@@ -3,7 +3,7 @@ GO_BIN_FILES=cmd/structure/structure.go cmd/runq/runq.go cmd/gha2db/gha2db.go cm
 GO_TEST_FILES=context_test.go gha_test.go map_test.go mgetc_test.go threads_test.go time_test.go unicode_test.go string_test.go regexp_test.go annotations_test.go env_test.go convert_test.go
 GO_DBTEST_FILES=pg_test.go series_test.go
 GO_LIBTEST_FILES=test/compare.go test/time.go
-GO_BIN_CMDS=devstats/cmd/structure devstats/cmd/runq devstats/cmd/gha2db devstats/cmd/calc_metric devstats/cmd/gha2db_sync devstats/cmd/import_affs devstats/cmd/annotations devstats/cmd/tags devstats/cmd/webhook devstats/cmd/devstats devstats/cmd/get_repos devstats/cmd/merge_dbs devstats/cmd/replacer devstats/cmd/vars devstats/cmd/ghapi2db devstats/cmd/columns devstats/cmd/hide_data devstats/cmd/sqlitedb devstats/cmd/website_data devstats/cmd/sync_issues devstats/cmd/gha2es
+GO_BIN_CMDS=devstatscode/cmd/structure devstatscode/cmd/runq devstatscode/cmd/gha2db devstatscode/cmd/calc_metric devstatscode/cmd/gha2db_sync devstatscode/cmd/import_affs devstatscode/cmd/annotations devstatscode/cmd/tags devstatscode/cmd/webhook devstatscode/cmd/devstats devstatscode/cmd/get_repos devstatscode/cmd/merge_dbs devstatscode/cmd/replacer devstatscode/cmd/vars devstatscode/cmd/ghapi2db devstatscode/cmd/columns devstatscode/cmd/hide_data devstatscode/cmd/sqlitedb devstatscode/cmd/website_data devstatscode/cmd/sync_issues devstatscode/cmd/gha2es
 #for race CGO_ENABLED=1
 #GO_ENV=CGO_ENABLED=1
 GO_ENV=CGO_ENABLED=0
