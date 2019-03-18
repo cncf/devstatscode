@@ -1,4 +1,4 @@
-package devstats
+package devstatscode
 
 import (
 	"context"

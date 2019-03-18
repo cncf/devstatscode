@@ -1,7 +1,7 @@
 package main
 
 import (
-	lib "devstats"
+	lib "devstatscode"
 	"time"
 
 	yaml "gopkg.in/yaml.v2"

@@ -1,7 +1,7 @@
-package devstats
+package devstatscode
 
 import (
-	lib "devstats"
+	lib "devstatscode"
 	"reflect"
 	"regexp"
 	"testing"

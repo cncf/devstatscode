@@ -1,8 +1,8 @@
-package devstats
+package devstatscode
 
 import (
-	lib "devstats"
-	testlib "devstats/test"
+	lib "devstatscode"
+	testlib "devstatscode/test"
 	"strings"
 	"testing"
 )

@@ -1,9 +1,9 @@
-package devstats
+package devstatscode
 
 import (
 	"database/sql"
-	lib "devstats"
-	testlib "devstats/test"
+	lib "devstatscode"
+	testlib "devstatscode/test"
 	"fmt"
 	"io/ioutil"
 	"os"

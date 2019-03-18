@@ -2,7 +2,7 @@ package main
 
 import (
 	"database/sql"
-	lib "devstats"
+	lib "devstatscode"
 	"fmt"
 	"time"
 

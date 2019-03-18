@@ -2,7 +2,7 @@ package main
 
 import (
 	"crypto/sha1"
-	lib "devstats"
+	lib "devstatscode"
 	"encoding/csv"
 	"encoding/hex"
 	"fmt"

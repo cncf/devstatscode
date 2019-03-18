@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
-	lib "devstats"
+	lib "devstatscode"
 	"fmt"
 	"math"
 	"os"

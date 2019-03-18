@@ -1,4 +1,4 @@
-package devstats
+package devstatscode
 
 // Today - common constant string
 const Today string = "today"

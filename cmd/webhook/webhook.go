@@ -5,7 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/x509"
-	lib "devstats"
+	lib "devstatscode"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"

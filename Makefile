@@ -1,7 +1,7 @@
 GO_LIB_FILES=pg_conn.go error.go mgetc.go map.go threads.go gha.go json.go time.go context.go exec.go structure.go log.go hash.go unicode.go const.go string.go annotations.go env.go ghapi.go io.go tags.go yaml.go es_conn.go ts_points.go convert.go
 GO_BIN_FILES=cmd/structure/structure.go cmd/runq/runq.go cmd/gha2db/gha2db.go cmd/calc_metric/calc_metric.go cmd/gha2db_sync/gha2db_sync.go cmd/import_affs/import_affs.go cmd/annotations/annotations.go cmd/tags/tags.go cmd/webhook/webhook.go cmd/devstats/devstats.go cmd/get_repos/get_repos.go cmd/merge_dbs/merge_dbs.go cmd/replacer/replacer.go cmd/vars/vars.go cmd/ghapi2db/ghapi2db.go cmd/columns/columns.go cmd/hide_data/hide_data.go cmd/sqlitedb/sqlitedb.go cmd/website_data/website_data.go cmd/sync_issues/sync_issues.go cmd/gha2es/gha2es.go
 GO_TEST_FILES=context_test.go gha_test.go map_test.go mgetc_test.go threads_test.go time_test.go unicode_test.go string_test.go regexp_test.go annotations_test.go env_test.go convert_test.go
-GO_DBTEST_FILES=pg_test.go series_test.go metrics_test.go
+GO_DBTEST_FILES=pg_test.go series_test.go
 GO_LIBTEST_FILES=test/compare.go test/time.go
 GO_BIN_CMDS=devstats/cmd/structure devstats/cmd/runq devstats/cmd/gha2db devstats/cmd/calc_metric devstats/cmd/gha2db_sync devstats/cmd/import_affs devstats/cmd/annotations devstats/cmd/tags devstats/cmd/webhook devstats/cmd/devstats devstats/cmd/get_repos devstats/cmd/merge_dbs devstats/cmd/replacer devstats/cmd/vars devstats/cmd/ghapi2db devstats/cmd/columns devstats/cmd/hide_data devstats/cmd/sqlitedb devstats/cmd/website_data devstats/cmd/sync_issues devstats/cmd/gha2es
 #for race CGO_ENABLED=1
@@ -25,7 +25,7 @@ GO_USEDEXPORTS=usedexports -ignore 'sqlitedb.go|vendor'
 GO_ERRCHECK=errcheck -asserts -ignore '[FS]?[Pp]rint*' -ignoretests
 GO_TEST=go test
 BINARIES=structure gha2db calc_metric gha2db_sync import_affs annotations tags webhook devstats get_repos merge_dbs replacer vars ghapi2db columns hide_data website_data sync_issues gha2es runq sqlitedb
-CRON_SCRIPTS=cron/cron_db_backup.sh cron/cron_db_backup_all.sh cron/refresh_mviews.sh cron/sysctl_config.sh cron/backup_artificial.sh cron/restart_dbs.sh cron/ensure_service_active.sh
+CRON_SCRIPTS=cron/cron_db_backup.sh cron/cron_db_backup_all.sh cron/sysctl_config.sh cron/backup_artificial.sh cron/restart_dbs.sh cron/ensure_service_active.sh
 UTIL_SCRIPTS=devel/wait_for_command.sh devel/cronctl.sh devel/sync_lock.sh devel/sync_unlock.sh devel/db.sh devel/all_projs.sh devel/all_dbs.sh
 GIT_SCRIPTS=git/git_reset_pull.sh git/git_files.sh git/git_tags.sh git/last_tag.sh
 STRIP=strip
@@ -142,12 +142,6 @@ copydata: util_scripts
 	mkdir ${DATADIR} 2>/dev/null || echo "..."
 	chmod 777 ${DATADIR} 2>/dev/null || echo "..."
 	rm -fr ${DATADIR}/* || exit 3
-	cp -R metrics/ ${DATADIR}/metrics/ || exit 4
-	cp -R util_sql/ ${DATADIR}/util_sql/ || exit 5
-	cp -R util_sh/ ${DATADIR}/util_sh/ || exit 6
-	cp -R docs/ ${DATADIR}/docs/ || exit 7
-	cp -R partials/ ${DATADIR}/partials/ || exit 8
-	cp -R scripts/ ${DATADIR}/scripts/ || exit 9
 	cp devel/*.txt ${DATADIR}/ || exit 11
 
 install: ${BINARIES} data

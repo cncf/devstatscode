@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"database/sql"
-	lib "devstats"
+	lib "devstatscode"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
