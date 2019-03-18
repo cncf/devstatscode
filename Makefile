@@ -25,16 +25,10 @@ GO_USEDEXPORTS=usedexports -ignore 'sqlitedb.go|vendor'
 GO_ERRCHECK=errcheck -asserts -ignore '[FS]?[Pp]rint*' -ignoretests
 GO_TEST=go test
 BINARIES=structure gha2db calc_metric gha2db_sync import_affs annotations tags webhook devstats get_repos merge_dbs replacer vars ghapi2db columns hide_data website_data sync_issues gha2es runq sqlitedb
-CRON_SCRIPTS=cron/cron_db_backup.sh cron/cron_db_backup_all.sh cron/sysctl_config.sh cron/backup_artificial.sh cron/restart_dbs.sh cron/ensure_service_active.sh
-UTIL_SCRIPTS=devel/wait_for_command.sh devel/cronctl.sh devel/sync_lock.sh devel/sync_unlock.sh devel/db.sh devel/all_projs.sh devel/all_dbs.sh
+CRON_SCRIPTS=cron/cron_db_backup.sh cron/sysctl_config.sh cron/backup_artificial.sh
+UTIL_SCRIPTS=devel/wait_for_command.sh devel/cronctl.sh devel/sync_lock.sh devel/sync_unlock.sh devel/db.sh
 GIT_SCRIPTS=git/git_reset_pull.sh git/git_files.sh git/git_tags.sh git/last_tag.sh
 STRIP=strip
-
-ifdef GHA2DB_DATADIR
-DATADIR=${GHA2DB_DATADIR}
-else
-DATADIR=/etc/gha2db
-endif
 
 all: check ${BINARIES}
 
@@ -130,21 +124,10 @@ dbtest:
 
 check: fmt lint imports vet const usedexports errcheck
 
-util_scripts:
+install: ${BINARIES}
 	cp -v ${UTIL_SCRIPTS} ${GOPATH}/bin
-
-data: util_scripts
 	[ ! -f /tmp/deploy.wip ] || exit 1
 	wait_for_command.sh devstats 3600 || exit 2
-	make copydata
-
-copydata: util_scripts
-	mkdir ${DATADIR} 2>/dev/null || echo "..."
-	chmod 777 ${DATADIR} 2>/dev/null || echo "..."
-	rm -fr ${DATADIR}/* || exit 3
-	cp devel/*.txt ${DATADIR}/ || exit 11
-
-install: ${BINARIES} data
 	${GO_INSTALL} ${GO_BIN_CMDS}
 	cp -v ${CRON_SCRIPTS} ${GOPATH}/bin
 	cp -v ${GIT_SCRIPTS} ${GOPATH}/bin
