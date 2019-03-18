@@ -7,3 +7,9 @@ This is a code reposotory for [DevStats](https://github.com/cncf/devstats) used 
 
 Authors: Łukasz Gryglicki <lgryglicki@cncf.io>, Justyna Gryglicka <lgryglicka@cncf.io>.
 
+# Building and installing
+
+- Follow [this guide](https://github.com/cncf/devstats/blob/master/INSTALL_UBUNTU18.md#devstats-installation-on-ubuntu)
+- Fetch dependency libraries.
+- `make` then `make test` finally `make install`.
+
