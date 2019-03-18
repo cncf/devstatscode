@@ -4,7 +4,6 @@ GO_TEST_FILES=context_test.go gha_test.go map_test.go mgetc_test.go threads_test
 GO_DBTEST_FILES=pg_test.go series_test.go metrics_test.go
 GO_LIBTEST_FILES=test/compare.go test/time.go
 GO_BIN_CMDS=devstats/cmd/structure devstats/cmd/runq devstats/cmd/gha2db devstats/cmd/calc_metric devstats/cmd/gha2db_sync devstats/cmd/import_affs devstats/cmd/annotations devstats/cmd/tags devstats/cmd/webhook devstats/cmd/devstats devstats/cmd/get_repos devstats/cmd/merge_dbs devstats/cmd/replacer devstats/cmd/vars devstats/cmd/ghapi2db devstats/cmd/columns devstats/cmd/hide_data devstats/cmd/sqlitedb devstats/cmd/website_data devstats/cmd/sync_issues devstats/cmd/gha2es
-GO_DOCKER_BIN_CMDS=devstats/cmd/structure devstats/cmd/gha2db devstats/cmd/calc_metric devstats/cmd/gha2db_sync devstats/cmd/import_affs devstats/cmd/annotations devstats/cmd/tags devstats/cmd/devstats devstats/cmd/get_repos devstats/cmd/vars devstats/cmd/ghapi2db devstats/cmd/columns devstats/cmd/gha2es devstats/cmd/runq devstats/cmd/replacer
 #for race CGO_ENABLED=1
 #GO_ENV=CGO_ENABLED=1
 GO_ENV=CGO_ENABLED=0
@@ -26,12 +25,10 @@ GO_USEDEXPORTS=usedexports -ignore 'sqlitedb.go|vendor'
 GO_ERRCHECK=errcheck -asserts -ignore '[FS]?[Pp]rint*' -ignoretests
 GO_TEST=go test
 BINARIES=structure gha2db calc_metric gha2db_sync import_affs annotations tags webhook devstats get_repos merge_dbs replacer vars ghapi2db columns hide_data website_data sync_issues gha2es runq sqlitedb
-DOCKER_BINARIES=structure gha2db calc_metric gha2db_sync import_affs annotations tags devstats get_repos vars ghapi2db columns gha2es runq replacer
 CRON_SCRIPTS=cron/cron_db_backup.sh cron/cron_db_backup_all.sh cron/refresh_mviews.sh cron/sysctl_config.sh cron/backup_artificial.sh cron/restart_dbs.sh cron/ensure_service_active.sh
 UTIL_SCRIPTS=devel/wait_for_command.sh devel/cronctl.sh devel/sync_lock.sh devel/sync_unlock.sh devel/db.sh devel/all_projs.sh devel/all_dbs.sh
 GIT_SCRIPTS=git/git_reset_pull.sh git/git_files.sh git/git_tags.sh git/last_tag.sh
 STRIP=strip
-BINARY_PATH=/devstats-minimal/
 
 ifdef GHA2DB_DATADIR
 DATADIR=${GHA2DB_DATADIR}
@@ -40,8 +37,6 @@ DATADIR=/etc/gha2db
 endif
 
 all: check ${BINARIES}
-
-dockerbin: ${DOCKER_BINARIES}
 
 structure: cmd/structure/structure.go ${GO_LIB_FILES}
 	 ${GO_ENV} ${GO_BUILD} -o structure cmd/structure/structure.go
@@ -154,33 +149,11 @@ copydata: util_scripts
 	cp -R partials/ ${DATADIR}/partials/ || exit 8
 	cp -R scripts/ ${DATADIR}/scripts/ || exit 9
 	cp devel/*.txt ${DATADIR}/ || exit 11
-	cp github_users.json projects.yaml companies.yaml skip_dates.yaml linux.yaml zephyr.yaml ${DATADIR}/ || exit 12
-	cp cdf/projects.yaml ${DATADIR}/cdf_projects.yaml || exit 13
 
 install: ${BINARIES} data
 	${GO_INSTALL} ${GO_BIN_CMDS}
 	cp -v ${CRON_SCRIPTS} ${GOPATH}/bin
 	cp -v ${GIT_SCRIPTS} ${GOPATH}/bin
-
-dockerinstall: ${DOCKER_BINARIES} copydata
-	mkdir ${DATADIR}/docker 2>/dev/null || echo "..."
-	chmod 777 ${DATADIR}/docker 2>/dev/null || echo "..."
-	cp docker/docker_projects.yaml ${DATADIR}/docker/ || exit 10
-	${GO_INSTALL} ${GO_DOCKER_BIN_CMDS}
-	cp -v ${CRON_SCRIPTS} ${GOPATH}/bin || exit 11
-	cp -v ${GIT_SCRIPTS} ${GOPATH}/bin || exit 12
-	cd ${GOPATH}/bin || exit 13
-	mkdir ${BINARY_PATH} || exit 14
-	cp -v ${DOCKER_BINARIES} ${BINARY_PATH} || exit 15
-	cp -v ${CRON_SCRIPTS} ${BINARY_PATH} || exit 16
-	cp -v ${GIT_SCRIPTS} ${BINARY_PATH} || exit 17
-	cp -v ${UTIL_SCRIPTS} ${BINARY_PATH} || exit 18
-
-deploy:
-	./deploy.sh || exit 1
-
-links: clean
-	./util_sh/make_binary_links.sh ${BINARIES} || exit 1
 
 strip: ${BINARIES}
 	${STRIP} ${BINARIES}

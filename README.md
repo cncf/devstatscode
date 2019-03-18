@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/cncf/devstats.svg?branch=master)](https://travis-ci.org/cncf/devstats)
+[![Build Status](https://travis-ci.org/cncf/devstatscode.svg?branch=master)](https://travis-ci.org/cncf/devstatscode)
 [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/1357/badge)](https://bestpractices.coreinfrastructure.org/projects/1357)
 
 # DevStats code
