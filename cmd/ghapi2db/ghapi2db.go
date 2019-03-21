@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	lib "devstatscode"
 	"fmt"
 	"math"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	lib "github.com/cncf/devstatscode"
 	"github.com/google/go-github/github"
 )
 

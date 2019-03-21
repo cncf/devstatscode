@@ -1,11 +1,12 @@
 package devstatscode
 
 import (
-	lib "devstatscode"
-	testlib "devstatscode/test"
 	"fmt"
 	"os"
 	"testing"
+
+	lib "github.com/cncf/devstatscode"
+	testlib "github.com/cncf/devstatscode/test"
 )
 
 func TestEnv(t *testing.T) {

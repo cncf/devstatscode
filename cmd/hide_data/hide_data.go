@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha1"
-	lib "devstatscode"
 	"encoding/csv"
 	"encoding/hex"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	lib "github.com/cncf/devstatscode"
 	yaml "gopkg.in/yaml.v2"
 )
 

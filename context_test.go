@@ -1,14 +1,15 @@
 package devstatscode
 
 import (
-	lib "devstatscode"
-	testlib "devstatscode/test"
 	"fmt"
 	"os"
 	"reflect"
 	"regexp"
 	"testing"
 	"time"
+
+	lib "github.com/cncf/devstatscode"
+	testlib "github.com/cncf/devstatscode/test"
 )
 
 // Copies Ctx structure

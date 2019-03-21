@@ -1,9 +1,9 @@
 package main
 
 import (
-	lib "devstatscode"
 	"time"
 
+	lib "github.com/cncf/devstatscode"
 	yaml "gopkg.in/yaml.v2"
 )
 

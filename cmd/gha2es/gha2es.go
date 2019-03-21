@@ -2,12 +2,13 @@ package main
 
 import (
 	"database/sql"
-	lib "devstatscode"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	lib "github.com/cncf/devstatscode"
 )
 
 type esRawCommit struct {

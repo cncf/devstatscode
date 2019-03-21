@@ -5,7 +5,6 @@ import (
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/x509"
-	lib "devstatscode"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -17,6 +16,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	lib "github.com/cncf/devstatscode"
 )
 
 // Payload signature verification based on:

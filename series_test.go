@@ -2,10 +2,11 @@ package devstatscode
 
 import (
 	"database/sql"
-	lib "devstatscode"
-	testlib "devstatscode/test"
 	"testing"
 	"time"
+
+	lib "github.com/cncf/devstatscode"
+	testlib "github.com/cncf/devstatscode/test"
 )
 
 // Return array of arrays of any values from TSDB result

@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	lib "devstatscode"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -10,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	lib "github.com/cncf/devstatscode"
 	yaml "gopkg.in/yaml.v2"
 )
 

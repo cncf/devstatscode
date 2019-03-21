@@ -2,13 +2,14 @@ package main
 
 import (
 	"database/sql"
-	lib "devstatscode"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	lib "github.com/cncf/devstatscode"
 )
 
 // calcMetricData structure to hold metric calculation data

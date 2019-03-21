@@ -1,8 +1,9 @@
 package devstatscode
 
 import (
-	lib "devstatscode"
 	"testing"
+
+	lib "github.com/cncf/devstatscode"
 )
 
 func TestStripUnicode(t *testing.T) {

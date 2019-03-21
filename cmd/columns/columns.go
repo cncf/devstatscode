@@ -1,10 +1,10 @@
 package main
 
 import (
-	lib "devstatscode"
 	"fmt"
 	"time"
 
+	lib "github.com/cncf/devstatscode"
 	yaml "gopkg.in/yaml.v2"
 )
 

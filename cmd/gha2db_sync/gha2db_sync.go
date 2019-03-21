@@ -1,13 +1,13 @@
 package main
 
 import (
-	lib "devstatscode"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	lib "github.com/cncf/devstatscode"
 	yaml "gopkg.in/yaml.v2"
 )
 

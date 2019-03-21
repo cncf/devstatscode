@@ -1,8 +1,9 @@
 package main
 
 import (
-	lib "devstatscode"
 	"time"
+
+	lib "github.com/cncf/devstatscode"
 )
 
 func main() {

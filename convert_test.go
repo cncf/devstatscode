@@ -1,9 +1,10 @@
 package devstatscode
 
 import (
-	lib "devstatscode"
 	"math"
 	"testing"
+
+	lib "github.com/cncf/devstatscode"
 )
 
 func TestGetFloatFromInterface(t *testing.T) {

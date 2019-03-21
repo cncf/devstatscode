@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	lib "devstatscode"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	lib "github.com/cncf/devstatscode"
 	_ "github.com/mattn/go-sqlite3"
 )
 

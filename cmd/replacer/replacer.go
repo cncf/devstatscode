@@ -1,13 +1,14 @@
 package main
 
 import (
-	lib "devstatscode"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+
+	lib "github.com/cncf/devstatscode"
 )
 
 // replacer - replace regexp or string with regesp or string

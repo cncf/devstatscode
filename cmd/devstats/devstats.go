@@ -1,12 +1,12 @@
 package main
 
 import (
-	lib "devstatscode"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"time"
 
+	lib "github.com/cncf/devstatscode"
 	"github.com/lib/pq"
 	yaml "gopkg.in/yaml.v2"
 )

@@ -2,10 +2,10 @@ package main
 
 import (
 	"database/sql"
-	lib "devstatscode"
 	"fmt"
 	"time"
 
+	lib "github.com/cncf/devstatscode"
 	"github.com/lib/pq"
 )
 
