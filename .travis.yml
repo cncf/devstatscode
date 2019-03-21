@@ -25,8 +25,8 @@ before_install:
   - sudo -u postgres psql gha -c "create user devstats_team with password 'pwd'"
   - sudo -u postgres psql gha -c 'grant all privileges on database "gha" to devstats_team'
 script:
-  - mv /home/travis/gopath/src/github.com/cncf/devstatscode /home/travis/gopath/src/devstatscode
-  - cd /home/travis/gopath/src/devstatscode
+  - mv /home/travis/gopath/src/github.com/cncf/devstatscode /home/travis/gopath/src/github.com/cncf/devstatscode
+  - cd /home/travis/gopath/src/github.com/cncf/devstatscode
   - make
   - make test
   - GHA2DB_PROJECT=kubernetes GHA2DB_LOCAL=1 PG_PORT=5433 PG_PASS=pwd ./dbtest.sh
