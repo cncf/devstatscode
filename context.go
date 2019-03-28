@@ -127,6 +127,7 @@ type Ctx struct {
 	CheckRunningFlag    bool                         // From GHA2DB_CHECK_RUNNING_FLAG, devstats tool - check if there is a 'devstats_running' metric saved in 'gha_computed' table - if yes, abort
 	SetRunningFlag      bool                         // From GHA2DB_SET_RUNNING_FLAG, devstats tool - set 'devstats_running' flag on 'gha_computed' table while devstats cronjob is running
 	ESBulkSize          int                          // FROM GHA2DB_ES_BULK_SIZE, calc_metric and gha2es tools, default 10000
+	PidFileRoot         string                       // From GHA2DB_PID_FILE_ROOT, devstats tool, use '/tmp/PidFileRoot.pid' as PID file, default 'devstats' -> '/tmp/devstats.pid'
 	SharedDB            string                       // Currently annotations tool read this from projects.yaml:shared_db and if set, outputs annotations data to the sharded DB in addition to the current DB
 	ProjectMainRepo     string                       // Used by annotations tool to store project's main repo name
 	TestMode            bool                         // True when running tests
@@ -249,6 +250,12 @@ func (ctx *Ctx) Init() {
 	}
 	if ctx.PgSSL == "" {
 		ctx.PgSSL = "disable"
+	}
+
+	// PID file
+	ctx.PidFileRoot = os.Getenv("GHA2DB_PID_FILE_ROOT")
+	if ctx.PidFileRoot == "" {
+		ctx.PidFileRoot = "devstats"
 	}
 
 	// Environment controlling index creation, table & tools

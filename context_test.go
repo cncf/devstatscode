@@ -129,6 +129,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		SetRunningFlag:      in.SetRunningFlag,
 		SkipDatesYaml:       in.SkipDatesYaml,
 		PropagateOnlyVar:    in.PropagateOnlyVar,
+		PidFileRoot:         in.PidFileRoot,
 		TestMode:            in.TestMode,
 		ESBulkSize:          in.ESBulkSize,
 	}
@@ -362,6 +363,7 @@ func TestInit(t *testing.T) {
 		CheckRunningFlag:    false,
 		SetRunningFlag:      false,
 		PropagateOnlyVar:    false,
+		PidFileRoot:         "devstats",
 		TestMode:            true,
 		ESBulkSize:          10000,
 	}
@@ -557,6 +559,19 @@ func TestInit(t *testing.T) {
 				t,
 				copyContext(&defaultContext),
 				map[string]interface{}{"TmOffset": 5},
+			),
+		},
+		{
+			"Setting PID file",
+			map[string]string{
+				"GHA2DB_PID_FILE_ROOT": "kubernetes_devstats",
+			},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{
+					"PidFileRoot": "kubernetes_devstats",
+				},
 			),
 		},
 		{
