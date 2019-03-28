@@ -100,7 +100,7 @@ func ClearDBLogs() {
 	ctx.Init()
 
 	// Point to logs database
-	ctx.PgDB = "devstats"
+	ctx.PgDB = Devstats
 
 	// Connect to DB
 	c := PgConn(&ctx)

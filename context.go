@@ -255,7 +255,7 @@ func (ctx *Ctx) Init() {
 	// PID file
 	ctx.PidFileRoot = os.Getenv("GHA2DB_PID_FILE_ROOT")
 	if ctx.PidFileRoot == "" {
-		ctx.PidFileRoot = "devstats"
+		ctx.PidFileRoot = Devstats
 	}
 
 	// Environment controlling index creation, table & tools
