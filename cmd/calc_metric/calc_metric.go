@@ -404,9 +404,9 @@ func getPathIndependentKey(key string) string {
 
 // isAlreadyComputed check if given quick range period was already computed
 // It will skip past period marked as compued unless special flags are passed
-func isAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, from string) bool {
+func isAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) bool {
 	key = getPathIndependentKey(key)
-	dtFrom := lib.TimeParseAny(from)
+	dt := lib.TimeParseAny(sdt)
 	rows := lib.QuerySQLWithErr(
 		con,
 		ctx,
@@ -417,7 +417,7 @@ func isAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, from string) bool {
 			lib.NValue(2),
 		),
 		key,
-		dtFrom,
+		dt,
 	)
 	defer func() { lib.FatalOnError(rows.Close()) }()
 	i := 0
@@ -430,15 +430,15 @@ func isAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, from string) bool {
 
 // setAlreadyComputed marks given quick range period as computed
 // Should be called inside: if !ctx.SkipTSDB { ... }
-func setAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, from string) {
+func setAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) {
 	key = getPathIndependentKey(key)
-	dtFrom := lib.TimeParseAny(from)
+	dt := lib.TimeParseAny(sdt)
 	lib.ExecSQLWithErr(
 		con,
 		ctx,
 		lib.InsertIgnore("into gha_computed(metric, dt) "+lib.NValues(2)),
 		key,
-		dtFrom,
+		dt,
 	)
 }
 
@@ -461,7 +461,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 	lib.Printf("calc_metric.go: Histogram running interval '%v,%v' n:%d anno:%v past:%v multi:%v\n", interval, intervalAbbr, nIntervals, cfg.annotationsRanges, cfg.skipPast, cfg.multivalue)
 
 	// If using annotations ranges, then get their values
-	var qrFrom *string
+	var qrDt *string
 	if cfg.annotationsRanges {
 		// Get Quick Ranges from TSDB (it is filled by annotations command)
 		quickRanges := lib.GetTagValues(sqlc, ctx, "quick_ranges", "quick_ranges_data")
@@ -482,8 +482,8 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 				if cfg.skipPast && period == "" {
 					dtTo := lib.TimeParseAny(to)
 					prevHour := lib.PrevHourStart(time.Now())
-					if dtTo.Before(prevHour) && isAlreadyComputed(sqlc, ctx, sqlFile, from) {
-						lib.Printf("Skipping past quick range: %v (already computed)\n", from)
+					if dtTo.Before(prevHour) && isAlreadyComputed(sqlc, ctx, sqlFile, to) {
+						lib.Printf("Skipping past quick range: %v-%v (already computed)\n", from, to)
 						return
 					}
 				}
@@ -493,7 +493,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 					dtTo := lib.TimeParseAny(to)
 					prevHour := lib.PrevHourStart(time.Now())
 					if dtTo.Before(prevHour) {
-						qrFrom = &from
+						qrDt = &to
 					}
 				}
 				break
@@ -802,8 +802,8 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 	if !ctx.SkipTSDB && !ctx.UseESOnly {
 		// Mark this metric & period as already computed if this is a QR period
 		lib.WriteTSPoints(ctx, sqlc, &pts, cfg.mergeSeries, nil)
-		if qrFrom != nil {
-			setAlreadyComputed(sqlc, ctx, sqlFile, *qrFrom)
+		if qrDt != nil {
+			setAlreadyComputed(sqlc, ctx, sqlFile, *qrDt)
 		}
 	} else if ctx.Debug > 0 {
 		lib.Printf("Skipping series write\n")

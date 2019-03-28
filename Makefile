@@ -127,7 +127,10 @@ check: fmt lint imports vet const usedexports errcheck
 install: ${BINARIES}
 	cp -v ${UTIL_SCRIPTS} ${GOPATH}/bin
 	[ ! -f /tmp/deploy.wip ] || exit 1
-	wait_for_command.sh devstats 3600 || exit 2
+	wait_for_command.sh devstats 600 || exit 2
+	wait_for_command.sh devstats_others 600 || exit 3
+	wait_for_command.sh devstats_kubernetes 600 || exit 4
+	wait_for_command.sh devstats_allprj 600 || exit 5
 	${GO_INSTALL} ${GO_BIN_CMDS}
 	cp -v ${CRON_SCRIPTS} ${GOPATH}/bin
 	cp -v ${GIT_SCRIPTS} ${GOPATH}/bin
