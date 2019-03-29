@@ -1435,7 +1435,8 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg map[string]s
 	fn := fmt.Sprintf("http://data.gharchive.org/%s.json.gz", lib.ToGHADate(dt))
 
 	// Get gzipped JSON array via HTTP
-	response, err := http.Get(fn)
+	httpClient := &http.Client{Timeout: time.Minute * 2}
+	response, err := httpClient.Get(fn)
 	if err != nil {
 		lib.Printf("%v: Error http.Get:\n%v\n", dt, err)
 		fmt.Fprintf(os.Stderr, "%v: Error http.Get:\n%v\n", dt, err)
