@@ -132,6 +132,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		PidFileRoot:         in.PidFileRoot,
 		TestMode:            in.TestMode,
 		ESBulkSize:          in.ESBulkSize,
+		HTTPTimeout:         in.HTTPTimeout,
 	}
 	return &out
 }
@@ -366,6 +367,7 @@ func TestInit(t *testing.T) {
 		PidFileRoot:         "devstats",
 		TestMode:            true,
 		ESBulkSize:          10000,
+		HTTPTimeout:         2,
 	}
 
 	var nilRegexp *regexp.Regexp
@@ -424,6 +426,15 @@ func TestInit(t *testing.T) {
 				t,
 				copyContext(&defaultContext),
 				map[string]interface{}{"ESBulkSize": 999},
+			),
+		},
+		{
+			"Setting non-standard HTTP timeout",
+			map[string]string{"GHA2DB_HTTP_TIMEOUT": "120"},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{"HTTPTimeout": 120},
 			),
 		},
 		{

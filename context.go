@@ -126,7 +126,8 @@ type Ctx struct {
 	CheckProvisionFlag  bool                         // From GHA2DB_CHECK_PROVISION_FLAG, devstats tool - check if there is a 'provision' metric saved in 'gha_computed' table - if not, abort
 	CheckRunningFlag    bool                         // From GHA2DB_CHECK_RUNNING_FLAG, devstats tool - check if there is a 'devstats_running' metric saved in 'gha_computed' table - if yes, abort
 	SetRunningFlag      bool                         // From GHA2DB_SET_RUNNING_FLAG, devstats tool - set 'devstats_running' flag on 'gha_computed' table while devstats cronjob is running
-	ESBulkSize          int                          // FROM GHA2DB_ES_BULK_SIZE, calc_metric and gha2es tools, default 10000
+	ESBulkSize          int                          // From GHA2DB_ES_BULK_SIZE, calc_metric and gha2es tools, default 10000
+	HTTPTimeout         int                          // From GHA2DB_HTTP_TIMEOUT, gha2db - data.gharchive.org timeout value in minutes, default 2
 	PidFileRoot         string                       // From GHA2DB_PID_FILE_ROOT, devstats tool, use '/tmp/PidFileRoot.pid' as PID file, default 'devstats' -> '/tmp/devstats.pid'
 	SharedDB            string                       // Currently annotations tool read this from projects.yaml:shared_db and if set, outputs annotations data to the sharded DB in addition to the current DB
 	ProjectMainRepo     string                       // Used by annotations tool to store project's main repo name
@@ -629,6 +630,15 @@ func (ctx *Ctx) Init() {
 		size, err := strconv.Atoi(os.Getenv("GHA2DB_ES_BULK_SIZE"))
 		FatalNoLog(err)
 		ctx.ESBulkSize = size
+	}
+
+	// HTTP Timeout
+	if os.Getenv("GHA2DB_HTTP_TIMEOUT") == "" {
+		ctx.HTTPTimeout = 2
+	} else {
+		size, err := strconv.Atoi(os.Getenv("GHA2DB_HTTP_TIMEOUT"))
+		FatalNoLog(err)
+		ctx.HTTPTimeout = size
 	}
 
 	// Skip writing to shared_db from projects.yaml
