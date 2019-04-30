@@ -826,7 +826,7 @@ func CreateDatabaseIfNeeded(ctx *Ctx) bool {
 
 // CreateDatabaseIfNeeded - creates requested database if not exists
 // Returns true if database was not existing existed and created dropped
-func CreateDatabaseIfNeededExtended(ctx *Ctx, extraparams string) bool {
+func CreateDatabaseIfNeededExtended(ctx *Ctx, extraParams string) bool {
 	// Check if database exists
 	exists, c := DatabaseExists(ctx, false)
 	defer func() { FatalOnError(c.Close()) }()
