@@ -823,3 +823,19 @@ func CreateDatabaseIfNeeded(ctx *Ctx) bool {
 	// Return whatever we created DB or not
 	return !exists
 }
+
+// CreateDatabaseIfNeeded - creates requested database if not exists
+// Returns true if database was not existing existed and created dropped
+func CreateDatabaseIfNeededExtended(ctx *Ctx, extraparams string) bool {
+	// Check if database exists
+	exists, c := DatabaseExists(ctx, false)
+	defer func() { FatalOnError(c.Close()) }()
+
+	// Create database if not exists
+	if !exists {
+		ExecSQLWithErr(c, ctx, "create database "+ctx.PgDB+" "+extraParams)
+	}
+
+	// Return whatever we created DB or not
+	return !exists
+}
