@@ -249,6 +249,10 @@ func dynamicSetFields(t *testing.T, ctx *lib.Ctx, fields map[string]interface{})
 
 func TestInit(t *testing.T) {
 	// This is the expected default struct state
+	pass := os.Getenv("PG_PASS")
+	if pass == "" {
+		pass = lib.Password
+	}
 	defaultContext := lib.Ctx{
 		DataDir:             "/etc/gha2db/",
 		Debug:               0,
@@ -266,7 +270,7 @@ func TestInit(t *testing.T) {
 		PgPort:              "5432",
 		PgDB:                "gha",
 		PgUser:              "gha_admin",
-		PgPass:              "password",
+		PgPass:              pass,
 		PgSSL:               "disable",
 		Index:               false,
 		Table:               true,
