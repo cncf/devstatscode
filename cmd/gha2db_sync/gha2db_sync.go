@@ -191,6 +191,7 @@ func sync(ctx *lib.Ctx, args []string) {
 	// Just to get into next GHA hour
 	from := maxDtPg
 	to := time.Now()
+	nowHour := time.Now().Hour()
 	fromDate := lib.ToYMDDate(from)
 	fromHour := strconv.Itoa(from.Hour())
 	toDate := lib.ToYMDDate(to)
@@ -315,7 +316,7 @@ func sync(ctx *lib.Ctx, args []string) {
 
 		// TSDB tags (repo groups template variable currently)
 		if !ctx.SkipTags {
-			if ctx.ResetTSDB || time.Now().Hour() == 0 {
+			if ctx.ResetTSDB || nowHour == 0 {
 				_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "tags"}, nil)
 				lib.FatalOnError(err)
 			} else {
@@ -332,7 +333,7 @@ func sync(ctx *lib.Ctx, args []string) {
 
 		// Annotations
 		if !ctx.SkipAnnotations {
-			if ctx.Project != "" && (ctx.ResetTSDB || time.Now().Hour() == 0) {
+			if ctx.Project != "" && (ctx.ResetTSDB || nowHour == 0) {
 				_, err := lib.ExecCommand(
 					ctx,
 					[]string{
@@ -539,7 +540,7 @@ func sync(ctx *lib.Ctx, args []string) {
 
 		// TSDB ensure that calculated metric have all columns from tags
 		if !ctx.SkipColumns {
-			if ctx.RunColumns || ctx.ResetTSDB || time.Now().Hour() == 0 {
+			if ctx.RunColumns || ctx.ResetTSDB || nowHour == 0 {
 				_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "columns"}, nil)
 				lib.FatalOnError(err)
 			} else {
