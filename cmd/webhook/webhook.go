@@ -164,7 +164,7 @@ func checkDeployEnvError(w http.ResponseWriter) bool {
 
 // successPayload: is this a success payload?
 func successPayload(ctx *lib.Ctx, pl payload) bool {
-	if pl.Repo.Name != lib.Devstats || pl.Repo.OwnerName != "cncf" {
+	if (pl.Repo.Name != lib.Devstats && pl.Repo.Name != lib.DevstatsCode) || pl.Repo.OwnerName != "cncf" {
 		return false
 	}
 	if strings.Contains(pl.Message, "[no deploy]") || strings.Contains(pl.Message, "[wip]") {
@@ -325,10 +325,12 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	if checkError(true, true, w, err) {
 		return
 	}
-	lib.Printf("WebHook: %s\n", "make")
-	_, err = lib.ExecCommand(&ctx, []string{"make"}, nil)
-	if checkError(true, true, w, err) {
-		return
+	if payload.Repo.Name != lib.DevstatsCode {
+		lib.Printf("WebHook: %s\n", "make")
+		_, err = lib.ExecCommand(&ctx, []string{"make"}, nil)
+		if checkError(true, true, w, err) {
+			return
+		}
 	}
 	lib.Printf("WebHook: %s\n", "make install")
 	_, err = lib.ExecCommand(&ctx, []string{"make", "install"}, nil)
