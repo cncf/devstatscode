@@ -154,6 +154,16 @@ func mergeESSeriesName(mergeSeries, sqlFile string) string {
 	return series
 }
 
+func mapName(cfg *calcMetricData, name string) string {
+	if cfg.seriesNameMap == nil {
+		return name
+	}
+	for k, v := range cfg.seriesNameMap {
+		name = strings.Replace(name, k, v, -1)
+	}
+	return name
+}
+
 func calcRange(
 	ch chan bool,
 	ctx *lib.Ctx,
@@ -246,7 +256,7 @@ func calcRange(
 			lib.AddTSPoint(
 				ctx,
 				&pts,
-				lib.NewTSPoint(ctx, name, period, nil, fields, dt, false),
+				lib.NewTSPoint(ctx, mapName(cfg, name), period, nil, fields, dt, false),
 			)
 		} else if nColumns >= 2 {
 			// Multiple rows, each with (series name, value(s))
@@ -319,7 +329,7 @@ func calcRange(
 									lib.AddTSPoint(
 										ctx,
 										&pts,
-										lib.NewTSPoint(ctx, name, period, nil, fields, cTime, true),
+										lib.NewTSPoint(ctx, mapName(cfg, name), period, nil, fields, cTime, true),
 									)
 								}
 							}
@@ -356,7 +366,7 @@ func calcRange(
 								lib.AddTSPoint(
 									ctx,
 									&pts,
-									lib.NewTSPoint(ctx, name, period, nil, fields, dt, false),
+									lib.NewTSPoint(ctx, mapName(cfg, name), period, nil, fields, dt, false),
 								)
 							}
 						}
@@ -368,7 +378,7 @@ func calcRange(
 				lib.AddTSPoint(
 					ctx,
 					&pts,
-					lib.NewTSPoint(ctx, seriesName, period, nil, seriesValues, dt, cfg.customData),
+					lib.NewTSPoint(ctx, mapName(cfg, seriesName), period, nil, seriesValues, dt, cfg.customData),
 				)
 			}
 			lib.FatalOnError(rows.Err())
@@ -579,7 +589,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 			lib.AddTSPoint(
 				ctx,
 				&pts,
-				lib.NewTSPoint(ctx, seriesNameOrFunc, intervalAbbr, nil, fields, tm, false),
+				lib.NewTSPoint(ctx, mapName(cfg, seriesNameOrFunc), intervalAbbr, nil, fields, tm, false),
 			)
 			rowCount++
 			tm = tm.Add(-time.Hour)
@@ -663,7 +673,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 				lib.AddTSPoint(
 					ctx,
 					&pts,
-					lib.NewTSPoint(ctx, name, intervalAbbr, nil, fields, tm, false),
+					lib.NewTSPoint(ctx, mapName(cfg, name), intervalAbbr, nil, fields, tm, false),
 				)
 			} else {
 				if nNames > 0 {
@@ -712,7 +722,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 							lib.AddTSPoint(
 								ctx,
 								&pts,
-								lib.NewTSPoint(ctx, name, intervalAbbr, nil, fields, tm, false),
+								lib.NewTSPoint(ctx, mapName(cfg, name), intervalAbbr, nil, fields, tm, false),
 							)
 						}
 					} else {
@@ -747,7 +757,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 							lib.AddTSPoint(
 								ctx,
 								&pts,
-								lib.NewTSPoint(ctx, name, intervalAbbr, nil, fields, tm, false),
+								lib.NewTSPoint(ctx, mapName(cfg, name), intervalAbbr, nil, fields, tm, false),
 							)
 						}
 					}
