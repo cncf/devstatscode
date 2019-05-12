@@ -1,6 +1,9 @@
 package devstatscode
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // SkipEmpty - skip one element arrays contining only empty string
 // This is what strings.Split() returns for empty input
@@ -44,4 +47,28 @@ func StringsSetKeys(set map[string]struct{}) []string {
 	}
 	sort.Strings(outArr)
 	return outArr
+}
+
+// MapFromString - returns maps from string formatted as map[k1:v1 k2:v2 k3:v3 ...]
+func MapFromString(str string) map[string]string {
+	if len(str) < 6 {
+		return nil
+	}
+	l := len(str)
+	if str[:4] != "map[" || str[l-1:l] != "]" {
+		return nil
+	}
+	str = str[4 : l-1]
+	ary := strings.Split(str, " ")
+	var res map[string]string
+	for _, data := range ary {
+		d := strings.Split(data, ":")
+		if len(d) == 2 {
+			if res == nil {
+				res = make(map[string]string)
+			}
+			res[d[0]] = d[1]
+		}
+	}
+	return res
 }

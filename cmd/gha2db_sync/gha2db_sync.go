@@ -18,22 +18,23 @@ type metrics struct {
 
 // metric contain each metric data
 type metric struct {
-	Name              string     `yaml:"name"`
-	Periods           string     `yaml:"periods"`
-	SeriesNameOrFunc  string     `yaml:"series_name_or_func"`
-	MetricSQL         string     `yaml:"sql"`
-	AddPeriodToName   bool       `yaml:"add_period_to_name"`
-	Histogram         bool       `yaml:"histogram"`
-	Aggregate         string     `yaml:"aggregate"`
-	Skip              string     `yaml:"skip"`
-	Desc              string     `yaml:"desc"`
-	MultiValue        bool       `yaml:"multi_value"`
-	EscapeValueName   bool       `yaml:"escape_value_name"`
-	AnnotationsRanges bool       `yaml:"annotations_ranges"`
-	MergeSeries       string     `yaml:"merge_series"`
-	CustomData        bool       `yaml:"custom_data"`
-	StartFrom         *time.Time `yaml:"start_from"`
-	LastHours         int        `yaml:"last_hours"`
+	Name              string            `yaml:"name"`
+	Periods           string            `yaml:"periods"`
+	SeriesNameOrFunc  string            `yaml:"series_name_or_func"`
+	MetricSQL         string            `yaml:"sql"`
+	AddPeriodToName   bool              `yaml:"add_period_to_name"`
+	Histogram         bool              `yaml:"histogram"`
+	Aggregate         string            `yaml:"aggregate"`
+	Skip              string            `yaml:"skip"`
+	Desc              string            `yaml:"desc"`
+	MultiValue        bool              `yaml:"multi_value"`
+	EscapeValueName   bool              `yaml:"escape_value_name"`
+	AnnotationsRanges bool              `yaml:"annotations_ranges"`
+	MergeSeries       string            `yaml:"merge_series"`
+	CustomData        bool              `yaml:"custom_data"`
+	StartFrom         *time.Time        `yaml:"start_from"`
+	LastHours         int               `yaml:"last_hours"`
+	SeriesNameMap     map[string]string `yaml:"series_name_map"`
 }
 
 // Add _period to all array items
@@ -426,6 +427,9 @@ func sync(ctx *lib.Ctx, args []string) {
 			}
 			if metric.CustomData {
 				extraParams = append(extraParams, "custom_data")
+			}
+			if metric.SeriesNameMap != nil {
+				extraParams = append(extraParams, "series_name_map:"+fmt.Sprintf("%v", metric.SeriesNameMap))
 			}
 			periods := strings.Split(metric.Periods, ",")
 			aggregate := metric.Aggregate

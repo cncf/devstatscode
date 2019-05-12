@@ -22,6 +22,7 @@ type calcMetricData struct {
 	desc              string
 	mergeSeries       string
 	customData        bool
+	seriesNameMap     map[string]string
 }
 
 // valueDescription - return string description for given float value
@@ -979,7 +980,11 @@ func main() {
 			if len(optArr) > 1 {
 				optVal = optArr[1]
 			}
-			optMap[optName] = optVal
+			if optName == "series_name_map" {
+				optMap[optName] = strings.Join(optArr[1:], ":")
+			} else {
+				optMap[optName] = optVal
+			}
 		}
 		if _, ok := optMap["hist"]; ok {
 			cfg.hist = true
@@ -1004,6 +1009,9 @@ func main() {
 		}
 		if _, ok := optMap["custom_data"]; ok {
 			cfg.customData = true
+		}
+		if snm, ok := optMap["series_name_map"]; ok {
+			cfg.seriesNameMap = lib.MapFromString(snm)
 		}
 	}
 	lib.Printf("%s...\n", os.Args[2])

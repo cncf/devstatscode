@@ -1,12 +1,47 @@
 package devstatscode
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	lib "github.com/cncf/devstatscode"
 	testlib "github.com/cncf/devstatscode/test"
 )
+
+func TestMapFromString(t *testing.T) {
+	// Test cases
+	var testCases = []struct {
+		value    string
+		expected map[string]string
+	}{
+		{value: "", expected: nil},
+		{value: "map[]", expected: nil},
+		{value: "map[:]", expected: map[string]string{"": ""}},
+		{value: "map[a:]", expected: map[string]string{"a": ""}},
+		{value: "map[:b]", expected: map[string]string{"": "b"}},
+		{value: "map[a:b]", expected: map[string]string{"a": "b"}},
+		{value: "map[a:b c:d", expected: nil},
+		{value: "map a:b c:d]", expected: nil},
+		{value: "map[a:b c:d]", expected: map[string]string{"a": "b", "c": "d"}},
+	}
+	// Execute test cases
+	for index, test := range testCases {
+		got := lib.MapFromString(test.value)
+		expected := test.expected
+		testlib.MakeComparableMapStr(&expected)
+		oriGot := got
+		testlib.MakeComparableMapStr(&got)
+		gotS := fmt.Sprintf("%+v", got)
+		expectedS := fmt.Sprintf("%+v", expected)
+		if gotS != expectedS {
+			t.Errorf(
+				"test number %d, expected %v got %v, test: %v",
+				index+1, test.expected, oriGot, test,
+			)
+		}
+	}
+}
 
 func TestSkipEmpty(t *testing.T) {
 	// Test cases
