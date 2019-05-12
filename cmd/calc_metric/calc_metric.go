@@ -25,6 +25,17 @@ type calcMetricData struct {
 	seriesNameMap     map[string]string
 }
 
+// some metrics can define series_name_map to change internal series names generated
+func mapName(cfg *calcMetricData, name string) string {
+	if cfg.seriesNameMap == nil {
+		return name
+	}
+	for k, v := range cfg.seriesNameMap {
+		name = strings.Replace(name, k, v, -1)
+	}
+	return name
+}
+
 // valueDescription - return string description for given float value
 // descFunc specifies how to treat value
 // currently supported:
@@ -47,7 +58,7 @@ func valueDescription(descFunc string, value float64) (result string) {
 // if multivalue is true then rowName is not used for generating series name
 // Series name is independent from rowName, and metric returns "series_name;rowName"
 // Multivalue series can even have partialy multivalue row: "this_comes_to_multivalues`this_comes_to_series_name", separator is `
-func multiRowMultiColumn(expr string, multivalue, escapeValueName bool) (result []string) {
+func multiRowMultiColumn(cfg *calcMetricData, expr string, multivalue, escapeValueName bool) (result []string) {
 	ary := strings.Split(expr, ";")
 	pref := ary[0]
 	if pref == "" {
@@ -61,6 +72,7 @@ func multiRowMultiColumn(expr string, multivalue, escapeValueName bool) (result 
 		if escapeValueName {
 			rowName = lib.NormalizeName(rowName)
 		}
+		rowName = mapName(cfg, rowName)
 		if len(rowNameAry) > 1 {
 			rowNameNonMulti := lib.NormalizeName(rowNameAry[1])
 			for _, series := range splitColumns {
@@ -78,6 +90,7 @@ func multiRowMultiColumn(expr string, multivalue, escapeValueName bool) (result 
 		lib.Printf("multiRowMultiColumn: Info: rowName '%v' (%+v) maps to empty string, skipping\n", ary[1], ary)
 		return
 	}
+	rowName = mapName(cfg, rowName)
 	for _, series := range splitColumns {
 		result = append(result, fmt.Sprintf("%s%s%s", pref, rowName, series))
 	}
@@ -90,7 +103,7 @@ func multiRowMultiColumn(expr string, multivalue, escapeValueName bool) (result 
 // if multivalue is true then rowName is not used for generating series name
 // Series name is independent from rowName, and metric returns "series_name;rowName"
 // Multivalue series can even have partialy multivalue row: "this_comes_to_multivalues`this_comes_to_series_name", separator is `
-func multiRowSingleColumn(col string, multivalue, escapeValueName bool) (result []string) {
+func multiRowSingleColumn(cfg *calcMetricData, col string, multivalue, escapeValueName bool) (result []string) {
 	ary := strings.Split(col, ",")
 	pref := ary[0]
 	if pref == "" {
@@ -103,6 +116,7 @@ func multiRowSingleColumn(col string, multivalue, escapeValueName bool) (result 
 		if escapeValueName {
 			rowName = lib.NormalizeName(rowName)
 		}
+		rowName = mapName(cfg, rowName)
 		if len(rowNameAry) > 1 {
 			rowNameNonMulti := lib.NormalizeName(rowNameAry[1])
 			return []string{fmt.Sprintf("%s%s;%s", pref, rowNameNonMulti, rowName)}
@@ -114,18 +128,19 @@ func multiRowSingleColumn(col string, multivalue, escapeValueName bool) (result 
 		lib.Printf("multiRowSingleColumn: Info: rowName '%v' (%+v) maps to empty string, skipping\n", ary[1], ary)
 		return
 	}
+	rowName = mapName(cfg, rowName)
 	return []string{fmt.Sprintf("%s%s", pref, rowName)}
 }
 
 // Generate name for given series row and period
-func nameForMetricsRow(metric, name string, multivalue, escapeValueName bool) []string {
+func nameForMetricsRow(cfg *calcMetricData, metric, name string, multivalue, escapeValueName bool) []string {
 	switch metric {
 	case "single_row_multi_column":
 		return strings.Split(name, ",")
 	case "multi_row_single_column":
-		return multiRowSingleColumn(name, multivalue, escapeValueName)
+		return multiRowSingleColumn(cfg, name, multivalue, escapeValueName)
 	case "multi_row_multi_column":
-		return multiRowMultiColumn(name, multivalue, escapeValueName)
+		return multiRowMultiColumn(cfg, name, multivalue, escapeValueName)
 	default:
 		lib.Printf("Error\nUnknown metric '%v'\n", metric)
 		fmt.Fprintf(os.Stdout, "Error\nUnknown metric '%v'\n", metric)
@@ -152,16 +167,6 @@ func mergeESSeriesName(mergeSeries, sqlFile string) string {
 	ary = strings.Split(series, ".")
 	series = strings.TrimSpace(ary[0])
 	return series
-}
-
-func mapName(cfg *calcMetricData, name string) string {
-	if cfg.seriesNameMap == nil {
-		return name
-	}
-	for k, v := range cfg.seriesNameMap {
-		name = strings.Replace(name, k, v, -1)
-	}
-	return name
 }
 
 func calcRange(
@@ -256,7 +261,7 @@ func calcRange(
 			lib.AddTSPoint(
 				ctx,
 				&pts,
-				lib.NewTSPoint(ctx, mapName(cfg, name), period, nil, fields, dt, false),
+				lib.NewTSPoint(ctx, name, period, nil, fields, dt, false),
 			)
 		} else if nColumns >= 2 {
 			// Multiple rows, each with (series name, value(s))
@@ -272,7 +277,7 @@ func calcRange(
 				// Get first column name, and using it all series names
 				// First column should contain nColumns - 1 names separated by ","
 				name := string(*pValues[0].(*sql.RawBytes))
-				names := nameForMetricsRow(seriesNameOrFunc, name, cfg.multivalue, cfg.escapeValueName)
+				names := nameForMetricsRow(cfg, seriesNameOrFunc, name, cfg.multivalue, cfg.escapeValueName)
 				if ctx.Debug > 0 {
 					lib.Printf("nameForMetricsRow: %s -> %v\n", name, names)
 				}
@@ -329,7 +334,7 @@ func calcRange(
 									lib.AddTSPoint(
 										ctx,
 										&pts,
-										lib.NewTSPoint(ctx, mapName(cfg, name), period, nil, fields, cTime, true),
+										lib.NewTSPoint(ctx, name, period, nil, fields, cTime, true),
 									)
 								}
 							}
@@ -366,7 +371,7 @@ func calcRange(
 								lib.AddTSPoint(
 									ctx,
 									&pts,
-									lib.NewTSPoint(ctx, mapName(cfg, name), period, nil, fields, dt, false),
+									lib.NewTSPoint(ctx, name, period, nil, fields, dt, false),
 								)
 							}
 						}
@@ -378,7 +383,7 @@ func calcRange(
 				lib.AddTSPoint(
 					ctx,
 					&pts,
-					lib.NewTSPoint(ctx, mapName(cfg, seriesName), period, nil, seriesValues, dt, cfg.customData),
+					lib.NewTSPoint(ctx, seriesName, period, nil, seriesValues, dt, cfg.customData),
 				)
 			}
 			lib.FatalOnError(rows.Err())
@@ -589,7 +594,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 			lib.AddTSPoint(
 				ctx,
 				&pts,
-				lib.NewTSPoint(ctx, mapName(cfg, seriesNameOrFunc), intervalAbbr, nil, fields, tm, false),
+				lib.NewTSPoint(ctx, seriesNameOrFunc, intervalAbbr, nil, fields, tm, false),
 			)
 			rowCount++
 			tm = tm.Add(-time.Hour)
@@ -617,7 +622,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 			// Get row values
 			lib.FatalOnError(rows.Scan(pValues...))
 			name := string(*pValues[0].(*sql.RawBytes))
-			names := nameForMetricsRow(seriesNameOrFunc, name, cfg.multivalue, false)
+			names := nameForMetricsRow(cfg, seriesNameOrFunc, name, cfg.multivalue, false)
 			if ctx.Debug > 0 {
 				lib.Printf("nameForMetricsRow: %s -> %v\n", name, names)
 			}
@@ -673,7 +678,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 				lib.AddTSPoint(
 					ctx,
 					&pts,
-					lib.NewTSPoint(ctx, mapName(cfg, name), intervalAbbr, nil, fields, tm, false),
+					lib.NewTSPoint(ctx, name, intervalAbbr, nil, fields, tm, false),
 				)
 			} else {
 				if nNames > 0 {
@@ -722,7 +727,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 							lib.AddTSPoint(
 								ctx,
 								&pts,
-								lib.NewTSPoint(ctx, mapName(cfg, name), intervalAbbr, nil, fields, tm, false),
+								lib.NewTSPoint(ctx, name, intervalAbbr, nil, fields, tm, false),
 							)
 						}
 					} else {
@@ -757,7 +762,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 							lib.AddTSPoint(
 								ctx,
 								&pts,
-								lib.NewTSPoint(ctx, mapName(cfg, name), intervalAbbr, nil, fields, tm, false),
+								lib.NewTSPoint(ctx, name, intervalAbbr, nil, fields, tm, false),
 							)
 						}
 					}
