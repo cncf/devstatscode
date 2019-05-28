@@ -218,6 +218,9 @@ func pdbVars() {
 			for i := range va.Command {
 				va.Command[i] = strings.Replace(va.Command[i], "{{datadir}}", dataPrefix, -1)
 			}
+			for i := range va.Command {
+				va.Command[i] = strings.Replace(va.Command[i], "{{project}}", ctx.Project, -1)
+			}
 			cmdBytes, err := exec.Command(va.Command[0], va.Command[1:]...).CombinedOutput()
 			if err != nil {
 				lib.Printf("Failed command: %s %v\n", va.Command[0], va.Command[1:])
