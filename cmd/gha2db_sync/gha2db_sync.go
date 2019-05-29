@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -646,35 +645,6 @@ func getSyncArgs(ctx *lib.Ctx, osArgs []string) []string {
 		}
 		if !envSet && proj.Env != nil {
 			for envK, envV := range proj.Env {
-				if envK == "GHA2DB_EXCLUDE_REPOS" {
-					if envV != "" {
-						ctx.ExcludeRepos = make(map[string]bool)
-						excludeArray := strings.Split(envV, ",")
-						for _, exclude := range excludeArray {
-							if exclude != "" {
-								ctx.ExcludeRepos[exclude] = true
-							}
-						}
-						lib.Printf("Exclude repos config from env: %+v\n", ctx.ExcludeRepos)
-					} else {
-						lib.Fatalf("empty '%s', do not specify at all instead", envK)
-					}
-				} else if envK == "GHA2DB_ACTORS_FILTER" {
-					ctx.ActorsFilter = envV != ""
-					lib.Printf("Actors filter from env: %+v\n", ctx.ActorsFilter)
-				} else if envK == "GHA2DB_ACTORS_ALLOW" {
-					if envV != "" {
-						ctx.ActorsAllow = regexp.MustCompile(envV)
-						lib.Printf("Actors allow from env: %+v\n", ctx.ActorsAllow)
-					}
-				} else if envK == "GHA2DB_ACTORS_FORBID" {
-					if envV != "" {
-						ctx.ActorsForbid = regexp.MustCompile(envV)
-						lib.Printf("Actors forbid from env: %+v\n", ctx.ActorsForbid)
-					}
-				} else {
-					lib.Fatalf("don't know how to apply env: '%s' = '%s'", envK, envV)
-				}
 				lib.FatalOnError(os.Setenv(envK, envV))
 			}
 		}
