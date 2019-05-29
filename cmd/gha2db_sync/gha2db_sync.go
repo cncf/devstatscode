@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -657,6 +658,16 @@ func getSyncArgs(ctx *lib.Ctx, osArgs []string) []string {
 						lib.Printf("Exclude repos config from env: %+v\n", ctx.ExcludeRepos)
 					} else {
 						lib.Fatalf("empty '%s', do not specify at all instead", envK)
+					}
+				} else if envK == "GHA2DB_ACTORS_FILTER" {
+					ctx.ActorsFilter = envV != ""
+				} else if envK == "GHA2DB_ACTORS_ALLOW" {
+					if envV != "" {
+						ctx.ActorsAllow = regexp.MustCompile(envV)
+					}
+				} else if envK == "GHA2DB_ACTORS_FORBID" {
+					if envV != "" {
+						ctx.ActorsForbid = regexp.MustCompile(envV)
 					}
 				} else {
 					lib.Fatalf("don't know how to apply env: '%s' = '%s'", envK, envV)
