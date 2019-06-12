@@ -18,5 +18,5 @@ Authors: Łukasz Gryglicki <lgryglicki@cncf.io>, Justyna Gryglicka <lgryglicka@c
 
 # Adding new projects
 
-See `cncf/devstats-helm-example`:`ADDING_NEW_PROJECTS.md` for informations about how to add more projects on Kubernetes/Helm deployment.
+See `cncf/devstats-helm`:`ADDING_NEW_PROJECTS.md` for informations about how to add more projects on Kubernetes/Helm deployment.
 See `cncf/devstats`:`ADDING_NEW_PROJECT.md` for informations about how to add more projects on bare metal deployment.
