@@ -22,6 +22,7 @@ type metric struct {
 	Periods           string            `yaml:"periods"`
 	SeriesNameOrFunc  string            `yaml:"series_name_or_func"`
 	MetricSQL         string            `yaml:"sql"`
+	MetricSQLs        *[]string         `yaml:"sqls"`
 	AddPeriodToName   bool              `yaml:"add_period_to_name"`
 	Histogram         bool              `yaml:"histogram"`
 	Aggregate         string            `yaml:"aggregate"`
@@ -372,8 +373,26 @@ func sync(ctx *lib.Ctx, args []string) {
 			skipMetrics = true
 		}
 
+		metricsList := []metric{}
 		// Iterate all metrics
 		for _, metric := range allMetrics.Metrics {
+			if metric.MetricSQLs != nil {
+				if metric.MetricSQL != "" {
+					lib.Fatalf("you cannot use both 'sql' and 'sqls' fields'")
+				}
+				for _, sql := range *metric.MetricSQLs {
+					newMetric := metric
+					newMetric.MetricSQLs = nil
+					newMetric.MetricSQL = sql
+					metricsList = append(metricsList, newMetric)
+				}
+				continue
+			}
+			metricsList = append(metricsList, metric)
+		}
+
+		// Iterate all metrics
+		for _, metric := range metricsList {
 			if onlyMetrics {
 				_, ok := ctx.OnlyMetrics[metric.MetricSQL]
 				if !ok {
