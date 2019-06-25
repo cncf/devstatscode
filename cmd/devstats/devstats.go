@@ -165,7 +165,7 @@ func syncAllProjects() bool {
 					_, err := lib.ExecSQL(con, &ctx, "delete from gha_computed where metric = "+lib.NValue(1), runningFlag)
 					con.Close()
 					if err == nil {
-						if ctx.Debug > 0 {
+						if ctx.Debug > 0 || sleepTime > 1 {
 							lib.Printf("Cleared running flag on %s\n", db)
 						}
 						break

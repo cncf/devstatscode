@@ -132,6 +132,7 @@ type Ctx struct {
 	SharedDB            string                       // Currently annotations tool read this from projects.yaml:shared_db and if set, outputs annotations data to the sharded DB in addition to the current DB
 	ProjectMainRepo     string                       // Used by annotations tool to store project's main repo name
 	TestMode            bool                         // True when running tests
+	CanReconnect        bool                         // True, unless connecting to a custom database, in this case there can be multiple threads sharing context and we don't want to write to a random database
 }
 
 // Init - get context from environment variables
@@ -139,6 +140,7 @@ func (ctx *Ctx) Init() {
 	ctx.ExecFatal = true
 	ctx.ExecQuiet = false
 	ctx.ExecOutput = false
+	ctx.CanReconnect = true
 
 	// Data directory
 	ctx.DataDir = os.Getenv("GHA2DB_DATADIR")

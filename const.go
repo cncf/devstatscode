@@ -77,3 +77,9 @@ const InvalidCatalogName string = "invalid_catalog_name"
 
 // Nil - common constant string
 const Nil string = "(nil)"
+
+// Reconnect - common constant string
+const Reconnect string = "reconnect"
+
+// OK - common constant string
+const OK string = "ok"

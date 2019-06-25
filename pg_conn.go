@@ -455,7 +455,6 @@ func PgConn(ctx *Ctx) *sql.DB {
 		// Avoid trying to log something to DB while connecting
 		fmt.Printf("PgConnectString: %s\n", connectionString)
 	}
-
 	con, err := sql.Open("postgres", connectionString)
 	FatalOnError(err)
 	return con
@@ -470,7 +469,7 @@ func PgConnDB(ctx *Ctx, dbName string) *sql.DB {
 		// Avoid trying to log something to DB while connecting
 		fmt.Printf("ConnectString: %s\n", connectionString)
 	}
-
+	ctx.CanReconnect = false
 	con, err := sql.Open("postgres", connectionString)
 	FatalOnError(err)
 	return con
@@ -539,8 +538,15 @@ func QuerySQLWithErr(con *sql.DB, ctx *Ctx, query string, args ...interface{}) *
 		Printf("Will retry after %d seconds...\n", try)
 		time.Sleep(time.Duration(try) * time.Second)
 		Printf("%d seconds passed, retrying...\n", try)
+		if status == Reconnect {
+			if ctx.CanReconnect {
+				con = PgConn(ctx)
+			} else {
+				Fatalf("returned reconnect request, but custom DB connect strings are in use")
+			}
+		}
 	}
-	if status == Retry {
+	if status != OK {
 		Fatalf("too many attempts, tried %d times", len(ctx.Trials))
 	}
 	return res
@@ -563,9 +569,15 @@ func QuerySQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{})
 		status string
 		res    *sql.Rows
 		err    error
+		db     *sql.DB
 	)
 	for _, try := range ctx.Trials {
-		res, err = QuerySQLTx(con, ctx, query, args...)
+		if db == nil {
+			res, err = QuerySQLTx(con, ctx, query, args...)
+		} else {
+			// FIXME: fallback to transaction less query when reconnect succeeded
+			res, err = QuerySQL(db, ctx, query, args...)
+		}
 		if err != nil {
 			queryOut(query, args...)
 		}
@@ -576,8 +588,15 @@ func QuerySQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{})
 		Printf("Will retry after %d seconds...\n", try)
 		time.Sleep(time.Duration(try) * time.Second)
 		Printf("%d seconds passed, retrying...\n", try)
+		if status == Reconnect {
+			if ctx.CanReconnect {
+				db = PgConn(ctx)
+			} else {
+				Fatalf("returned reconnect request, but custom DB connect strings are in use")
+			}
+		}
 	}
-	if status == Retry {
+	if status != OK {
 		Fatalf("too many attempts, tried %d times", len(ctx.Trials))
 	}
 	return res
@@ -611,8 +630,15 @@ func ExecSQLWithErr(con *sql.DB, ctx *Ctx, query string, args ...interface{}) sq
 		Printf("Will retry after %d seconds...\n", try)
 		time.Sleep(time.Duration(try) * time.Second)
 		Printf("%d seconds passed, retrying...\n", try)
+		if status == Reconnect {
+			if ctx.CanReconnect {
+				con = PgConn(ctx)
+			} else {
+				Fatalf("returned reconnect request, but custom DB connect strings are in use")
+			}
+		}
 	}
-	if status == Retry {
+	if status != OK {
 		Fatalf("too many attempts, tried %d times", len(ctx.Trials))
 	}
 	return res
@@ -635,9 +661,15 @@ func ExecSQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{}) 
 		status string
 		res    sql.Result
 		err    error
+		db     *sql.DB
 	)
 	for _, try := range ctx.Trials {
-		res, err = ExecSQLTx(con, ctx, query, args...)
+		if db == nil {
+			res, err = ExecSQLTx(con, ctx, query, args...)
+		} else {
+			// FIXME: fallback to transaction less query when reconnect succeeded
+			res, err = ExecSQL(db, ctx, query, args...)
+		}
 		if err != nil {
 			queryOut(query, args...)
 		}
@@ -648,8 +680,15 @@ func ExecSQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{}) 
 		Printf("Will retry after %d seconds...\n", try)
 		time.Sleep(time.Duration(try) * time.Second)
 		Printf("%d seconds passed, retrying...\n", try)
+		if status == Reconnect {
+			if ctx.CanReconnect {
+				db = PgConn(ctx)
+			} else {
+				Fatalf("returned reconnect request, but custom DB connect strings are in use")
+			}
+		}
 	}
-	if status == Retry {
+	if status != OK {
 		Fatalf("too many attempts, tried %d times", len(ctx.Trials))
 	}
 	return res
