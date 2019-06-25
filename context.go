@@ -54,7 +54,7 @@ type Ctx struct {
 	SkipDatesYaml       string                       // From GHA2DB_SKIP_DATES_YAML gha2db tool, set other skip_dates.yaml file, default is "skip_dates.yaml"
 	GitHubOAuth         string                       // From GHA2DB_GITHUB_OAUTH ghapi2db tool, if not set reads from /etc/github/oauth file, set to "-" to force public access.
 	ClearDBPeriod       string                       // From GHA2DB_MAXLOGAGE gha2db_sync tool, maximum age of devstats.gha_logs entries, default "1 week"
-	Trials              []int                        // From GHA2DB_TRIALS, all Postgres related tools, retry periods for "too many connections open" error
+	Trials              []int                        // From GHA2DB_TRIALS, all Postgres related tools, retry periods for some retryable errors
 	WebHookRoot         string                       // From GHA2DB_WHROOT, webhook tool, default "/hook", must match .travis.yml notifications webhooks
 	WebHookPort         string                       // From GHA2DB_WHPORT, webhook tool, default ":1982", note that webhook listens using http:1982, but we use apache on https:2982 (to enable https protocol and proxy requests to http:1982)
 	WebHookHost         string                       // From GHA2DB_WHHOST, webhook tool, default "127.0.0.1" (this can be localhost to disable access by IP, we use Apache proxy to enable https and then apache only need 127.0.0.1)

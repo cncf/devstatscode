@@ -159,15 +159,24 @@ func syncAllProjects() bool {
 			}
 			for _, proj := range projs {
 				db := proj.PDB
-				con := lib.PgConnDB(&ctx, db)
-				_, err := lib.ExecSQL(con, &ctx, "delete from gha_computed where metric = "+lib.NValue(1), runningFlag)
-				con.Close()
-				if err == nil {
-					if ctx.Debug > 0 {
-						lib.Printf("Cleared running flag on %s\n", db)
+				sleepTime := 1
+				for {
+					con := lib.PgConnDB(&ctx, db)
+					_, err := lib.ExecSQL(con, &ctx, "delete from gha_computed where metric = "+lib.NValue(1), runningFlag)
+					con.Close()
+					if err == nil {
+						if ctx.Debug > 0 {
+							lib.Printf("Cleared running flag on %s\n", db)
+						}
+						break
+					} else {
+						if sleepTime >= 60 {
+							lib.Fatalf("something really bad happened, tried to clear running flag 60 times without success")
+						}
+						lib.Printf("Failed to clear running flag on %s: %+v, retrying after %d seconds\n", db, err, sleepTime)
+						time.Sleep(time.Duration(sleepTime) * time.Second)
+						sleepTime++
 					}
-				} else {
-					lib.Printf("Failed to clear running flag on %s: %+v\n", db, err)
 				}
 			}
 		}()

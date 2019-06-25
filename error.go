@@ -20,8 +20,22 @@ func FatalOnError(err error) string {
 				Printf("Warning: too many postgres connections: %+v: '%s'\n", tm, err.Error())
 				return Retry
 			}
-			Printf("PqError: code=%s, detail=%s\n", e.Code, e.Detail)
+			if e.Code == "57P03" {
+				// FIXME
+				Printf("PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
+				Printf("Warning: DB shutting down, retrying\n")
+				return Retry
+			}
+			Printf("PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
 			fmt.Fprintf(os.Stderr, "PqError: code=%s, detail=%s\n", e.Code, e.Detail)
+		default:
+			Printf("ErrorType: %T\n", e)
+			fmt.Fprintf(os.Stderr, "ErrorType: %T\n", e)
+		}
+		if err.Error() == "driver: bad connection" {
+			// FIXME
+			Printf("Warning: bad driver, retrying\n")
+			return Retry
 		}
 		Printf("Error(time=%+v):\nError: '%s'\nStacktrace:\n%s\n", tm, err.Error(), string(debug.Stack()))
 		fmt.Fprintf(os.Stderr, "Error(time=%+v):\nError: '%s'\nStacktrace:\n", tm, err.Error())
