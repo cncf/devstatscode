@@ -540,6 +540,7 @@ func QuerySQLWithErr(con *sql.DB, ctx *Ctx, query string, args ...interface{}) *
 		Printf("%d seconds passed, retrying...\n", try)
 		if status == Reconnect {
 			if ctx.CanReconnect {
+				Printf("Reconnect request after %dseconds\n", try)
 				con = PgConn(ctx)
 			} else {
 				Fatalf("returned reconnect request, but custom DB connect strings are in use")
@@ -589,6 +590,7 @@ func QuerySQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{})
 		time.Sleep(time.Duration(try) * time.Second)
 		Printf("%d seconds passed, retrying...\n", try)
 		if status == Reconnect {
+			Printf("Reconnect request after %d seconds, breaking transaction\n", try)
 			if ctx.CanReconnect {
 				db = PgConn(ctx)
 			} else {
@@ -632,6 +634,7 @@ func ExecSQLWithErr(con *sql.DB, ctx *Ctx, query string, args ...interface{}) sq
 		Printf("%d seconds passed, retrying...\n", try)
 		if status == Reconnect {
 			if ctx.CanReconnect {
+				Printf("Reconnect request after %d seconds\n", try)
 				con = PgConn(ctx)
 			} else {
 				Fatalf("returned reconnect request, but custom DB connect strings are in use")
@@ -682,6 +685,7 @@ func ExecSQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{}) 
 		Printf("%d seconds passed, retrying...\n", try)
 		if status == Reconnect {
 			if ctx.CanReconnect {
+				Printf("Reconnect request after %d seconds, breaking transaction\n", try)
 				db = PgConn(ctx)
 			} else {
 				Fatalf("returned reconnect request, but custom DB connect strings are in use")
