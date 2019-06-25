@@ -133,6 +133,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		TestMode:            in.TestMode,
 		ESBulkSize:          in.ESBulkSize,
 		HTTPTimeout:         in.HTTPTimeout,
+    CanReconnect:        in.CanReconnect,
 	}
 	return &out
 }
@@ -372,6 +373,7 @@ func TestInit(t *testing.T) {
 		TestMode:            true,
 		ESBulkSize:          10000,
 		HTTPTimeout:         2,
+    CanReconnect:        true,
 	}
 
 	var nilRegexp *regexp.Regexp
