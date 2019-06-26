@@ -302,8 +302,39 @@ func processRepos(ctx *lib.Ctx, allRepos map[string]map[string]struct{}) {
 	lib.Printf("Sucesfully processed %d/%d repos\n", len(allOkRepos), checked)
 }
 
-// processCommitsDB creates/updates mapping between commits and list of files they refer to on databse 'db'
-// using 'query' to get the list of unprocessed commits
+// processCommitsLOC creates/updates commits LOC stats on database 'db'
+// using 'query' to get the list of unprocessed LOC stats commits
+func processCommitsLOC(ch chan dbCommits, ctx *lib.Ctx, db, query string) {
+	// Result struct to be passed by the channel
+	var commits dbCommits
+
+	// Get list of unprocessed commits for current DB
+	lib.Printf("LOC stats running on database: %s\n", db)
+	dtStart := time.Now()
+	// Connect to Postgres `db` database.
+	con := lib.PgConnDB(ctx, db)
+
+	rows, err := con.Query(query)
+	lib.FatalOnError(err)
+	defer func() { lib.FatalOnError(rows.Close()) }()
+	var (
+		sha  string
+		repo string
+	)
+	for rows.Next() {
+		lib.FatalOnError(rows.Scan(&sha, &repo))
+		commits.shas = append(commits.shas, sha)
+		commits.repos = append(commits.repos, repo)
+	}
+	lib.FatalOnError(rows.Err())
+	dtEnd := time.Now()
+	lib.Printf("LOC stats database '%s' processed took %v, new commits: %d\n", db, dtEnd.Sub(dtStart), len(commits.shas))
+	commits.con = con
+	ch <- commits
+}
+
+// processCommitsDB creates/updates mapping between commits and list of files they refer to on database 'db'
+// using 'query' to get the list of unprocessed commits (commits files)
 func processCommitsDB(ch chan dbCommits, ctx *lib.Ctx, db, filesSkipPattern, query string) {
 	// Result struct to be passed by the channel
 	var commits dbCommits
@@ -332,6 +363,118 @@ func processCommitsDB(ch chan dbCommits, ctx *lib.Ctx, db, filesSkipPattern, que
 	commits.con = con
 	commits.filesSkipPattern = filesSkipPattern
 	ch <- commits
+}
+
+// getCommitLOC get given commit's LOC stats and saves it in the database
+func getCommitLOC(ch chan int, ctx *lib.Ctx, con *sql.DB, repo, sha string) {
+	// Local or cron mode?
+	cmdPrefix := ""
+	if ctx.LocalCmd {
+		cmdPrefix = lib.LocalGitScripts
+	}
+
+	// Get LOC stats using shell script that does 'chdir'
+	// We cannot chdir because this is a multithreaded app
+	// And all threads share CWD (current working directory)
+	if ctx.Debug > 1 {
+		lib.Printf("Getting LOC stats for commit %s:%s\n", repo, sha)
+	}
+	dtStart := time.Now()
+	rwd := ctx.ReposDir + repo
+	locStr, err := lib.ExecCommand(
+		ctx,
+		[]string{cmdPrefix + "git_loc.sh", rwd, sha},
+		map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+	)
+	dtEnd := time.Now()
+	if err != nil {
+		if ctx.Debug > 0 {
+			lib.Printf("Warning git_loc.sh failed: %s:%s (took %v): %+v\n", repo, sha, dtEnd.Sub(dtStart), err)
+			fmt.Fprintf(os.Stderr, "Warning git_loc.sh failed: %s:%s (took %v): %+v\n", repo, sha, dtEnd.Sub(dtStart), err)
+		}
+		lib.ExecSQLWithErr(
+			con,
+			ctx,
+			lib.InsertIgnore("into gha_skip_commits(sha, dt, reason) "+lib.NValues(3)),
+			lib.AnyArray{sha, time.Now(), 2}...,
+		)
+		ch <- -1
+		return
+	}
+	//fmt.Printf("'%s'\n", locStr)
+	changed := 0
+	added := 0
+	removed := 0
+	got := 0
+	v := 0
+	status := 0
+	ary := strings.Split(strings.TrimSpace(locStr), ",")
+	for _, str := range ary {
+		str := strings.TrimSpace(str)
+		n, err := fmt.Sscanf(str, "%d file changed", &v)
+		if err == nil && n == 1 {
+			got++
+			changed = v
+			status = 1
+			continue
+		}
+		n, err = fmt.Sscanf(str, "%d files changed", &v)
+		if err == nil && n == 1 {
+			got++
+			changed = v
+			status = 1
+			continue
+		}
+		n, err = fmt.Sscanf(str, "%d insertion(+)", &v)
+		if err == nil && n == 1 {
+			got++
+			added = v
+			status = 1
+			continue
+		}
+		n, err = fmt.Sscanf(str, "%d insertions(+)", &v)
+		if err == nil && n == 1 {
+			got++
+			added = v
+			status = 1
+			continue
+		}
+		n, err = fmt.Sscanf(str, "%d deletion(-)", &v)
+		if err == nil && n == 1 {
+			got++
+			removed = v
+			status = 1
+			continue
+		}
+		n, err = fmt.Sscanf(str, "%d deletions(-)", &v)
+		if err == nil && n == 1 {
+			got++
+			removed = v
+			status = 1
+			continue
+		}
+	}
+	//fmt.Printf("status: %d, got: %d, changed: %d, added: %d, removed: %d\n", status, got, changed, added, removed)
+	res := lib.ExecSQLWithErr(
+		con,
+		ctx,
+		"update gha_commits set loc_added = $1, loc_removed = $2, files_changed = $3 where sha = $4",
+		lib.AnyArray{added, removed, changed, sha}...,
+	)
+	rows := int64(0)
+	rows, err = res.RowsAffected()
+	lib.FatalOnError(err)
+	if rows == 0 {
+		lib.Printf("No rows updated for SHA %s\n", sha)
+		lib.ExecSQLWithErr(
+			con,
+			ctx,
+			lib.InsertIgnore("into gha_skip_commits(sha, dt, reason) "+lib.NValues(3)),
+			lib.AnyArray{sha, time.Now(), 2}...,
+		)
+		status = 0
+	}
+	ch <- status
 }
 
 // getCommitFiles get given commit's list of files and saves it in the database
@@ -499,7 +642,7 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 		allCommits = append(allCommits, commits)
 	}
 	dtEnd := time.Now()
-	lib.Printf("Got new commits list: took %v\n", dtEnd.Sub(dtStart))
+	lib.Printf("Got %d DBs new commits list: took %v\n", len(allCommits), dtEnd.Sub(dtStart))
 
 	// Set non-fatal exec mode, we want to run sync for next project(s) if current fails
 	// Also set quite mode, many git-pulls or git-clones can fail and this is not needed to log it to DB
@@ -598,6 +741,92 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 	}
 	dtEnd = time.Now()
 	lib.Printf("Postprocessed all new commits, took %v\n", dtEnd.Sub(dtStart))
+
+	// Commits LOC analysis (lines of code added, removed and changed files counts)
+	allCommits = []dbCommits{}
+	bytes, err = lib.ReadFile(
+		ctx,
+		dataPrefix+"util_sql/list_unprocessed_commits_loc.sql",
+	)
+	lib.FatalOnError(err)
+	sqlQuery = string(bytes)
+
+	// Process all DBs in a separate threads to get all commits LOC stats
+	dtStart = time.Now()
+	chC = make(chan dbCommits)
+	nThreads = 0
+	for db := range dbs {
+		go processCommitsLOC(chC, ctx, db, sqlQuery)
+		nThreads++
+		if nThreads == thrN {
+			commits := <-chC
+			nThreads--
+			allCommits = append(allCommits, commits)
+		}
+	}
+	for nThreads > 0 {
+		commits := <-chC
+		nThreads--
+		allCommits = append(allCommits, commits)
+	}
+	dtEnd = time.Now()
+	lib.Printf("Got %d DBs new commits LOC stats: took %v\n", len(allCommits), dtEnd.Sub(dtStart))
+
+	// Create final commits LOC stats
+	dtStart = time.Now()
+	lastTime = dtStart
+	statuses = make(map[int]int)
+	// statuses:
+	// -1: error
+	// 0: commit without LOC stats
+	// 1: commit with LOC stats
+	statuses[-1] = 0
+	statuses[0] = 0
+	statuses[1] = 0
+	allN = 0
+	checked = 0
+	// Count all commits
+	for _, commits := range allCommits {
+		allN += len(commits.shas)
+	}
+	// process all commits
+	ch = make(chan int)
+	nThreads = 0
+	for _, commits := range allCommits {
+		con := commits.con
+		for i, sha := range commits.shas {
+			repo := commits.repos[i]
+			go getCommitLOC(ch, ctx, con, repo, sha)
+			nThreads++
+			if nThreads == thrN {
+				statuses[<-ch]++
+				nThreads--
+				checked++
+				lib.ProgressInfo(checked, allN, dtStart, &lastTime, time.Duration(10)*time.Second, repo)
+			}
+		}
+	}
+	for nThreads > 0 {
+		statuses[<-ch]++
+		nThreads--
+		checked++
+		lib.ProgressInfo(checked, allN, dtStart, &lastTime, time.Duration(10)*time.Second, "final join...")
+	}
+	dtEnd = time.Now()
+	all = statuses[-1] + statuses[0] + statuses[1]
+	perc = 0.0
+	if all > 0 {
+		perc = float64(statuses[1]) * 100.0 / (float64(all))
+	}
+	lib.Printf(
+		"Got %d (%.2f%%) new commit's LOC stats, %d without stats, %d failed, all %d, took %v\n",
+		statuses[1],
+		perc,
+		statuses[0],
+		statuses[-1],
+		all,
+		dtEnd.Sub(dtStart),
+	)
 }
 
 func main() {
