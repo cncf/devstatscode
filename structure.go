@@ -308,6 +308,9 @@ func Structure(ctx *Ctx) {
 					"author_name varchar(160) not null, "+
 					"message text not null, "+
 					"is_distinct boolean not null, "+
+					"loc_added int, "+
+					"loc_removed int, "+
+					"files_changed int, "+
 					"dup_actor_id bigint not null, "+
 					"dup_actor_login varchar(120) not null, "+
 					"dup_repo_id bigint not null, "+
@@ -330,6 +333,9 @@ func Structure(ctx *Ctx) {
 	if ctx.Index {
 		ExecSQLWithErr(c, ctx, "create index commits_event_id_idx on gha_commits(event_id)")
 		ExecSQLWithErr(c, ctx, "create index commits_sha_idx on gha_commits(sha)")
+		ExecSQLWithErr(c, ctx, "create index commits_loc_added_idx on gha_commits(loc_added)")
+		ExecSQLWithErr(c, ctx, "create index commits_loc_removed_idx on gha_commits(loc_removed)")
+		ExecSQLWithErr(c, ctx, "create index commits_files_changed_idx on gha_commits(files_changed)")
 		ExecSQLWithErr(c, ctx, "create index commits_author_name_idx on gha_commits(author_name)")
 		ExecSQLWithErr(c, ctx, "create index commits_author_email_idx on gha_commits(author_email)")
 		ExecSQLWithErr(c, ctx, "create index commits_committers_name_idx on gha_commits(committer_name)")
@@ -1065,7 +1071,8 @@ func Structure(ctx *Ctx) {
 				"gha_skip_commits("+
 					"sha varchar(40) not null, "+
 					"dt {{ts}} not null, "+
-					"primary key(sha)"+
+					"reason int, "+
+					"primary key(sha, reason)"+
 					")",
 			),
 		)
@@ -1088,6 +1095,8 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index events_commits_files_dup_type_idx on gha_events_commits_files(dup_type)")
 		ExecSQLWithErr(c, ctx, "create index events_commits_files_dup_created_at_idx on gha_events_commits_files(dup_created_at)")
 		ExecSQLWithErr(c, ctx, "create index skip_commits_sha_idx on gha_skip_commits(sha)")
+		ExecSQLWithErr(c, ctx, "create index skip_commits_dt_idx on gha_skip_commits(dt)")
+		ExecSQLWithErr(c, ctx, "create index skip_commits_reason_idx on gha_skip_commits(reason)")
 	}
 
 	// Scripts to run on a given database

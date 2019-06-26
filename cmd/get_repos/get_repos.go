@@ -364,8 +364,8 @@ func getCommitFiles(ch chan int, ctx *lib.Ctx, con *sql.DB, filesSkipPattern *re
 		lib.ExecSQLWithErr(
 			con,
 			ctx,
-			lib.InsertIgnore("into gha_skip_commits(sha, dt) "+lib.NValues(2)),
-			lib.AnyArray{sha, time.Now()}...,
+			lib.InsertIgnore("into gha_skip_commits(sha, dt, reason) "+lib.NValues(3)),
+			lib.AnyArray{sha, time.Now(), 1}...,
 		)
 		ch <- -1
 		return
@@ -435,8 +435,8 @@ func getCommitFiles(ch chan int, ctx *lib.Ctx, con *sql.DB, filesSkipPattern *re
 		lib.ExecSQLTxWithErr(
 			tx,
 			ctx,
-			lib.InsertIgnore("into gha_skip_commits(sha, dt) "+lib.NValues(2)),
-			lib.AnyArray{sha, time.Now()}...,
+			lib.InsertIgnore("into gha_skip_commits(sha, dt, reason) "+lib.NValues(3)),
+			lib.AnyArray{sha, time.Now(), 1}...,
 		)
 		// Commit transaction
 		lib.FatalOnError(tx.Commit())
@@ -607,6 +607,10 @@ func main() {
 	ctx.Init()
 	if !ctx.SkipGetRepos {
 		dbs, repos := getRepos(&ctx)
+		if ctx.Debug > 0 {
+			lib.Printf("dbs: %+v\n", dbs)
+			lib.Printf("repos: %+v\n", repos)
+		}
 		if len(dbs) == 0 {
 			lib.Fatalf("No databases to process")
 		}
