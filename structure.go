@@ -1029,6 +1029,7 @@ func Structure(ctx *Ctx) {
 				"gha_commits_files("+
 					"sha varchar(40) not null, "+
 					"path text not null, "+
+					"ext text not null default '', "+
 					"size bigint not null, "+
 					"dt {{ts}} not null, "+
 					"primary key(sha, path)"+
@@ -1044,6 +1045,7 @@ func Structure(ctx *Ctx) {
 					"sha varchar(40) not null, "+
 					"event_id bigint not null, "+
 					"path text not null, "+
+					"ext text not null default '', "+
 					"size bigint not null, "+
 					"dt {{ts}} not null, "+
 					"repo_group varchar(80), "+
@@ -1071,11 +1073,13 @@ func Structure(ctx *Ctx) {
 	if ctx.Index {
 		ExecSQLWithErr(c, ctx, "create index commits_files_sha_idx on gha_commits_files(sha)")
 		ExecSQLWithErr(c, ctx, "create index commits_files_path_idx on gha_commits_files(path)")
+		ExecSQLWithErr(c, ctx, "create index commits_files_ext_idx on gha_commits_files(ext)")
 		ExecSQLWithErr(c, ctx, "create index commits_files_size_idx on gha_commits_files(size)")
 		ExecSQLWithErr(c, ctx, "create index commits_files_dt_idx on gha_commits_files(dt)")
 		ExecSQLWithErr(c, ctx, "create index events_commits_files_sha_idx on gha_events_commits_files(sha)")
 		ExecSQLWithErr(c, ctx, "create index events_commits_files_event_id_idx on gha_events_commits_files(event_id)")
 		ExecSQLWithErr(c, ctx, "create index events_commits_files_path_idx on gha_events_commits_files(path)")
+		ExecSQLWithErr(c, ctx, "create index events_commits_files_ext_idx on gha_events_commits_files(ext)")
 		ExecSQLWithErr(c, ctx, "create index events_commits_files_size_idx on gha_events_commits_files(size)")
 		ExecSQLWithErr(c, ctx, "create index events_commits_files_dt_idx on gha_events_commits_files(dt)")
 		ExecSQLWithErr(c, ctx, "create index events_commits_files_repo_group_idx on gha_events_commits_files(repo_group)")

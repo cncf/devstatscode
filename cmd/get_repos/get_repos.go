@@ -421,7 +421,10 @@ func getCommitFiles(ch chan int, ctx *lib.Ctx, con *sql.DB, filesSkipPattern *re
 		lib.ExecSQLTxWithErr(
 			tx,
 			ctx,
-			lib.InsertIgnore("into gha_commits_files(sha, dt, path, size) "+lib.NValues(4)),
+			lib.InsertIgnore(
+				"into gha_commits_files(sha, dt, path, size, ext) "+
+					"values($1, $2, $3, $4, regexp_replace(lower($3), '^.*\\.', ''))",
+			),
 			lib.AnyArray{sha, commitDate, fileName, fileSize}...,
 		)
 		nFiles++
