@@ -27,7 +27,7 @@ GO_TEST=go test
 BINARIES=structure gha2db calc_metric gha2db_sync import_affs annotations tags webhook devstats get_repos merge_dbs replacer vars ghapi2db columns hide_data website_data sync_issues gha2es runq sqlitedb
 CRON_SCRIPTS=cron/cron_db_backup.sh cron/sysctl_config.sh cron/backup_artificial.sh
 UTIL_SCRIPTS=devel/wait_for_command.sh devel/cronctl.sh devel/sync_lock.sh devel/sync_unlock.sh devel/db.sh
-GIT_SCRIPTS=git/git_reset_pull.sh git/git_files.sh git/git_tags.sh git/last_tag.sh
+GIT_SCRIPTS=git/git_reset_pull.sh git/git_files.sh git/git_tags.sh git/last_tag.sh git/git_loc.sh
 STRIP=strip
 
 all: check ${BINARIES}
