@@ -465,7 +465,7 @@ func postprocessCommitsDB(ch chan int, ctx *lib.Ctx, con *sql.DB, query string) 
 // on each database it creates/updates mapping between commits and list of files they refer to
 // It is multithreaded processing up to NCPU databases at the same time
 func processCommits(ctx *lib.Ctx, dbs map[string]string) {
-	// Read SQL to get commits to sync from 'util_sql/list_unprocessed_commits.sql' file.
+	// Read SQL to get commits to sync from 'util_sql/list_unprocessed_commits_files.sql' file.
 	// Local or cron mode?
 	dataPrefix := ctx.DataDir
 	if ctx.Local {
@@ -473,7 +473,7 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 	}
 	bytes, err := lib.ReadFile(
 		ctx,
-		dataPrefix+"util_sql/list_unprocessed_commits.sql",
+		dataPrefix+"util_sql/list_unprocessed_commits_files.sql",
 	)
 	lib.FatalOnError(err)
 	sqlQuery := string(bytes)
