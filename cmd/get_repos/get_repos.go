@@ -465,7 +465,9 @@ func getCommitLOC(ch chan int, ctx *lib.Ctx, con *sql.DB, repo, sha string) {
 	rows, err = res.RowsAffected()
 	lib.FatalOnError(err)
 	if rows == 0 {
-		lib.Printf("No rows updated for SHA %s\n", sha)
+		if ctx.Debug > 0 {
+			lib.Printf("No rows updated for SHA %s\n", sha)
+		}
 		lib.ExecSQLWithErr(
 			con,
 			ctx,
