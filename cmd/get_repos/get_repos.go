@@ -458,8 +458,8 @@ func getCommitLOC(ch chan int, ctx *lib.Ctx, con *sql.DB, repo, sha string) {
 	res := lib.ExecSQLWithErr(
 		con,
 		ctx,
-		"update gha_commits set loc_added = $1, loc_removed = $2, files_changed = $3 where sha = $4",
-		lib.AnyArray{added, removed, changed, sha}...,
+		"update gha_commits set loc_added = $1, loc_removed = $2, files_changed = $3 where sha = $4 and dup_repo_name = $5",
+		lib.AnyArray{added, removed, changed, sha, repo}...,
 	)
 	rows := int64(0)
 	rows, err = res.RowsAffected()
@@ -616,147 +616,155 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 	if ctx.Local {
 		dataPrefix = "./"
 	}
-	bytes, err := lib.ReadFile(
-		ctx,
-		dataPrefix+"util_sql/list_unprocessed_commits_files.sql",
-	)
-	lib.FatalOnError(err)
-	sqlQuery := string(bytes)
 
-	// Process all DBs in a separate threads to get all commits
-	dtStart := time.Now()
-	thrN := lib.GetThreadsNum(ctx)
-	chC := make(chan dbCommits)
-	nThreads := 0
-	allCommits := []dbCommits{}
-	for db, filesSkipPattern := range dbs {
-		go processCommitsDB(chC, ctx, db, filesSkipPattern, sqlQuery)
-		nThreads++
-		if nThreads == thrN {
+	if ctx.CommitsFilesStatsEnabled {
+		bytes, err := lib.ReadFile(
+			ctx,
+			dataPrefix+"util_sql/list_unprocessed_commits_files.sql",
+		)
+		lib.FatalOnError(err)
+		sqlQuery := string(bytes)
+
+		// Process all DBs in a separate threads to get all commits
+		dtStart := time.Now()
+		thrN := lib.GetThreadsNum(ctx)
+		chC := make(chan dbCommits)
+		nThreads := 0
+		allCommits := []dbCommits{}
+		for db, filesSkipPattern := range dbs {
+			go processCommitsDB(chC, ctx, db, filesSkipPattern, sqlQuery)
+			nThreads++
+			if nThreads == thrN {
+				commits := <-chC
+				nThreads--
+				allCommits = append(allCommits, commits)
+			}
+		}
+		for nThreads > 0 {
 			commits := <-chC
 			nThreads--
 			allCommits = append(allCommits, commits)
 		}
-	}
-	for nThreads > 0 {
-		commits := <-chC
-		nThreads--
-		allCommits = append(allCommits, commits)
-	}
-	dtEnd := time.Now()
-	lib.Printf("Got %d DBs new commits list: took %v\n", len(allCommits), dtEnd.Sub(dtStart))
+		dtEnd := time.Now()
+		lib.Printf("Got %d DBs new commits list: took %v\n", len(allCommits), dtEnd.Sub(dtStart))
 
-	// Set non-fatal exec mode, we want to run sync for next project(s) if current fails
-	// Also set quite mode, many git-pulls or git-clones can fail and this is not needed to log it to DB
-	// User can set higher debug level and run manually to debug this
-	// Also set capture command's stdout mode
-	ctx.ExecFatal = false
-	ctx.ExecQuiet = true
-	ctx.ExecOutput = true
+		// Set non-fatal exec mode, we want to run sync for next project(s) if current fails
+		// Also set quite mode, many git-pulls or git-clones can fail and this is not needed to log it to DB
+		// User can set higher debug level and run manually to debug this
+		// Also set capture command's stdout mode
+		ctx.ExecFatal = false
+		ctx.ExecQuiet = true
+		ctx.ExecOutput = true
 
-	// Create final 'commits - file list' associations
-	dtStart = time.Now()
-	lastTime := dtStart
-	statuses := make(map[int]int)
-	// statuses:
-	// -1: error
-	// 0: commit without files
-	// 1: commit with files
-	statuses[-1] = 0
-	statuses[0] = 0
-	statuses[1] = 0
-	allN := 0
-	checked := 0
-	// Count all commits
-	for _, commits := range allCommits {
-		allN += len(commits.shas)
-	}
-	// process all commits
-	ch := make(chan int)
-	nThreads = 0
-	for _, commits := range allCommits {
-		con := commits.con
-		filesSkipPattern := commits.filesSkipPattern
-		var re *regexp.Regexp
-		if filesSkipPattern != "" {
-			re = regexp.MustCompile(filesSkipPattern)
+		// Create final 'commits - file list' associations
+		dtStart = time.Now()
+		lastTime := dtStart
+		statuses := make(map[int]int)
+		// statuses:
+		// -1: error
+		// 0: commit without files
+		// 1: commit with files
+		statuses[-1] = 0
+		statuses[0] = 0
+		statuses[1] = 0
+		allN := 0
+		checked := 0
+		// Count all commits
+		for _, commits := range allCommits {
+			allN += len(commits.shas)
 		}
-		for i, sha := range commits.shas {
-			repo := commits.repos[i]
-			go getCommitFiles(ch, ctx, con, re, repo, sha)
-			nThreads++
-			if nThreads == thrN {
-				statuses[<-ch]++
-				nThreads--
-				checked++
-				lib.ProgressInfo(checked, allN, dtStart, &lastTime, time.Duration(10)*time.Second, repo)
+		// process all commits
+		ch := make(chan int)
+		nThreads = 0
+		for _, commits := range allCommits {
+			con := commits.con
+			filesSkipPattern := commits.filesSkipPattern
+			var re *regexp.Regexp
+			if filesSkipPattern != "" {
+				re = regexp.MustCompile(filesSkipPattern)
+			}
+			for i, sha := range commits.shas {
+				repo := commits.repos[i]
+				go getCommitFiles(ch, ctx, con, re, repo, sha)
+				nThreads++
+				if nThreads == thrN {
+					statuses[<-ch]++
+					nThreads--
+					checked++
+					lib.ProgressInfo(checked, allN, dtStart, &lastTime, time.Duration(10)*time.Second, repo)
+				}
 			}
 		}
-	}
-	for nThreads > 0 {
-		statuses[<-ch]++
-		nThreads--
-		checked++
-		lib.ProgressInfo(checked, allN, dtStart, &lastTime, time.Duration(10)*time.Second, "final join...")
-	}
-	dtEnd = time.Now()
-	all := statuses[-1] + statuses[0] + statuses[1]
-	perc := 0.0
-	if all > 0 {
-		perc = float64(statuses[1]) * 100.0 / (float64(all))
-	}
-	lib.Printf(
-		"Got %d (%.2f%%) new commit's files, %d without files, %d failed, all %d, took %v\n",
-		statuses[1],
-		perc,
-		statuses[0],
-		statuses[-1],
-		all,
-		dtEnd.Sub(dtStart),
-	)
+		for nThreads > 0 {
+			statuses[<-ch]++
+			nThreads--
+			checked++
+			lib.ProgressInfo(checked, allN, dtStart, &lastTime, time.Duration(10)*time.Second, "final join...")
+		}
+		dtEnd = time.Now()
+		all := statuses[-1] + statuses[0] + statuses[1]
+		perc := 0.0
+		if all > 0 {
+			perc = float64(statuses[1]) * 100.0 / (float64(all))
+		}
+		lib.Printf(
+			"Got %d (%.2f%%) new commit's files, %d without files, %d failed, all %d, took %v\n",
+			statuses[1],
+			perc,
+			statuses[0],
+			statuses[-1],
+			all,
+			dtEnd.Sub(dtStart),
+		)
 
-	// Post execute SQL 'util_sql/create_events_commits.sql' on each database
-	// This SQL updates 'gha_events_commits_files' table that
-	// holds connections between commits SHA and events that refer to it
-	// So we can query for files modified in the given events (via commits)
-	dtStart = time.Now()
-	bytes, err = lib.ReadFile(
-		ctx,
-		dataPrefix+"util_sql/create_events_commits.sql",
-	)
-	lib.FatalOnError(err)
-	sqlQuery = string(bytes)
-	ch = make(chan int)
-	nThreads = 0
-	for _, commits := range allCommits {
-		con := commits.con
-		go postprocessCommitsDB(ch, ctx, con, sqlQuery)
-		nThreads++
-		if nThreads == thrN {
+		// Post execute SQL 'util_sql/create_events_commits.sql' on each database
+		// This SQL updates 'gha_events_commits_files' table that
+		// holds connections between commits SHA and events that refer to it
+		// So we can query for files modified in the given events (via commits)
+		dtStart = time.Now()
+		bytes, err = lib.ReadFile(
+			ctx,
+			dataPrefix+"util_sql/create_events_commits.sql",
+		)
+		lib.FatalOnError(err)
+		sqlQuery = string(bytes)
+		ch = make(chan int)
+		nThreads = 0
+		for _, commits := range allCommits {
+			con := commits.con
+			go postprocessCommitsDB(ch, ctx, con, sqlQuery)
+			nThreads++
+			if nThreads == thrN {
+				<-ch
+				nThreads--
+			}
+		}
+		for nThreads > 0 {
 			<-ch
 			nThreads--
 		}
+		dtEnd = time.Now()
+		lib.Printf("Postprocessed all new commits, took %v\n", dtEnd.Sub(dtStart))
 	}
-	for nThreads > 0 {
-		<-ch
-		nThreads--
+
+	if !ctx.CommitsLOCStatsEnabled {
+		return
 	}
-	dtEnd = time.Now()
-	lib.Printf("Postprocessed all new commits, took %v\n", dtEnd.Sub(dtStart))
 
 	// Commits LOC analysis (lines of code added, removed and changed files counts)
-	allCommits = []dbCommits{}
-	bytes, err = lib.ReadFile(
+	allCommits := []dbCommits{}
+	bytes, err := lib.ReadFile(
 		ctx,
 		dataPrefix+"util_sql/list_unprocessed_commits_loc.sql",
 	)
 	lib.FatalOnError(err)
-	sqlQuery = string(bytes)
+	sqlQuery := string(bytes)
 
 	// Process all DBs in a separate threads to get all commits LOC stats
-	dtStart = time.Now()
-	chC = make(chan dbCommits)
-	nThreads = 0
+	dtStart := time.Now()
+	chC := make(chan dbCommits)
+	thrN := lib.GetThreadsNum(ctx)
+	nThreads := 0
 	for db := range dbs {
 		go processCommitsLOC(chC, ctx, db, sqlQuery)
 		nThreads++
@@ -771,13 +779,13 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 		nThreads--
 		allCommits = append(allCommits, commits)
 	}
-	dtEnd = time.Now()
+	dtEnd := time.Now()
 	lib.Printf("Got %d DBs new commits LOC stats: took %v\n", len(allCommits), dtEnd.Sub(dtStart))
 
 	// Create final commits LOC stats
 	dtStart = time.Now()
-	lastTime = dtStart
-	statuses = make(map[int]int)
+	lastTime := dtStart
+	statuses := make(map[int]int)
 	// statuses:
 	// -1: error
 	// 0: commit without LOC stats
@@ -785,14 +793,14 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 	statuses[-1] = 0
 	statuses[0] = 0
 	statuses[1] = 0
-	allN = 0
-	checked = 0
+	allN := 0
+	checked := 0
 	// Count all commits
 	for _, commits := range allCommits {
 		allN += len(commits.shas)
 	}
 	// process all commits
-	ch = make(chan int)
+	ch := make(chan int)
 	nThreads = 0
 	for _, commits := range allCommits {
 		con := commits.con
@@ -815,8 +823,8 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 		lib.ProgressInfo(checked, allN, dtStart, &lastTime, time.Duration(10)*time.Second, "final join...")
 	}
 	dtEnd = time.Now()
-	all = statuses[-1] + statuses[0] + statuses[1]
-	perc = 0.0
+	all := statuses[-1] + statuses[0] + statuses[1]
+	perc := 0.0
 	if all > 0 {
 		perc = float64(statuses[1]) * 100.0 / (float64(all))
 	}

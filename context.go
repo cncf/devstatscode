@@ -11,128 +11,130 @@ import (
 
 // Ctx - environment context packed in structure
 type Ctx struct {
-	DataDir             string                       // From GHA2DB_DATADIR, default /etc/gha2db/
-	Debug               int                          // From GHA2DB_DEBUG Debug level: 0-no, 1-info, 2-verbose, including SQLs, default 0
-	CmdDebug            int                          // From GHA2DB_CMDDEBUG Commands execution Debug level: 0-no, 1-only output commands, 2-output commands and their output, 3-output full environment as well, default 0
-	GitHubDebug         int                          // From GHA2DB_GITHUB_DEBUG debug GitHub rate limits
-	DryRun              bool                         // From GHA2DB_DRY_RUN, import_affs tool - stop before doing any updates
-	JSONOut             bool                         // From GHA2DB_JSON gha2db: write JSON files? default false
-	DBOut               bool                         // From GHA2DB_NODB gha2db: write to SQL database, default true
-	ST                  bool                         // From GHA2DB_ST true: use single threaded version, false: use multi threaded version, default false
-	NCPUs               int                          // From GHA2DB_NCPUS, set to override number of CPUs to run, this overwrites GHA2DB_ST, default 0 (which means do not use it)
-	PgHost              string                       // From PG_HOST, default "localhost"
-	PgPort              string                       // From PG_PORT, default "5432"
-	PgDB                string                       // From PG_DB, default "gha"
-	PgUser              string                       // From PG_USER, default "gha_admin"
-	PgPass              string                       // From PG_PASS, default "password"
-	PgSSL               string                       // From PG_SSL, default "disable"
-	Index               bool                         // From GHA2DB_INDEX Create DB index? default false
-	Table               bool                         // From GHA2DB_SKIPTABLE Create table structure? default true
-	Tools               bool                         // From GHA2DB_SKIPTOOLS Create DB tools (like views, summary tables, materialized views etc)? default true
-	Mgetc               string                       // From GHA2DB_MGETC Character returned by mgetc (if non empty), default ""
-	QOut                bool                         // From GHA2DB_QOUT output all SQL queries?, default false
-	CtxOut              bool                         // From GHA2DB_CTXOUT output all context data (this struct), default false
-	LogTime             bool                         // From GHA2DB_SKIPTIME, output time with all lib.Printf(...) calls, default true, use GHA2DB_SKIPTIME to disable
-	DefaultStartDate    time.Time                    // From GHA2DB_STARTDT, default `2012-07-01 00:00 UTC`, expects format "YYYY-MM-DD HH:MI:SS", can be set in `projects.yaml` via `start_date:`, value from projects.yaml (if set) has the highest priority.
-	ForceStartDate      bool                         // From GHA2DB_STARTDT_FORCE, default false
-	LastSeries          string                       // From GHA2DB_LASTSERIES, use this TSDB series to determine last timestamp date, default "events_h"
-	SkipTSDB            bool                         // From GHA2DB_SKIPTSDB gha2db_sync tool, skip TS DB processing? for calc_metric it skips final series write, default false
-	SkipPDB             bool                         // From GHA2DB_SKIPPDB gha2db_sync tool, skip Postgres DB processing (gha2db part) default false
-	ResetTSDB           bool                         // From GHA2DB_RESETTSDB sync tool, regenerate all TS points? default false
-	ResetRanges         bool                         // From GHA2DB_RESETRANGES sync tool, regenerate all past quick ranges? default false
-	Explain             bool                         // From GHA2DB_EXPLAIN runq tool, prefix query with "explain " - it will display query plan instead of executing real query, default false
-	OldFormat           bool                         // From GHA2DB_OLDFMT gha2db tool, if set then use pre 2015 GHA JSONs format
-	Exact               bool                         // From GHA2DB_EXACT gha2db tool, if set then orgs list provided from commandline is used as a list of exact repository full names, like "a/b,c/d,e", if not only full names "a/b,x/y" can be treated like this, names without "/" are either orgs or repos.
-	LogToDB             bool                         // From GHA2DB_SKIPLOG all tools, if set, DB logging into Postgres table `gha_logs` in `devstats` database will be disabled
-	Local               bool                         // From GHA2DB_LOCAL many tools, if set it will use data files prefixed with "./" to use local ones. Otherwise it will search for data files in /etc/gha2db.
-	LocalCmd            bool                         // From GHA2DB_LOCAL_CMD many tools, if set it will call other tools prefixed with "./" to use locally compiled ones. Otherwise it will call binaries without prefix (so it will use those in $PATH).
-	MetricsYaml         string                       // From GHA2DB_METRICS_YAML gha2db_sync tool, set other metrics.yaml file, default is "metrics/{{project}}metrics.yaml"
-	TagsYaml            string                       // From GHA2DB_TAGS_YAML tags tool, set other tags.yaml file, default is "metrics/{{project}}/tags.yaml"
-	ColumnsYaml         string                       // From GHA2DB_COLUMNS_YAML tags tool, set other columns.yaml file, default is "metrics/{{project}}/columns.yaml"
-	VarsYaml            string                       // From GHA2DB_VARS_YAML db_vars tool, set other vars.yaml file (full path), default is "metrics/{{project}}/vars.yaml"
-	VarsFnYaml          string                       // From GHA2DB_VARS_FN_YAML db_vars tool, set other vars.yaml file (final file name without path), default is "vars.yaml"
-	SkipDatesYaml       string                       // From GHA2DB_SKIP_DATES_YAML gha2db tool, set other skip_dates.yaml file, default is "skip_dates.yaml"
-	GitHubOAuth         string                       // From GHA2DB_GITHUB_OAUTH ghapi2db tool, if not set reads from /etc/github/oauth file, set to "-" to force public access.
-	ClearDBPeriod       string                       // From GHA2DB_MAXLOGAGE gha2db_sync tool, maximum age of devstats.gha_logs entries, default "1 week"
-	Trials              []int                        // From GHA2DB_TRIALS, all Postgres related tools, retry periods for some retryable errors
-	WebHookRoot         string                       // From GHA2DB_WHROOT, webhook tool, default "/hook", must match .travis.yml notifications webhooks
-	WebHookPort         string                       // From GHA2DB_WHPORT, webhook tool, default ":1982", note that webhook listens using http:1982, but we use apache on https:2982 (to enable https protocol and proxy requests to http:1982)
-	WebHookHost         string                       // From GHA2DB_WHHOST, webhook tool, default "127.0.0.1" (this can be localhost to disable access by IP, we use Apache proxy to enable https and then apache only need 127.0.0.1)
-	CheckPayload        bool                         // From GHA2DB_SKIP_VERIFY_PAYLOAD, webhook tool, default true, use GHA2DB_SKIP_VERIFY_PAYLOAD=1 to manually test payloads
-	FullDeploy          bool                         // From GHA2DB_SKIP_FULL_DEPLOY, webhook tool, default true, use GHA2DB_SKIP_FULL_DEPLOY=1 to ignore "[deploy]" requests that call `./devel/deploy_all.sh`.
-	DeployBranches      []string                     // From GHA2DB_DEPLOY_BRANCHES, webhook tool, default "master" - comma separated list
-	DeployStatuses      []string                     // From GHA2DB_DEPLOY_STATUSES, webhook tool, default "Passed,Fixed", - comma separated list
-	DeployResults       []int                        // From GHA2DB_DEPLOY_RESULTS, webhook tool, default "0", - comma separated list
-	DeployTypes         []string                     // From GHA2DB_DEPLOY_TYPES, webhook tool, default "push", - comma separated list
-	ProjectRoot         string                       // From GHA2DB_PROJECT_ROOT, webhook tool, no default, must be specified to run webhook tool
-	ExecFatal           bool                         // default true, set this manually to false to avoid lib.ExecCommand calling os.Exit() on failure and return error instead
-	ExecQuiet           bool                         // default false, set this manually to true to have quite exec failures (for example `get_repos` git-clones or git-pulls on errors).
-	ExecOutput          bool                         // default false, set to true to capture commands STDOUT
-	Project             string                       // From GHA2DB_PROJECT, gha2db_sync default "", You should set it to something like "kubernetes", "prometheus" etc.
-	TestsYaml           string                       // From GHA2DB_TESTS_YAML ./dbtest.sh tool, set other tests.yaml file, default is "tests.yaml"
-	ReposDir            string                       // From GHA2DB_REPOS_DIR get_repos tool, default "~/devstats_repos/"
-	ProcessRepos        bool                         // From GHA2DB_PROCESS_REPOS get_repos tool, enable processing (cloning/pulling) all devstats repos, default false
-	ProcessCommits      bool                         // From GHA2DB_PROCESS_COMMITS get_repos tool, enable update/create mapping table: commit - list of file that commit refers to, default false
-	ExternalInfo        bool                         // From GHA2DB_EXTERNAL_INFO get_repos tool, enable outputing data needed by external tools (cncf/gitdm), default false
-	ProjectsCommits     string                       // From GHA2DB_PROJECTS_COMMITS get_repos tool, set list of projects for commits analysis instead of analysing all, default "" - means all
-	PropagateOnlyVar    bool                         // From GHA2DB_PROPAGATE_ONLY_VAR, if set the it will check ONLY="a b c" env variable and propagate it into other project filter variables if they're not set, for example GHA2DB_PROJECTS_COMMITS
-	ProjectsYaml        string                       // From GHA2DB_PROJECTS_YAML, many tools - set main projects file, default "projects.yaml"
-	CompanyAcqYaml      string                       // From GHA2DB_COMPANY_ACQ_YAML, import_affs tool, set non-standard "companies.yaml" file
-	ProjectsOverride    map[string]bool              // From GHA2DB_PROJECTS_OVERRIDE, get_repos and ./devstats tools - for example "-pro1,+pro2" means never sync pro1 and always sync pro2 (even if disabled in `projects.yaml`).
-	AffiliationsJSON    string                       // From GHA2DB_AFFILIATIONS_JSON, import_affs tool - set main affiliations file, default "github_users.json"
-	ExcludeRepos        map[string]bool              // From GHA2DB_EXCLUDE_REPOS, gha2db tool, default "" - comma separated list of repos to exclude, example: "theupdateframework/notary,theupdateframework/other"
-	InputDBs            []string                     // From GHA2DB_INPUT_DBS, merge_dbs tool - list of input databases to merge, order matters - first one will insert on a clean DB, next will do insert ignore (to avoid constraints failure due to common data)
-	OutputDB            string                       // From GHA2DB_OUTPUT_DB, merge_dbs tool - output database to merge into
-	TmOffset            int                          // From GHA2DB_TMOFFSET, gha2db_sync tool - uses time offset to decide when to calculate various metrics, default offset is 0 which means UTC, good offset for USA is -6, and for Poland is 1 or 2
-	DefaultHostname     string                       // "devstats.cncf.io"
-	RecentRange         string                       // From GHA2DB_RECENT_RANGE, ghapi2db tool, default '2 hours'. This is a recent period to check open issues/PR to fix their labels and milestones.
-	RecentReposRange    string                       // From GHA2DB_RECENT_REPOS_RANGE, ghapi2db tool, default '1 day'. This is a recent period to check modified repositories.
-	MinGHAPIPoints      int                          // From GHA2DB_MIN_GHAPI_POINTS, ghapi2db tool, minimum GitHub API points, before waiting for reset.
-	MaxGHAPIWaitSeconds int                          // From GHA2DB_MAX_GHAPI_WAIT, ghapi2db tool, maximum wait time for GitHub API points reset (in seconds).
-	MaxGHAPIRetry       int                          // From GHA2DB_MAX_GHAPI_RETRY, ghapi2db tool, maximum wait retries
-	GHAPIErrorIsFatal   bool                         // From GHA2DB_GHAPI_ERROR_FATAL, ghapi2db tool, make any GH API error fatal, default false
-	SkipGHAPI           bool                         // From GHA2DB_GHAPISKIP, ghapi2db tool, if set then tool is skipping GH API calls (all: events (artificial events to make sure we are in sync with GH) and commits (enriches obfuscated GHA commits data)
-	SkipAPIEvents       bool                         // From GHA2DB_GHAPISKIPEVENTS, ghapi2db tool, if set then tool is skipping GH API events sync
-	SkipAPICommits      bool                         // From GHA2DB_GHAPISKIPCOMMITS, ghapi2db tool, if set then tool is skipping GH API commits enrichment
-	SkipGetRepos        bool                         // From GHA2DB_GETREPOSSKIP, get_repos tool, if set then tool does nothing
-	CSVFile             string                       // From GHA2DB_CSVOUT, runq tool, if set, saves result in this file
-	ComputeAll          bool                         // From GHA2DB_COMPUTE_ALL, all tools, if set then no period decisions are taken based on time, but all possible periods are recalculated
-	ActorsFilter        bool                         // From GHA2DB_ACTORS_FILTER gha2db tool, if enabled then actor filterning will be added, default false
-	ActorsAllow         *regexp.Regexp               // From GHA2DB_ACTORS_ALLOW, gha2db tool, process JSON if actor matches this regexp, default "" which means skip this check
-	ActorsForbid        *regexp.Regexp               // From GHA2DB_ACTORS_FORBID, gha2db tool, process JSON if actor doesn't match this regexp, default "" which means skip this check
-	SkipMetrics         map[string]bool              // From GHA2DB_SKIP_METRICS, gha2db_sync tool, default "" - comma separated list of metrics to skip, as given by "sql: name" in the "metrics.yaml" file. Those metrics will be skipped.
-	OnlyMetrics         map[string]bool              // From GHA2DB_ONLY_METRICS, gha2db_sync tool, default "" - comma separated list of metrics to process, as given by "sql: name" in the "metrics.yaml" file. Only those metrics will be calculated.
-	AllowBrokenJSON     bool                         // From GHA2DB_ALLOW_BROKEN_JSON, gha2db tool, default false. If set then gha2db skips broken jsons and saves them as jsons/error_YYYY-MM-DD-h-n-m.json (n is the JSON number (1-m) of m JSONS array)
-	JSONsDir            string                       // From GHA2DB_JSONS_DIR, website_data tool, default "./jsons/"
-	WebsiteData         bool                         // From GHA2DB_WEBSITEDATA, devstats tool, run website_data just after sync is complete, default false.
-	SkipUpdateEvents    bool                         // From GHA2DB_SKIP_UPDATE_EVENTS, ghapi2db tool, drop and recreate artificial events if their state differs, default false
-	ComputePeriods      map[string]map[bool]struct{} // From GHA2DB_FORCE_PERIODS, gha2db_sync tool, force recompute only given periods, "y10:t,m:f,...", default ""
-	AutoFetchCommits    bool                         // From GHA2DB_NO_AUTOFETCHCOMMITS, ghapi2db, disable fetching from last enriched commit data, it will fetch from 'RecentRange instead, AutoFetchCommits is enabled by default
-	SkipTags            bool                         // From GHA2DB_SKIP_TAGS, gha2db_sync tool, skip calling tags tool, default false
-	SkipAnnotations     bool                         // From GHA2DB_SKIP_ANNOTATIONS, gha2db_sync tool, skip calling annotations tool, default false
-	SkipColumns         bool                         // From GHA2DB_SKIP_COLUMNS, gha2db_sync tool, skip calling columns tool, default false
-	RunColumns          bool                         // From GHA2DB_RUN_COLUMNS, gha2db_sync tool, force calling columns tool, default false
-	SkipVars            bool                         // From GHA2DB_SKIP_VARS, gha2db_sync tool, skip calling vars tool, default false
-	ExcludeVars         map[string]bool              // From GHA2DB_EXCLUDE_VARS, vars tool, default "" - comma separated list of variable names to exclude, example: "hostname,projects_health_partial_html"
-	OnlyVars            map[string]bool              // From GHA2DB_ONLY_VARS, vars tool, default "" - comma separated list of variable names to write (and skip all others): "hostname,projects_health_partial_html", not used if empty
-	ElasticURL          string                       // From GHA2DB_ES_URL, calc_metric, tags, annotations tools - ElasticSearch URL (if used), default http://127.0.0.1:9200
-	UseES               bool                         // From GHA2DB_USE_ES, calc_metric, tags, annotations tools - enable ElasticSearch, default false
-	UseESOnly           bool                         // From GHA2DB_USE_ES_ONLY, calc_metric, annotations tools - enable ElasticSearch and do not write PSQL TSDB, default false
-	UseESRaw            bool                         // From GHA2DB_USE_ES_RAW, gha2es, gha2db_sync tools - enable generating RAW ElasticSearch data (directly from gha_tables instead of aggregated data from TSDB)
-	ResetESRaw          bool                         // From GHA2DB_RESET_ES_RAW, gha2db_sync tools - generate RAW ES index from project start date
-	SkipSharedDB        bool                         // From GHA2DB_SKIP_SHAREDDB, annotations tool, default false, will skip writing to shared_db (from projects.yaml) if set
-	SkipPIDFile         bool                         // From GHA2DB_SKIP_PIDFILE, devstats tool, skip creating, checking and removing PID file
-	SkipCompanyAcq      bool                         // From GHA2DB_SKIP_COMPANY_ACQ, import_affs tool, skip processing company acquisitions from companies.yaml file
-	CheckProvisionFlag  bool                         // From GHA2DB_CHECK_PROVISION_FLAG, devstats tool - check if there is a 'provision' metric saved in 'gha_computed' table - if not, abort
-	CheckRunningFlag    bool                         // From GHA2DB_CHECK_RUNNING_FLAG, devstats tool - check if there is a 'devstats_running' metric saved in 'gha_computed' table - if yes, abort
-	SetRunningFlag      bool                         // From GHA2DB_SET_RUNNING_FLAG, devstats tool - set 'devstats_running' flag on 'gha_computed' table while devstats cronjob is running
-	ESBulkSize          int                          // From GHA2DB_ES_BULK_SIZE, calc_metric and gha2es tools, default 10000
-	HTTPTimeout         int                          // From GHA2DB_HTTP_TIMEOUT, gha2db - data.gharchive.org timeout value in minutes, default 2
-	PidFileRoot         string                       // From GHA2DB_PID_FILE_ROOT, devstats tool, use '/tmp/PidFileRoot.pid' as PID file, default 'devstats' -> '/tmp/devstats.pid'
-	SharedDB            string                       // Currently annotations tool read this from projects.yaml:shared_db and if set, outputs annotations data to the sharded DB in addition to the current DB
-	ProjectMainRepo     string                       // Used by annotations tool to store project's main repo name
-	TestMode            bool                         // True when running tests
-	CanReconnect        bool                         // True, unless connecting to a custom database, in this case there can be multiple threads sharing context and we don't want to write to a random database
+	DataDir                  string                       // From GHA2DB_DATADIR, default /etc/gha2db/
+	Debug                    int                          // From GHA2DB_DEBUG Debug level: 0-no, 1-info, 2-verbose, including SQLs, default 0
+	CmdDebug                 int                          // From GHA2DB_CMDDEBUG Commands execution Debug level: 0-no, 1-only output commands, 2-output commands and their output, 3-output full environment as well, default 0
+	GitHubDebug              int                          // From GHA2DB_GITHUB_DEBUG debug GitHub rate limits
+	DryRun                   bool                         // From GHA2DB_DRY_RUN, import_affs tool - stop before doing any updates
+	JSONOut                  bool                         // From GHA2DB_JSON gha2db: write JSON files? default false
+	DBOut                    bool                         // From GHA2DB_NODB gha2db: write to SQL database, default true
+	ST                       bool                         // From GHA2DB_ST true: use single threaded version, false: use multi threaded version, default false
+	NCPUs                    int                          // From GHA2DB_NCPUS, set to override number of CPUs to run, this overwrites GHA2DB_ST, default 0 (which means do not use it)
+	PgHost                   string                       // From PG_HOST, default "localhost"
+	PgPort                   string                       // From PG_PORT, default "5432"
+	PgDB                     string                       // From PG_DB, default "gha"
+	PgUser                   string                       // From PG_USER, default "gha_admin"
+	PgPass                   string                       // From PG_PASS, default "password"
+	PgSSL                    string                       // From PG_SSL, default "disable"
+	Index                    bool                         // From GHA2DB_INDEX Create DB index? default false
+	Table                    bool                         // From GHA2DB_SKIPTABLE Create table structure? default true
+	Tools                    bool                         // From GHA2DB_SKIPTOOLS Create DB tools (like views, summary tables, materialized views etc)? default true
+	Mgetc                    string                       // From GHA2DB_MGETC Character returned by mgetc (if non empty), default ""
+	QOut                     bool                         // From GHA2DB_QOUT output all SQL queries?, default false
+	CtxOut                   bool                         // From GHA2DB_CTXOUT output all context data (this struct), default false
+	LogTime                  bool                         // From GHA2DB_SKIPTIME, output time with all lib.Printf(...) calls, default true, use GHA2DB_SKIPTIME to disable
+	DefaultStartDate         time.Time                    // From GHA2DB_STARTDT, default `2012-07-01 00:00 UTC`, expects format "YYYY-MM-DD HH:MI:SS", can be set in `projects.yaml` via `start_date:`, value from projects.yaml (if set) has the highest priority.
+	ForceStartDate           bool                         // From GHA2DB_STARTDT_FORCE, default false
+	LastSeries               string                       // From GHA2DB_LASTSERIES, use this TSDB series to determine last timestamp date, default "events_h"
+	SkipTSDB                 bool                         // From GHA2DB_SKIPTSDB gha2db_sync tool, skip TS DB processing? for calc_metric it skips final series write, default false
+	SkipPDB                  bool                         // From GHA2DB_SKIPPDB gha2db_sync tool, skip Postgres DB processing (gha2db part) default false
+	ResetTSDB                bool                         // From GHA2DB_RESETTSDB sync tool, regenerate all TS points? default false
+	ResetRanges              bool                         // From GHA2DB_RESETRANGES sync tool, regenerate all past quick ranges? default false
+	Explain                  bool                         // From GHA2DB_EXPLAIN runq tool, prefix query with "explain " - it will display query plan instead of executing real query, default false
+	OldFormat                bool                         // From GHA2DB_OLDFMT gha2db tool, if set then use pre 2015 GHA JSONs format
+	Exact                    bool                         // From GHA2DB_EXACT gha2db tool, if set then orgs list provided from commandline is used as a list of exact repository full names, like "a/b,c/d,e", if not only full names "a/b,x/y" can be treated like this, names without "/" are either orgs or repos.
+	LogToDB                  bool                         // From GHA2DB_SKIPLOG all tools, if set, DB logging into Postgres table `gha_logs` in `devstats` database will be disabled
+	Local                    bool                         // From GHA2DB_LOCAL many tools, if set it will use data files prefixed with "./" to use local ones. Otherwise it will search for data files in /etc/gha2db.
+	LocalCmd                 bool                         // From GHA2DB_LOCAL_CMD many tools, if set it will call other tools prefixed with "./" to use locally compiled ones. Otherwise it will call binaries without prefix (so it will use those in $PATH).
+	MetricsYaml              string                       // From GHA2DB_METRICS_YAML gha2db_sync tool, set other metrics.yaml file, default is "metrics/{{project}}metrics.yaml"
+	TagsYaml                 string                       // From GHA2DB_TAGS_YAML tags tool, set other tags.yaml file, default is "metrics/{{project}}/tags.yaml"
+	ColumnsYaml              string                       // From GHA2DB_COLUMNS_YAML tags tool, set other columns.yaml file, default is "metrics/{{project}}/columns.yaml"
+	VarsYaml                 string                       // From GHA2DB_VARS_YAML db_vars tool, set other vars.yaml file (full path), default is "metrics/{{project}}/vars.yaml"
+	VarsFnYaml               string                       // From GHA2DB_VARS_FN_YAML db_vars tool, set other vars.yaml file (final file name without path), default is "vars.yaml"
+	SkipDatesYaml            string                       // From GHA2DB_SKIP_DATES_YAML gha2db tool, set other skip_dates.yaml file, default is "skip_dates.yaml"
+	GitHubOAuth              string                       // From GHA2DB_GITHUB_OAUTH ghapi2db tool, if not set reads from /etc/github/oauth file, set to "-" to force public access.
+	ClearDBPeriod            string                       // From GHA2DB_MAXLOGAGE gha2db_sync tool, maximum age of devstats.gha_logs entries, default "1 week"
+	Trials                   []int                        // From GHA2DB_TRIALS, all Postgres related tools, retry periods for some retryable errors
+	WebHookRoot              string                       // From GHA2DB_WHROOT, webhook tool, default "/hook", must match .travis.yml notifications webhooks
+	WebHookPort              string                       // From GHA2DB_WHPORT, webhook tool, default ":1982", note that webhook listens using http:1982, but we use apache on https:2982 (to enable https protocol and proxy requests to http:1982)
+	WebHookHost              string                       // From GHA2DB_WHHOST, webhook tool, default "127.0.0.1" (this can be localhost to disable access by IP, we use Apache proxy to enable https and then apache only need 127.0.0.1)
+	CheckPayload             bool                         // From GHA2DB_SKIP_VERIFY_PAYLOAD, webhook tool, default true, use GHA2DB_SKIP_VERIFY_PAYLOAD=1 to manually test payloads
+	FullDeploy               bool                         // From GHA2DB_SKIP_FULL_DEPLOY, webhook tool, default true, use GHA2DB_SKIP_FULL_DEPLOY=1 to ignore "[deploy]" requests that call `./devel/deploy_all.sh`.
+	DeployBranches           []string                     // From GHA2DB_DEPLOY_BRANCHES, webhook tool, default "master" - comma separated list
+	DeployStatuses           []string                     // From GHA2DB_DEPLOY_STATUSES, webhook tool, default "Passed,Fixed", - comma separated list
+	DeployResults            []int                        // From GHA2DB_DEPLOY_RESULTS, webhook tool, default "0", - comma separated list
+	DeployTypes              []string                     // From GHA2DB_DEPLOY_TYPES, webhook tool, default "push", - comma separated list
+	ProjectRoot              string                       // From GHA2DB_PROJECT_ROOT, webhook tool, no default, must be specified to run webhook tool
+	ExecFatal                bool                         // default true, set this manually to false to avoid lib.ExecCommand calling os.Exit() on failure and return error instead
+	ExecQuiet                bool                         // default false, set this manually to true to have quite exec failures (for example `get_repos` git-clones or git-pulls on errors).
+	ExecOutput               bool                         // default false, set to true to capture commands STDOUT
+	Project                  string                       // From GHA2DB_PROJECT, gha2db_sync default "", You should set it to something like "kubernetes", "prometheus" etc.
+	TestsYaml                string                       // From GHA2DB_TESTS_YAML ./dbtest.sh tool, set other tests.yaml file, default is "tests.yaml"
+	ReposDir                 string                       // From GHA2DB_REPOS_DIR get_repos tool, default "~/devstats_repos/"
+	ProcessRepos             bool                         // From GHA2DB_PROCESS_REPOS get_repos tool, enable processing (cloning/pulling) all devstats repos, default false
+	ProcessCommits           bool                         // From GHA2DB_PROCESS_COMMITS get_repos tool, enable update/create mapping table: commit - list of file that commit refers to, default false
+	ExternalInfo             bool                         // From GHA2DB_EXTERNAL_INFO get_repos tool, enable outputing data needed by external tools (cncf/gitdm), default false
+	ProjectsCommits          string                       // From GHA2DB_PROJECTS_COMMITS get_repos tool, set list of projects for commits analysis instead of analysing all, default "" - means all
+	PropagateOnlyVar         bool                         // From GHA2DB_PROPAGATE_ONLY_VAR, if set the it will check ONLY="a b c" env variable and propagate it into other project filter variables if they're not set, for example GHA2DB_PROJECTS_COMMITS
+	ProjectsYaml             string                       // From GHA2DB_PROJECTS_YAML, many tools - set main projects file, default "projects.yaml"
+	CompanyAcqYaml           string                       // From GHA2DB_COMPANY_ACQ_YAML, import_affs tool, set non-standard "companies.yaml" file
+	ProjectsOverride         map[string]bool              // From GHA2DB_PROJECTS_OVERRIDE, get_repos and ./devstats tools - for example "-pro1,+pro2" means never sync pro1 and always sync pro2 (even if disabled in `projects.yaml`).
+	AffiliationsJSON         string                       // From GHA2DB_AFFILIATIONS_JSON, import_affs tool - set main affiliations file, default "github_users.json"
+	ExcludeRepos             map[string]bool              // From GHA2DB_EXCLUDE_REPOS, gha2db tool, default "" - comma separated list of repos to exclude, example: "theupdateframework/notary,theupdateframework/other"
+	InputDBs                 []string                     // From GHA2DB_INPUT_DBS, merge_dbs tool - list of input databases to merge, order matters - first one will insert on a clean DB, next will do insert ignore (to avoid constraints failure due to common data)
+	OutputDB                 string                       // From GHA2DB_OUTPUT_DB, merge_dbs tool - output database to merge into
+	TmOffset                 int                          // From GHA2DB_TMOFFSET, gha2db_sync tool - uses time offset to decide when to calculate various metrics, default offset is 0 which means UTC, good offset for USA is -6, and for Poland is 1 or 2
+	DefaultHostname          string                       // "devstats.cncf.io"
+	RecentRange              string                       // From GHA2DB_RECENT_RANGE, ghapi2db tool, default '2 hours'. This is a recent period to check open issues/PR to fix their labels and milestones.
+	RecentReposRange         string                       // From GHA2DB_RECENT_REPOS_RANGE, ghapi2db tool, default '1 day'. This is a recent period to check modified repositories.
+	MinGHAPIPoints           int                          // From GHA2DB_MIN_GHAPI_POINTS, ghapi2db tool, minimum GitHub API points, before waiting for reset.
+	MaxGHAPIWaitSeconds      int                          // From GHA2DB_MAX_GHAPI_WAIT, ghapi2db tool, maximum wait time for GitHub API points reset (in seconds).
+	MaxGHAPIRetry            int                          // From GHA2DB_MAX_GHAPI_RETRY, ghapi2db tool, maximum wait retries
+	GHAPIErrorIsFatal        bool                         // From GHA2DB_GHAPI_ERROR_FATAL, ghapi2db tool, make any GH API error fatal, default false
+	SkipGHAPI                bool                         // From GHA2DB_GHAPISKIP, ghapi2db tool, if set then tool is skipping GH API calls (all: events (artificial events to make sure we are in sync with GH) and commits (enriches obfuscated GHA commits data)
+	SkipAPIEvents            bool                         // From GHA2DB_GHAPISKIPEVENTS, ghapi2db tool, if set then tool is skipping GH API events sync
+	SkipAPICommits           bool                         // From GHA2DB_GHAPISKIPCOMMITS, ghapi2db tool, if set then tool is skipping GH API commits enrichment
+	SkipGetRepos             bool                         // From GHA2DB_GETREPOSSKIP, get_repos tool, if set then tool does nothing
+	CSVFile                  string                       // From GHA2DB_CSVOUT, runq tool, if set, saves result in this file
+	ComputeAll               bool                         // From GHA2DB_COMPUTE_ALL, all tools, if set then no period decisions are taken based on time, but all possible periods are recalculated
+	ActorsFilter             bool                         // From GHA2DB_ACTORS_FILTER gha2db tool, if enabled then actor filterning will be added, default false
+	ActorsAllow              *regexp.Regexp               // From GHA2DB_ACTORS_ALLOW, gha2db tool, process JSON if actor matches this regexp, default "" which means skip this check
+	ActorsForbid             *regexp.Regexp               // From GHA2DB_ACTORS_FORBID, gha2db tool, process JSON if actor doesn't match this regexp, default "" which means skip this check
+	SkipMetrics              map[string]bool              // From GHA2DB_SKIP_METRICS, gha2db_sync tool, default "" - comma separated list of metrics to skip, as given by "sql: name" in the "metrics.yaml" file. Those metrics will be skipped.
+	OnlyMetrics              map[string]bool              // From GHA2DB_ONLY_METRICS, gha2db_sync tool, default "" - comma separated list of metrics to process, as given by "sql: name" in the "metrics.yaml" file. Only those metrics will be calculated.
+	AllowBrokenJSON          bool                         // From GHA2DB_ALLOW_BROKEN_JSON, gha2db tool, default false. If set then gha2db skips broken jsons and saves them as jsons/error_YYYY-MM-DD-h-n-m.json (n is the JSON number (1-m) of m JSONS array)
+	JSONsDir                 string                       // From GHA2DB_JSONS_DIR, website_data tool, default "./jsons/"
+	WebsiteData              bool                         // From GHA2DB_WEBSITEDATA, devstats tool, run website_data just after sync is complete, default false.
+	SkipUpdateEvents         bool                         // From GHA2DB_SKIP_UPDATE_EVENTS, ghapi2db tool, drop and recreate artificial events if their state differs, default false
+	ComputePeriods           map[string]map[bool]struct{} // From GHA2DB_FORCE_PERIODS, gha2db_sync tool, force recompute only given periods, "y10:t,m:f,...", default ""
+	AutoFetchCommits         bool                         // From GHA2DB_NO_AUTOFETCHCOMMITS, ghapi2db, disable fetching from last enriched commit data, it will fetch from 'RecentRange instead, AutoFetchCommits is enabled by default
+	SkipTags                 bool                         // From GHA2DB_SKIP_TAGS, gha2db_sync tool, skip calling tags tool, default false
+	SkipAnnotations          bool                         // From GHA2DB_SKIP_ANNOTATIONS, gha2db_sync tool, skip calling annotations tool, default false
+	SkipColumns              bool                         // From GHA2DB_SKIP_COLUMNS, gha2db_sync tool, skip calling columns tool, default false
+	RunColumns               bool                         // From GHA2DB_RUN_COLUMNS, gha2db_sync tool, force calling columns tool, default false
+	SkipVars                 bool                         // From GHA2DB_SKIP_VARS, gha2db_sync tool, skip calling vars tool, default false
+	ExcludeVars              map[string]bool              // From GHA2DB_EXCLUDE_VARS, vars tool, default "" - comma separated list of variable names to exclude, example: "hostname,projects_health_partial_html"
+	OnlyVars                 map[string]bool              // From GHA2DB_ONLY_VARS, vars tool, default "" - comma separated list of variable names to write (and skip all others): "hostname,projects_health_partial_html", not used if empty
+	ElasticURL               string                       // From GHA2DB_ES_URL, calc_metric, tags, annotations tools - ElasticSearch URL (if used), default http://127.0.0.1:9200
+	UseES                    bool                         // From GHA2DB_USE_ES, calc_metric, tags, annotations tools - enable ElasticSearch, default false
+	UseESOnly                bool                         // From GHA2DB_USE_ES_ONLY, calc_metric, annotations tools - enable ElasticSearch and do not write PSQL TSDB, default false
+	UseESRaw                 bool                         // From GHA2DB_USE_ES_RAW, gha2es, gha2db_sync tools - enable generating RAW ElasticSearch data (directly from gha_tables instead of aggregated data from TSDB)
+	ResetESRaw               bool                         // From GHA2DB_RESET_ES_RAW, gha2db_sync tools - generate RAW ES index from project start date
+	SkipSharedDB             bool                         // From GHA2DB_SKIP_SHAREDDB, annotations tool, default false, will skip writing to shared_db (from projects.yaml) if set
+	SkipPIDFile              bool                         // From GHA2DB_SKIP_PIDFILE, devstats tool, skip creating, checking and removing PID file
+	SkipCompanyAcq           bool                         // From GHA2DB_SKIP_COMPANY_ACQ, import_affs tool, skip processing company acquisitions from companies.yaml file
+	CheckProvisionFlag       bool                         // From GHA2DB_CHECK_PROVISION_FLAG, devstats tool - check if there is a 'provision' metric saved in 'gha_computed' table - if not, abort
+	CheckRunningFlag         bool                         // From GHA2DB_CHECK_RUNNING_FLAG, devstats tool - check if there is a 'devstats_running' metric saved in 'gha_computed' table - if yes, abort
+	SetRunningFlag           bool                         // From GHA2DB_SET_RUNNING_FLAG, devstats tool - set 'devstats_running' flag on 'gha_computed' table while devstats cronjob is running
+	ESBulkSize               int                          // From GHA2DB_ES_BULK_SIZE, calc_metric and gha2es tools, default 10000
+	HTTPTimeout              int                          // From GHA2DB_HTTP_TIMEOUT, gha2db - data.gharchive.org timeout value in minutes, default 2
+	PidFileRoot              string                       // From GHA2DB_PID_FILE_ROOT, devstats tool, use '/tmp/PidFileRoot.pid' as PID file, default 'devstats' -> '/tmp/devstats.pid'
+	SharedDB                 string                       // Currently annotations tool read this from projects.yaml:shared_db and if set, outputs annotations data to the sharded DB in addition to the current DB
+	ProjectMainRepo          string                       // Used by annotations tool to store project's main repo name
+	TestMode                 bool                         // True when running tests
+	CanReconnect             bool                         // True, unless connecting to a custom database, in this case there can be multiple threads sharing context and we don't want to write to a random database
+	CommitsFilesStatsEnabled bool                         // True, can be disabled by GHA2DB_SKIP_COMMITS_FILES, get_repos tool
+	CommitsLOCStatsEnabled   bool                         // True, can be disabled by GHA2DB_SKIP_COMMITS_LOC, get_repos tool
 }
 
 // Init - get context from environment variables
@@ -141,6 +143,10 @@ func (ctx *Ctx) Init() {
 	ctx.ExecQuiet = false
 	ctx.ExecOutput = false
 	ctx.CanReconnect = true
+
+	/// Commits analysis
+	ctx.CommitsFilesStatsEnabled = os.Getenv("GHA2DB_SKIP_COMMITS_FILES") == ""
+	ctx.CommitsLOCStatsEnabled = os.Getenv("GHA2DB_SKIP_COMMITS_LOC") == ""
 
 	// Data directory
 	ctx.DataDir = os.Getenv("GHA2DB_DATADIR")
