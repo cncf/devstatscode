@@ -541,6 +541,7 @@ func QuerySQLWithErr(con *sql.DB, ctx *Ctx, query string, args ...interface{}) *
 		if status == Reconnect {
 			if ctx.CanReconnect {
 				Printf("Reconnect request after %dseconds\n", try)
+				_ = con.Close()
 				con = PgConn(ctx)
 				Printf("Reconnected after %d seconds\n", try)
 			} else {
@@ -577,7 +578,6 @@ func QuerySQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{})
 		if db == nil {
 			res, err = QuerySQLTx(con, ctx, query, args...)
 		} else {
-			// FIXME: fallback to transaction less query when reconnect succeeded
 			res, err = QuerySQL(db, ctx, query, args...)
 		}
 		if err != nil {
@@ -593,8 +593,9 @@ func QuerySQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{})
 		if status == Reconnect {
 			Printf("Reconnect request after %d seconds, breaking transaction\n", try)
 			if ctx.CanReconnect {
-				db = PgConn(ctx)
-				Printf("Reconnected after %d seconds, breaking transaction\n", try)
+				//db = PgConn(ctx)
+				//Printf("Reconnected after %d seconds, breaking transaction\n", try)
+				Fatalf("reconnect request from within the transaction is not supported")
 			} else {
 				Fatalf("returned reconnect request, but custom DB connect strings are in use")
 			}
@@ -635,8 +636,9 @@ func ExecSQLWithErr(con *sql.DB, ctx *Ctx, query string, args ...interface{}) sq
 		time.Sleep(time.Duration(try) * time.Second)
 		Printf("%d seconds passed, retrying...\n", try)
 		if status == Reconnect {
+			Printf("Reconnect request after %d seconds\n", try)
 			if ctx.CanReconnect {
-				Printf("Reconnect request after %d seconds\n", try)
+				_ = con.Close()
 				con = PgConn(ctx)
 				Printf("Reconnected after %d seconds\n", try)
 			} else {
@@ -673,7 +675,6 @@ func ExecSQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{}) 
 		if db == nil {
 			res, err = ExecSQLTx(con, ctx, query, args...)
 		} else {
-			// FIXME: fallback to transaction less query when reconnect succeeded
 			res, err = ExecSQL(db, ctx, query, args...)
 		}
 		if err != nil {
@@ -687,10 +688,11 @@ func ExecSQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{}) 
 		time.Sleep(time.Duration(try) * time.Second)
 		Printf("%d seconds passed, retrying...\n", try)
 		if status == Reconnect {
+			Printf("Reconnect request after %d seconds, breaking transaction\n", try)
 			if ctx.CanReconnect {
-				Printf("Reconnect request after %d seconds, breaking transaction\n", try)
-				db = PgConn(ctx)
-				Printf("Reconnected after %d seconds, breaking transaction\n", try)
+				//db = PgConn(ctx)
+				//Printf("Reconnected after %d seconds, breaking transaction\n", try)
+				Fatalf("reconnect request from within the transaction is not supported")
 			} else {
 				Fatalf("returned reconnect request, but custom DB connect strings are in use")
 			}

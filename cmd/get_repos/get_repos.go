@@ -837,6 +837,11 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 		all,
 		dtEnd.Sub(dtStart),
 	)
+	for _, commits := range allCommits {
+		con := commits.con
+		// Close connection
+		lib.FatalOnError(con.Close())
+	}
 }
 
 func main() {
