@@ -3,6 +3,7 @@ package devstatscode
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -488,10 +489,15 @@ func queryOut(query string, args ...interface{}) {
 	// Use fmt.Printf not lib.Printf here
 	// If we use lib.Printf (that logs to DB) while ouputting some query's parameters
 	// We would have infinite recurence
-	if len(args) > 0 {
-		fmt.Printf("%+v\n", args)
-	}
 	fmt.Printf("%s\n", query)
+	if len(args) > 0 {
+		s := ""
+		for vi, vv := range args {
+			s += fmt.Sprintf("%d:%+v ", vi+1, reflect.ValueOf(vv).Elem())
+		}
+		fmt.Printf("[%s]\n", s)
+		//fmt.Printf("%+v\n", args)
+	}
 }
 
 // QueryRowSQL executes given SQL on Postgres DB (and returns single row)

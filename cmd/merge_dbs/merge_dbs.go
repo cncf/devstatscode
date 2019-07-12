@@ -152,6 +152,8 @@ func mergePDBs() {
 						switch e := err.(type) {
 						case *pq.Error:
 							if e.Code.Name() != "unique_violation" {
+								// Problem here usually means different columns order because it uses unordered inserts like
+								// insert into table_name ($1, $2, $3)
 								lib.Printf("Failing values:\n")
 								for vi, vv := range vals {
 									lib.Printf("%d: %+v\n", vi, reflect.ValueOf(vv).Elem())
