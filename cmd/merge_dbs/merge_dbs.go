@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"time"
 
 	lib "github.com/cncf/devstatscode"
@@ -151,8 +152,9 @@ func mergePDBs() {
 						switch e := err.(type) {
 						case *pq.Error:
 							if e.Code.Name() != "unique_violation" {
+								lib.Printf("Failing values:\n")
 								for vi, vv := range vals {
-									lib.Printf("%d: %T:%+v\n", vi, vv, vv)
+									lib.Printf("%d: %+v\n", vi, reflect.ValueOf(vv).Elem())
 								}
 								lib.FatalOnError(err)
 							}
