@@ -151,6 +151,7 @@ func mergePDBs() {
 						switch e := err.(type) {
 						case *pq.Error:
 							if e.Code.Name() != "unique_violation" {
+								lib.Printf("values: %+v\n", vals)
 								lib.FatalOnError(err)
 							}
 						default:
