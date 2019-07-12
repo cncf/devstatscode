@@ -308,9 +308,6 @@ func Structure(ctx *Ctx) {
 					"author_name varchar(160) not null, "+
 					"message text not null, "+
 					"is_distinct boolean not null, "+
-					"loc_added int, "+
-					"loc_removed int, "+
-					"files_changed int, "+
 					"dup_actor_id bigint not null, "+
 					"dup_actor_login varchar(120) not null, "+
 					"dup_repo_id bigint not null, "+
@@ -325,6 +322,9 @@ func Structure(ctx *Ctx) {
 					"committer_id bigint, "+
 					"dup_author_login varchar(120) not null default '', "+
 					"dup_committer_login varchar(120) not null default '', "+
+					"loc_added int, "+
+					"loc_removed int, "+
+					"files_changed int, "+
 					"primary key(sha, event_id)"+
 					")",
 			),
@@ -1035,9 +1035,9 @@ func Structure(ctx *Ctx) {
 				"gha_commits_files("+
 					"sha varchar(40) not null, "+
 					"path text not null, "+
-					"ext text not null default '', "+
 					"size bigint not null, "+
 					"dt {{ts}} not null, "+
+					"ext text not null default '', "+
 					"primary key(sha, path)"+
 					")",
 			),
@@ -1051,7 +1051,6 @@ func Structure(ctx *Ctx) {
 					"sha varchar(40) not null, "+
 					"event_id bigint not null, "+
 					"path text not null, "+
-					"ext text not null default '', "+
 					"size bigint not null, "+
 					"dt {{ts}} not null, "+
 					"repo_group varchar(80), "+
@@ -1059,6 +1058,7 @@ func Structure(ctx *Ctx) {
 					"dup_repo_name varchar(160) not null, "+
 					"dup_type varchar(40) not null, "+
 					"dup_created_at {{ts}} not null, "+
+					"ext text not null default '', "+
 					"primary key(sha, event_id, path)"+
 					")",
 			),
