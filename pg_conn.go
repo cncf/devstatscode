@@ -493,7 +493,12 @@ func queryOut(query string, args ...interface{}) {
 	if len(args) > 0 {
 		s := ""
 		for vi, vv := range args {
-			s += fmt.Sprintf("%d:%+v ", vi+1, reflect.ValueOf(vv).Elem())
+			switch v := vv.(type) {
+			case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, complex64, complex128, string, bool, time.Time:
+				s += fmt.Sprintf("%d:%+v ", vi+1, v)
+			default:
+				s += fmt.Sprintf("%d:%+v ", vi+1, reflect.ValueOf(vv).Elem())
+			}
 		}
 		fmt.Printf("[%s]\n", s)
 		//fmt.Printf("%+v\n", args)
