@@ -129,9 +129,12 @@ func mergePDBs() {
 				// Vals to hold any type as []interface{}
 				nColumns := len(columns)
 				vals := make([]interface{}, nColumns)
-				for i := range columns {
+				cols := "("
+				for i, col := range columns {
 					vals[i] = new(interface{})
+					cols += "\"" + col + "\", "
 				}
+				cols = cols[:len(cols)-2] + ")"
 
 				// Get results into `results` array of maps
 				rowCount := 0
@@ -145,7 +148,7 @@ func mergePDBs() {
 					_, err := lib.ExecSQL(
 						co,
 						&ctx,
-						"insert into "+table+" "+lib.NValues(nColumns),
+						"insert into "+table+cols+" "+lib.NValues(nColumns),
 						vals...,
 					)
 					if err != nil {
