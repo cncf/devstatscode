@@ -292,7 +292,7 @@ func processRepos(ctx *lib.Ctx, allRepos map[string]map[string]struct{}) {
 		// Output shell command sorted
 		finalCmd := "./all_repos_log.sh "
 		for _, org := range orgs {
-			finalCmd += ctx.ReposDir + org + "/* "
+			finalCmd += ctx.ReposDir + org + "/* \\\n"
 		}
 
 		// Output cncf/gitdm related data
