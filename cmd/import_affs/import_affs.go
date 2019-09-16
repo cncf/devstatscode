@@ -244,7 +244,7 @@ func setImportedSHA(db *sql.DB, ctx *lib.Ctx, sha string) {
 }
 
 // Imports given JSON file.
-func importAffs(jsonFN string) {
+func importAffs(jsonFN string) int {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
@@ -273,7 +273,7 @@ func importAffs(jsonFN string) {
 		if imported {
 			if ctx.SkipCompanyAcq {
 				lib.Printf("%s (SHA: %s) was already imported and skip company acquisitions mode is set, exiting\n", jsonFN, sha)
-				return
+				return 3
 			}
 			lib.Printf("%s (SHA: %s) was already imported, checking company acquisitions file import status\n", jsonFN, sha)
 		}
@@ -282,7 +282,7 @@ func importAffs(jsonFN string) {
 		imported, sha = alreadyImported(con, &ctx, fn)
 		if imported {
 			lib.Printf("%s (SHA: %s) was already imported, exiting\n", fn, sha)
-			return
+			return 3
 		}
 		currentSHA2 = sha
 	}
@@ -347,7 +347,7 @@ func importAffs(jsonFN string) {
 	data, err := lib.ReadFile(&ctx, jsonFN)
 	if err != nil {
 		lib.FatalOnError(err)
-		return
+		return 1
 	}
 	lib.FatalOnError(json.Unmarshal(data, &users))
 
@@ -417,7 +417,7 @@ func importAffs(jsonFN string) {
 
 	if ctx.DryRun {
 		lib.Printf("Exiting due to dry-run mode.\n")
-		return
+		return 2
 	}
 
 	// Login - Names should be 1:1
@@ -665,15 +665,18 @@ func importAffs(jsonFN string) {
 			setImportedSHA(con, &ctx, currentSHA2)
 		}
 	}
+	return 0
 }
 
 func main() {
 	dtStart := time.Now()
+	ret := 0
 	if len(os.Args) < 2 {
-		importAffs("")
+		ret = importAffs("")
 	} else {
-		importAffs(os.Args[1])
+		ret = importAffs(os.Args[1])
 	}
 	dtEnd := time.Now()
 	lib.Printf("Time: %v\n", dtEnd.Sub(dtStart))
+	os.Exit(ret)
 }
