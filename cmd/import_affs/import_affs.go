@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -213,18 +214,40 @@ func mapCompanyName(comMap map[string][2]string, acqMap map[*regexp.Regexp]strin
 	return company
 }
 
+// Check if given file was already imported
+func alreadyImported(db *sql.DB, ctx *lib.Ctx, fn string) (imported bool, sha string) {
+	data, err := lib.ReadFile(ctx, fn)
+	if err != nil {
+		lib.FatalOnError(err)
+		return
+	}
+	sha = fmt.Sprintf("%x", sha256.Sum256(data))
+	fmt.Printf("%s\n", sha)
+	rows := lib.QuerySQLWithErr(
+		db,
+		ctx,
+		fmt.Sprintf("select sha from gha_imported_shas where sha=%s", lib.NValue(1)),
+		sha,
+	)
+	defer func() { lib.FatalOnError(rows.Close()) }()
+	sha2 := ""
+	for rows.Next() {
+		lib.FatalOnError(rows.Scan(&sha2))
+	}
+	lib.FatalOnError(rows.Err())
+	return sha2 == sha, sha
+}
+
+// Sets given SHA as imported
+func setImportedSHA(db *sql.DB, ctx *lib.Ctx, sha string) {
+	lib.ExecSQLWithErr(db, ctx, "insert into gha_imported_shas(sha) select "+lib.NValue(1), sha)
+}
+
 // Imports given JSON file.
 func importAffs(jsonFN string) {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
-
-	// Connect to Postgres DB
-	con := lib.PgConn(&ctx)
-	defer func() { lib.FatalOnError(con.Close()) }()
-
-	// To handle GDPR
-	maybeHide := lib.MaybeHideFunc(lib.GetHidden(lib.HideCfgFile))
 
 	// Files path
 	dataPrefix := ctx.DataDir
@@ -237,6 +260,24 @@ func importAffs(jsonFN string) {
 		// Local or cron mode?
 		jsonFN = dataPrefix + ctx.AffiliationsJSON
 	}
+
+	// Connect to Postgres DB
+	con := lib.PgConn(&ctx)
+	defer func() { lib.FatalOnError(con.Close()) }()
+
+	// Check if given file was already imported
+	currentSHA := ""
+	if ctx.CheckImportedSHA {
+		imported, sha := alreadyImported(con, &ctx, jsonFN)
+		if imported {
+			lib.Printf("%s (SHA: %s) was already imported, exiting\n", jsonFN, sha)
+			return
+		}
+		currentSHA = sha
+	}
+
+	// To handle GDPR
+	maybeHide := lib.MaybeHideFunc(lib.GetHidden(lib.HideCfgFile))
 
 	// Read company acquisitions mapping
 	var (
@@ -604,6 +645,11 @@ func importAffs(jsonFN string) {
 			continue
 		}
 		lib.Printf("Used mapping '%s' --> '%s'\n", company, data[0])
+	}
+
+	// If check imported flag is set, then mark imported file
+	if ctx.CheckImportedSHA {
+		setImportedSHA(con, &ctx, currentSHA)
 	}
 }
 

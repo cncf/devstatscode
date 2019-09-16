@@ -1315,7 +1315,7 @@ func Structure(ctx *Ctx) {
 			CreateTable(
 				"gha_imported_shas("+
 					"sha text not null, "+
-					"dt {{ts}} not null, "+
+					"dt {{tsnow}} not null, "+
 					"primary key(sha)"+
 					")",
 			),
