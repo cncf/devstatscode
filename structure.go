@@ -1306,6 +1306,24 @@ func Structure(ctx *Ctx) {
 	if ctx.Index {
 		ExecSQLWithErr(c, ctx, "create index parsed_dt_idx on gha_parsed(dt)")
 	}
+	// This is to determine if a given JSON was imported or not
+	if ctx.Table {
+		ExecSQLWithErr(c, ctx, "drop table if exists gha_imported_shas")
+		ExecSQLWithErr(
+			c,
+			ctx,
+			CreateTable(
+				"gha_imported_shas("+
+					"sha text not null, "+
+					"dt {{ts}} not null, "+
+					"primary key(sha)"+
+					")",
+			),
+		)
+	}
+	if ctx.Index {
+		ExecSQLWithErr(c, ctx, "create index imported_shas_sha_idx on gha_imported_shas(sha)")
+	}
 	// Foreign keys are not needed - they slow down processing a lot
 
 	// Tools (like views and functions needed for generating metrics)

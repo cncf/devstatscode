@@ -126,6 +126,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		SkipCompanyAcq:           in.SkipCompanyAcq,
 		CheckProvisionFlag:       in.CheckProvisionFlag,
 		CheckRunningFlag:         in.CheckRunningFlag,
+		CheckImportedSHA:         in.CheckImportedSHA,
 		SetRunningFlag:           in.SetRunningFlag,
 		SkipDatesYaml:            in.SkipDatesYaml,
 		PropagateOnlyVar:         in.PropagateOnlyVar,
@@ -369,6 +370,7 @@ func TestInit(t *testing.T) {
 		SkipCompanyAcq:           false,
 		CheckProvisionFlag:       false,
 		CheckRunningFlag:         false,
+		CheckImportedSHA:         false,
 		SetRunningFlag:           false,
 		PropagateOnlyVar:         false,
 		PidFileRoot:              "devstats",
@@ -1325,6 +1327,19 @@ func TestInit(t *testing.T) {
 				map[string]interface{}{
 					"CheckProvisionFlag": true,
 					"CheckRunningFlag":   true,
+				},
+			),
+		},
+		{
+			"Check imported SHA",
+			map[string]string{
+				"GHA2DB_CHECK_IMPORTED_SHA": "1",
+			},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{
+					"CheckImportedSHA": true,
 				},
 			),
 		},
