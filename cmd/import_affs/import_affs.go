@@ -285,6 +285,9 @@ func importAffs(jsonFN string) int {
 			return 3
 		}
 		currentSHA2 = sha
+		if ctx.OnlyCheckImportedSHA {
+			return 0
+		}
 	}
 
 	// To handle GDPR

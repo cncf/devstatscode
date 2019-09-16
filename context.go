@@ -127,6 +127,7 @@ type Ctx struct {
 	CheckRunningFlag         bool                         // From GHA2DB_CHECK_RUNNING_FLAG, devstats tool - check if there is a 'devstats_running' metric saved in 'gha_computed' table - if yes, abort
 	SetRunningFlag           bool                         // From GHA2DB_SET_RUNNING_FLAG, devstats tool - set 'devstats_running' flag on 'gha_computed' table while devstats cronjob is running
 	CheckImportedSHA         bool                         // From GHA2DB_CHECK_IMPORTED_SHA, import_affs tool - check if given JSON was already imported using 'gha_imported_shas' table
+	OnlyCheckImportedSHA     bool                         // From GHA2DB_ONLY_CHECK_IMPORTED_SHA, import_affs tool - check if given JSON was already imported using 'gha_imported_shas' table, do not attempt to import, only return status: 3=imported, 0=not imported
 	ESBulkSize               int                          // From GHA2DB_ES_BULK_SIZE, calc_metric and gha2es tools, default 10000
 	HTTPTimeout              int                          // From GHA2DB_HTTP_TIMEOUT, gha2db - data.gharchive.org timeout value in minutes, default 2
 	PidFileRoot              string                       // From GHA2DB_PID_FILE_ROOT, devstats tool, use '/tmp/PidFileRoot.pid' as PID file, default 'devstats' -> '/tmp/devstats.pid'
@@ -670,6 +671,7 @@ func (ctx *Ctx) Init() {
 
 	// Check Imported SHAs
 	ctx.CheckImportedSHA = os.Getenv("GHA2DB_CHECK_IMPORTED_SHA") != ""
+	ctx.OnlyCheckImportedSHA = os.Getenv("GHA2DB_ONLY_CHECK_IMPORTED_SHA") != ""
 
 	// Calculate all periods?
 	ctx.ComputeAll = os.Getenv("GHA2DB_COMPUTE_ALL") != ""
