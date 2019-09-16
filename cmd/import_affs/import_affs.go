@@ -289,6 +289,7 @@ func importAffs(jsonFN string) int {
 		}
 		currentSHA2 = sha
 		if ctx.OnlyCheckImportedSHA {
+			lib.Printf("Returining not-imported state\n")
 			return 0
 		}
 	}
