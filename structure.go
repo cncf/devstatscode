@@ -1321,9 +1321,6 @@ func Structure(ctx *Ctx) {
 			),
 		)
 	}
-	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index imported_shas_sha_idx on gha_imported_shas(sha)")
-	}
 	// Foreign keys are not needed - they slow down processing a lot
 
 	// Tools (like views and functions needed for generating metrics)
