@@ -267,13 +267,24 @@ func importAffs(jsonFN string) {
 
 	// Check if given file was already imported
 	currentSHA := ""
+	currentSHA2 := ""
 	if ctx.CheckImportedSHA {
 		imported, sha := alreadyImported(con, &ctx, jsonFN)
 		if imported {
-			lib.Printf("%s (SHA: %s) was already imported, exiting\n", jsonFN, sha)
-			return
+			if ctx.SkipCompanyAcq {
+				lib.Printf("%s (SHA: %s) was already imported and skip company acquisitions mode is set, exiting\n", jsonFN, sha)
+				return
+			}
+			lib.Printf("%s (SHA: %s) was already imported, checking company acquisitions file import status\n", jsonFN, sha)
 		}
 		currentSHA = sha
+		fn := dataPrefix + ctx.CompanyAcqYaml
+		imported, sha = alreadyImported(con, &ctx, fn)
+		if imported {
+			lib.Printf("%s (SHA: %s) was already imported, exiting\n", fn, sha)
+			return
+		}
+		currentSHA2 = sha
 	}
 
 	// To handle GDPR
@@ -650,6 +661,9 @@ func importAffs(jsonFN string) {
 	// If check imported flag is set, then mark imported file
 	if ctx.CheckImportedSHA {
 		setImportedSHA(con, &ctx, currentSHA)
+		if !ctx.SkipCompanyAcq {
+			setImportedSHA(con, &ctx, currentSHA2)
+		}
 	}
 }
 
