@@ -279,10 +279,13 @@ func importAffs(jsonFN string) int {
 		}
 		currentSHA = sha
 		fn := dataPrefix + ctx.CompanyAcqYaml
-		imported, sha = alreadyImported(con, &ctx, fn)
-		if imported {
-			lib.Printf("%s (SHA: %s) was already imported, exiting\n", fn, sha)
-			return 3
+		imported2, sha := alreadyImported(con, &ctx, fn)
+		if imported2 {
+			if imported {
+				lib.Printf("%s (SHA: %s) was already imported, %s (SHA: %s) also imported, exiting\n", fn, sha, jsonFN, currentSHA)
+				return 3
+			}
+			lib.Printf("%s (SHA: %s) was already imported, but %s (SHA: %s) wasn't, continuying\n", fn, sha, jsonFN, currentSHA)
 		}
 		currentSHA2 = sha
 		if ctx.OnlyCheckImportedSHA {
