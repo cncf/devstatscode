@@ -240,7 +240,7 @@ func alreadyImported(db *sql.DB, ctx *lib.Ctx, fn string) (imported bool, sha st
 
 // Sets given SHA as imported
 func setImportedSHA(db *sql.DB, ctx *lib.Ctx, sha string) {
-	lib.ExecSQLWithErr(db, ctx, "insert into gha_imported_shas(sha) select "+lib.NValue(1), sha)
+	lib.ExecSQLWithErr(db, ctx, "insert into gha_imported_shas(sha) select "+lib.NValue(1)+" on conflict do nothing", sha)
 }
 
 // Imports given JSON file.
