@@ -222,7 +222,6 @@ func alreadyImported(db *sql.DB, ctx *lib.Ctx, fn string) (imported bool, sha st
 		return
 	}
 	sha = fmt.Sprintf("%x", sha256.Sum256(data))
-	fmt.Printf("%s\n", sha)
 	rows := lib.QuerySQLWithErr(
 		db,
 		ctx,
