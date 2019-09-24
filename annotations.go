@@ -420,8 +420,14 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 		AddTSPoint(ctx, &pts, pt)
 		tm = tm.Add(time.Hour)
 
+		// If we have both moved to incubating and graduation, then graduation must happen after moving to incubation
+		correctOrder := true
+		if incubatingDate != nil && graduatedDate != nil && !graduatedDate.After(*incubatingDate) {
+			correctOrder = false
+		}
+
 		// Moved to incubating handle
-		if incubatingDate != nil && incubatingDate.After(*joinDate) {
+		if correctOrder == true && incubatingDate != nil && incubatingDate.After(*joinDate) {
 			// From CNCF join date to incubating date
 			sfx := "c_j_i"
 			tags[tagName+"_suffix"] = sfx
@@ -440,7 +446,7 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 			tm = tm.Add(time.Hour)
 
 			// From incubating till graduating or now
-			if graduatedDate != nil && graduatedDate.After(*incubatingDate) {
+			if graduatedDate != nil {
 				// From incubating date to graduated date
 				sfx := "c_i_g"
 				tags[tagName+"_suffix"] = sfx
@@ -477,9 +483,9 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 		}
 
 		// Graduated handle
-		if graduatedDate != nil && graduatedDate.After(*joinDate) {
+		if correctOrder == true && graduatedDate != nil && graduatedDate.After(*joinDate) {
 			// If incubating happened after graduation or there was no moved to incubating date
-			if incubatingDate == nil || (incubatingDate != nil && incubatingDate.After(*graduatedDate)) {
+			if incubatingDate == nil {
 				// From CNCF join date to graduated
 				sfx := "c_j_g"
 				tags[tagName+"_suffix"] = sfx
