@@ -172,8 +172,12 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 		es = ESConn(ctx, "d_")
 	}
 
+	// CNCF milestone dates
 	startDate := dates[0]
 	joinDate := dates[1]
+	incubatingDate := dates[2]
+	graduatedDate := dates[3]
+	archivedDate := dates[4]
 
 	// Get BatchPoints
 	var pts TSPoints
@@ -240,6 +244,63 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 			pt := NewTSPoint(ctx, "annotations", "", nil, fields, *joinDate, false)
 			AddTSPoint(ctx, &pts, pt)
 		}
+	}
+
+	// Moved to Incubating
+	if incubatingDate != nil {
+		fields := map[string]interface{}{
+			"title":       "Moved to incubating state",
+			"description": ToYMDDate(*incubatingDate) + " - project moved to incubating state",
+		}
+		// Add batch point
+		if ctx.Debug > 0 {
+			Printf(
+				"Project moved to incubating state: %v: '%v', '%v'\n",
+				ToYMDDate(*incubatingDate),
+				fields["title"],
+				fields["description"],
+			)
+		}
+		pt := NewTSPoint(ctx, "annotations", "", nil, fields, *incubatingDate, false)
+		AddTSPoint(ctx, &pts, pt)
+	}
+
+	// Graduated
+	if graduatedDate != nil {
+		fields := map[string]interface{}{
+			"title":       "Graduated",
+			"description": ToYMDDate(*graduatedDate) + " - project graduated",
+		}
+		// Add batch point
+		if ctx.Debug > 0 {
+			Printf(
+				"Project graduated: %v: '%v', '%v'\n",
+				ToYMDDate(*graduatedDate),
+				fields["title"],
+				fields["description"],
+			)
+		}
+		pt := NewTSPoint(ctx, "annotations", "", nil, fields, *graduatedDate, false)
+		AddTSPoint(ctx, &pts, pt)
+	}
+
+	// Archived
+	if archivedDate != nil {
+		fields := map[string]interface{}{
+			"title":       "Archived",
+			"description": ToYMDDate(*archivedDate) + " - project was archived",
+		}
+		// Add batch point
+		if ctx.Debug > 0 {
+			Printf(
+				"Project was archived: %v: '%v', '%v'\n",
+				ToYMDDate(*archivedDate),
+				fields["title"],
+				fields["description"],
+			)
+		}
+		pt := NewTSPoint(ctx, "annotations", "", nil, fields, *archivedDate, false)
+		AddTSPoint(ctx, &pts, pt)
 	}
 
 	// Special ranges
