@@ -41,10 +41,10 @@ func makeAnnotations() {
 	// Get annotations using GitHub API and add annotations and quick ranges to TSDB
 	if proj.MainRepo != "" {
 		annotations := lib.GetAnnotations(&ctx, proj.MainRepo, proj.AnnotationRegexp)
-		lib.ProcessAnnotations(&ctx, &annotations, proj.StartDate, proj.JoinDate)
+		lib.ProcessAnnotations(&ctx, &annotations, []*time.Time{proj.StartDate, proj.JoinDate, proj.IncubatingDate, proj.GraduatedDate, proj.ArchivedDate})
 	} else if proj.StartDate != nil && proj.JoinDate != nil {
 		annotations := lib.GetFakeAnnotations(*proj.StartDate, *proj.JoinDate)
-		lib.ProcessAnnotations(&ctx, &annotations, nil, nil)
+		lib.ProcessAnnotations(&ctx, &annotations, []*time.Time{nil, nil, proj.IncubatingDate, proj.GraduatedDate, proj.ArchivedDate})
 	}
 }
 

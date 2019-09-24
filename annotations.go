@@ -160,8 +160,8 @@ func GetAnnotations(ctx *Ctx, orgRepo, annoRegexp string) (annotations Annotatio
 	return
 }
 
-// ProcessAnnotations Creates IfluxDB annotations and quick_series
-func ProcessAnnotations(ctx *Ctx, annotations *Annotations, startDate, joinDate *time.Time) {
+// ProcessAnnotations Creates annotations and quick_series
+func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) {
 	// Connect to Postgres
 	ic := PgConn(ctx)
 	defer func() { FatalOnError(ic.Close()) }()
@@ -171,6 +171,9 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, startDate, joinDate 
 	if ctx.UseES {
 		es = ESConn(ctx, "d_")
 	}
+
+	startDate := dates[0]
+	joinDate := dates[1]
 
 	// Get BatchPoints
 	var pts TSPoints

@@ -428,7 +428,7 @@ func TestProcessAnnotations(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		// Execute annotations & quick ranges call
-		lib.ProcessAnnotations(&ctx, &test.annotations, test.startDate, test.joinDate)
+		lib.ProcessAnnotations(&ctx, &test.annotations, []*time.Time{test.startDate, test.joinDate, nil, nil, nil})
 
 		// Check annotations created
 		rows := lib.QuerySQLWithErr(c, &ctx, "select time, description, title from \"sannotations\" order by time asc")

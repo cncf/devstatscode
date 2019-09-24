@@ -41,6 +41,9 @@ type Project struct {
 	FullName         string            `yaml:"name"`
 	Status           string            `yaml:"status"`
 	SharedDB         string            `yaml:"shared_db"`
+	IncubatingDate   *time.Time        `yaml:"incubating_date"`
+	GraduatedDate    *time.Time        `yaml:"graduated_date"`
+	ArchivedDate     *time.Time        `yaml:"archived_date"`
 }
 
 // AnyArray - holds array of interface{} - just a shortcut
