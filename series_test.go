@@ -103,12 +103,17 @@ func TestProcessAnnotations(t *testing.T) {
 	// Test cases (they will create and close new connection inside ProcessAnnotations)
 	ft := testlib.YMDHMS
 	earlyDate := ft(2014)
+	earlyMiddleDate := ft(2015)
 	middleDate := ft(2016)
+	middleLateDate := ft(2017)
 	lateDate := ft(2018)
 	var testCases = []struct {
 		annotations         lib.Annotations
 		startDate           *time.Time
 		joinDate            *time.Time
+		incubatingDate      *time.Time
+		graduatedDate       *time.Time
+		archivedDate        *time.Time
 		expectedAnnotations [][]interface{}
 		expectedQuickRanges [][]interface{}
 		additionalSkip      bool
@@ -424,11 +429,49 @@ func TestProcessAnnotations(t *testing.T) {
 				{"v6.0 - now", "a_5_n"},
 			},
 		},
+		{
+			annotations: lib.Annotations{
+				Annotations: []lib.Annotation{
+					{
+						Name:        "release 0.0.0",
+						Description: "desc 0.0.0",
+						Date:        ft(2017, 2),
+					},
+				},
+			},
+			startDate:      &earlyDate,
+			joinDate:       &earlyMiddleDate,
+			incubatingDate: &middleDate,
+			graduatedDate:  &middleLateDate,
+			archivedDate:   &lateDate,
+			expectedAnnotations: [][]interface{}{
+				{"2014-01-01T00:00:00Z", "2014-01-01 - project starts", "Project start date"},
+				{"2015-01-01T00:00:00Z", "2015-01-01 - joined CNCF", "CNCF join date"},
+				{"2016-01-01T00:00:00Z", "2016-01-01 - project moved to incubating state", "Moved to incubating state"},
+				{"2017-01-01T00:00:00Z", "2017-01-01 - project graduated", "Graduated"},
+				{"2017-02-01T00:00:00Z", "desc 0.0.0", "release 0.0.0"},
+				{"2018-01-01T00:00:00Z", "2018-01-01 - project was archived", "Archived"},
+			},
+			expectedQuickRanges: [][]interface{}{
+				{"d;1 day;;", "Last day", "d"},
+				{"w;1 week;;", "Last week", "w"},
+				{"d10;10 days;;", "Last 10 days", "d10"},
+				{"m;1 month;;", "Last month", "m"},
+				{"q;3 months;;", "Last quarter", "q"},
+				{"y;1 year;;", "Last year", "y"},
+				{"y10;10 years;;", "Last decade", "y10"},
+				{"release 0.0.0 - now", "a_0_n"},
+				{"c_b;;2014-01-01 00:00:00;2015-01-01 00:00:00", "Before joining CNCF", "c_b"},
+				{"Since joining CNCF", "c_n"},
+			},
+			additionalSkip: true,
+			skipI:          7,
+		},
 	}
 	// Execute test cases
 	for index, test := range testCases {
 		// Execute annotations & quick ranges call
-		lib.ProcessAnnotations(&ctx, &test.annotations, []*time.Time{test.startDate, test.joinDate, nil, nil, nil})
+		lib.ProcessAnnotations(&ctx, &test.annotations, []*time.Time{test.startDate, test.joinDate, test.incubatingDate, test.graduatedDate, test.archivedDate})
 
 		// Check annotations created
 		rows := lib.QuerySQLWithErr(c, &ctx, "select time, description, title from \"sannotations\" order by time asc")
