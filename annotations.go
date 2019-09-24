@@ -419,6 +419,101 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 		pt = NewTSPoint(ctx, tagName, "", tags, nil, tm, false)
 		AddTSPoint(ctx, &pts, pt)
 		tm = tm.Add(time.Hour)
+
+		// Moved to incubating handle
+		if incubatingDate != nil && incubatingDate.After(*joinDate) {
+			// From CNCF join date to incubating date
+			sfx := "c_j_i"
+			tags[tagName+"_suffix"] = sfx
+			tags[tagName+"_name"] = "CNCF join date - moved to incubation"
+			tags[tagName+"_data"] = fmt.Sprintf("%s;;%s;%s", sfx, ToYMDHMSDate(*joinDate), ToYMDHMSDate(*incubatingDate))
+			if ctx.Debug > 0 {
+				Printf(
+					"Series: %v: %+v\n",
+					tagName,
+					tags,
+				)
+			}
+			// Add batch point
+			pt := NewTSPoint(ctx, tagName, "", tags, nil, tm, false)
+			AddTSPoint(ctx, &pts, pt)
+			tm = tm.Add(time.Hour)
+
+			// From incubating till graduating or now
+			if graduatedDate != nil && graduatedDate.After(*incubatingDate) {
+				// From incubating date to graduated date
+				sfx := "c_i_g"
+				tags[tagName+"_suffix"] = sfx
+				tags[tagName+"_name"] = "Moved to incubation - graduated"
+				tags[tagName+"_data"] = fmt.Sprintf("%s;;%s;%s", sfx, ToYMDHMSDate(*incubatingDate), ToYMDHMSDate(*graduatedDate))
+				if ctx.Debug > 0 {
+					Printf(
+						"Series: %v: %+v\n",
+						tagName,
+						tags,
+					)
+				}
+				// Add batch point
+				pt := NewTSPoint(ctx, tagName, "", tags, nil, tm, false)
+				AddTSPoint(ctx, &pts, pt)
+			} else {
+				// From incubating till now
+				sfx = "c_i_n"
+				tags[tagName+"_suffix"] = sfx
+				tags[tagName+"_name"] = "Since moving to incubating state"
+				tags[tagName+"_data"] = fmt.Sprintf("%s;;%s;%s", sfx, ToYMDHMSDate(*incubatingDate), ToYMDHMSDate(NextDayStart(time.Now())))
+				if ctx.Debug > 0 {
+					Printf(
+						"Series: %v: %+v\n",
+						tagName,
+						tags,
+					)
+				}
+				// Add batch point
+				pt = NewTSPoint(ctx, tagName, "", tags, nil, tm, false)
+				AddTSPoint(ctx, &pts, pt)
+			}
+			tm = tm.Add(time.Hour)
+		}
+
+		// Graduated handle
+		if graduatedDate != nil && graduatedDate.After(*joinDate) {
+			// If incubating happened after graduation or there was no moved to incubating date
+			if incubatingDate == nil || (incubatingDate != nil && incubatingDate.After(*graduatedDate)) {
+				// From CNCF join date to graduated
+				sfx := "c_j_g"
+				tags[tagName+"_suffix"] = sfx
+				tags[tagName+"_name"] = "CNCF join date - graduated"
+				tags[tagName+"_data"] = fmt.Sprintf("%s;;%s;%s", sfx, ToYMDHMSDate(*joinDate), ToYMDHMSDate(*graduatedDate))
+				if ctx.Debug > 0 {
+					Printf(
+						"Series: %v: %+v\n",
+						tagName,
+						tags,
+					)
+				}
+				// Add batch point
+				pt := NewTSPoint(ctx, tagName, "", tags, nil, tm, false)
+				AddTSPoint(ctx, &pts, pt)
+				tm = tm.Add(time.Hour)
+			}
+			// From graduated till now
+			sfx = "c_g_n"
+			tags[tagName+"_suffix"] = sfx
+			tags[tagName+"_name"] = "Since graduating"
+			tags[tagName+"_data"] = fmt.Sprintf("%s;;%s;%s", sfx, ToYMDHMSDate(*graduatedDate), ToYMDHMSDate(NextDayStart(time.Now())))
+			if ctx.Debug > 0 {
+				Printf(
+					"Series: %v: %+v\n",
+					tagName,
+					tags,
+				)
+			}
+			// Add batch point
+			pt = NewTSPoint(ctx, tagName, "", tags, nil, tm, false)
+			AddTSPoint(ctx, &pts, pt)
+			tm = tm.Add(time.Hour)
+		}
 	}
 
 	// Output to ElasticSearch

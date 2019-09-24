@@ -40,7 +40,7 @@ func getTSDBResult(rows *sql.Rows) (ret [][]interface{}) {
 // And postprocess special time values (like now or 1st column from
 // quick ranges which has current hours etc) - used for quick ranges
 // skipI means that also index "skipI" should skip time now() value (only if additionalSkip is true)
-func getTSDBResultFiltered(rows *sql.Rows, additionalSkip bool, skipI int) (ret [][]interface{}) {
+func getTSDBResultFiltered(rows *sql.Rows, additionalSkip bool, skipI []int) (ret [][]interface{}) {
 	res := getTSDBResult(rows)
 	if len(res) < 1 || len(res[0]) < 1 {
 		return
@@ -49,8 +49,15 @@ func getTSDBResultFiltered(rows *sql.Rows, additionalSkip bool, skipI int) (ret 
 	lastJ := len(res[0]) - 1
 	for i, val := range res {
 		skipPeriod := false
-		if i == lastI || (additionalSkip && i == skipI) {
+		if i == lastI {
 			skipPeriod = true
+		} else if additionalSkip {
+			for _, ii := range skipI {
+				if i == ii {
+					skipPeriod = true
+					break
+				}
+			}
 		}
 		row := []interface{}{}
 		for j, col := range val {
@@ -117,7 +124,7 @@ func TestProcessAnnotations(t *testing.T) {
 		expectedAnnotations [][]interface{}
 		expectedQuickRanges [][]interface{}
 		additionalSkip      bool
-		skipI               int
+		skipI               []int
 	}{
 		{
 			annotations: lib.Annotations{
@@ -149,7 +156,7 @@ func TestProcessAnnotations(t *testing.T) {
 				{"Since joining CNCF", "c_n"},
 			},
 			additionalSkip: true,
-			skipI:          7,
+			skipI:          []int{7},
 		},
 		{
 			annotations: lib.Annotations{
@@ -463,9 +470,12 @@ func TestProcessAnnotations(t *testing.T) {
 				{"release 0.0.0 - now", "a_0_n"},
 				{"c_b;;2014-01-01 00:00:00;2015-01-01 00:00:00", "Before joining CNCF", "c_b"},
 				{"Since joining CNCF", "c_n"},
+				{"c_j_i;;2015-01-01 00:00:00;2016-01-01 00:00:00", "CNCF join date - moved to incubation", "c_j_i"},
+				{"c_i_g;;2016-01-01 00:00:00;2017-01-01 00:00:00", "Moved to incubation - graduated", "c_i_g"},
+				{"Since graduating", "c_g_n"},
 			},
 			additionalSkip: true,
-			skipI:          7,
+			skipI:          []int{7, 9},
 		},
 	}
 	// Execute test cases
