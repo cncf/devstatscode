@@ -419,7 +419,7 @@ func getPathIndependentKey(key string) string {
 }
 
 // isAlreadyComputed check if given quick range period was already computed
-// It will skip past period marked as compued unless special flags are passed
+// It will skip past period marked as computed unless special flags are passed
 func isAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) bool {
 	key = getPathIndependentKey(key)
 	dt := lib.TimeParseAny(sdt)
