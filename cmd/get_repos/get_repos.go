@@ -294,6 +294,7 @@ func processRepos(ctx *lib.Ctx, allRepos map[string]map[string]struct{}) {
 		for _, org := range orgs {
 			finalCmd += ctx.ReposDir + org + "/* \\\n"
 		}
+		finalCmd = strings.TrimSuffix(finalCmd, " \\\n")
 
 		// Output cncf/gitdm related data
 		fmt.Printf("AllRepos:\n%s\n", allOkReposStr)
