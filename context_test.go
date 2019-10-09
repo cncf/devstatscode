@@ -58,6 +58,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		SkipColumns:              in.SkipColumns,
 		RunColumns:               in.RunColumns,
 		SkipVars:                 in.SkipVars,
+		SkipRand:                 in.SkipRand,
 		ResetTSDB:                in.ResetTSDB,
 		ResetRanges:              in.ResetRanges,
 		Explain:                  in.Explain,
@@ -302,6 +303,7 @@ func TestInit(t *testing.T) {
 		SkipColumns:              false,
 		RunColumns:               false,
 		SkipVars:                 false,
+		SkipRand:                 false,
 		ResetTSDB:                false,
 		ResetRanges:              false,
 		Explain:                  false,
@@ -748,6 +750,19 @@ func TestInit(t *testing.T) {
 					"SkipAnnotations": true,
 					"SkipColumns":     true,
 					"SkipVars":        true,
+				},
+			),
+		},
+		{
+			"Setting skip tools",
+			map[string]string{
+				"GHA2DB_SKIP_RAND": "1",
+			},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{
+					"SkipRand": true,
 				},
 			),
 		},

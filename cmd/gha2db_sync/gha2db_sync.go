@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
@@ -36,6 +37,23 @@ type metric struct {
 	StartFrom         *time.Time        `yaml:"start_from"`
 	LastHours         int               `yaml:"last_hours"`
 	SeriesNameMap     map[string]string `yaml:"series_name_map"`
+}
+
+// randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
+func (m *metrics) randomize(ctx *lib.Ctx) {
+	rand.Seed(time.Now().UnixNano())
+	rand.Shuffle(len(m.Metrics), func(i, j int) { m.Metrics[i], m.Metrics[j] = m.Metrics[j], m.Metrics[i] })
+	idx := -1
+	lastI := len(m.Metrics) - 1
+	for i, m := range m.Metrics {
+		if m.SeriesNameOrFunc == ctx.LastSeries {
+			idx = i
+			break
+		}
+	}
+	if idx >= 0 && idx != lastI {
+		m.Metrics[idx], m.Metrics[lastI] = m.Metrics[lastI], m.Metrics[idx]
+	}
 }
 
 // Add _period to all array items
@@ -361,6 +379,11 @@ func sync(ctx *lib.Ctx, args []string) {
 		}
 		var allMetrics metrics
 		lib.FatalOnError(yaml.Unmarshal(data, &allMetrics))
+
+		// randomize metrics order
+		if !ctx.SkipRand {
+			allMetrics.randomize(ctx)
+		}
 
 		// Keep all histograms here
 		var hists [][]string

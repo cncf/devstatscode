@@ -113,6 +113,7 @@ type Ctx struct {
 	SkipColumns              bool                         // From GHA2DB_SKIP_COLUMNS, gha2db_sync tool, skip calling columns tool, default false
 	RunColumns               bool                         // From GHA2DB_RUN_COLUMNS, gha2db_sync tool, force calling columns tool, default false
 	SkipVars                 bool                         // From GHA2DB_SKIP_VARS, gha2db_sync tool, skip calling vars tool, default false
+	SkipRand                 bool                         // From GHA2DB_SKIP_RAND, gha2db_sync tool, skip randomizing metrics calculation, default false
 	ExcludeVars              map[string]bool              // From GHA2DB_EXCLUDE_VARS, vars tool, default "" - comma separated list of variable names to exclude, example: "hostname,projects_health_partial_html"
 	OnlyVars                 map[string]bool              // From GHA2DB_ONLY_VARS, vars tool, default "" - comma separated list of variable names to write (and skip all others): "hostname,projects_health_partial_html", not used if empty
 	ElasticURL               string                       // From GHA2DB_ES_URL, calc_metric, tags, annotations tools - ElasticSearch URL (if used), default http://127.0.0.1:9200
@@ -321,6 +322,9 @@ func (ctx *Ctx) Init() {
 	ctx.SkipColumns = os.Getenv("GHA2DB_SKIP_COLUMNS") != ""
 	ctx.RunColumns = os.Getenv("GHA2DB_RUN_COLUMNS") != ""
 	ctx.SkipVars = os.Getenv("GHA2DB_SKIP_VARS") != ""
+
+	// Skip randomizing task order
+	ctx.SkipRand = os.Getenv("GHA2DB_SKIP_RAND") != ""
 
 	// TS variables
 	ctx.SkipTSDB = os.Getenv("GHA2DB_SKIPTSDB") != ""
