@@ -41,6 +41,7 @@ type metric struct {
 
 // randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
 func (m *metrics) randomize(ctx *lib.Ctx) {
+	lib.Printf("Randomizing metrics order\n")
 	rand.Seed(time.Now().UnixNano())
 	rand.Shuffle(len(m.Metrics), func(i, j int) { m.Metrics[i], m.Metrics[j] = m.Metrics[j], m.Metrics[i] })
 	idx := -1
