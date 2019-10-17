@@ -496,6 +496,8 @@ func queryOut(query string, args ...interface{}) {
 			switch v := vv.(type) {
 			case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, complex64, complex128, string, bool, time.Time:
 				s += fmt.Sprintf("%d:%+v ", vi+1, v)
+			case nil:
+				s += fmt.Sprintf("%d:(null) ", vi+1)
 			default:
 				s += fmt.Sprintf("%d:%+v ", vi+1, reflect.ValueOf(vv).Elem())
 			}
