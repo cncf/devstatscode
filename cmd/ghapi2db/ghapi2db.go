@@ -146,7 +146,7 @@ func insertActorTx(con *sql.Tx, ctx *lib.Ctx, aid int64, login, name string, may
 		con,
 		ctx,
 		lib.InsertIgnore("into gha_actors(id, login, name) "+lib.NValues(3)),
-		lib.AnyArray{aid, maybeHide(login), maybeHide(name)}...,
+		lib.AnyArray{aid, maybeHide(login), maybeHide(lib.TruncToBytes(name, 120))}...,
 	)
 }
 
@@ -263,10 +263,10 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 			"committer_email=" + lib.NValue(4),
 		}
 		vals := lib.AnyArray{
-			maybeHide(authorName),
-			maybeHide(authorEmail),
-			maybeHide(committerName),
-			maybeHide(committerEmail),
+			maybeHide(lib.TruncToBytes(authorName, 160)),
+			maybeHide(lib.TruncToBytes(authorEmail, 160)),
+			maybeHide(lib.TruncToBytes(committerName, 160)),
+			maybeHide(lib.TruncToBytes(committerEmail, 160)),
 		}
 		nVal := 5
 		if committerLogin != "" {
@@ -274,7 +274,7 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 			vals = append(vals, committerID)
 			nVal++
 			cols = append(cols, "dup_committer_login="+lib.NValue(nVal))
-			vals = append(vals, maybeHide(committerLogin))
+			vals = append(vals, maybeHide(lib.TruncToBytes(committerLogin, 160)))
 			nVal++
 		}
 		if authorLogin != "" {
@@ -282,7 +282,7 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 			vals = append(vals, authorID)
 			nVal++
 			cols = append(cols, "dup_author_login="+lib.NValue(nVal))
-			vals = append(vals, maybeHide(authorLogin))
+			vals = append(vals, maybeHide(lib.TruncToBytes(authorLogin, 160)))
 			nVal++
 		}
 		vals = append(vals, sha)
@@ -297,7 +297,7 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 		tx,
 		ctx,
 		lib.InsertIgnore("into gha_actors_emails(actor_id, email) "+lib.NValues(2)),
-		lib.AnyArray{authorID, maybeHide(authorEmail)}...,
+		lib.AnyArray{authorID, maybeHide(lib.TruncToBytes(authorEmail, 120))}...,
 	)
 	// Committer email
 	if committerEmail != authorEmail {
@@ -305,7 +305,7 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 			tx,
 			ctx,
 			lib.InsertIgnore("into gha_actors_emails(actor_id, email) "+lib.NValues(2)),
-			lib.AnyArray{committerID, maybeHide(committerEmail)}...,
+			lib.AnyArray{committerID, maybeHide(lib.TruncToBytes(committerEmail, 120))}...,
 		)
 	}
 	// Author name
@@ -313,7 +313,7 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 		tx,
 		ctx,
 		lib.InsertIgnore("into gha_actors_names(actor_id, name) "+lib.NValues(2)),
-		lib.AnyArray{authorID, maybeHide(authorName)}...,
+		lib.AnyArray{authorID, maybeHide(lib.TruncToBytes(authorName, 120))}...,
 	)
 	// Committer name
 	if committerName != authorName {
@@ -321,7 +321,7 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 			tx,
 			ctx,
 			lib.InsertIgnore("into gha_actors_names(actor_id, name) "+lib.NValues(2)),
-			lib.AnyArray{committerID, maybeHide(committerName)}...,
+			lib.AnyArray{committerID, maybeHide(lib.TruncToBytes(committerName, 120))}...,
 		)
 	}
 
