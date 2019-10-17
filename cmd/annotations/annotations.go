@@ -42,8 +42,11 @@ func makeAnnotations() {
 	if proj.MainRepo != "" {
 		annotations := lib.GetAnnotations(&ctx, proj.MainRepo, proj.AnnotationRegexp)
 		lib.ProcessAnnotations(&ctx, &annotations, []*time.Time{proj.StartDate, proj.JoinDate, proj.IncubatingDate, proj.GraduatedDate, proj.ArchivedDate})
-	} else if proj.StartDate != nil && proj.JoinDate != nil {
-		annotations := lib.GetFakeAnnotations(*proj.StartDate, *proj.JoinDate)
+	} else if proj.StartDate != nil {
+		var annotations lib.Annotations
+		if proj.JoinDate != nil {
+			annotations = lib.GetFakeAnnotations(*proj.StartDate, *proj.JoinDate)
+		}
 		lib.ProcessAnnotations(&ctx, &annotations, []*time.Time{nil, nil, proj.IncubatingDate, proj.GraduatedDate, proj.ArchivedDate})
 	}
 }
