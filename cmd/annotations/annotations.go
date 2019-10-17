@@ -46,6 +46,15 @@ func makeAnnotations() {
 		var annotations lib.Annotations
 		if proj.JoinDate != nil {
 			annotations = lib.GetFakeAnnotations(*proj.StartDate, *proj.JoinDate)
+		} else {
+			annotations.Annotations = append(
+				annotations.Annotations,
+				lib.Annotation{
+					Name:        "Project start",
+					Description: lib.ToYMDDate(*proj.StartDate) + " - project starts",
+					Date:        *proj.StartDate,
+				},
+			)
 		}
 		lib.ProcessAnnotations(&ctx, &annotations, []*time.Time{nil, nil, proj.IncubatingDate, proj.GraduatedDate, proj.ArchivedDate})
 	}
