@@ -27,6 +27,7 @@ type gitHubUser struct {
 	Sex         *string  `json:"sex"`
 	Tz          *string  `json:"tz"`
 	SexProb     *float64 `json:"sex_prob"`
+	Age         *int     `json:"age"`
 }
 
 // AllAcquisitions contain all company acquisitions data
@@ -52,13 +53,14 @@ type affData struct {
 	To      time.Time
 }
 
-// csData holds country_id, sex and sex_prob
+// csData holds country_id, tz, tz_offset, sex, sex_prob, age
 type csData struct {
 	CountryID *string
 	Sex       *string
 	Tz        *string
 	SexProb   *float64
 	TzOffset  *int
+	Age       *int
 }
 
 // decode emails with ! instead of @
@@ -106,8 +108,8 @@ func findActor(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) st
 		db,
 		ctx,
 		fmt.Sprintf(
-			"select id, name, country_id, tz, tz_offset, sex, sex_prob from gha_actors where login=%s "+
-				"union select id, name, country_id, tz, tz_offset, sex, sex_prob from gha_actors where lower(login)=%s "+
+			"select id, name, country_id, tz, tz_offset, sex, sex_prob, age from gha_actors where login=%s "+
+				"union select id, name, country_id, tz, tz_offset, sex, sex_prob, age from gha_actors where lower(login)=%s "+
 				"order by id desc limit 1",
 			lib.NValue(1),
 			lib.NValue(2),
@@ -127,6 +129,7 @@ func findActor(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) st
 				&csd.TzOffset,
 				&csd.Sex,
 				&csd.SexProb,
+				&csd.Age,
 			),
 		)
 		actor.Login = login
@@ -168,13 +171,13 @@ func firstKey(strMap stringSet) string {
 }
 
 // Adds non-existing actor
-func addActor(con *sql.DB, ctx *lib.Ctx, login, name string, countryID, sex, tz *string, sexProb *float64, tzOff *int, maybeHide func(string) string) int {
+func addActor(con *sql.DB, ctx *lib.Ctx, login, name string, countryID, sex, tz *string, sexProb *float64, tzOff *int, age *int, maybeHide func(string) string) int {
 	hlogin := maybeHide(login)
 	name = maybeHide(name)
 	aid := lib.HashStrings([]string{login})
 	lib.ExecSQLWithErr(con, ctx,
-		"insert into gha_actors(id, login, name, country_id, sex, tz, sex_prob, tz_offset) "+lib.NValues(8),
-		lib.AnyArray{aid, hlogin, name, countryID, sex, tz, sexProb, tzOff}...,
+		"insert into gha_actors(id, login, name, country_id, sex, tz, sex_prob, tz_offset, age) "+lib.NValues(9),
+		lib.AnyArray{aid, hlogin, name, countryID, sex, tz, sexProb, tzOff, age}...,
 	)
 	return aid
 }
@@ -413,6 +416,7 @@ func importAffs(jsonFN string) int {
 			Tz:        user.Tz,
 			SexProb:   user.SexProb,
 			TzOffset:  tzOffset(con, &ctx, user.Tz, tzCache),
+			Age:       user.Age,
 		}
 	}
 	lib.Printf(
@@ -438,11 +442,12 @@ func importAffs(jsonFN string) int {
 		actor, csd, ok := findActor(con, &ctx, login, maybeHide)
 		if !ok {
 			// If no such actor, add with artificial ID (just like data from pre-2015)
-			addActor(con, &ctx, login, name, csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, maybeHide)
+			addActor(con, &ctx, login, name, csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide)
 			added++
 		} else if name != actor.Name || !lib.CompareStringPtr(csd.CountryID, csD.CountryID) ||
 			!lib.CompareStringPtr(csd.Sex, csD.Sex) || !lib.CompareFloat64Ptr(csd.SexProb, csD.SexProb) ||
-			!lib.CompareStringPtr(csd.Tz, csD.Tz) || !lib.CompareIntPtr(csd.TzOffset, csD.TzOffset) {
+			!lib.CompareStringPtr(csd.Tz, csD.Tz) || !lib.CompareIntPtr(csd.TzOffset, csD.TzOffset) ||
+			!lib.CompareIntPtr(csd.Age, csD.Age) {
 			// If actor found, but with different name (actually with name == "" after standard GHA import), update name
 			// Because there can be the same actor (by id) with different IDs (pre-2015 and post 2015), update His/Her name
 			// for all records with this login
@@ -454,7 +459,8 @@ func importAffs(jsonFN string) int {
 					", tz="+lib.NValue(4)+
 					", sex_prob="+lib.NValue(5)+
 					", tz_offset="+lib.NValue(6)+
-					" where lower(login)="+lib.NValue(7),
+					", age="+lib.NValue(7)+
+					" where lower(login)="+lib.NValue(8),
 				lib.AnyArray{
 					maybeHide(name),
 					csD.CountryID,
@@ -462,6 +468,7 @@ func importAffs(jsonFN string) int {
 					csD.Tz,
 					csD.SexProb,
 					csD.TzOffset,
+					csD.Age,
 					strings.ToLower(maybeHide(login)),
 				}...,
 			)
@@ -479,7 +486,7 @@ func importAffs(jsonFN string) int {
 			csD := loginCSData[login]
 			// Can happen if user have github login but name = "" or null
 			// In that case previous loop by loginName didn't add such user
-			actIDs = append(actIDs, addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, maybeHide))
+			actIDs = append(actIDs, addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide))
 			added++
 		}
 		// Store given login's actor IDs in the case
@@ -623,7 +630,7 @@ func importAffs(jsonFN string) int {
 				csD := loginCSData[login]
 				// Can happen if user have github login but email = "" or null
 				// In that case previous loop by loginEmail didn't add such user
-				actIDs = append(actIDs, addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, maybeHide))
+				actIDs = append(actIDs, addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide))
 				added++
 			}
 			cacheActIDs[login] = actIDs
