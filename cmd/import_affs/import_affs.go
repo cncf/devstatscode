@@ -399,7 +399,7 @@ func importAffs(jsonFN string) int {
 
 		// Affiliation
 		aff := user.Affiliation
-		if aff != "NotFound" && aff != "(Unknown)" && aff != "?" && aff != "" {
+		if aff != "NotFound" && aff != "(Unknown)" && aff != "?" && aff != "-" && aff != "" {
 			_, ok := loginAffs[login]
 			if !ok {
 				loginAffs[login] = stringSet{}
