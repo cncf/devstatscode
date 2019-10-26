@@ -500,7 +500,7 @@ func importAffs(jsonFN string) int {
 			for _, aid := range actIDs {
 				lib.ExecSQLWithErr(con, &ctx,
 					lib.InsertIgnore("into gha_actors_emails(actor_id, email) "+lib.NValues(2)),
-					lib.AnyArray{aid, maybeHide(email)}...,
+					lib.AnyArray{aid, maybeHide(lib.TruncToBytes(email, 120))}...,
 				)
 				allEmails++
 			}
@@ -523,7 +523,7 @@ func importAffs(jsonFN string) int {
 			for _, aid := range actIDs {
 				lib.ExecSQLWithErr(con, &ctx,
 					lib.InsertIgnore("into gha_actors_names(actor_id, name) "+lib.NValues(2)),
-					lib.AnyArray{aid, maybeHide(name)}...,
+					lib.AnyArray{aid, maybeHide(lib.TruncToBytes(name, 120))}...,
 				)
 				allNames++
 			}
@@ -606,13 +606,13 @@ func importAffs(jsonFN string) int {
 		}
 		lib.ExecSQLWithErr(con, &ctx,
 			lib.InsertIgnore("into gha_companies(name) "+lib.NValues(1)),
-			lib.AnyArray{maybeHide(company)}...,
+			lib.AnyArray{maybeHide(lib.TruncToBytes(company, 160))}...,
 		)
 		mappedCompany := mapCompanyName(comMap, acqMap, stat, company)
 		if mappedCompany != company {
 			lib.ExecSQLWithErr(con, &ctx,
 				lib.InsertIgnore("into gha_companies(name) "+lib.NValues(1)),
-				lib.AnyArray{maybeHide(mappedCompany)}...,
+				lib.AnyArray{maybeHide(lib.TruncToBytes(mappedCompany, 160))}...,
 			)
 		}
 	}
@@ -649,7 +649,7 @@ func importAffs(jsonFN string) int {
 			lib.ExecSQLWithErr(con, &ctx,
 				lib.InsertIgnore(
 					"into gha_actors_affiliations(actor_id, company_name, original_company_name, dt_from, dt_to) "+lib.NValues(5)),
-				lib.AnyArray{aid, maybeHide(mappedCompany), maybeHide(company), dtFrom, dtTo}...,
+				lib.AnyArray{aid, maybeHide(lib.TruncToBytes(mappedCompany, 160)), maybeHide(lib.TruncToBytes(company, 160)), dtFrom, dtTo}...,
 			)
 		}
 	}
