@@ -177,7 +177,7 @@ func addActor(con *sql.DB, ctx *lib.Ctx, login, name string, countryID, sex, tz 
 	aid := lib.HashStrings([]string{login})
 	lib.ExecSQLWithErr(con, ctx,
 		"insert into gha_actors(id, login, name, country_id, sex, tz, sex_prob, tz_offset, age) "+lib.NValues(9),
-		lib.AnyArray{aid, hlogin, name, countryID, sex, tz, sexProb, tzOff, age}...,
+		lib.AnyArray{aid, hlogin, lib.TruncToBytes(name, 120), countryID, sex, tz, sexProb, tzOff, age}...,
 	)
 	return aid
 }
@@ -462,7 +462,7 @@ func importAffs(jsonFN string) int {
 					", age="+lib.NValue(7)+
 					" where lower(login)="+lib.NValue(8),
 				lib.AnyArray{
-					maybeHide(name),
+					maybeHide(lib.TruncToBytes(name, 120)),
 					csD.CountryID,
 					csD.Sex,
 					csD.Tz,
