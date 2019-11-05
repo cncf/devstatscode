@@ -44,6 +44,7 @@ type Project struct {
 	IncubatingDate   *time.Time        `yaml:"incubating_date"`
 	GraduatedDate    *time.Time        `yaml:"graduated_date"`
 	ArchivedDate     *time.Time        `yaml:"archived_date"`
+	SyncProbability  *float64          `yaml:"sync_probabilty"`
 }
 
 // AnyArray - holds array of interface{} - just a shortcut

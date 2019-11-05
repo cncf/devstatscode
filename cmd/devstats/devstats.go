@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"time"
 
@@ -236,6 +237,13 @@ func syncAllProjects() bool {
 	// Sync all projects
 	for i, name := range names {
 		proj := projs[i]
+		if proj.SyncProbability != nil {
+			rand.Seed(time.Now().UnixNano())
+			if rand.Float64() >= *proj.SyncProbability {
+				lib.Printf("Skipping #%d %s\n", proj.Order, name)
+				continue
+			}
+		}
 		projEnv := map[string]string{
 			"GHA2DB_PROJECT": name,
 			"PG_DB":          proj.PDB,
