@@ -42,7 +42,7 @@ type metric struct {
 
 // randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
 func (m *metrics) randomize(ctx *lib.Ctx) {
-	lib.Printf("Randomizing metrics order\n")
+	lib.Printf("Randomizing metrics calculation order\n")
 	rand.Seed(time.Now().UnixNano())
 	rand.Shuffle(len(m.Metrics), func(i, j int) { m.Metrics[i], m.Metrics[j] = m.Metrics[j], m.Metrics[i] })
 	idx := -1
@@ -560,6 +560,18 @@ func sync(ctx *lib.Ctx, args []string) {
 					}
 				}
 			}
+		}
+		// randomize histograms
+		if !ctx.SkipRand {
+			lib.Printf("Randomizing histogram metrics calculation order\n")
+			rand.Seed(time.Now().UnixNano())
+			rand.Shuffle(
+				len(hists),
+				func(i, j int) {
+					hists[i], hists[j] = hists[j], hists[i]
+					envMaps[i], envMaps[j] = envMaps[j], envMaps[i]
+				},
+			)
 		}
 		// Process histograms (possibly MT)
 		// Get number of CPUs available
