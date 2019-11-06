@@ -29,6 +29,7 @@ func TestGetThreadsNum(t *testing.T) {
 		{ST: true, NCPUs: 1, expected: 1},
 		{ST: true, NCPUs: -1, expected: 1},
 		{ST: true, NCPUs: 2, expected: 2},
+		{ST: true, NCPUs: nThreads + 1, expected: nThreads},
 	}
 	// Execute test cases
 	for index, test := range testCases {
