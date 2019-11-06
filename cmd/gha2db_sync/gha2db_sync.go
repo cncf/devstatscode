@@ -37,6 +37,7 @@ type metric struct {
 	StartFrom         *time.Time        `yaml:"start_from"`
 	LastHours         int               `yaml:"last_hours"`
 	SeriesNameMap     map[string]string `yaml:"series_name_map"`
+	EnvMap            map[string]string `yaml:"env"`
 }
 
 // randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
@@ -388,6 +389,7 @@ func sync(ctx *lib.Ctx, args []string) {
 
 		// Keep all histograms here
 		var hists [][]string
+		var envMaps []map[string]string
 		onlyMetrics := false
 		if len(ctx.OnlyMetrics) > 0 {
 			onlyMetrics = true
@@ -538,6 +540,7 @@ func sync(ctx *lib.Ctx, args []string) {
 								strings.Join(extraParams, ","),
 							},
 						)
+						envMaps = append(envMaps, metric.EnvMap)
 					} else {
 						lib.Printf("Calculate metric %v, period %v, desc: '%v', aggregate: '%v' ...\n", metric.Name, period, metric.Desc, aggrSuffix)
 						_, err = lib.ExecCommand(
@@ -551,7 +554,7 @@ func sync(ctx *lib.Ctx, args []string) {
 								periodAggr,
 								strings.Join(extraParams, ","),
 							},
-							nil,
+							metric.EnvMap,
 						)
 						lib.FatalOnError(err)
 					}
@@ -565,8 +568,8 @@ func sync(ctx *lib.Ctx, args []string) {
 			lib.Printf("Now processing %d histograms using MT%d version\n", len(hists), thrN)
 			ch := make(chan bool)
 			nThreads := 0
-			for _, hist := range hists {
-				go calcHistogram(ch, ctx, hist)
+			for idx, hist := range hists {
+				go calcHistogram(ch, ctx, hist, envMaps[idx])
 				nThreads++
 				if nThreads == thrN {
 					<-ch
@@ -580,8 +583,8 @@ func sync(ctx *lib.Ctx, args []string) {
 			}
 		} else {
 			lib.Printf("Now processing %d histograms using ST version\n", len(hists))
-			for _, hist := range hists {
-				calcHistogram(nil, ctx, hist)
+			for idx, hist := range hists {
+				calcHistogram(nil, ctx, hist, envMaps[idx])
 			}
 		}
 
@@ -615,11 +618,10 @@ func sync(ctx *lib.Ctx, args []string) {
 }
 
 // calcHistogram - calculate single histogram by calling "calc_metric" program with parameters from "hist"
-func calcHistogram(ch chan bool, ctx *lib.Ctx, hist []string) {
+func calcHistogram(ch chan bool, ctx *lib.Ctx, hist []string, envMap map[string]string) {
 	if len(hist) != 7 {
 		lib.Fatalf("calcHistogram, expected 7 strings, got: %d: %v", len(hist), hist)
 	}
-	envMap := make(map[string]string)
 	lib.Printf(
 		"Calculate histogram %s,%s,%s,%s,%s,%s ...\n",
 		hist[1],
