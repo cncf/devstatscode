@@ -96,7 +96,8 @@ func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}) 
 		for _, repo := range repos {
 			ary := strings.Split(repo, "/")
 			if len(ary) != 2 {
-				lib.Fatalf("invalid repo name: %s", repo)
+				lib.Printf("invalid repo name: %s", repo)
+				continue
 			}
 			org := ary[0]
 			_, ok := allRepos[org]
