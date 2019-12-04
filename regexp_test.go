@@ -125,6 +125,14 @@ func TestAnnotationRegexp(t *testing.T) {
 		{re: `(^|/)_?(vendor|Godeps|_workspace)/`, str: "abc/workspace_a", match: false},
 		{re: `(^|/)_?(vendor|Godeps|_workspace)/`, str: "abc/_workspace_a", match: false},
 		{re: `(?i)^(plexistor|stack\s*point\s*cloud|greenqloud|netapp)(,?\s*inc\.?)?$`, str: "GreenQLoud, Inc.", match: true},
+		{re: `^\d+\.(0|\d+0)$`, str: "0.0", match: true},
+		{re: `^\d+\.(0|\d+0)$`, str: "0.10", match: true},
+		{re: `^\d+\.(0|\d+0)$`, str: "1.220", match: true},
+		{re: `^\d+\.(0|\d+0)$`, str: "2.00", match: true},
+		{re: `^\d+\.(0|\d+0)$`, str: "2.11", match: false},
+		{re: `^\d+\.(0|\d+0)$`, str: "0.73", match: false},
+		{re: `^\d+\.(0|\d+0)$`, str: "0.a0", match: false},
+		{re: `^\d+\.(0|\d+0)$`, str: "2.10.0", match: false},
 	}
 	// Execute test cases
 	for index, test := range testCases {
