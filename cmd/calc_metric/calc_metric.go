@@ -466,6 +466,9 @@ func handleSeriesDrop(ctx *lib.Ctx, con *sql.DB, cfg *calcMetricData) bool {
 	for _, table := range cfg.drop {
 		if !ctx.SkipTSDB {
 			if lib.TableExists(con, ctx, table) {
+				if ctx.Debug > 0 {
+					lib.Printf("Truncating table %s\n", table)
+				}
 				lib.ExecSQLWithErr(con, ctx, "truncate "+table)
 			}
 		}
