@@ -459,21 +459,17 @@ func setAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) {
 	)
 }
 
-func handleSeriesDrop(ctx *lib.Ctx, con *sql.DB, cfg *calcMetricData) bool {
-	if len(cfg.drop) <= 0 {
-		return false
-	}
+func handleSeriesDrop(ctx *lib.Ctx, con *sql.DB, cfg *calcMetricData) {
 	for _, table := range cfg.drop {
 		if !ctx.SkipTSDB {
 			if lib.TableExists(con, ctx, table) {
-				if ctx.Debug > 0 {
+				if ctx.Debug >= 0 {
 					lib.Printf("Truncating table %s\n", table)
 				}
 				lib.ExecSQLWithErr(con, ctx, "truncate "+table)
 			}
 		}
 	}
-	return true
 }
 
 func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBots, interval, intervalAbbr string, nIntervals int, cfg *calcMetricData) {
@@ -494,9 +490,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 
 	lib.Printf("calc_metric.go: Histogram running interval '%v,%v' n:%d anno:%v past:%v multi:%v\n", interval, intervalAbbr, nIntervals, cfg.annotationsRanges, cfg.skipPast, cfg.multivalue)
 
-	// Handle 'drop:' metric flag
-	dropped := handleSeriesDrop(ctx, sqlc, cfg)
-
+	dropped := len(cfg.drop) > 0
 	// If using annotations ranges, then get their values
 	var qrDt *string
 	if cfg.annotationsRanges {
@@ -874,6 +868,12 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 	lib.FatalOnError(err)
 	excludeBots := string(bytes)
 
+	// Connect to Postgres DB
+	sqlc := lib.PgConn(&ctx)
+	defer func() { lib.FatalOnError(sqlc.Close()) }()
+	// Handle 'drop:' metric flag
+	handleSeriesDrop(&ctx, sqlc, cfg)
+
 	// Process interval
 	interval, nIntervals, intervalStart, nextIntervalStart, prevIntervalStart := lib.GetIntervalFunctions(intervalAbbr, cfg.annotationsRanges)
 
@@ -908,12 +908,6 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 		"calc_metric.go: %s: Running (on %d CPUs): %v - %v with interval %s, descriptions '%s', multivalue: %v, escape_value_name: %v, custom_data: %v\n",
 		sqlFile, thrN, dFrom, dTo, interval, cfg.desc, cfg.multivalue, cfg.escapeValueName, cfg.customData,
 	)
-
-	// Connect to Postgres DB
-	sqlc := lib.PgConn(&ctx)
-	defer func() { lib.FatalOnError(sqlc.Close()) }()
-	// Handle 'drop:' metric flag
-	_ = handleSeriesDrop(&ctx, sqlc, cfg)
 
 	dt := dFrom
 	dta := [][]time.Time{}
