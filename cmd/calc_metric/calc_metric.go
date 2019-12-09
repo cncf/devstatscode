@@ -23,6 +23,7 @@ type calcMetricData struct {
 	mergeSeries       string
 	customData        bool
 	seriesNameMap     map[string]string
+	drop              []string
 }
 
 // some metrics can define series_name_map to change internal series names generated
@@ -458,6 +459,20 @@ func setAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) {
 	)
 }
 
+func handleSeriesDrop(ctx *lib.Ctx, con *sql.DB, cfg *calcMetricData) bool {
+	if len(cfg.drop) <= 0 {
+		return false
+	}
+	for _, table := range cfg.drop {
+		if !ctx.SkipTSDB {
+			if lib.TableExists(con, ctx, table) {
+				lib.ExecSQLWithErr(con, ctx, "truncate "+table)
+			}
+		}
+	}
+	return true
+}
+
 func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBots, interval, intervalAbbr string, nIntervals int, cfg *calcMetricData) {
 	// Connect to Postgres DB
 	sqlc := lib.PgConn(ctx)
@@ -475,6 +490,9 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 	var pts lib.TSPoints
 
 	lib.Printf("calc_metric.go: Histogram running interval '%v,%v' n:%d anno:%v past:%v multi:%v\n", interval, intervalAbbr, nIntervals, cfg.annotationsRanges, cfg.skipPast, cfg.multivalue)
+
+	// Handle 'drop:' metric flag
+	dropped := handleSeriesDrop(ctx, sqlc, cfg)
 
 	// If using annotations ranges, then get their values
 	var qrDt *string
@@ -548,7 +566,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 			// Drop existing data
 			if cfg.mergeSeries == "" {
 				table := "s" + seriesNameOrFunc
-				if lib.TableExists(sqlc, ctx, table) {
+				if !dropped && lib.TableExists(sqlc, ctx, table) {
 					lib.ExecSQLWithErr(sqlc, ctx, fmt.Sprintf("delete from \""+table+"\" where period = %s", lib.NValue(1)), intervalAbbr)
 					if ctx.Debug > 0 {
 						lib.Printf("Dropped data from %s table with %s period\n", table, intervalAbbr)
@@ -556,7 +574,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 				}
 			} else {
 				table := "s" + cfg.mergeSeries
-				if lib.TableExists(sqlc, ctx, table) {
+				if !dropped && lib.TableExists(sqlc, ctx, table) {
 					lib.ExecSQLWithErr(sqlc, ctx,
 						fmt.Sprintf(
 							"delete from \""+table+"\" where series = %s and period = %s",
@@ -775,7 +793,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 				if cfg.mergeSeries == "" {
 					for series := range seriesToClear {
 						table := "s" + series
-						if lib.TableExists(sqlc, ctx, table) {
+						if !dropped && lib.TableExists(sqlc, ctx, table) {
 							lib.ExecSQLWithErr(sqlc, ctx, fmt.Sprintf("delete from \""+table+"\" where period = %s", lib.NValue(1)), intervalAbbr)
 							if ctx.Debug > 0 {
 								lib.Printf("Dropped from table %s with %s period\n", table, intervalAbbr)
@@ -784,7 +802,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 					}
 				} else {
 					table := "s" + cfg.mergeSeries
-					if lib.TableExists(sqlc, ctx, table) {
+					if !dropped && lib.TableExists(sqlc, ctx, table) {
 						for series := range seriesToClear {
 							lib.ExecSQLWithErr(sqlc, ctx,
 								fmt.Sprintf(
@@ -887,6 +905,13 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 		"calc_metric.go: %s: Running (on %d CPUs): %v - %v with interval %s, descriptions '%s', multivalue: %v, escape_value_name: %v, custom_data: %v\n",
 		sqlFile, thrN, dFrom, dTo, interval, cfg.desc, cfg.multivalue, cfg.escapeValueName, cfg.customData,
 	)
+
+	// Connect to Postgres DB
+	sqlc := lib.PgConn(&ctx)
+	defer func() { lib.FatalOnError(sqlc.Close()) }()
+	// Handle 'drop:' metric flag
+	_ = handleSeriesDrop(&ctx, sqlc, cfg)
+
 	dt := dFrom
 	dta := [][]time.Time{}
 	ndta := [][]time.Time{}
@@ -974,7 +999,7 @@ func main() {
 	if len(os.Args) < 6 {
 		lib.Printf(
 			"Required series name, SQL file name, from, to, period " +
-				"[series_name_or_func some.sql '2015-08-03' '2017-08-21' h|d|w|m|q|y [hist,desc:time_diff_as_string,multivalue,escape_value_name,annotations_ranges,skip_past,merge_series:name,custom_data]]\n",
+				"[series_name_or_func some.sql '2015-08-03' '2017-08-21' h|d|w|m|q|y [hist,desc:time_diff_as_string,multivalue,escape_value_name,annotations_ranges,skip_past,merge_series:name,custom_data,drop:table1;table2]]\n",
 		)
 		lib.Printf(
 			"Series name (series_name_or_func) will become exact series name if " +
@@ -1018,6 +1043,9 @@ func main() {
 		}
 		if d, ok := optMap["desc"]; ok {
 			cfg.desc = d
+		}
+		if d, ok := optMap["drop"]; ok {
+			cfg.drop = strings.Split(d, ";")
 		}
 		if ms, ok := optMap["merge_series"]; ok {
 			cfg.mergeSeries = ms
