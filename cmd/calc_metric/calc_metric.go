@@ -460,6 +460,9 @@ func setAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) {
 }
 
 func handleSeriesDrop(ctx *lib.Ctx, con *sql.DB, cfg *calcMetricData) {
+	if cfg.hist && len(cfg.drop) > 0 {
+		lib.Fatalf("You cannot use drop series property on histogram metrics")
+	}
 	for _, table := range cfg.drop {
 		if !ctx.SkipTSDB {
 			if lib.TableExists(con, ctx, table) {
@@ -490,7 +493,6 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 
 	lib.Printf("calc_metric.go: Histogram running interval '%v,%v' n:%d anno:%v past:%v multi:%v\n", interval, intervalAbbr, nIntervals, cfg.annotationsRanges, cfg.skipPast, cfg.multivalue)
 
-	dropped := len(cfg.drop) > 0
 	// If using annotations ranges, then get their values
 	var qrDt *string
 	if cfg.annotationsRanges {
@@ -563,7 +565,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 			// Drop existing data
 			if cfg.mergeSeries == "" {
 				table := "s" + seriesNameOrFunc
-				if !dropped && lib.TableExists(sqlc, ctx, table) {
+				if lib.TableExists(sqlc, ctx, table) {
 					lib.ExecSQLWithErr(sqlc, ctx, fmt.Sprintf("delete from \""+table+"\" where period = %s", lib.NValue(1)), intervalAbbr)
 					if ctx.Debug > 0 {
 						lib.Printf("Dropped data from %s table with %s period\n", table, intervalAbbr)
@@ -571,7 +573,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 				}
 			} else {
 				table := "s" + cfg.mergeSeries
-				if !dropped && lib.TableExists(sqlc, ctx, table) {
+				if lib.TableExists(sqlc, ctx, table) {
 					lib.ExecSQLWithErr(sqlc, ctx,
 						fmt.Sprintf(
 							"delete from \""+table+"\" where series = %s and period = %s",
@@ -790,7 +792,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 				if cfg.mergeSeries == "" {
 					for series := range seriesToClear {
 						table := "s" + series
-						if !dropped && lib.TableExists(sqlc, ctx, table) {
+						if lib.TableExists(sqlc, ctx, table) {
 							lib.ExecSQLWithErr(sqlc, ctx, fmt.Sprintf("delete from \""+table+"\" where period = %s", lib.NValue(1)), intervalAbbr)
 							if ctx.Debug > 0 {
 								lib.Printf("Dropped from table %s with %s period\n", table, intervalAbbr)
@@ -799,7 +801,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 					}
 				} else {
 					table := "s" + cfg.mergeSeries
-					if !dropped && lib.TableExists(sqlc, ctx, table) {
+					if lib.TableExists(sqlc, ctx, table) {
 						for series := range seriesToClear {
 							lib.ExecSQLWithErr(sqlc, ctx,
 								fmt.Sprintf(
@@ -868,12 +870,6 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 	lib.FatalOnError(err)
 	excludeBots := string(bytes)
 
-	// Connect to Postgres DB
-	sqlc := lib.PgConn(&ctx)
-	defer func() { lib.FatalOnError(sqlc.Close()) }()
-	// Handle 'drop:' metric flag
-	handleSeriesDrop(&ctx, sqlc, cfg)
-
 	// Process interval
 	interval, nIntervals, intervalStart, nextIntervalStart, prevIntervalStart := lib.GetIntervalFunctions(intervalAbbr, cfg.annotationsRanges)
 
@@ -891,6 +887,12 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 		)
 		return
 	}
+
+	// Connect to Postgres DB
+	sqlc := lib.PgConn(&ctx)
+	defer func() { lib.FatalOnError(sqlc.Close()) }()
+	// Handle 'drop:' metric flag
+	handleSeriesDrop(&ctx, sqlc, cfg)
 
 	// Parse input dates
 	dFrom := lib.TimeParseAny(from)

@@ -404,14 +404,23 @@ func sync(ctx *lib.Ctx, args []string) {
 		metricsList := []metric{}
 		// Iterate all metrics
 		for _, metric := range allMetrics.Metrics {
+			if metric.Histogram && metric.Drop != "" {
+				lib.Fatalf("You cannot use drop series property on histogram metrics")
+			}
 			if metric.MetricSQLs != nil {
 				if metric.MetricSQL != "" {
 					lib.Fatalf("you cannot use both 'sql' and 'sqls' fields'")
 				}
+				dropAdded := false
 				for _, sql := range *metric.MetricSQLs {
 					newMetric := metric
 					newMetric.MetricSQLs = nil
 					newMetric.MetricSQL = sql
+					if !dropAdded {
+						dropAdded = true
+					} else {
+						newMetric.Drop = ""
+					}
 					metricsList = append(metricsList, newMetric)
 				}
 				continue
@@ -436,6 +445,7 @@ func sync(ctx *lib.Ctx, args []string) {
 					continue
 				}
 			}
+			dropProcessed := false
 			// handle start_from (datetime) or last_hours (from now - N hours)
 			fromDate := from
 			if metric.StartFrom != nil && metric.LastHours > 0 {
@@ -471,9 +481,6 @@ func sync(ctx *lib.Ctx, args []string) {
 			}
 			if metric.Desc != "" {
 				extraParams = append(extraParams, "desc:"+metric.Desc)
-			}
-			if metric.Drop != "" {
-				extraParams = append(extraParams, "drop:"+metric.Drop)
 			}
 			if metric.MergeSeries != "" {
 				extraParams = append(extraParams, "merge_series:"+metric.MergeSeries)
@@ -534,6 +541,13 @@ func sync(ctx *lib.Ctx, args []string) {
 					// Histogram metrics usualy take long time, but executes single query, so there is no way to
 					// Implement multi threading inside "calc_metric" call for them
 					// So we're creating array of such metrics to be executed at the end - each in a separate go routine
+					eParams := extraParams
+					if !dropProcessed {
+						if metric.Drop != "" {
+							eParams = append(eParams, "drop:"+metric.Drop)
+						}
+						dropProcessed = true
+					}
 					if metric.Histogram {
 						lib.Printf("Scheduled histogram metric %v, period %v, desc: '%v', aggregate: '%v' ...\n", metric.Name, period, metric.Desc, aggrSuffix)
 						hists = append(
@@ -560,7 +574,7 @@ func sync(ctx *lib.Ctx, args []string) {
 								lib.ToYMDHDate(fromDate),
 								lib.ToYMDHDate(to),
 								periodAggr,
-								strings.Join(extraParams, ","),
+								strings.Join(eParams, ","),
 							},
 							metric.EnvMap,
 						)
