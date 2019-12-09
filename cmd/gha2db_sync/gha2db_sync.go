@@ -38,6 +38,8 @@ type metric struct {
 	LastHours         int               `yaml:"last_hours"`
 	SeriesNameMap     map[string]string `yaml:"series_name_map"`
 	EnvMap            map[string]string `yaml:"env"`
+	Disabled          bool              `yaml:"disabled"`
+	Drop              string            `yaml:"drop"`
 }
 
 // randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
@@ -419,6 +421,9 @@ func sync(ctx *lib.Ctx, args []string) {
 
 		// Iterate all metrics
 		for _, metric := range metricsList {
+			if metric.Disabled {
+				continue
+			}
 			if onlyMetrics {
 				_, ok := ctx.OnlyMetrics[metric.MetricSQL]
 				if !ok {
@@ -466,6 +471,9 @@ func sync(ctx *lib.Ctx, args []string) {
 			}
 			if metric.Desc != "" {
 				extraParams = append(extraParams, "desc:"+metric.Desc)
+			}
+			if metric.Drop != "" {
+				extraParams = append(extraParams, "drop:"+metric.Drop)
 			}
 			if metric.MergeSeries != "" {
 				extraParams = append(extraParams, "merge_series:"+metric.MergeSeries)
