@@ -461,7 +461,7 @@ func setAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) {
 
 func handleSeriesDrop(ctx *lib.Ctx, con *sql.DB, cfg *calcMetricData) {
 	if cfg.hist && len(cfg.drop) > 0 {
-		lib.Fatalf("You cannot use drop series property on histogram metrics")
+		lib.Fatalf("you cannot use drop series property on histogram metrics: %+v", &cfg)
 	}
 	if !ctx.EnableMetricsDrop {
 		return

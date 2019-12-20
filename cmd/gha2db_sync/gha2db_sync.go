@@ -405,7 +405,7 @@ func sync(ctx *lib.Ctx, args []string) {
 		// Iterate all metrics
 		for _, metric := range allMetrics.Metrics {
 			if metric.Histogram && metric.Drop != "" {
-				lib.Fatalf("You cannot use drop series property on histogram metrics")
+				lib.Fatalf("you cannot use drop series property on histogram metrics: %+v", metric)
 			}
 			if metric.MetricSQLs != nil {
 				if metric.MetricSQL != "" {
