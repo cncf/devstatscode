@@ -473,7 +473,7 @@ func handleSeriesDrop(ctx *lib.Ctx, con *sql.DB, cfg *calcMetricData) {
 					lib.Printf("Truncating table %s\n", table)
 				}
 				// lib.ExecSQLWithErr(con, ctx, "truncate "+table)
-				lib.ExecSQLWithErr(con, ctx, "drop "+table)
+				lib.ExecSQLWithErr(con, ctx, "drop table if exists "+table)
 			}
 		}
 	}
