@@ -463,13 +463,17 @@ func handleSeriesDrop(ctx *lib.Ctx, con *sql.DB, cfg *calcMetricData) {
 	if cfg.hist && len(cfg.drop) > 0 {
 		lib.Fatalf("You cannot use drop series property on histogram metrics")
 	}
+	if !ctx.EnableMetricsDrop {
+		return
+	}
 	for _, table := range cfg.drop {
 		if !ctx.SkipTSDB {
 			if lib.TableExists(con, ctx, table) {
 				if ctx.Debug >= 0 {
 					lib.Printf("Truncating table %s\n", table)
 				}
-				lib.ExecSQLWithErr(con, ctx, "truncate "+table)
+				// lib.ExecSQLWithErr(con, ctx, "truncate "+table)
+				lib.ExecSQLWithErr(con, ctx, "drop "+table)
 			}
 		}
 	}

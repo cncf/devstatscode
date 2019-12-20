@@ -139,6 +139,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		CanReconnect:             in.CanReconnect,
 		CommitsFilesStatsEnabled: in.CommitsFilesStatsEnabled,
 		CommitsLOCStatsEnabled:   in.CommitsLOCStatsEnabled,
+		EnableMetricsDrop:        in.EnableMetricsDrop,
 	}
 	return &out
 }
@@ -384,6 +385,7 @@ func TestInit(t *testing.T) {
 		CanReconnect:             true,
 		CommitsFilesStatsEnabled: true,
 		CommitsLOCStatsEnabled:   true,
+		EnableMetricsDrop:        false,
 	}
 
 	var nilRegexp *regexp.Regexp
@@ -1263,6 +1265,15 @@ func TestInit(t *testing.T) {
 					"UseESRaw":   true,
 					"ResetESRaw": true,
 				},
+			),
+		},
+		{
+			"Enable metrics drop",
+			map[string]string{"GHA2DB_ENABLE_METRICS_DROP": "1"},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{"EnableMetricsDrop": true},
 			),
 		},
 		{

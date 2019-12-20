@@ -542,7 +542,7 @@ func sync(ctx *lib.Ctx, args []string) {
 					// Implement multi threading inside "calc_metric" call for them
 					// So we're creating array of such metrics to be executed at the end - each in a separate go routine
 					eParams := extraParams
-					if !dropProcessed {
+					if ctx.EnableMetricsDrop && !dropProcessed {
 						if metric.Drop != "" {
 							eParams = append(eParams, "drop:"+metric.Drop)
 						}

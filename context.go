@@ -129,6 +129,7 @@ type Ctx struct {
 	SetRunningFlag           bool                         // From GHA2DB_SET_RUNNING_FLAG, devstats tool - set 'devstats_running' flag on 'gha_computed' table while devstats cronjob is running
 	CheckImportedSHA         bool                         // From GHA2DB_CHECK_IMPORTED_SHA, import_affs tool - check if given JSON was already imported using 'gha_imported_shas' table
 	OnlyCheckImportedSHA     bool                         // From GHA2DB_ONLY_CHECK_IMPORTED_SHA, import_affs tool - check if given JSON was already imported using 'gha_imported_shas' table, do not attempt to import, only return status: 3=imported, 0=not imported
+	EnableMetricsDrop        bool                         // From GHA2DB_ENABLE_METRICS_DROP, if enabled will process each metric's 'drop:' property if present - use when regenerating affiliations data or reinitializing entire TSDB data
 	ESBulkSize               int                          // From GHA2DB_ES_BULK_SIZE, calc_metric and gha2es tools, default 10000
 	HTTPTimeout              int                          // From GHA2DB_HTTP_TIMEOUT, gha2db - data.gharchive.org timeout value in minutes, default 2
 	PidFileRoot              string                       // From GHA2DB_PID_FILE_ROOT, devstats tool, use '/tmp/PidFileRoot.pid' as PID file, default 'devstats' -> '/tmp/devstats.pid'
@@ -738,6 +739,9 @@ func (ctx *Ctx) Init() {
 	if ctx.RecentReposRange == "" {
 		ctx.RecentReposRange = "1 day"
 	}
+
+	// Enable drop metrics support
+	ctx.EnableMetricsDrop = os.Getenv("GHA2DB_ENABLE_METRICS_DROP") != ""
 
 	ctx.CSVFile = os.Getenv("GHA2DB_CSVOUT")
 
