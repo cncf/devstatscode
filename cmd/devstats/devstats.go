@@ -197,7 +197,7 @@ func syncAllProjects() bool {
 		pidFile := "/tmp/" + ctx.PidFileRoot + ".pid"
 		f, err := os.OpenFile(pidFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
 		if err != nil {
-			lib.Printf("Another `devstats` instance is running, PID file '%s' exists, exiting\n", pidFile)
+			lib.Printf("Another `devstats` instance is running, PID file '%s' exists, exiting (not an error)\n", pidFile)
 			return false
 		}
 		fmt.Fprintf(f, "%d", pid)
