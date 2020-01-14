@@ -125,8 +125,14 @@ func lookupActorTx(con *sql.Tx, ctx *lib.Ctx, login string, maybeHide func(strin
 	rows := lib.QuerySQLTxWithErr(
 		con,
 		ctx,
-		fmt.Sprintf("select id from gha_actors where login=%s order by id desc limit 1", lib.NValue(1)),
+		fmt.Sprintf(
+			"select id from gha_actors where login=%s union select id from "+
+				"gha_actors where lower(login)=%s order by id desc limit 1",
+			lib.NValue(1),
+			lib.NValue(2),
+		),
 		hlogin,
+		strings.ToLower(hlogin),
 	)
 	defer func() { lib.FatalOnError(rows.Close()) }()
 	aid := 0

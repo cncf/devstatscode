@@ -62,7 +62,7 @@ func Structure(ctx *Ctx) {
 			ctx,
 			CreateTable(
 				"gha_actors("+
-					"id bigint not null primary key, "+
+					"id bigint not null, "+
 					"login varchar(120) not null, "+
 					"name varchar(120),"+
 					"country_id varchar(2),"+
@@ -71,12 +71,14 @@ func Structure(ctx *Ctx) {
 					"tz varchar(40),"+
 					"tz_offset int,"+
 					"country_name text,"+
-					"age int"+
+					"age int,"+
+					"primary key(id, login)"+
 					")",
 			),
 		)
 	}
 	if ctx.Index {
+		ExecSQLWithErr(c, ctx, "create index actors_id_idx on gha_actors(id)")
 		ExecSQLWithErr(c, ctx, "create index actors_login_idx on gha_actors(login)")
 		ExecSQLWithErr(c, ctx, "create index actors_lower_login_idx on gha_actors(lower(login))")
 		ExecSQLWithErr(c, ctx, "create index actors_name_idx on gha_actors(name)")
@@ -193,6 +195,7 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
+		ExecSQLWithErr(c, ctx, "create index repos_id_idx on gha_repos(id)")
 		ExecSQLWithErr(c, ctx, "create index repos_name_idx on gha_repos(name)")
 		ExecSQLWithErr(c, ctx, "create index repos_org_id_idx on gha_repos(org_id)")
 		ExecSQLWithErr(c, ctx, "create index repos_org_login_idx on gha_repos(org_login)")
@@ -205,6 +208,7 @@ func Structure(ctx *Ctx) {
 	// "url:String"=>18494, "avatar_url:String"=>18494}
 	// {"id"=>8, "login"=>38, "gravatar_id"=>0, "url"=>66, "avatar_url"=>49}
 	// const
+	// FIXME: probably orgs can also change name keeping the same ID, just like repos
 	if ctx.Table {
 		ExecSQLWithErr(c, ctx, "drop table if exists gha_orgs")
 		ExecSQLWithErr(

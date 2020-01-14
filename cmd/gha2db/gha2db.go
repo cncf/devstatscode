@@ -1153,6 +1153,23 @@ func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) 
 	// gha_actors
 	ghaActor(con, ctx, &ev.Actor, maybeHide)
 
+	// Make sure that entry is gha_actors is most up-to-date
+	/*
+		lib.ExecSQLWithErr(
+			db,
+			ctx,
+			fmt.Sprintf(
+				"update gha_actors set login=%s where id=%s"+
+					lib.NValue(1),
+				  lib.NValue(2),
+			),
+			lib.AnyArray{
+				maybeHide(ev.Actor.Login),
+				ev.Actor.ID,
+			}...,
+		)
+	*/
+
 	// gha_commits
 	// {"sha:String"=>23265, "author:Hash"=>23265, "message:String"=>23265,
 	// "distinct:TrueClass"=>21789, "url:String"=>23265, "distinct:FalseClass"=>1476}
