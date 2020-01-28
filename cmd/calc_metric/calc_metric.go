@@ -63,7 +63,7 @@ func multiRowMultiColumn(cfg *calcMetricData, expr string, multivalue, escapeVal
 	ary := strings.Split(expr, ";")
 	pref := ary[0]
 	if pref == "" {
-		lib.Printf("multiRowMultiColumn: Info: prefix '%v' (ary=%+v,expr=%+v,mv=%+v) skipping\n", pref, ary, expr, multivalue)
+		lib.Printf("multiRowMultiColumn: Info: prefix '%v' (ary=%+v,expr=%+v,mv=%+v,data=%+v) skipping\n", pref, ary, expr, multivalue, *cfg)
 		return
 	}
 	splitColumns := strings.Split(ary[2], ",")
