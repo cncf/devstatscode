@@ -108,7 +108,7 @@ func multiRowSingleColumn(cfg *calcMetricData, col string, multivalue, escapeVal
 	ary := strings.Split(col, ",")
 	pref := ary[0]
 	if pref == "" {
-		lib.Printf("multiRowSingleColumn: Info: prefix '%v' (ary=%+v,col=%+v,mv=%+v) skipping\n", pref, ary, col, multivalue)
+		lib.Printf("multiRowSingleColumn: Info: prefix '%v' (ary=%+v,col=%+v,mv=%+v,data=%+v) skipping\n", pref, ary, col, multivalue, *cfg)
 		return
 	}
 	if multivalue {
