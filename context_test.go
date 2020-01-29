@@ -130,6 +130,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		CheckImportedSHA:         in.CheckImportedSHA,
 		OnlyCheckImportedSHA:     in.OnlyCheckImportedSHA,
 		SetRunningFlag:           in.SetRunningFlag,
+		MaxRunningFlagAge:        in.MaxRunningFlagAge,
 		SkipDatesYaml:            in.SkipDatesYaml,
 		PropagateOnlyVar:         in.PropagateOnlyVar,
 		PidFileRoot:              in.PidFileRoot,
@@ -244,6 +245,14 @@ func dynamicSetFields(t *testing.T, ctx *lib.Ctx, fields map[string]interface{})
 				return ctx
 			}
 			field.Set(reflect.ValueOf(fieldValue))
+		case time.Duration:
+			// Check if types match
+			fieldType := field.Type()
+			if fieldType != reflect.TypeOf(time.Duration(1)*time.Nanosecond) {
+				t.Errorf("trying to set value %v, type %T for field \"%s\", type %v", interfaceValue, interfaceValue, fieldName, fieldKind)
+				return ctx
+			}
+			field.Set(reflect.ValueOf(fieldValue))
 		default:
 			// Unknown type provided
 			t.Errorf("unknown type %T for field \"%s\"", interfaceValue, fieldName)
@@ -260,6 +269,8 @@ func TestInit(t *testing.T) {
 	if pass == "" {
 		pass = lib.Password
 	}
+	defaultDur, _ := time.ParseDuration("6h")
+	testDur, _ := time.ParseDuration("1h45m")
 	defaultContext := lib.Ctx{
 		DataDir:                  "/etc/gha2db/",
 		Debug:                    0,
@@ -377,6 +388,7 @@ func TestInit(t *testing.T) {
 		CheckImportedSHA:         false,
 		OnlyCheckImportedSHA:     false,
 		SetRunningFlag:           false,
+		MaxRunningFlagAge:        defaultDur,
 		PropagateOnlyVar:         false,
 		PidFileRoot:              "devstats",
 		TestMode:                 true,
@@ -1383,6 +1395,19 @@ func TestInit(t *testing.T) {
 				copyContext(&defaultContext),
 				map[string]interface{}{
 					"SetRunningFlag": true,
+				},
+			),
+		},
+		{
+			"Set max running flag age",
+			map[string]string{
+				"GHA2DB_MAX_RUNNING_FLAG_AGE": "1h45m",
+			},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{
+					"MaxRunningFlagAge": testDur,
 				},
 			),
 		},
