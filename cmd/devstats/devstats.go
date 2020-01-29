@@ -87,7 +87,12 @@ func syncAllProjects() bool {
 		for _, proj := range projs {
 			db := proj.PDB
 			con := lib.PgConnDB(&ctx, db)
-			rows, err := lib.QuerySQL(con, &ctx, "select 1 from gha_computed where metric = "+lib.NValue(1)+" limit 1", runningFlag)
+			rows, err := lib.QuerySQL(
+				con,
+				&ctx,
+				"select dt from gha_computed where metric = "+lib.NValue(1)+" order by dt desc limit 1",
+				runningFlag,
+			)
 			if err != nil {
 				switch e := err.(type) {
 				case *pq.Error:
@@ -102,16 +107,26 @@ func syncAllProjects() bool {
 					lib.FatalOnError(err)
 				}
 			}
-			running := 0
+			running := time.Now()
+			runningSet := false
 			for rows.Next() {
 				lib.FatalOnError(rows.Scan(&running))
+				runningSet = true
 			}
 			lib.FatalOnError(rows.Err())
 			lib.FatalOnError(rows.Close())
-			lib.FatalOnError(con.Close())
-			if running == 1 {
-				lib.Printf("Running flag on '%s' set, exiting\n", db)
-				return false
+			if runningSet {
+				age := time.Now().Sub(running)
+				lib.Printf("Running flag on '%s' set, age %+v, maximum allowed age: %+v\n", db, age, ctx.MaxRunningFlagAge)
+				if age <= ctx.MaxRunningFlagAge {
+					lib.Printf("Running flag on '%s' set, exiting\n", db)
+					lib.FatalOnError(con.Close())
+					return false
+				}
+				lib.Printf("Running flag on '%s' expired, removing (this may be due to some error)\n", db)
+				lib.ExecSQLWithErr(con, &ctx, "delete from gha_computed where metric ="+lib.NValue(1), runningFlag)
+				lib.FatalOnError(con.Close())
+				lib.Printf("Running flag on '%s' force removed\n", db)
 			}
 		}
 	}
