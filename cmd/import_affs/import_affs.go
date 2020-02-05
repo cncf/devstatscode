@@ -143,7 +143,7 @@ func findActor(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) st
 }
 
 // Search for given actor ID(s) using His/Her login
-// Return list of actor IDs with that login
+// Return list of actor IDs correlated with that login (downcased) - search deep by lower(login)/id correlations
 func findActorIDs(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) string) (actIDs []int) {
 	login = maybeHide(login)
 	rows := lib.QuerySQLWithErr(
@@ -151,8 +151,9 @@ func findActorIDs(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string)
 		ctx,
 		//fmt.Sprintf("select id from gha_actors where lower(login)=%s", lib.NValue(1)),
 		fmt.Sprintf(
-			"select distinct id from gha_actors where login in (select login from gha_actors where id in (select id from gha_actors where login in ("+
-				"select login from gha_actors where id in (select id from gha_actors where lower(login)=%s))));",
+			"select distinct id from gha_actors where lower(login) in (select lower(login) from gha_actors "+
+				"where id in (select id from gha_actors where lower(login) in ("+
+				"select lower(login) from gha_actors where id in (select id from gha_actors where lower(login)=%s))));",
 			lib.NValue(1),
 		),
 		strings.ToLower(login),
