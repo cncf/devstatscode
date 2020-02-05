@@ -555,7 +555,7 @@ func importAffs(jsonFN string) int {
 			// maxNum holds max number of companies listed in any of affiliations
 			for aff := range affs {
 				ary := strings.Split(aff, ", ")
-				// Just pick first affiliation defin ition that lists most companies
+				// Just pick first affiliation definition that lists most companies
 				if len(ary) == maxNum {
 					affsAry = ary
 					break
