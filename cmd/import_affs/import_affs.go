@@ -149,7 +149,12 @@ func findActorIDs(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string)
 	rows := lib.QuerySQLWithErr(
 		db,
 		ctx,
-		fmt.Sprintf("select id from gha_actors where lower(login)=%s", lib.NValue(1)),
+		//fmt.Sprintf("select id from gha_actors where lower(login)=%s", lib.NValue(1)),
+		fmt.Sprintf(
+			"select distinct id from gha_actors where login in (select login from gha_actors where id in (select id from gha_actors where login in ("+
+				"select login from gha_actors where id in (select id from gha_actors where lower(login)=%s))));",
+			lib.NValue(1),
+		),
 		strings.ToLower(login),
 	)
 	defer func() { lib.FatalOnError(rows.Close()) }()
@@ -371,7 +376,7 @@ func importAffs(jsonFN string) int {
 	for _, user := range users {
 		// Email decode ! --> @
 		user.Email = strings.ToLower(emailDecode(user.Email))
-		login := user.Login
+		login := strings.ToLower(user.Login)
 
 		// Email
 		email := user.Email
