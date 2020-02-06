@@ -653,7 +653,9 @@ func importAffs(jsonFN string) int {
 		}
 		// Store given login's actor IDs in the case
 		cacheActIDs[login] = actIDs
-		cacheActLogins[login] = actLogins
+		for _, aLogin := range actLogins {
+			cacheActLogins[aLogin] = actLogins
+		}
 	}
 	if added > 0 {
 		lib.Printf("Unexpected: added actors: %d while caching affiliations\n", added)
@@ -706,7 +708,9 @@ func importAffs(jsonFN string) int {
 			added++
 		}
 		cacheActIDs[login] = actIDs
-		cacheActLogins[login] = actLogins
+		for _, aLogin := range actLogins {
+			cacheActLogins[aLogin] = actLogins
+		}
 		for email := range emails {
 			// One actor can have multiple emails but...
 			// One email can also belong to multiple actors
@@ -736,7 +740,9 @@ func importAffs(jsonFN string) int {
 		}
 		// Store given login's actor IDs in the case
 		cacheActIDs[login] = actIDs
-		cacheActLogins[login] = actLogins
+		for _, aLogin := range actLogins {
+			cacheActLogins[aLogin] = actLogins
+		}
 		for name := range names {
 			// One actor can have multiple names but...
 			// One name can also belong to multiple actors
@@ -865,7 +871,9 @@ func importAffs(jsonFN string) int {
 				added++
 			}
 			cacheActIDs[login] = actIDs
-			cacheActLogins[login] = actLogins
+			for _, aLogin := range actLogins {
+				cacheActLogins[aLogin] = actLogins
+			}
 			nonCached++
 		}
 		company := aff.Company
