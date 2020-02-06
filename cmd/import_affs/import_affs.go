@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ type gitHubUser struct {
 	Login       string   `json:"login"`
 	Email       string   `json:"email"`
 	Affiliation string   `json:"affiliation"`
+	Source      string   `json:"source"`
 	Name        string   `json:"name"`
 	CountryID   *string  `json:"country_id"`
 	Sex         *string  `json:"sex"`
@@ -39,16 +41,26 @@ type allAcquisitions struct {
 // stringSet - set of strings
 type stringSet map[string]struct{}
 
+// mapIntSet - this is a map from int to set of string
+type mapIntSet map[int]stringSet
+
 // mapStringSet - this is a map from string to Set of strings
 type mapStringSet map[string]stringSet
 
+// mapStringIntSet - this is a map from string to map from int to set of string
+type mapStringIntSet map[string]mapIntSet
+
 // mapIntArray - this is a map form string to array of ints
 type mapIntArray map[string][]int
+
+// mapStringArray - this is a map form string to array of strings
+type mapStringArray map[string][]string
 
 // affData - holds single affiliation data
 type affData struct {
 	Login   string
 	Company string
+	Source  string
 	From    time.Time
 	To      time.Time
 }
@@ -144,27 +156,90 @@ func findActor(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) st
 
 // Search for given actor ID(s) using His/Her login
 // Return list of actor IDs correlated with that login (downcased) - search deep by lower(login)/id correlations
-func findActorIDs(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) string) (actIDs []int) {
+func findActors(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) string) (actIDs []int, actLogins []string) {
 	login = maybeHide(login)
-	rows := lib.QuerySQLWithErr(
-		db,
-		ctx,
-		//fmt.Sprintf("select id from gha_actors where lower(login)=%s", lib.NValue(1)),
-		fmt.Sprintf(
-			"select distinct id from gha_actors where lower(login) in (select lower(login) from gha_actors "+
-				"where id in (select id from gha_actors where lower(login) in ("+
-				"select lower(login) from gha_actors where id in (select id from gha_actors where lower(login)=%s))));",
-			lib.NValue(1),
-		),
-		strings.ToLower(login),
-	)
-	defer func() { lib.FatalOnError(rows.Close()) }()
-	var aid int
-	for rows.Next() {
-		lib.FatalOnError(rows.Scan(&aid))
-		actIDs = append(actIDs, aid)
+	ids := make(map[int]struct{})
+	logins := make(map[string]struct{})
+	logins[login] = struct{}{}
+	aid := 0
+	alogin := ""
+	prevIDs := ""
+	prevLogins := login
+	depth := 0
+	for {
+		query := "select id from gha_actors where lower(login) in ("
+		nLogins := len(logins)
+		args := []interface{}{}
+		idx := 0
+		for aLogin := range logins {
+			idx++
+			args = append(args, strings.ToLower(aLogin))
+			query += lib.NValue(idx)
+			if idx != nLogins {
+				query += ","
+			}
+		}
+		query += ")"
+		rows := lib.QuerySQLWithErr(db, ctx, query, args...)
+		for rows.Next() {
+			lib.FatalOnError(rows.Scan(&aid))
+			ids[aid] = struct{}{}
+		}
+		if len(ids) == 0 {
+			return
+		}
+		lib.FatalOnError(rows.Err())
+		lib.FatalOnError(rows.Close())
+		query = "select login from gha_actors where id in ("
+		nIDs := len(ids)
+		args = []interface{}{}
+		idx = 0
+		for anID := range ids {
+			idx++
+			args = append(args, anID)
+			query += lib.NValue(idx)
+			if idx != nIDs {
+				query += ","
+			}
+		}
+		query += ")"
+		rows = lib.QuerySQLWithErr(db, ctx, query, args...)
+		for rows.Next() {
+			lib.FatalOnError(rows.Scan(&alogin))
+			logins[alogin] = struct{}{}
+		}
+		lib.FatalOnError(rows.Err())
+		lib.FatalOnError(rows.Close())
+		currLoginsAry := []string{}
+		for aLogin := range logins {
+			currLoginsAry = append(currLoginsAry, aLogin)
+		}
+		sort.Strings(currLoginsAry)
+		currLogins := strings.Join(currLoginsAry, ",")
+		currIDsAry := []string{}
+		for aID := range ids {
+			currIDsAry = append(currIDsAry, fmt.Sprintf("%d", aID))
+		}
+		sort.Strings(currIDsAry)
+		currIDs := strings.Join(currIDsAry, ",")
+		depth++
+		if prevLogins == currLogins && prevIDs == currIDs {
+			break
+		}
+		if depth >= 10 {
+			lib.Printf("Error (non fatal): gone too deep: logins map: %+v, ids map: %+v\n", logins, ids)
+			lib.Printf("Error (non fatal): gone too deep: Logins: '%s'=='%s', IDs: '%s'=='%s'\n", prevLogins, currLogins, prevIDs, currIDs)
+			break
+		}
+		prevLogins = currLogins
+		prevIDs = currIDs
 	}
-	lib.FatalOnError(rows.Err())
+	for aID := range ids {
+		actIDs = append(actIDs, aID)
+	}
+	for aLogin := range logins {
+		actLogins = append(actLogins, aLogin)
+	}
 	return
 }
 
@@ -249,6 +324,28 @@ func alreadyImported(db *sql.DB, ctx *lib.Ctx, fn string) (imported bool, sha st
 // Sets given SHA as imported
 func setImportedSHA(db *sql.DB, ctx *lib.Ctx, sha string) {
 	lib.ExecSQLWithErr(db, ctx, "insert into gha_imported_shas(sha) select "+lib.NValue(1)+" on conflict do nothing", sha)
+}
+
+func scoreCSD(csd *csData) (score float64) {
+	if csd.CountryID != nil && *csd.CountryID != "" {
+		score += 2.0
+	}
+	if csd.Tz != nil && *csd.Tz != "" {
+		score += 1.0
+	}
+	if csd.TzOffset != nil {
+		score += 1.0
+	}
+	if csd.Sex != nil && (*csd.Sex == "m" || *csd.Sex == "f" || *csd.Sex == "b") {
+		score += 1.0
+	}
+	if csd.SexProb != nil {
+		score += *csd.SexProb
+	}
+	if csd.Age != nil {
+		score += 0.5
+	}
+	return
 }
 
 // Imports given JSON file.
@@ -370,14 +467,23 @@ func importAffs(jsonFN string) int {
 	emptyVal := struct{}{}
 	loginEmails := make(mapStringSet)
 	loginNames := make(mapStringSet)
-	loginAffs := make(mapStringSet)
+	loginAffs := make(mapStringIntSet)
 	loginCSData := make(map[string]csData)
 	tzCache := make(map[string]*int)
+	sourceToPrio := map[string]int{"notfound": -20, "domain": -10, "": 0, "config": 10, "manual": 20, "user_manual": 30, "user": 40}
+	prioToSource := map[int]string{-20: "notfound", -10: "domain", 0: "", 10: "config", 20: "manual", 30: "user_manual", 40: "user"}
 	eNames, eEmails, eAffs := 0, 0, 0
 	for _, user := range users {
 		// Email decode ! --> @
 		user.Email = strings.ToLower(emailDecode(user.Email))
 		login := strings.ToLower(user.Login)
+
+		// Affiliation source
+		source := strings.ToLower(user.Source)
+		sourcePrio, ok := sourceToPrio[source]
+		if !ok {
+			sourcePrio = 0
+		}
 
 		// Email
 		email := user.Email
@@ -408,15 +514,19 @@ func importAffs(jsonFN string) int {
 		if aff != "NotFound" && aff != "(Unknown)" && aff != "?" && aff != "-" && aff != "" {
 			_, ok := loginAffs[login]
 			if !ok {
-				loginAffs[login] = stringSet{}
+				loginAffs[login] = mapIntSet{}
 			}
-			loginAffs[login][aff] = emptyVal
+			_, ok = loginAffs[login][sourcePrio]
+			if !ok {
+				loginAffs[login][sourcePrio] = stringSet{}
+			}
+			loginAffs[login][sourcePrio][aff] = emptyVal
 		} else {
 			eAffs++
 		}
 
 		// Country & sex data
-		loginCSData[login] = csData{
+		newCsd := csData{
 			CountryID: user.CountryID,
 			Sex:       user.Sex,
 			Tz:        user.Tz,
@@ -424,10 +534,22 @@ func importAffs(jsonFN string) int {
 			TzOffset:  tzOffset(con, &ctx, user.Tz, tzCache),
 			Age:       user.Age,
 		}
+		csd, ok := loginCSData[login]
+		if ok {
+			newScore := scoreCSD(&newCsd)
+			score := scoreCSD(&csd)
+			// fmt.Printf("login already has score %f\n", score)
+			if newScore > score {
+				// fmt.Printf("Got better score %f > %f for %+v vs %+v\n", newScore, score, newCsd, csd)
+				loginCSData[login] = newCsd
+			}
+		} else {
+			loginCSData[login] = newCsd
+		}
 	}
 	lib.Printf(
-		"Processing non-empty: %d names, %d emails lists and %d affiliations lists\n",
-		len(loginNames), len(loginEmails), len(loginAffs),
+		"Processing non-empty: %d name lists, %d email lists, %d affiliations lists, %d objects\n",
+		len(loginNames), len(loginEmails), len(loginAffs), len(loginCSData),
 	)
 	lib.Printf("Empty/Not found: names: %d, emails: %d, affiliations: %d\n", eNames, eEmails, eAffs)
 
@@ -436,72 +558,160 @@ func importAffs(jsonFN string) int {
 		return 2
 	}
 
-	// Login - Names should be 1:1
-	added, updated := 0, 0
-	for login, names := range loginNames {
-		if len(names) > 1 {
-			//lib.Fatalf("login has multiple names: %v: %+v", login, names)
+	// Login - Names should be 1:1 (also handle records without name set)
+	added, updated, noName, mulNames, notChanged := 0, 0, 0, 0, 0
+	//for login, names := range loginNames {
+	for login, csD := range loginCSData {
+		names, foundName := loginNames[login]
+		name := ""
+		if foundName {
+			// Other option would be to join all names via ", " - but it's better to query gha_actors_names then
+			name = firstKey(names)
+			if len(names) > 1 {
+				mulNames++
+			}
+		} else {
+			noName++
 		}
-		csD := loginCSData[login]
-		name := firstKey(names)
 		// Try to find actor by login
 		actor, csd, ok := findActor(con, &ctx, login, maybeHide)
 		if !ok {
 			// If no such actor, add with artificial ID (just like data from pre-2015)
 			addActor(con, &ctx, login, name, csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide)
 			added++
-		} else if name != actor.Name || !lib.CompareStringPtr(csd.CountryID, csD.CountryID) ||
-			!lib.CompareStringPtr(csd.Sex, csD.Sex) || !lib.CompareFloat64Ptr(csd.SexProb, csD.SexProb) ||
-			!lib.CompareStringPtr(csd.Tz, csD.Tz) || !lib.CompareIntPtr(csd.TzOffset, csD.TzOffset) ||
-			!lib.CompareIntPtr(csd.Age, csD.Age) {
-			// If actor found, but with different name (actually with name == "" after standard GHA import), update name
-			// Because there can be the same actor (by id) with different IDs (pre-2015 and post 2015), update His/Her name
-			// for all records with this login
-			lib.ExecSQLWithErr(con, &ctx,
-				"update gha_actors set "+
-					"name="+lib.NValue(1)+
-					", country_id="+lib.NValue(2)+
-					", sex="+lib.NValue(3)+
-					", tz="+lib.NValue(4)+
-					", sex_prob="+lib.NValue(5)+
-					", tz_offset="+lib.NValue(6)+
-					", age="+lib.NValue(7)+
-					" where lower(login)="+lib.NValue(8),
-				lib.AnyArray{
-					maybeHide(lib.TruncToBytes(name, 120)),
-					csD.CountryID,
-					csD.Sex,
-					csD.Tz,
-					csD.SexProb,
-					csD.TzOffset,
-					csD.Age,
-					strings.ToLower(maybeHide(login)),
-				}...,
-			)
-			updated++
+		} else {
+			if (foundName && name != actor.Name) || !lib.CompareStringPtr(csd.CountryID, csD.CountryID) ||
+				!lib.CompareStringPtr(csd.Sex, csD.Sex) || !lib.CompareFloat64Ptr(csd.SexProb, csD.SexProb) ||
+				!lib.CompareStringPtr(csd.Tz, csD.Tz) || !lib.CompareIntPtr(csd.TzOffset, csD.TzOffset) ||
+				!lib.CompareIntPtr(csd.Age, csD.Age) {
+				if foundName {
+					// If actor found, but with different name (actually with name == "" after standard GHA import), update name
+					// Because there can be the same actor (by id) with different IDs (pre-2015 and post 2015), update His/Her name
+					// for all records with this login
+					lib.ExecSQLWithErr(con, &ctx,
+						"update gha_actors set "+
+							"name="+lib.NValue(1)+
+							", country_id="+lib.NValue(2)+
+							", sex="+lib.NValue(3)+
+							", tz="+lib.NValue(4)+
+							", sex_prob="+lib.NValue(5)+
+							", tz_offset="+lib.NValue(6)+
+							", age="+lib.NValue(7)+
+							" where lower(login)="+lib.NValue(8),
+						lib.AnyArray{
+							maybeHide(lib.TruncToBytes(name, 120)),
+							csD.CountryID,
+							csD.Sex,
+							csD.Tz,
+							csD.SexProb,
+							csD.TzOffset,
+							csD.Age,
+							strings.ToLower(maybeHide(login)),
+						}...,
+					)
+				} else {
+					lib.ExecSQLWithErr(con, &ctx,
+						"update gha_actors set "+
+							"country_id="+lib.NValue(1)+
+							", sex="+lib.NValue(2)+
+							", tz="+lib.NValue(3)+
+							", sex_prob="+lib.NValue(4)+
+							", tz_offset="+lib.NValue(5)+
+							", age="+lib.NValue(6)+
+							" where lower(login)="+lib.NValue(7),
+						lib.AnyArray{
+							csD.CountryID,
+							csD.Sex,
+							csD.Tz,
+							csD.SexProb,
+							csD.TzOffset,
+							csD.Age,
+							strings.ToLower(maybeHide(login)),
+						}...,
+					)
+				}
+				updated++
+			} else {
+				notChanged++
+			}
 		}
 	}
-	lib.Printf("%d non-empty names, added actors: %d, updated actors: %d\n", len(loginNames), added, updated)
+	lib.Printf("Added actors: %d, updated actors: %d, empty names: %d, non-unique names: %d, non-changed: %d\n", added, updated, noName, mulNames, notChanged)
 
-	// Login - Email(s) 1:N
+	// Main caches
 	cacheActIDs := make(mapIntArray)
-	added, allEmails := 0, 0
-	for login, emails := range loginEmails {
-		actIDs := findActorIDs(con, &ctx, login, maybeHide)
+	cacheActLogins := make(mapStringArray)
+
+	// Login - Possible multiple logins, possibly multiple affs
+	added = 0
+	for login := range loginAffs {
+		actIDs, actLogins := findActors(con, &ctx, login, maybeHide)
 		if len(actIDs) < 1 {
 			csD := loginCSData[login]
-			// Can happen if user have github login but name = "" or null
-			// In that case previous loop by loginName didn't add such user
 			actIDs = append(actIDs, addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide))
 			added++
 		}
 		// Store given login's actor IDs in the case
 		cacheActIDs[login] = actIDs
+		cacheActLogins[login] = actLogins
+	}
+	if added > 0 {
+		lib.Printf("Unexpected: added actors: %d while caching affiliations\n", added)
+	}
+
+	// Handle GitHub login changes
+	newLogins, copiedAffs, otherPrios := 0, 0, 0
+	for login, prios := range loginAffs {
+		actLogins, ok := cacheActLogins[login]
+		if !ok {
+			continue
+		}
+		for _, otherLogin := range actLogins {
+			if otherLogin == login {
+				continue
+			}
+			// fmt.Printf("found %s correlated to %s\n", otherLogin, login)
+			_, ok := loginAffs[otherLogin]
+			if !ok {
+				loginAffs[otherLogin] = mapIntSet{}
+				newLogins++
+			}
+			for prio, affs := range prios {
+				_, ok := loginAffs[otherLogin][prio]
+				if !ok {
+					loginAffs[otherLogin][prio] = stringSet{}
+					otherPrios++
+				}
+				for aff := range affs {
+					_, ok := loginAffs[otherLogin][prio][aff]
+					if !ok {
+						// fmt.Printf("other login %s (correlated to %s) has no %s affiliation, adding\n", otherLogin, login, aff)
+						loginAffs[otherLogin][prio][aff] = emptyVal
+						copiedAffs++
+					}
+				}
+			}
+		}
+	}
+	lib.Printf("%d new logins added by correlations, copied affiliations: %d (%d different priority)\n", newLogins, copiedAffs, otherPrios)
+
+	// Login - Email(s) 1:N
+	added, allEmails := 0, 0
+	for login, emails := range loginEmails {
+		actIDs, actLogins := findActors(con, &ctx, login, maybeHide)
+		if len(actIDs) < 1 {
+			csD := loginCSData[login]
+			// Shoudl not happen
+			actIDs = append(actIDs, addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide))
+			added++
+		}
+		cacheActIDs[login] = actIDs
+		cacheActLogins[login] = actLogins
 		for email := range emails {
 			// One actor can have multiple emails but...
 			// One email can also belong to multiple actors
 			// This happens when actor was first defined in pre-2015 era (so He/She have negative ID then)
-			// And then in new API era 2015+ that actor was active too (so He/Sha will
+			// And then in new API era 2015+ that actor was active too (so He/She will
 			// have entry with valid GitHub actor_id > 0)
 			for _, aid := range actIDs {
 				lib.ExecSQLWithErr(con, &ctx,
@@ -512,17 +722,21 @@ func importAffs(jsonFN string) int {
 			}
 		}
 	}
-	lib.Printf("%d emails lists, added actors: %d, all emails: %d\n", len(loginEmails), added, allEmails)
+	if added > 0 {
+		lib.Printf("Unexpected: added %d actors while processing emails\n", added)
+	}
+	lib.Printf("Added up to %d actors emails\n", allEmails)
 
 	// Login - Names(s) 1:N
-	added, allNames := 0, 0
+	allNames := 0
 	for login, names := range loginNames {
-		actIDs := findActorIDs(con, &ctx, login, maybeHide)
+		actIDs, actLogins := findActors(con, &ctx, login, maybeHide)
 		if len(actIDs) < 1 {
 			lib.Fatalf("actor login not found %s", login)
 		}
 		// Store given login's actor IDs in the case
 		cacheActIDs[login] = actIDs
+		cacheActLogins[login] = actLogins
 		for name := range names {
 			// One actor can have multiple names but...
 			// One name can also belong to multiple actors
@@ -535,18 +749,32 @@ func importAffs(jsonFN string) int {
 			}
 		}
 	}
-	lib.Printf("%d names lists, all names: %d\n", len(loginNames), allNames)
+	lib.Printf("Added up to %d actors names\n", allNames)
 
 	// Login - Affiliation should be 1:1, but it is sometimes 1:2 or 1:3
 	// There are some ambigous affiliations in github_users.json
-	// For such cases we're picking up the one with most entries
+	// For such cases we're picking up the one with top source priority
+	// If there are still multiple such we're taking one with most entries
 	// And then if more than 1 with the same number of entries, then pick up first
-	unique, nonUnique, allAffs := 0, 0, 0
+	unique, nonUnique, allAffs, nonUniquePrio := 0, 0, 0, 0
 	defaultStartDate := time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
 	defaultEndDate := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
 	companies := make(stringSet)
 	var affList []affData
-	for login, affs := range loginAffs {
+	for login, prios := range loginAffs {
+		aPrios := []int{}
+		for prio := range prios {
+			aPrios = append(aPrios, prio)
+		}
+		sort.Ints(aPrios)
+		nPrios := len(aPrios)
+		if nPrios > 1 {
+			nonUniquePrio++
+		}
+		maxPrio := aPrios[nPrios-1]
+		source, _ := prioToSource[maxPrio]
+		affs, _ := prios[maxPrio]
+		//fmt.Printf("Prio: %d -> %s\n", maxPrio, source)
 		var affsAry []string
 		if len(affs) > 1 {
 			// This login has different affiliations definitions in the input JSON
@@ -595,15 +823,12 @@ func importAffs(jsonFN string) int {
 				continue
 			}
 			companies[company] = emptyVal
-			affList = append(affList, affData{Login: login, Company: company, From: dtFrom, To: dtTo})
+			affList = append(affList, affData{Login: login, Company: company, From: dtFrom, To: dtTo, Source: source})
 			prevDate = dtTo
 			allAffs++
 		}
 	}
-	lib.Printf(
-		"%d affiliations, unique: %d, non-unique: %d, all user-company connections: %d\n",
-		len(loginAffs), unique, nonUnique, allAffs,
-	)
+	lib.Printf("Affiliations unique: %d, non-unique: %d, with multiple priorities: %d, all user-company connections: %d\n", unique, nonUnique, nonUniquePrio, allAffs)
 
 	// Add companies
 	for company := range companies {
@@ -625,24 +850,23 @@ func importAffs(jsonFN string) int {
 	lib.Printf("Processed %d companies\n", len(companies))
 
 	// Add affiliations
-	added, cached, nonCached := 0, 0, 0
+	added, nonCached, addedAffs := 0, 0, 0
 	for _, aff := range affList {
 		login := aff.Login
 		// Check if we have that actor IDs cached
+		actLogins, ok := cacheActLogins[login]
 		actIDs, ok := cacheActIDs[login]
 		if !ok {
-			actIDs = findActorIDs(con, &ctx, login, maybeHide)
+			actIDs, actLogins = findActors(con, &ctx, login, maybeHide)
 			if len(actIDs) < 1 {
 				csD := loginCSData[login]
-				// Can happen if user have github login but email = "" or null
-				// In that case previous loop by loginEmail didn't add such user
+				// Should not happen
 				actIDs = append(actIDs, addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide))
 				added++
 			}
 			cacheActIDs[login] = actIDs
+			cacheActLogins[login] = actLogins
 			nonCached++
-		} else {
-			cached++
 		}
 		company := aff.Company
 		if company == "" {
@@ -651,18 +875,23 @@ func importAffs(jsonFN string) int {
 		mappedCompany := mapCompanyName(comMap, acqMap, stat, company)
 		dtFrom := aff.From
 		dtTo := aff.To
+		source := lib.TruncToBytes(aff.Source, 30)
 		for _, aid := range actIDs {
 			lib.ExecSQLWithErr(con, &ctx,
 				lib.InsertIgnore(
-					"into gha_actors_affiliations(actor_id, company_name, original_company_name, dt_from, dt_to) "+lib.NValues(5)),
-				lib.AnyArray{aid, maybeHide(lib.TruncToBytes(mappedCompany, 160)), maybeHide(lib.TruncToBytes(company, 160)), dtFrom, dtTo}...,
+					"into gha_actors_affiliations(actor_id, company_name, original_company_name, dt_from, dt_to, source) "+lib.NValues(6)),
+				lib.AnyArray{aid, maybeHide(lib.TruncToBytes(mappedCompany, 160)), maybeHide(lib.TruncToBytes(company, 160)), dtFrom, dtTo, source}...,
 			)
+			addedAffs++
 		}
 	}
-	lib.Printf(
-		"Processed %d affiliations, added %d actors, cache hit: %d, miss: %d\n",
-		len(affList), added, cached, nonCached,
-	)
+	if added > 0 {
+		lib.Printf("Unexpected: added %d actors while processing affiliations\n", added)
+	}
+	if nonCached > 0 {
+		lib.Printf("Unexpected: %d cache misses\n", nonCached)
+	}
+	lib.Printf("Affiliations added up to: %d\n", addedAffs)
 	for company, data := range stat {
 		if company == "---" {
 			lib.Printf("Non-acquired companies: checked all regexp: %d, cache hit: %d\n", data[0], data[1])

@@ -160,6 +160,7 @@ func Structure(ctx *Ctx) {
 					"original_company_name varchar(160) not null, "+
 					"dt_from {{ts}} not null, "+
 					"dt_to {{ts}} not null, "+
+					"source varchar(30) not null default '', "+
 					"primary key(actor_id, company_name, dt_from, dt_to)"+
 					")",
 			),
@@ -171,6 +172,7 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index actors_affiliations_original_company_name_idx on gha_actors_affiliations(original_company_name)")
 		ExecSQLWithErr(c, ctx, "create index actors_affiliations_dt_from_idx on gha_actors_affiliations(dt_from)")
 		ExecSQLWithErr(c, ctx, "create index actors_affiliations_dt_to_idx on gha_actors_affiliations(dt_to)")
+		ExecSQLWithErr(c, ctx, "create index actors_affiliations_source_idx on gha_actors_affiliations(source)")
 	}
 
 	// gha_repos
