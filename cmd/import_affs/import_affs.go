@@ -161,6 +161,7 @@ func findActors(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) s
 	ids := make(map[int]struct{})
 	logins := make(map[string]struct{})
 	logins[login] = struct{}{}
+	actLogins = append(actLogins, login)
 	aid := 0
 	alogin := ""
 	prevIDs := ""
@@ -206,6 +207,7 @@ func findActors(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) s
 		rows = lib.QuerySQLWithErr(db, ctx, query, args...)
 		for rows.Next() {
 			lib.FatalOnError(rows.Scan(&alogin))
+			alogin = maybeHide(alogin)
 			logins[alogin] = struct{}{}
 		}
 		lib.FatalOnError(rows.Err())
@@ -238,6 +240,9 @@ func findActors(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) s
 		actIDs = append(actIDs, aID)
 	}
 	for aLogin := range logins {
+		if aLogin == login {
+			continue
+		}
 		actLogins = append(actLogins, aLogin)
 	}
 	return
@@ -652,8 +657,8 @@ func importAffs(jsonFN string) int {
 			added++
 		}
 		// Store given login's actor IDs in the case
-		cacheActIDs[login] = actIDs
 		for _, aLogin := range actLogins {
+			cacheActIDs[aLogin] = actIDs
 			cacheActLogins[aLogin] = actLogins
 		}
 	}
@@ -707,8 +712,8 @@ func importAffs(jsonFN string) int {
 			actIDs = append(actIDs, addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide))
 			added++
 		}
-		cacheActIDs[login] = actIDs
 		for _, aLogin := range actLogins {
+			cacheActIDs[aLogin] = actIDs
 			cacheActLogins[aLogin] = actLogins
 		}
 		for email := range emails {
@@ -739,8 +744,8 @@ func importAffs(jsonFN string) int {
 			lib.Fatalf("actor login not found %s", login)
 		}
 		// Store given login's actor IDs in the case
-		cacheActIDs[login] = actIDs
 		for _, aLogin := range actLogins {
+			cacheActIDs[aLogin] = actIDs
 			cacheActLogins[aLogin] = actLogins
 		}
 		for name := range names {
@@ -860,9 +865,9 @@ func importAffs(jsonFN string) int {
 	for _, aff := range affList {
 		login := aff.Login
 		// Check if we have that actor IDs cached
-		actLogins, ok := cacheActLogins[login]
-		actIDs, ok := cacheActIDs[login]
-		if !ok {
+		actLogins, okL := cacheActLogins[login]
+		actIDs, okI := cacheActIDs[login]
+		if !okL || !okI {
 			actIDs, actLogins = findActors(con, &ctx, login, maybeHide)
 			if len(actIDs) < 1 {
 				csD := loginCSData[login]
@@ -870,8 +875,8 @@ func importAffs(jsonFN string) int {
 				actIDs = append(actIDs, addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide))
 				added++
 			}
-			cacheActIDs[login] = actIDs
 			for _, aLogin := range actLogins {
+				cacheActIDs[aLogin] = actIDs
 				cacheActLogins[aLogin] = actLogins
 			}
 			nonCached++
