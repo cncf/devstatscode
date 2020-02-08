@@ -192,8 +192,8 @@ func Structure(ctx *Ctx) {
 					"org_login varchar(100), "+
 					"repo_group varchar(80), "+
 					"alias varchar(160), "+
-					"license_key varchar(60), "+
-					"license_name varchar(60), "+
+					"license_key varchar(30), "+
+					"license_name varchar(160), "+
 					"license_prob double precision,"+
 					"primary key(id, name))",
 			),
