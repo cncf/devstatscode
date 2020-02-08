@@ -192,6 +192,9 @@ func Structure(ctx *Ctx) {
 					"org_login varchar(100), "+
 					"repo_group varchar(80), "+
 					"alias varchar(160), "+
+					"license_key varchar(60), "+
+					"license_name varchar(60), "+
+					"license_prob double precision,"+
 					"primary key(id, name))",
 			),
 		)
@@ -203,6 +206,9 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index repos_org_login_idx on gha_repos(org_login)")
 		ExecSQLWithErr(c, ctx, "create index repos_repo_group_idx on gha_repos(repo_group)")
 		ExecSQLWithErr(c, ctx, "create index repos_alias_idx on gha_repos(alias)")
+		ExecSQLWithErr(c, ctx, "create index repos_license_key_idx on gha_repos(license_key)")
+		ExecSQLWithErr(c, ctx, "create index repos_license_name_idx on gha_repos(license_name)")
+		ExecSQLWithErr(c, ctx, "create index repos_license_prob_idx on gha_repos(license_prob)")
 	}
 
 	// gha_orgs
