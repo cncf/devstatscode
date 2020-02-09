@@ -79,7 +79,7 @@ func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}) 
 		defer func() { lib.FatalOnError(con.Close()) }()
 
 		// Get list of orgs in a given database
-		rows, err := con.Query("select distinct name from gha_repos where name like '%_/_%'")
+		rows, err := con.Query("select distinct name from gha_repos where name like '%_/_%' and name not like '%/%/%'")
 		lib.FatalOnError(err)
 		defer func() { lib.FatalOnError(rows.Close()) }()
 		var (

@@ -1064,6 +1064,134 @@ func syncEvents(ctx *lib.Ctx) {
 	lib.SyncIssuesState(gctx, gc, ctx, c, issues, prs, false)
 }
 
+func syncLicenses(ctx *lib.Ctx) {
+	gctx, gcs := lib.GHClient(ctx)
+	c := lib.PgConn(ctx)
+	defer func() { lib.FatalOnError(c.Close()) }()
+	query := "select name from gha_repos where name like '%_/_%' and name not like '%/%/%'"
+	//query += " and name = 'kubernetes/kubernetes'"
+	if !ctx.ForceAPILicenses {
+		query += " and (license_key is null or license_key = '')"
+	}
+	repos := []string{}
+	repo := ""
+	rows := lib.QuerySQLWithErr(c, ctx, query)
+	defer func() { lib.FatalOnError(rows.Close()) }()
+	for rows.Next() {
+		lib.FatalOnError(rows.Scan(&repo))
+		repos = append(repos, repo)
+	}
+	lib.FatalOnError(rows.Err())
+	nRepos := len(repos)
+	lib.Printf("Checking license on %d repos\n", nRepos)
+	hint, _, rem, wait := lib.GetRateLimits(gctx, ctx, gcs, true)
+	allowed := 0
+	handleRate := func() (ok bool) {
+		if rem[hint] <= ctx.MinGHAPIPoints {
+			if wait[hint].Seconds() <= float64(ctx.MaxGHAPIWaitSeconds) {
+				if ctx.GitHubDebug > 0 {
+					lib.Printf("API limit reached while getting commits data, waiting %v\n", wait[hint])
+				}
+				time.Sleep(time.Duration(1) * time.Second)
+				time.Sleep(wait[hint])
+			} else {
+				if ctx.GHAPIErrorIsFatal {
+					lib.Fatalf("API limit reached while getting commits data, aborting, don't want to wait %v", wait[hint])
+					os.Exit(1)
+				} else {
+					lib.Printf("Error: API limit reached while getting commits data, aborting, don't want to wait %v\n", wait[hint])
+					return
+				}
+			}
+			hint, _, rem, wait = lib.GetRateLimits(gctx, ctx, gcs, true)
+		}
+		allowed = rem[hint] / 2
+		ok = true
+		return
+	}
+	if !handleRate() {
+		return
+	}
+	thrN := lib.GetThreadsNum(ctx)
+	processed := 0
+	lastTime := time.Now()
+	dtStart := lastTime
+	freq := time.Duration(1) * time.Second
+	iter := func() (ok bool) {
+		processed++
+		allowed--
+		if allowed <= 0 {
+			hint, _, rem, wait = lib.GetRateLimits(gctx, ctx, gcs, true)
+			if !handleRate() {
+				return
+			}
+		}
+		lib.ProgressInfo(processed, nRepos, dtStart, &lastTime, freq, fmt.Sprintf("API points: %+v, resets in: %+v, hint: %d", rem, wait, hint))
+		ok = true
+		return
+	}
+	getLicense := func(ch chan struct{}, repo string) {
+		defer func() {
+			if ch != nil {
+				ch <- struct{}{}
+			}
+		}()
+		cl := gcs[hint]
+		l := fmt.Sprintf("repos/%s/license", repo)
+		req, err := cl.NewRequest("GET", l, nil)
+		lib.FatalOnError(err)
+		var license lib.LicenseData
+		resp, err := cl.Do(gctx, req, &license)
+		if resp.StatusCode == 404 {
+			if ctx.Debug > 0 {
+				lib.Printf("No license found for: %s\n", repo)
+			}
+			return
+		}
+		lib.FatalOnError(err)
+		if ctx.Debug > 0 {
+			lib.Printf("%s license:%+v\n", repo, license)
+		}
+		query := fmt.Sprintf(
+			"update gha_repos set license_key = %s, license_name = %s, license_prob = %s where name = %s",
+			lib.NValue(1),
+			lib.NValue(2),
+			lib.NValue(3),
+			lib.NValue(4),
+		)
+		lib.ExecSQLWithErr(c, ctx, query, license.License.Key, license.License.Name, 100.0, repo)
+	}
+	if thrN > 1 {
+		ch := make(chan struct{})
+		nThreads := 0
+		for _, repo := range repos {
+			go getLicense(ch, repo)
+			nThreads++
+			if nThreads == thrN {
+				<-ch
+				nThreads--
+				if !iter() {
+					return
+				}
+			}
+		}
+		for nThreads > 0 {
+			<-ch
+			nThreads--
+			if !iter() {
+				return
+			}
+		}
+	} else {
+		for _, repo := range repos {
+			getLicense(nil, repo)
+			if !iter() {
+				return
+			}
+		}
+	}
+}
+
 func main() {
 	// Environment context parse
 	var ctx lib.Ctx
@@ -1072,6 +1200,9 @@ func main() {
 	dtStart := time.Now()
 	// Create artificial events
 	if !ctx.SkipGHAPI {
+		if !ctx.SkipAPILicenses {
+			syncLicenses(&ctx)
+		}
 		if !ctx.SkipAPIEvents {
 			syncEvents(&ctx)
 		}
