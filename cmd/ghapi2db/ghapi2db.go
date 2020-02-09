@@ -1069,7 +1069,6 @@ func syncLicenses(ctx *lib.Ctx) {
 	c := lib.PgConn(ctx)
 	defer func() { lib.FatalOnError(c.Close()) }()
 	query := "select name from gha_repos where name like '%_/_%' and name not like '%/%/%'"
-	//query += " and name = 'kubernetes/kubernetes'"
 	if !ctx.ForceAPILicenses {
 		query += " and (license_key is null or license_key = '')"
 	}
@@ -1090,16 +1089,16 @@ func syncLicenses(ctx *lib.Ctx) {
 		if rem[hint] <= ctx.MinGHAPIPoints {
 			if wait[hint].Seconds() <= float64(ctx.MaxGHAPIWaitSeconds) {
 				if ctx.GitHubDebug > 0 {
-					lib.Printf("API limit reached while getting commits data, waiting %v\n", wait[hint])
+					lib.Printf("API limit reached while getting licenses data, waiting %v\n", wait[hint])
 				}
 				time.Sleep(time.Duration(1) * time.Second)
 				time.Sleep(wait[hint])
 			} else {
 				if ctx.GHAPIErrorIsFatal {
-					lib.Fatalf("API limit reached while getting commits data, aborting, don't want to wait %v", wait[hint])
+					lib.Fatalf("API limit reached while getting licenses data, aborting, don't want to wait %v", wait[hint])
 					os.Exit(1)
 				} else {
-					lib.Printf("Error: API limit reached while getting commits data, aborting, don't want to wait %v\n", wait[hint])
+					lib.Printf("Error: API limit reached while getting licenses data, aborting, don't want to wait %v\n", wait[hint])
 					return
 				}
 			}
