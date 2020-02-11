@@ -83,3 +83,6 @@ const Reconnect string = "reconnect"
 
 // OK - common constant string
 const OK string = "ok"
+
+// RepoNamesQuery - common constant string
+const RepoNamesQuery string = "select distinct name from gha_repos where name like '%_/_%' and name not like '%/%/%'"

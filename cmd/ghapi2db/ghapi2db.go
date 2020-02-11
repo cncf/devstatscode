@@ -1068,7 +1068,7 @@ func syncLicenses(ctx *lib.Ctx) {
 	gctx, gcs := lib.GHClient(ctx)
 	c := lib.PgConn(ctx)
 	defer func() { lib.FatalOnError(c.Close()) }()
-	query := "select name from gha_repos where name like '%_/_%' and name not like '%/%/%'"
+	query := lib.RepoNamesQuery
 	if !ctx.ForceAPILicenses {
 		query += " and (license_key is null or license_key = '')"
 	}
@@ -1115,7 +1115,7 @@ func syncLicenses(ctx *lib.Ctx) {
 	processed := 0
 	lastTime := time.Now()
 	dtStart := lastTime
-	freq := time.Duration(1) * time.Second
+	freq := time.Duration(30) * time.Second
 	iter := func() (ok bool) {
 		processed++
 		allowed--
@@ -1129,27 +1129,47 @@ func syncLicenses(ctx *lib.Ctx) {
 		ok = true
 		return
 	}
-	getLicense := func(ch chan struct{}, repo string) {
+	getLicense := func(ch chan struct{}, orgRepo string) {
 		defer func() {
 			if ch != nil {
 				ch <- struct{}{}
 			}
 		}()
+		noLicense := func() {
+			query := fmt.Sprintf(
+				"update gha_repos set license_key = %s, license_name = %s, license_prob = %s where name = %s",
+				lib.NValue(1),
+				lib.NValue(2),
+				lib.NValue(3),
+				lib.NValue(4),
+			)
+			lib.ExecSQLWithErr(c, ctx, query, "not_found", "Not found", 0.0, orgRepo)
+		}
 		cl := gcs[hint]
-		l := fmt.Sprintf("repos/%s/license", repo)
-		req, err := cl.NewRequest("GET", l, nil)
-		lib.FatalOnError(err)
-		var license lib.LicenseData
-		resp, err := cl.Do(gctx, req, &license)
+		ary := strings.Split(orgRepo, "/")
+		if len(ary) < 2 {
+			lib.Printf("WARNING: malformed repo name: '%s'\n", orgRepo)
+			return
+		}
+		org := ary[0]
+		license, resp, err := cl.Repositories.License(gctx, org, repo)
 		if resp.StatusCode == 404 {
 			if ctx.Debug > 0 {
-				lib.Printf("No license found for: %s\n", repo)
+				lib.Printf("No license found for: %s (404)\n", orgRepo)
 			}
+			noLicense()
 			return
 		}
 		lib.FatalOnError(err)
+		if license.License == nil {
+			if ctx.Debug > 0 {
+				lib.Printf("No license found for: %s (nil)\n", orgRepo)
+			}
+			noLicense()
+			return
+		}
 		if ctx.Debug > 0 {
-			lib.Printf("%s license:%+v\n", repo, license)
+			lib.Printf("%s license:%+v\n", orgRepo, license.License)
 		}
 		query := fmt.Sprintf(
 			"update gha_repos set license_key = %s, license_name = %s, license_prob = %s where name = %s",
@@ -1158,7 +1178,7 @@ func syncLicenses(ctx *lib.Ctx) {
 			lib.NValue(3),
 			lib.NValue(4),
 		)
-		lib.ExecSQLWithErr(c, ctx, query, license.License.Key, license.License.Name, 100.0, repo)
+		lib.ExecSQLWithErr(c, ctx, query, license.License.Key, license.License.Name, 100.0, orgRepo)
 	}
 	if thrN > 1 {
 		ch := make(chan struct{})
@@ -1191,6 +1211,149 @@ func syncLicenses(ctx *lib.Ctx) {
 	}
 }
 
+func syncLangs(ctx *lib.Ctx) {
+	gctx, gcs := lib.GHClient(ctx)
+	c := lib.PgConn(ctx)
+	defer func() { lib.FatalOnError(c.Close()) }()
+	query := lib.RepoNamesQuery
+	if !ctx.ForceAPILangs {
+		query += " and name not in (select distinct repo_name from gha_repos_langs)"
+	}
+	repos := []string{}
+	repo := ""
+	rows := lib.QuerySQLWithErr(c, ctx, query)
+	defer func() { lib.FatalOnError(rows.Close()) }()
+	for rows.Next() {
+		lib.FatalOnError(rows.Scan(&repo))
+		repos = append(repos, repo)
+	}
+	lib.FatalOnError(rows.Err())
+	nRepos := len(repos)
+	lib.Printf("Checking programming languages on %d repos\n", nRepos)
+	hint, _, rem, wait := lib.GetRateLimits(gctx, ctx, gcs, true)
+	allowed := 0
+	handleRate := func() (ok bool) {
+		if rem[hint] <= ctx.MinGHAPIPoints {
+			if wait[hint].Seconds() <= float64(ctx.MaxGHAPIWaitSeconds) {
+				if ctx.GitHubDebug > 0 {
+					lib.Printf("API limit reached while getting programming languages data, waiting %v\n", wait[hint])
+				}
+				time.Sleep(time.Duration(1) * time.Second)
+				time.Sleep(wait[hint])
+			} else {
+				if ctx.GHAPIErrorIsFatal {
+					lib.Fatalf("API limit reached while getting programming languages data, aborting, don't want to wait %v", wait[hint])
+					os.Exit(1)
+				} else {
+					lib.Printf("Error: API limit reached while getting programming languages data, aborting, don't want to wait %v\n", wait[hint])
+					return
+				}
+			}
+			hint, _, rem, wait = lib.GetRateLimits(gctx, ctx, gcs, true)
+		}
+		allowed = rem[hint] / 2
+		ok = true
+		return
+	}
+	if !handleRate() {
+		return
+	}
+	thrN := lib.GetThreadsNum(ctx)
+	processed := 0
+	lastTime := time.Now()
+	dtStart := lastTime
+	freq := time.Duration(30) * time.Second
+	iter := func() (ok bool) {
+		processed++
+		allowed--
+		if allowed <= 0 {
+			hint, _, rem, wait = lib.GetRateLimits(gctx, ctx, gcs, true)
+			if !handleRate() {
+				return
+			}
+		}
+		lib.ProgressInfo(processed, nRepos, dtStart, &lastTime, freq, fmt.Sprintf("API points: %+v, resets in: %+v, hint: %d", rem, wait, hint))
+		ok = true
+		return
+	}
+	getLangs := func(ch chan struct{}, orgRepo string) {
+		defer func() {
+			if ch != nil {
+				ch <- struct{}{}
+			}
+		}()
+		noLangs := func() {
+			lib.ExecSQLWithErr(c, ctx, "insert into gha_repos_langs(repo_name, lang_name, lang_loc, lang_perc) "+lib.NValues(4), orgRepo, "unknown", 0, 0.0)
+		}
+		cl := gcs[hint]
+		ary := strings.Split(orgRepo, "/")
+		if len(ary) < 2 {
+			lib.Printf("WARNING: malformed repo name: '%s'\n", orgRepo)
+			return
+		}
+		org := ary[0]
+		repo := ary[1]
+		when := time.Now()
+		langs, resp, err := cl.Repositories.ListLanguages(gctx, org, repo)
+		if resp.StatusCode == 404 || len(langs) == 0 {
+			if ctx.Debug > 0 {
+				lib.Printf("No programming languages found for: %s\n", orgRepo)
+			}
+			noLangs()
+			return
+		}
+		lib.FatalOnError(err)
+		if ctx.Debug > 0 {
+			lib.Printf("%s languages: %+v\n", orgRepo, langs)
+		}
+		lib.ExecSQLWithErr(c, ctx, "delete from gha_repos_langs where repo_name = "+lib.NValue(1), orgRepo)
+		allLOC := 0
+		for _, loc := range langs {
+			allLOC += loc
+		}
+		if allLOC == 0 {
+			if ctx.Debug > 0 {
+				lib.Printf("All LOC sum to 0 for: %s\n", orgRepo)
+			}
+			noLangs()
+			return
+		}
+		for lang, loc := range langs {
+			perc := (float64(loc) * 100.0) / float64(allLOC)
+			lib.ExecSQLWithErr(c, ctx, "insert into gha_repos_langs(repo_name, lang_name, lang_loc, lang_perc, dt) "+lib.NValues(5), orgRepo, lang, loc, perc, when)
+		}
+	}
+	if thrN > 1 {
+		ch := make(chan struct{})
+		nThreads := 0
+		for _, repo := range repos {
+			go getLangs(ch, repo)
+			nThreads++
+			if nThreads == thrN {
+				<-ch
+				nThreads--
+				if !iter() {
+					return
+				}
+			}
+		}
+		for nThreads > 0 {
+			<-ch
+			nThreads--
+			if !iter() {
+				return
+			}
+		}
+	} else {
+		for _, repo := range repos {
+			getLangs(nil, repo)
+			if !iter() {
+				return
+			}
+		}
+	}
+}
+
 func main() {
 	// Environment context parse
 	var ctx lib.Ctx
@@ -1201,6 +1364,9 @@ func main() {
 	if !ctx.SkipGHAPI {
 		if !ctx.SkipAPILicenses {
 			syncLicenses(&ctx)
+		}
+		if !ctx.SkipAPILangs {
+			syncLangs(&ctx)
 		}
 		if !ctx.SkipAPIEvents {
 			syncEvents(&ctx)

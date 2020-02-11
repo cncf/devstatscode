@@ -14,17 +14,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// License - license data
-type License struct {
-	Key  string `json:"key"`
-	Name string `json:"name"`
-}
-
-// LicenseData - license data
-type LicenseData struct {
-	License License `json:"license"`
-}
-
 // IssueConfig - holds issue data
 type IssueConfig struct {
 	Repo         string

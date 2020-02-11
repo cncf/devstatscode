@@ -211,6 +211,31 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index repos_license_prob_idx on gha_repos(license_prob)")
 	}
 
+	// gha_repos_langs
+	// const
+	if ctx.Table {
+		ExecSQLWithErr(c, ctx, "drop table if exists gha_repos_langs")
+		ExecSQLWithErr(
+			c,
+			ctx,
+			CreateTable(
+				"gha_repos_langs("+
+					"repo_name varchar(160) not null, "+
+					"lang_name varchar(60) not null, "+
+					"lang_loc int not null,"+
+					"lang_perc double precision not null,"+
+					"dt {{tsnow}}, "+
+					"primary key(repo_name, lang_name))",
+			),
+		)
+	}
+	if ctx.Index {
+		ExecSQLWithErr(c, ctx, "create index repos_langs_narepo_me_idx on gha_repos_langs(repo_name)")
+		ExecSQLWithErr(c, ctx, "create index repos_langs_lang_name_idx on gha_repos_langs(lang_name)")
+		ExecSQLWithErr(c, ctx, "create index repos_langs_lang_loc_idx on gha_repos_langs(lang_loc)")
+		ExecSQLWithErr(c, ctx, "create index repos_langs_lang_perc_idx on gha_repos_langs(lang_perc)")
+	}
+
 	// gha_orgs
 	// {"id:Fixnum"=>18494, "login:String"=>18494, "gravatar_id:String"=>18494,
 	// "url:String"=>18494, "avatar_url:String"=>18494}
