@@ -175,8 +175,10 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 	// Committer
 	committerID := int64(0)
 	committerLogin := ""
-	if commit.Committer != nil && commit.Committer.ID != nil && commit.Committer.Login != nil {
+	if commit.Committer != nil && commit.Committer.ID != nil {
 		committerID = *commit.Committer.ID
+	}
+	if commit.Committer != nil && commit.Committer.Login != nil {
 		committerLogin = *commit.Committer.Login
 	}
 	committerName := *commit.Commit.Committer.Name
@@ -186,8 +188,10 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 	// Author
 	authorID := int64(0)
 	authorLogin := ""
-	if commit.Author != nil && commit.Author.ID != nil && commit.Author.Login != nil {
+	if commit.Author != nil && commit.Author.ID != nil {
 		authorID = *commit.Author.ID
+	}
+	if commit.Author != nil && commit.Author.Login != nil {
 		authorLogin = *commit.Author.Login
 	}
 	authorName := *commit.Commit.Author.Name
