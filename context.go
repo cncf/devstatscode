@@ -96,6 +96,8 @@ type Ctx struct {
 	SkipAPICommits           bool                         // From GHA2DB_GHAPISKIPCOMMITS, ghapi2db tool, if set then tool is skipping GH API commits enrichment
 	SkipAPILicenses          bool                         // From GHA2DB_GHAPISKIPLICENSES, ghapi2db tool, if set then tool is skipping GH API licenses enrichment
 	ForceAPILicenses         bool                         // From GHA2DB_GHAPIFORCELICENSES, ghapi2db tool, if set, recheck licenses on repos that already have licenses fetched
+	SkipAPILangs             bool                         // From GHA2DB_GHAPISKIPLANGS, ghapi2db tool, if set then tool is skipping GH API repos programming languages enrichment
+	ForceAPILangs            bool                         // From GHA2DB_GHAPIFORCELANGS, ghapi2db tool, if set, recheck programming languages on repos that already have them fetched
 	SkipGetRepos             bool                         // From GHA2DB_GETREPOSSKIP, get_repos tool, if set then tool does nothing
 	CSVFile                  string                       // From GHA2DB_CSVOUT, runq tool, if set, saves result in this file
 	ComputeAll               bool                         // From GHA2DB_COMPUTE_ALL, all tools, if set then no period decisions are taken based on time, but all possible periods are recalculated
@@ -313,6 +315,8 @@ func (ctx *Ctx) Init() {
 	ctx.SkipAPICommits = os.Getenv("GHA2DB_GHAPISKIPCOMMITS") != ""
 	ctx.SkipAPILicenses = os.Getenv("GHA2DB_GHAPISKIPLICENSES") != ""
 	ctx.ForceAPILicenses = os.Getenv("GHA2DB_GHAPIFORCELICENSES") != ""
+	ctx.SkipAPILangs = os.Getenv("GHA2DB_GHAPISKIPLANGS") != ""
+	ctx.ForceAPILangs = os.Getenv("GHA2DB_GHAPIFORCELANGS") != ""
 	ctx.GHAPIErrorIsFatal = os.Getenv("GHA2DB_GHAPI_ERROR_FATAL") != ""
 	ctx.AutoFetchCommits = os.Getenv("GHA2DB_NO_AUTOFETCHCOMMITS") == ""
 
