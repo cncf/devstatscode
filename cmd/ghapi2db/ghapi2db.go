@@ -1287,7 +1287,7 @@ func syncLangs(ctx *lib.Ctx) {
 			}
 		}()
 		noLangs := func() {
-			lib.ExecSQLWithErr(c, ctx, "insert into gha_repos_langs(repo_name, lang_name, lang_loc, lang_perc) "+lib.NValues(4), orgRepo, "unknown", 0, 0.0)
+			lib.ExecSQLWithErr(c, ctx, lib.InsertIgnore("into gha_repos_langs(repo_name, lang_name, lang_loc, lang_perc) "+lib.NValues(4)), orgRepo, "unknown", 0, 0.0)
 		}
 		cl := gcs[hint]
 		ary := strings.Split(orgRepo, "/")
@@ -1310,7 +1310,6 @@ func syncLangs(ctx *lib.Ctx) {
 		if ctx.Debug > 0 {
 			lib.Printf("%s languages: %+v\n", orgRepo, langs)
 		}
-		lib.ExecSQLWithErr(c, ctx, "delete from gha_repos_langs where repo_name = "+lib.NValue(1), orgRepo)
 		allLOC := 0
 		for _, loc := range langs {
 			allLOC += loc
@@ -1322,6 +1321,7 @@ func syncLangs(ctx *lib.Ctx) {
 			noLangs()
 			return
 		}
+		lib.ExecSQLWithErr(c, ctx, "delete from gha_repos_langs where repo_name = "+lib.NValue(1), orgRepo)
 		for lang, loc := range langs {
 			perc := (float64(loc) * 100.0) / float64(allLOC)
 			lib.ExecSQLWithErr(c, ctx, "insert into gha_repos_langs(repo_name, lang_name, lang_loc, lang_perc, dt) "+lib.NValues(5), orgRepo, lang, loc, perc, when)
