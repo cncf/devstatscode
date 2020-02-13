@@ -1133,6 +1133,9 @@ func syncLicenses(ctx *lib.Ctx) {
 		ok = true
 		return
 	}
+	mtx := &sync.Mutex{}
+	found := 0
+	notFound := 0
 	getLicense := func(ch chan struct{}, orgRepo string) {
 		defer func() {
 			if ch != nil {
@@ -1149,6 +1152,9 @@ func syncLicenses(ctx *lib.Ctx) {
 				lib.NValue(5),
 			)
 			lib.ExecSQLWithErr(c, ctx, query, "not_found", "Not found", 0.0, time.Now(), orgRepo)
+			mtx.Lock()
+			notFound++
+			mtx.Unlock()
 		}
 		cl := gcs[hint]
 		ary := strings.Split(orgRepo, "/")
@@ -1159,17 +1165,13 @@ func syncLicenses(ctx *lib.Ctx) {
 		org := ary[0]
 		license, resp, err := cl.Repositories.License(gctx, org, repo)
 		if resp.StatusCode == 404 {
-			if ctx.Debug > 0 {
-				lib.Printf("No license found for: %s (404)\n", orgRepo)
-			}
+			lib.Printf("No license found for: %s (404)\n", orgRepo)
 			noLicense()
 			return
 		}
 		lib.FatalOnError(err)
 		if license.License == nil {
-			if ctx.Debug > 0 {
-				lib.Printf("No license found for: %s (nil)\n", orgRepo)
-			}
+			lib.Printf("No license found for: %s (nil)\n", orgRepo)
 			noLicense()
 			return
 		}
@@ -1185,6 +1187,9 @@ func syncLicenses(ctx *lib.Ctx) {
 			lib.NValue(5),
 		)
 		lib.ExecSQLWithErr(c, ctx, query, license.License.Key, license.License.Name, 100.0, time.Now(), orgRepo)
+		mtx.Lock()
+		found++
+		mtx.Unlock()
 	}
 	if thrN > 1 {
 		ch := make(chan struct{})
@@ -1215,6 +1220,7 @@ func syncLicenses(ctx *lib.Ctx) {
 			}
 		}
 	}
+	lib.Printf("Processed %d, found %d licenses, %d not found\n", processed, found, notFound)
 }
 
 func syncLangs(ctx *lib.Ctx) {
@@ -1282,6 +1288,9 @@ func syncLangs(ctx *lib.Ctx) {
 		ok = true
 		return
 	}
+	mtx := &sync.Mutex{}
+	found := 0
+	notFound := 0
 	getLangs := func(ch chan struct{}, orgRepo string) {
 		defer func() {
 			if ch != nil {
@@ -1290,6 +1299,9 @@ func syncLangs(ctx *lib.Ctx) {
 		}()
 		noLangs := func() {
 			lib.ExecSQLWithErr(c, ctx, lib.InsertIgnore("into gha_repos_langs(repo_name, lang_name, lang_loc, lang_perc) "+lib.NValues(4)), orgRepo, "unknown", 0, 0.0)
+			mtx.Lock()
+			notFound++
+			mtx.Unlock()
 		}
 		cl := gcs[hint]
 		ary := strings.Split(orgRepo, "/")
@@ -1302,9 +1314,7 @@ func syncLangs(ctx *lib.Ctx) {
 		when := time.Now()
 		langs, resp, err := cl.Repositories.ListLanguages(gctx, org, repo)
 		if resp.StatusCode == 404 || len(langs) == 0 {
-			if ctx.Debug > 0 {
-				lib.Printf("No programming languages found for: %s\n", orgRepo)
-			}
+			lib.Printf("No programming languages found for: %s\n", orgRepo)
 			noLangs()
 			return
 		}
@@ -1317,9 +1327,7 @@ func syncLangs(ctx *lib.Ctx) {
 			allLOC += loc
 		}
 		if allLOC == 0 {
-			if ctx.Debug > 0 {
-				lib.Printf("All LOC sum to 0 for: %s\n", orgRepo)
-			}
+			lib.Printf("All LOC sum to 0 for: %s\n", orgRepo)
 			noLangs()
 			return
 		}
@@ -1328,6 +1336,9 @@ func syncLangs(ctx *lib.Ctx) {
 			perc := (float64(loc) * 100.0) / float64(allLOC)
 			lib.ExecSQLWithErr(c, ctx, "insert into gha_repos_langs(repo_name, lang_name, lang_loc, lang_perc, dt) "+lib.NValues(5), orgRepo, lang, loc, perc, when)
 		}
+		mtx.Lock()
+		found++
+		mtx.Unlock()
 	}
 	if thrN > 1 {
 		ch := make(chan struct{})
@@ -1358,6 +1369,7 @@ func syncLangs(ctx *lib.Ctx) {
 			}
 		}
 	}
+	lib.Printf("Processed %d, found languages on %d repos, on %d not found\n", processed, found, notFound)
 }
 
 func main() {
