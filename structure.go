@@ -194,7 +194,7 @@ func Structure(ctx *Ctx) {
 					"alias varchar(160), "+
 					"license_key varchar(30), "+
 					"license_name varchar(160), "+
-					"license_prob double precision,"+
+					"license_prob double precision, "+
 					"created_at {{tsnow}}, "+
 					"updated_at {{tsnow}}, "+
 					"primary key(id, name))",
