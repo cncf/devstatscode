@@ -195,6 +195,8 @@ func Structure(ctx *Ctx) {
 					"license_key varchar(30), "+
 					"license_name varchar(160), "+
 					"license_prob double precision,"+
+					"created_at {{tsnow}}, "+
+					"updated_at {{tsnow}}, "+
 					"primary key(id, name))",
 			),
 		)
@@ -209,6 +211,8 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index repos_license_key_idx on gha_repos(license_key)")
 		ExecSQLWithErr(c, ctx, "create index repos_license_name_idx on gha_repos(license_name)")
 		ExecSQLWithErr(c, ctx, "create index repos_license_prob_idx on gha_repos(license_prob)")
+		ExecSQLWithErr(c, ctx, "create index repos_created_at_idx on gha_repos(created_at)")
+		ExecSQLWithErr(c, ctx, "create index repos_updated_at_idx on gha_repos(updated_at)")
 	}
 
 	// gha_repos_langs
