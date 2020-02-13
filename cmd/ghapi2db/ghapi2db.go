@@ -1165,15 +1165,31 @@ func syncLicenses(ctx *lib.Ctx) {
 		org := ary[0]
 		repo := ary[1]
 		license, resp, err := cl.Repositories.License(gctx, org, repo)
+		if resp == nil {
+			lib.Printf("License API response is null for %s/%s, skipping\n", org, repo)
+			return
+		}
+		if license == nil {
+			lib.Printf("License is null for %s/%s, skipping\n", org, repo)
+			return
+		}
 		if resp.StatusCode == 404 {
 			lib.Printf("No license found for: %s/%s (404)\n", org, repo)
 			noLicense()
 			return
 		}
+		if resp.StatusCode >= 400 {
+			lib.Printf("No license found for: %s/%s, skipping (%d)\n", org, repo, resp.StatusCode)
+			if resp.StatusCode == 403 {
+				mtx.Lock()
+				allowed = 0
+				mtx.Unlock()
+			}
+			return
+		}
 		lib.FatalOnError(err)
 		if license.License == nil {
 			lib.Printf("No license found for: %s (nil)\n", orgRepo)
-			noLicense()
 			return
 		}
 		if ctx.Debug > 0 {
@@ -1314,9 +1330,22 @@ func syncLangs(ctx *lib.Ctx) {
 		repo := ary[1]
 		when := time.Now()
 		langs, resp, err := cl.Repositories.ListLanguages(gctx, org, repo)
+		if resp == nil {
+			lib.Printf("Languages API response is null for %s/%s, skipping\n", org, repo)
+			return
+		}
 		if resp.StatusCode == 404 || len(langs) == 0 {
-			lib.Printf("No programming languages found for: %s\n", orgRepo)
+			lib.Printf("No programming languages found for: %s/%s (%d,%d)\n", org, repo, resp.StatusCode, len(langs))
 			noLangs()
+			return
+		}
+		if resp.StatusCode >= 400 {
+			lib.Printf("No languages found for: %s/%s, skipping (%d)\n", org, repo, resp.StatusCode)
+			if resp.StatusCode == 403 {
+				mtx.Lock()
+				allowed = 0
+				mtx.Unlock()
+			}
 			return
 		}
 		lib.FatalOnError(err)
