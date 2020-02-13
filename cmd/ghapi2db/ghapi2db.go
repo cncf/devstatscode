@@ -1141,13 +1141,14 @@ func syncLicenses(ctx *lib.Ctx) {
 		}()
 		noLicense := func() {
 			query := fmt.Sprintf(
-				"update gha_repos set license_key = %s, license_name = %s, license_prob = %s where name = %s",
+				"update gha_repos set license_key = %s, license_name = %s, license_prob = %s, updated_at = %s where name = %s",
 				lib.NValue(1),
 				lib.NValue(2),
 				lib.NValue(3),
 				lib.NValue(4),
+				lib.NValue(5),
 			)
-			lib.ExecSQLWithErr(c, ctx, query, "not_found", "Not found", 0.0, orgRepo)
+			lib.ExecSQLWithErr(c, ctx, query, "not_found", "Not found", 0.0, time.Now(), orgRepo)
 		}
 		cl := gcs[hint]
 		ary := strings.Split(orgRepo, "/")
@@ -1176,13 +1177,14 @@ func syncLicenses(ctx *lib.Ctx) {
 			lib.Printf("%s license:%+v\n", orgRepo, license.License)
 		}
 		query := fmt.Sprintf(
-			"update gha_repos set license_key = %s, license_name = %s, license_prob = %s where name = %s",
+			"update gha_repos set license_key = %s, license_name = %s, license_prob = %s, updated_at = %s where name = %s",
 			lib.NValue(1),
 			lib.NValue(2),
 			lib.NValue(3),
 			lib.NValue(4),
+			lib.NValue(5),
 		)
-		lib.ExecSQLWithErr(c, ctx, query, license.License.Key, license.License.Name, 100.0, orgRepo)
+		lib.ExecSQLWithErr(c, ctx, query, license.License.Key, license.License.Name, 100.0, time.Now(), orgRepo)
 	}
 	if thrN > 1 {
 		ch := make(chan struct{})

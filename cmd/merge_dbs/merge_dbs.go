@@ -84,6 +84,7 @@ func mergePDBs() {
 		{"gha_releases", "", "-"},
 		{"gha_releases_assets", "", "-"},
 		{"gha_repos", "", "-"},
+		{"gha_repos_langs", "", "-"},
 		{"gha_skip_commits", "", "-"},
 		{"gha_teams", "", "-"},
 		{"gha_teams_repositories", "", "-"},
