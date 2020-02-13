@@ -1108,7 +1108,7 @@ func syncLicenses(ctx *lib.Ctx) {
 			}
 			hint, _, rem, wait = lib.GetRateLimits(gctx, ctx, gcs, true)
 		}
-		allowed = rem[hint] / 2
+		allowed = rem[hint] / 10
 		ok = true
 		return
 	}
@@ -1120,9 +1120,18 @@ func syncLicenses(ctx *lib.Ctx) {
 	lastTime := time.Now()
 	dtStart := lastTime
 	freq := time.Duration(30) * time.Second
-	iter := func() (ok bool) {
-		processed++
-		allowed--
+	mtx := &sync.Mutex{}
+	found := 0
+	notFound := 0
+	abuses := 0
+	iter := func(abused bool) (ok bool) {
+		if !abused {
+			processed++
+			allowed--
+		} else {
+			allowed = 0
+			abuses++
+		}
 		if allowed <= 0 {
 			hint, _, rem, wait = lib.GetRateLimits(gctx, ctx, gcs, true)
 			if !handleRate() {
@@ -1133,9 +1142,6 @@ func syncLicenses(ctx *lib.Ctx) {
 		ok = true
 		return
 	}
-	mtx := &sync.Mutex{}
-	found := 0
-	notFound := 0
 	getLicense := func(ch chan struct{}, orgRepo string) {
 		defer func() {
 			if ch != nil {
@@ -1164,33 +1170,44 @@ func syncLicenses(ctx *lib.Ctx) {
 		}
 		org := ary[0]
 		repo := ary[1]
-		license, resp, err := cl.Repositories.License(gctx, org, repo)
-		if resp == nil {
-			lib.Printf("License API response is null for %s/%s, skipping\n", org, repo)
-			return
-		}
-		if license == nil {
-			lib.Printf("License is null for %s/%s, skipping\n", org, repo)
-			return
-		}
-		if resp.StatusCode == 404 {
-			lib.Printf("No license found for: %s/%s (404)\n", org, repo)
-			noLicense()
-			return
-		}
-		if resp.StatusCode >= 400 {
-			lib.Printf("No license found for: %s/%s, skipping (%d)\n", org, repo, resp.StatusCode)
-			if resp.StatusCode == 403 {
-				mtx.Lock()
-				allowed = 0
-				mtx.Unlock()
+		var license *github.RepositoryLicense
+		for {
+			lic, resp, err := cl.Repositories.License(gctx, org, repo)
+			if resp == nil {
+				lib.Printf("License API response is null for %s/%s, skipping\n", org, repo)
+				return
 			}
-			return
-		}
-		lib.FatalOnError(err)
-		if license.License == nil {
-			lib.Printf("No license found for: %s (nil)\n", orgRepo)
-			return
+			if resp.StatusCode == 404 {
+				lib.Printf("No license found for: %s/%s (404)\n", org, repo)
+				noLicense()
+				return
+			}
+			if resp.StatusCode >= 400 {
+				if resp.StatusCode == 403 {
+					lib.Printf("Licenses abuse detected on %s/%s, retrying\n", org, repo)
+					mtx.Lock()
+					if !iter(true) {
+						mtx.Unlock()
+						return
+					}
+					mtx.Unlock()
+					continue
+				} else {
+					lib.Printf("No license found for: %s/%s, skipping (%d)\n", org, repo, resp.StatusCode)
+				}
+				return
+			}
+			lib.FatalOnError(err)
+			if lic == nil {
+				lib.Printf("License is null for %s/%s, skipping\n", org, repo)
+				return
+			}
+			if lic.License == nil {
+				lib.Printf("No license found for: %s/%s (nil)\n", org, repo)
+				return
+			}
+			license = lic
+			break
 		}
 		if ctx.Debug > 0 {
 			lib.Printf("%s license:%+v\n", orgRepo, license.License)
@@ -1217,7 +1234,7 @@ func syncLicenses(ctx *lib.Ctx) {
 			if nThreads == thrN {
 				<-ch
 				nThreads--
-				if !iter() {
+				if !iter(false) {
 					return
 				}
 			}
@@ -1225,19 +1242,19 @@ func syncLicenses(ctx *lib.Ctx) {
 		for nThreads > 0 {
 			<-ch
 			nThreads--
-			if !iter() {
+			if !iter(false) {
 				return
 			}
 		}
 	} else {
 		for _, repo := range repos {
 			getLicense(nil, repo)
-			if !iter() {
+			if !iter(false) {
 				return
 			}
 		}
 	}
-	lib.Printf("Processed %d, found %d licenses, %d not found\n", processed, found, notFound)
+	lib.Printf("Processed %d, found %d licenses, %d not found, abuses %d\n", processed, found, notFound, abuses)
 }
 
 func syncLangs(ctx *lib.Ctx) {
@@ -1280,7 +1297,7 @@ func syncLangs(ctx *lib.Ctx) {
 			}
 			hint, _, rem, wait = lib.GetRateLimits(gctx, ctx, gcs, true)
 		}
-		allowed = rem[hint] / 2
+		allowed = rem[hint] / 10
 		ok = true
 		return
 	}
@@ -1292,9 +1309,18 @@ func syncLangs(ctx *lib.Ctx) {
 	lastTime := time.Now()
 	dtStart := lastTime
 	freq := time.Duration(30) * time.Second
-	iter := func() (ok bool) {
-		processed++
-		allowed--
+	mtx := &sync.Mutex{}
+	found := 0
+	notFound := 0
+	abuses := 0
+	iter := func(abused bool) (ok bool) {
+		if !abused {
+			processed++
+			allowed--
+		} else {
+			allowed = 0
+			abuses++
+		}
 		if allowed <= 0 {
 			hint, _, rem, wait = lib.GetRateLimits(gctx, ctx, gcs, true)
 			if !handleRate() {
@@ -1305,9 +1331,6 @@ func syncLangs(ctx *lib.Ctx) {
 		ok = true
 		return
 	}
-	mtx := &sync.Mutex{}
-	found := 0
-	notFound := 0
 	getLangs := func(ch chan struct{}, orgRepo string) {
 		defer func() {
 			if ch != nil {
@@ -1328,27 +1351,43 @@ func syncLangs(ctx *lib.Ctx) {
 		}
 		org := ary[0]
 		repo := ary[1]
+		var langs map[string]int
 		when := time.Now()
-		langs, resp, err := cl.Repositories.ListLanguages(gctx, org, repo)
-		if resp == nil {
-			lib.Printf("Languages API response is null for %s/%s, skipping\n", org, repo)
-			return
-		}
-		if resp.StatusCode == 404 || len(langs) == 0 {
-			lib.Printf("No programming languages found for: %s/%s (%d,%d)\n", org, repo, resp.StatusCode, len(langs))
-			noLangs()
-			return
-		}
-		if resp.StatusCode >= 400 {
-			lib.Printf("No languages found for: %s/%s, skipping (%d)\n", org, repo, resp.StatusCode)
-			if resp.StatusCode == 403 {
-				mtx.Lock()
-				allowed = 0
-				mtx.Unlock()
+		for {
+			ls, resp, err := cl.Repositories.ListLanguages(gctx, org, repo)
+			if resp == nil {
+				lib.Printf("Languages API response is null for %s/%s, skipping\n", org, repo)
+				return
 			}
-			return
+			if resp.StatusCode == 404 {
+				lib.Printf("No programming languages found for: %s/%s (404)\n", org, repo)
+				noLangs()
+				return
+			}
+			if resp.StatusCode >= 400 {
+				if resp.StatusCode == 403 {
+					lib.Printf("Languages abuse detected on %s/%s, retrying\n", org, repo)
+					mtx.Lock()
+					if !iter(true) {
+						mtx.Unlock()
+						return
+					}
+					mtx.Unlock()
+					continue
+				} else {
+					lib.Printf("No languages found for: %s/%s, skipping (%d)\n", org, repo, resp.StatusCode)
+				}
+				return
+			}
+			lib.FatalOnError(err)
+			if len(ls) == 0 {
+				lib.Printf("No programming languages found for: %s/%s (0)\n", org, repo)
+				noLangs()
+				return
+			}
+			langs = ls
+			break
 		}
-		lib.FatalOnError(err)
 		if ctx.Debug > 0 {
 			lib.Printf("%s languages: %+v\n", orgRepo, langs)
 		}
@@ -1357,7 +1396,7 @@ func syncLangs(ctx *lib.Ctx) {
 			allLOC += loc
 		}
 		if allLOC == 0 {
-			lib.Printf("All LOC sum to 0 for: %s\n", orgRepo)
+			lib.Printf("All LOC sum to 0 for: %s/%s\n", org, repo)
 			noLangs()
 			return
 		}
@@ -1379,7 +1418,7 @@ func syncLangs(ctx *lib.Ctx) {
 			if nThreads == thrN {
 				<-ch
 				nThreads--
-				if !iter() {
+				if !iter(false) {
 					return
 				}
 			}
@@ -1387,19 +1426,19 @@ func syncLangs(ctx *lib.Ctx) {
 		for nThreads > 0 {
 			<-ch
 			nThreads--
-			if !iter() {
+			if !iter(false) {
 				return
 			}
 		}
 	} else {
 		for _, repo := range repos {
 			getLangs(nil, repo)
-			if !iter() {
+			if !iter(false) {
 				return
 			}
 		}
 	}
-	lib.Printf("Processed %d, found languages on %d repos, on %d not found\n", processed, found, notFound)
+	lib.Printf("Processed %d, found languages on %d repos, on %d not found, abuses: %d\n", processed, found, notFound, abuses)
 }
 
 func main() {
