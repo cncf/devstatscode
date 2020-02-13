@@ -1163,9 +1163,10 @@ func syncLicenses(ctx *lib.Ctx) {
 			return
 		}
 		org := ary[0]
+		repo := ary[1]
 		license, resp, err := cl.Repositories.License(gctx, org, repo)
 		if resp.StatusCode == 404 {
-			lib.Printf("No license found for: %s (404)\n", orgRepo)
+			lib.Printf("No license found for: %s/%s (404)\n", org, repo)
 			noLicense()
 			return
 		}
