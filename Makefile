@@ -127,7 +127,9 @@ check: fmt lint imports vet const usedexports errcheck
 install: ${BINARIES}
 	cp -v ${UTIL_SCRIPTS} ${GOPATH}/bin
 	[ ! -f /tmp/deploy.wip ] || exit 1
+ifneq (${NOWAIT},1)
 	wait_for_command.sh 'devstats,devstats_others,devstats_kubernetes,devstats_allprj' 900 || exit 2
+endif
 	${GO_INSTALL} ${GO_BIN_CMDS}
 	cp -v ${CRON_SCRIPTS} ${GOPATH}/bin
 	cp -v ${GIT_SCRIPTS} ${GOPATH}/bin
