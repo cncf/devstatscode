@@ -589,6 +589,87 @@ func TestRepoHit(t *testing.T) {
 			excludes: map[string]bool{"abc/def": true},
 			hit:      true,
 		},
+		{
+			fullName: "fluent-plugins-nursery/fluent-plugin-cloudwatch-logs",
+			forg:     map[string]struct{}{`regexp:^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+)$`: {}},
+			frepo:    map[string]struct{}{},
+			excludes: map[string]bool{"fluent-plugins-nursery/this-fluent-is-excluded": true},
+			hit:      true,
+		},
+		{
+			fullName: "fluent-plugins-nursery/api",
+			forg:     map[string]struct{}{`regexp:^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+)$`: {}},
+			frepo:    map[string]struct{}{},
+			excludes: map[string]bool{"fluent-plugins-nursery/this-fluent-is-excluded": true},
+		},
+		{
+			fullName: "fluent-plugins-nursery/this-fluent-is-excluded",
+			forg:     map[string]struct{}{`regexp:^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+)$`: {}},
+			frepo:    map[string]struct{}{},
+			excludes: map[string]bool{"fluent-plugins-nursery/this-fluent-is-excluded": true},
+		},
+		{
+			fullName: "fluent/client",
+			forg:     map[string]struct{}{`regexp:^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+)$`: {}},
+			frepo:    map[string]struct{}{},
+			excludes: map[string]bool{"fluent-plugins-nursery/this-fluent-is-excluded": true},
+			hit:      true,
+		},
+		{
+			fullName: "fluent-plugins-nursery/excluded",
+			forg:     map[string]struct{}{`regexp:^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+)$`: {}},
+			frepo:    map[string]struct{}{},
+			excludes: map[string]bool{"fluent-plugins-nursery/excluded": true},
+		},
+		{
+			fullName: "excluded/fluent-plugin-a",
+			forg:     map[string]struct{}{`regexp:^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+)$`: {}},
+			frepo:    map[string]struct{}{},
+			excludes: map[string]bool{"excluded/fluent-plugin-a": true, "excluded2/fluentd-plugin-b": true},
+		},
+		{
+			fullName: "excluded2/fluentd-plugin-b",
+			forg:     map[string]struct{}{`regexp:^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+)$`: {}},
+			frepo:    map[string]struct{}{},
+			excludes: map[string]bool{"excluded/fluent-plugin-a": true, "excluded2/fluentd-plugin-b": true},
+		},
+		{
+			fullName: "any-org/fluent-plugin-",
+			forg:     map[string]struct{}{`regexp:^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+)$`: {}},
+			frepo:    map[string]struct{}{},
+			excludes: map[string]bool{"excluded/fluent-plugin-a": true, "excluded2/fluentd-plugin-b": true},
+		},
+		{
+			fullName: "any-org/fluentd-plugin-",
+			forg:     map[string]struct{}{`regexp:^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+)$`: {}},
+			frepo:    map[string]struct{}{},
+			excludes: map[string]bool{"excluded/fluent-plugin-a": true, "excluded2/fluentd-plugin-b": true},
+		},
+		{
+			fullName: "any-org/fluentd-plugin-x",
+			forg:     map[string]struct{}{`regexp:^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+)$`: {}},
+			frepo:    map[string]struct{}{},
+			excludes: map[string]bool{"excluded/fluent-plugin-a": true, "excluded2/fluentd-plugin-b": true},
+			hit:      true,
+		},
+		{
+			fullName: "x/a-fluentd-plugin-x",
+			forg:     map[string]struct{}{`regexp:^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+)$`: {}},
+			frepo:    map[string]struct{}{},
+			excludes: map[string]bool{"excluded/fluent-plugin-a": true, "excluded2/fluentd-plugin-b": true},
+		},
+		{
+			fullName: "WallyNegima/scenario-manager-plugin",
+			forg:     map[string]struct{}{`regexp:(?i)^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+|wallynegima\/scenario-manager-plugin)$`: {}},
+			frepo:    map[string]struct{}{},
+			hit:      true,
+		},
+		{
+			fullName: "WallyNegima/scenario-manager-plugin",
+			forg:     map[string]struct{}{`regexp:(?i)^(fluent|fluent-plugins-nursery\/.*fluent.*|.+\/fluentd?-plugin-.+|baritolog\/barito-fluent-plugin|blacknight95\/aws-fluent-plugin-kinesis|sumologic\/fluentd-kubernetes-sumologic|sumologic\/fluentd-output-sumologic|wallynegima\/scenario-manager-plugin|aliyun\/aliyun-odps-fluentd-plugin|awslabs\/aws-fluent-plugin-kinesis|campanja\/fluent-output-router|grafana\/loki\/|jdoconnor\/fluentd_https_out|newrelic\/newrelic-fluentd-output|roma42427\/filter_wms_auth|scalyr\/scalyr-fluentd|sebryu\/fluent_plugin_in_websocket|tagomoris\/fluent-helper-plugin-spec|y-ken\/fluent-mixin-rewrite-tag-name|y-ken\/fluent-mixin-type-converter)$`: {}},
+			frepo:    map[string]struct{}{},
+			hit:      true,
+		},
 	}
 
 	// Execute test cases
