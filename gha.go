@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -479,8 +480,27 @@ func RepoHit(ctx *Ctx, fullName string, forg, frepo map[string]struct{}) bool {
 	if len(res) > 1 {
 		org, repo = res[0], res[1]
 	}
+	var (
+		orgRE  *regexp.Regexp
+		repoRE *regexp.Regexp
+	)
+	// Handle org regexp
+	if len(forg) > 0 {
+		orgStr := ""
+		for s := range forg {
+			orgStr = s
+			break
+		}
+		if strings.HasPrefix(orgStr, "regexp:") {
+			orgRE = regexp.MustCompile(orgStr[7:])
+		}
+	}
 	// Now check for full name hit in org (one can provide full repo name org/repo)
-	_, ok = forg[fullName]
+	if orgRE != nil {
+		ok = orgRE.MatchString(fullName)
+	} else {
+		_, ok = forg[fullName]
+	}
 	// If we hit then we can have two cases
 	// We hit a full name with "/" - this is a direct hit, return true
 	// We hit old repo name format but special flag GHA2DB_EXACT is used
@@ -490,13 +510,34 @@ func RepoHit(ctx *Ctx, fullName string, forg, frepo map[string]struct{}) bool {
 	}
 	// Now if org list given and different org, return false
 	if len(forg) > 0 {
-		if _, ok := forg[org]; !ok {
+		if orgRE != nil {
+			ok = orgRE.MatchString(org)
+		} else {
+			_, ok = forg[org]
+		}
+		if !ok {
 			return false
+		}
+	}
+	// Handle repo regexp
+	if len(frepo) > 0 {
+		repoStr := ""
+		for s := range frepo {
+			repoStr = s
+			break
+		}
+		if strings.HasPrefix(repoStr, "regexp:") {
+			repoRE = regexp.MustCompile(repoStr[7:])
 		}
 	}
 	// Now if repo list given and different repo, return false
 	if len(frepo) > 0 {
-		if _, ok := frepo[repo]; !ok {
+		if repoRE != nil {
+			ok = repoRE.MatchString(repo)
+		} else {
+			_, ok = frepo[repo]
+		}
+		if !ok {
 			return false
 		}
 	}

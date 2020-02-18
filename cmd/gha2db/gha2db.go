@@ -1573,18 +1573,26 @@ func gha2db(args []string) {
 	// Stripping whitespace from org and repo params
 	var org map[string]struct{}
 	if len(args) >= 5 {
-		org = lib.StringsMapToSet(
-			stripFunc,
-			strings.Split(args[4], ","),
-		)
+		if strings.HasPrefix(args[4], "regexp:") {
+			org = map[string]struct{}{args[4]: {}}
+		} else {
+			org = lib.StringsMapToSet(
+				stripFunc,
+				strings.Split(args[4], ","),
+			)
+		}
 	}
 
 	var repo map[string]struct{}
 	if len(args) >= 6 {
-		repo = lib.StringsMapToSet(
-			stripFunc,
-			strings.Split(args[5], ","),
-		)
+		if strings.HasPrefix(args[5], "regexp:") {
+			repo = map[string]struct{}{args[5]: {}}
+		} else {
+			repo = lib.StringsMapToSet(
+				stripFunc,
+				strings.Split(args[5], ","),
+			)
+		}
 	}
 
 	// Get number of CPUs available
