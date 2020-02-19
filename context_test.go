@@ -401,7 +401,7 @@ func TestInit(t *testing.T) {
 		PidFileRoot:              "devstats",
 		TestMode:                 true,
 		ESBulkSize:               10000,
-		HTTPTimeout:              2,
+		HTTPTimeout:              5,
 		CanReconnect:             true,
 		CommitsFilesStatsEnabled: true,
 		CommitsLOCStatsEnabled:   true,
