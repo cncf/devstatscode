@@ -462,7 +462,7 @@ func ActorHit(ctx *Ctx, actorName string) bool {
 }
 
 // RepoHit - are we interested in this org/repo ?
-func RepoHit(ctx *Ctx, fullName string, forg, frepo map[string]struct{}) bool {
+func RepoHit(ctx *Ctx, fullName string, forg, frepo map[string]struct{}, orgRE, repoRE *regexp.Regexp) bool {
 	// Return false if no repo name
 	if fullName == "" {
 		return false
@@ -480,21 +480,6 @@ func RepoHit(ctx *Ctx, fullName string, forg, frepo map[string]struct{}) bool {
 	if len(res) > 1 {
 		org, repo = res[0], res[1]
 	}
-	var (
-		orgRE  *regexp.Regexp
-		repoRE *regexp.Regexp
-	)
-	// Handle org regexp
-	if len(forg) > 0 {
-		orgStr := ""
-		for s := range forg {
-			orgStr = s
-			break
-		}
-		if strings.HasPrefix(orgStr, "regexp:") {
-			orgRE = regexp.MustCompile(orgStr[7:])
-		}
-	}
 	// Now check for full name hit in org (one can provide full repo name org/repo)
 	if orgRE != nil {
 		ok = orgRE.MatchString(fullName)
@@ -509,34 +494,21 @@ func RepoHit(ctx *Ctx, fullName string, forg, frepo map[string]struct{}) bool {
 		return ok
 	}
 	// Now if org list given and different org, return false
+	if orgRE != nil && !orgRE.MatchString(org) {
+		return false
+	}
 	if len(forg) > 0 {
-		if orgRE != nil {
-			ok = orgRE.MatchString(org)
-		} else {
-			_, ok = forg[org]
-		}
+		_, ok = forg[org]
 		if !ok {
 			return false
 		}
 	}
-	// Handle repo regexp
-	if len(frepo) > 0 {
-		repoStr := ""
-		for s := range frepo {
-			repoStr = s
-			break
-		}
-		if strings.HasPrefix(repoStr, "regexp:") {
-			repoRE = regexp.MustCompile(repoStr[7:])
-		}
-	}
 	// Now if repo list given and different repo, return false
+	if repoRE != nil && !repoRE.MatchString(repo) {
+		return false
+	}
 	if len(frepo) > 0 {
-		if repoRE != nil {
-			ok = repoRE.MatchString(repo)
-		} else {
-			_, ok = frepo[repo]
-		}
+		_, ok = frepo[repo]
 		if !ok {
 			return false
 		}

@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1352,7 +1353,7 @@ func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) 
 }
 
 // parseJSON - parse signle GHA JSON event
-func parseJSON(con *sql.DB, ctx *lib.Ctx, idx, njsons int, jsonStr []byte, dt time.Time, forg, frepo map[string]struct{}, shas map[string]string) (f int, e int) {
+func parseJSON(con *sql.DB, ctx *lib.Ctx, idx, njsons int, jsonStr []byte, dt time.Time, forg, frepo map[string]struct{}, orgRE, repoRE *regexp.Regexp, shas map[string]string) (f int, e int) {
 	var (
 		h         lib.Event
 		hOld      lib.EventOld
@@ -1388,7 +1389,7 @@ func parseJSON(con *sql.DB, ctx *lib.Ctx, idx, njsons int, jsonStr []byte, dt ti
 		fullName = h.Repo.Name
 		actorName = h.Actor.Login
 	}
-	if lib.RepoHit(ctx, fullName, forg, frepo) && lib.ActorHit(ctx, actorName) {
+	if lib.RepoHit(ctx, fullName, forg, frepo, orgRE, repoRE) && lib.ActorHit(ctx, actorName) {
 		if ctx.OldFormat {
 			eid = fmt.Sprintf("%v", lib.HashStrings([]string{hOld.Type, hOld.Actor, hOld.Repository.Name, lib.ToYMDHMSDate(hOld.CreatedAt)}))
 		} else {
@@ -1431,7 +1432,7 @@ func markAsProcessed(con *sql.DB, ctx *lib.Ctx, dt time.Time) {
 // getGHAJSON - This is a work for single go routine - 1 hour of GHA data
 // Usually such JSON conatin about 15000 - 60000 singe GHA events
 // Boolean channel `ch` is used to synchronize go routines
-func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg map[string]struct{}, frepo map[string]struct{}, shas map[string]string, skipDates map[string]struct{}) {
+func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg, frepo map[string]struct{}, orgRE, repoRE *regexp.Regexp, shas map[string]string, skipDates map[string]struct{}) {
 	lib.Printf("Working on %v\n", dt)
 
 	// Connect to Postgres DB
@@ -1498,7 +1499,7 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg map[string]s
 		if len(json) < 1 {
 			continue
 		}
-		fi, ei := parseJSON(con, ctx, i, njsons, json, dt, forg, frepo, shas)
+		fi, ei := parseJSON(con, ctx, i, njsons, json, dt, forg, frepo, orgRE, repoRE, shas)
 		n++
 		f += fi
 		e += ei
@@ -1550,31 +1551,39 @@ func gha2db(args []string) {
 	}
 
 	// Parse to day & hour
-	if strings.ToLower(endH) == lib.Now {
-		hourTo = now.Hour()
-	} else {
-		hourTo, err = strconv.Atoi(endH)
-		lib.FatalOnError(err)
-	}
+	var currNow time.Time
+	dateToFunc := func() {
+		currNow = time.Now()
+		if strings.ToLower(endH) == lib.Now {
+			hourTo = currNow.Hour()
+		} else {
+			hourTo, err = strconv.Atoi(endH)
+			lib.FatalOnError(err)
+		}
 
-	if strings.ToLower(endD) == lib.Today {
-		dTo = lib.DayStart(now).Add(time.Duration(hourTo) * time.Hour)
-	} else {
-		dTo, err = time.Parse(
-			time.RFC3339,
-			fmt.Sprintf("%sT%02d:00:00+00:00", endD, hourTo),
-		)
-		lib.FatalOnError(err)
+		if strings.ToLower(endD) == lib.Today {
+			dTo = lib.DayStart(currNow).Add(time.Duration(hourTo) * time.Hour)
+		} else {
+			dTo, err = time.Parse(
+				time.RFC3339,
+				fmt.Sprintf("%sT%02d:00:00+00:00", endD, hourTo),
+			)
+			lib.FatalOnError(err)
+		}
 	}
+	dateToFunc()
 
 	// Strip function to be used by MapString
 	stripFunc := func(x string) string { return strings.TrimSpace(x) }
 
 	// Stripping whitespace from org and repo params
-	var org map[string]struct{}
+	var (
+		org   map[string]struct{}
+		orgRE *regexp.Regexp
+	)
 	if len(args) >= 5 {
 		if strings.HasPrefix(args[4], "regexp:") {
-			org = map[string]struct{}{args[4]: {}}
+			orgRE = regexp.MustCompile(args[4][7:])
 		} else {
 			org = lib.StringsMapToSet(
 				stripFunc,
@@ -1583,10 +1592,13 @@ func gha2db(args []string) {
 		}
 	}
 
-	var repo map[string]struct{}
+	var (
+		repo   map[string]struct{}
+		repoRE *regexp.Regexp
+	)
 	if len(args) >= 6 {
 		if strings.HasPrefix(args[5], "regexp:") {
-			repo = map[string]struct{}{args[5]: {}}
+			repoRE = regexp.MustCompile(args[5][7:])
 		} else {
 			repo = lib.StringsMapToSet(
 				stripFunc,
@@ -1634,7 +1646,8 @@ func gha2db(args []string) {
 		mp := make(map[time.Time]struct{})
 		nThreads := 0
 		for dt.Before(dTo) || dt.Equal(dTo) {
-			go getGHAJSON(ch, &ctx, dt, org, repo, shaMap, skipDates)
+			dateToFunc()
+			go getGHAJSON(ch, &ctx, dt, org, repo, orgRE, repoRE, shaMap, skipDates)
 			mp[dt] = struct{}{}
 			dt = dt.Add(time.Hour)
 			nThreads++
@@ -1642,6 +1655,7 @@ func gha2db(args []string) {
 				prcdt := <-ch
 				delete(mp, prcdt)
 				nThreads--
+				dateToFunc()
 			}
 		}
 		lib.Printf("Final threads join\n")
@@ -1656,16 +1670,18 @@ func gha2db(args []string) {
 			prcdt := <-ch
 			delete(mp, prcdt)
 			nThreads--
+			dateToFunc()
 		}
 	} else {
 		lib.Printf("Using single threaded version\n")
 		for dt.Before(dTo) || dt.Equal(dTo) {
-			getGHAJSON(nil, &ctx, dt, org, repo, shaMap, skipDates)
+			dateToFunc()
+			getGHAJSON(nil, &ctx, dt, org, repo, orgRE, repoRE, shaMap, skipDates)
 			dt = dt.Add(time.Hour)
 		}
 	}
 	// Finished
-	lib.Printf("All done.\n")
+	lib.Printf("All done: %v\n", currNow.Sub(now))
 }
 
 func main() {
