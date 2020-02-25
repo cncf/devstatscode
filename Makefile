@@ -4,18 +4,22 @@ GO_TEST_FILES=context_test.go gha_test.go map_test.go mgetc_test.go threads_test
 GO_DBTEST_FILES=pg_test.go series_test.go
 GO_LIBTEST_FILES=test/compare.go test/time.go
 GO_BIN_CMDS=github.com/cncf/devstatscode/cmd/structure github.com/cncf/devstatscode/cmd/runq github.com/cncf/devstatscode/cmd/gha2db github.com/cncf/devstatscode/cmd/calc_metric github.com/cncf/devstatscode/cmd/gha2db_sync github.com/cncf/devstatscode/cmd/import_affs github.com/cncf/devstatscode/cmd/annotations github.com/cncf/devstatscode/cmd/tags github.com/cncf/devstatscode/cmd/webhook github.com/cncf/devstatscode/cmd/devstats github.com/cncf/devstatscode/cmd/get_repos github.com/cncf/devstatscode/cmd/merge_dbs github.com/cncf/devstatscode/cmd/replacer github.com/cncf/devstatscode/cmd/vars github.com/cncf/devstatscode/cmd/ghapi2db github.com/cncf/devstatscode/cmd/columns github.com/cncf/devstatscode/cmd/hide_data github.com/cncf/devstatscode/cmd/sqlitedb github.com/cncf/devstatscode/cmd/website_data github.com/cncf/devstatscode/cmd/sync_issues github.com/cncf/devstatscode/cmd/gha2es
+BUILD_TIME=`date -u '+%Y-%m-%d_%I:%M:%S%p'`
+COMMIT=`git rev-parse HEAD`
+HOSTNAME=`uname -a | sed "s/ /_/g"`
+GO_VERSION=`go version | sed "s/ /_/g"`
 #for race CGO_ENABLED=1
 #GO_ENV=CGO_ENABLED=1
 GO_ENV=CGO_ENABLED=0
 # -ldflags '-s -w': create release binary - without debug info
-GO_BUILD=go build -ldflags '-s -w'
-#GO_BUILD=go build -ldflags '-s -w' -race
+GO_BUILD=go build -ldflags "-s -w -X github.com/cncf/devstatscode.BuildStamp=$(BUILD_TIME) -X github.com/cncf/devstatscode.GitHash=$(COMMIT) -X github.com/cncf/devstatscode.HostName=$(HOSTNAME) -X github.com/cncf/devstatscode.GoVersion=$(GO_VERSION)"
+#GO_BUILD=go build -ldflags "-s -w -X github.com/cncf/devstatscode.BuildStamp=$(BUILD_TIME) -X github.com/cncf/devstatscode.GitHash=$(COMMIT) -X github.com/cncf/devstatscode.HostName=$(HOSTNAME) -X github.com/cncf/devstatscode.GoVersion=$(GO_VERSION)" -race
 #  -ldflags '-s': instal stripped binary
 #GO_INSTALL=go install
 #For static gcc linking
 GCC_STATIC=
 #GCC_STATIC=-ldflags '-extldflags "-static"'
-GO_INSTALL=go install -ldflags '-s'
+GO_INSTALL=go install -ldflags "-s -w -X github.com/cncf/devstatscode.BuildStamp=$(BUILD_TIME) -X github.com/cncf/devstatscode.GitHash=$(COMMIT) -X github.com/cncf/devstatscode.HostName=$(HOSTNAME) -X github.com/cncf/devstatscode.GoVersion=$(GO_VERSION)"
 GO_FMT=gofmt -s -w
 GO_LINT=golint -set_exit_status
 GO_VET=go vet

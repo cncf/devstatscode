@@ -26,6 +26,10 @@ var (
 	logCtx      *logContext
 	logCtxMutex sync.RWMutex
 	logOnce     sync.Once
+	BuildStamp  = "None"
+	GitHash     = "None"
+	HostName    = "None"
+	GoVersion   = "None"
 )
 
 // Returns new context when not yet created
@@ -36,6 +40,17 @@ func newLogContext() *logContext {
 	con := PgConn(&ctx)
 	progSplit := strings.Split(os.Args[0], "/")
 	prog := progSplit[len(progSplit)-1]
+	info := fmt.Sprintf("Compiled %s, commit: %s on %s using %s", BuildStamp, GitHash, HostName, GoVersion)
+	fmt.Printf("%s\n", info)
+	_, _ = ExecSQL(
+		con,
+		&ctx,
+		"insert into gha_logs(prog, proj, run_dt, msg) "+NValues(4),
+		prog,
+		ctx.Project,
+		time.Now(),
+		info,
+	)
 	return &logContext{
 		ctx:   ctx,
 		con:   con,
