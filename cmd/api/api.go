@@ -50,24 +50,66 @@ func nameToDB(name string) (db string, err error) {
 	return
 }
 
-func apiHealth(w http.ResponseWriter, payload map[string]interface{}) {
+func handleSharedPayload(apiName string, w http.ResponseWriter, payload map[string]interface{}) (project, db string, passed bool) {
 	if len(payload) == 0 {
-		returnError(w, fmt.Errorf("API 'health' 'payload' section empty or missing"))
+		returnError(w, fmt.Errorf("API '%s' 'payload' section empty or missing", apiName))
 		return
 	}
 	iproject, ok := payload["project"]
 	if !ok {
-		returnError(w, fmt.Errorf("API 'health' missing 'project' field in 'payload' section"))
+		returnError(w, fmt.Errorf("API '%s' missing 'project' field in 'payload' section", apiName))
 		return
 	}
-	project, ok := iproject.(string)
+	project, ok = iproject.(string)
 	if !ok {
-		returnError(w, fmt.Errorf("API 'health' 'payload' 'project' field '%+v' is not a string", iproject))
+		returnError(w, fmt.Errorf("API '%s' 'payload' 'project' field '%+v' is not a string", apiName, iproject))
 		return
 	}
 	db, err := nameToDB(project)
 	if err != nil {
 		returnError(w, err)
+		return
+	}
+	passed = true
+	return
+}
+
+func getPayloadStringParam(apiName, paramName string, w http.ResponseWriter, payload map[string]interface{}) (param string, passed bool) {
+	iparam, ok := payload[paramName]
+	if !ok {
+		returnError(w, fmt.Errorf("API '%s' missing '%s' field in 'payload' section", apiName, paramName))
+		return
+	}
+	param, ok = iparam.(string)
+	if !ok {
+		returnError(w, fmt.Errorf("API '%s' 'payload' '%s' field '%+v' is not a string", apiName, paramName, iparam))
+		return
+	}
+	passed = true
+	return
+}
+
+func apiDevActCntRepoGrp(w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.DevActCntRepoGrp
+	project, db, ok := handleSharedPayload(apiName, w, payload)
+	if !ok {
+		return
+	}
+	params := map[string]string{"range": "", "metric": "", "repository_group": "", "country": "", "github_id": ""}
+	for paramName := range params {
+		paramValue, ok := getPayloadStringParam(apiName, paramName, w, payload)
+		if !ok {
+			return
+		}
+		params[paramName] = paramValue
+	}
+	fmt.Printf("project:%s db:%s params:%+v\n", project, db, params)
+}
+
+func apiHealth(w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.Health
+	project, db, ok := handleSharedPayload(apiName, w, payload)
+	if !ok {
 		return
 	}
 	var ctx lib.Ctx
@@ -115,8 +157,10 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	switch pl.API {
-	case "Health":
+	case lib.Health:
 		apiHealth(w, pl.Payload)
+	case lib.DevActCntRepoGrp:
+		apiDevActCntRepoGrp(w, pl.Payload)
 	default:
 		returnError(w, fmt.Errorf("unknown API '%s'", pl.API))
 	}
