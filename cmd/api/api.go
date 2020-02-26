@@ -303,6 +303,10 @@ func apiDevActCntRepoGrp(w http.ResponseWriter, payload map[string]interface{}) 
 		returnError(w, err)
 		return
 	}
+	if len(ranks) == 0 {
+		returnError(w, fmt.Errorf("github_id '%s' not found in results", ghID))
+		return
+	}
 	filter := fmt.Sprintf("series:%s period:%s", series, period)
 	if ghID != "" {
 		filter += " github_id:" + ghID
