@@ -320,12 +320,13 @@ func apiDevActCntRepoGrp(w http.ResponseWriter, payload map[string]interface{}) 
 		Login:           logins,
 		Number:          numbers,
 	}
-	/* RO connections, such operations are impossible
-	_, err = lib.ExecSQL(c, ctx, "insert into gha_repos(id, name) values($1, $2)", 999999999, "xxx")
-	if err != nil {
-		returnError(w, err)
-		return
-	}
+	// RO connections, such operations are impossible
+	/*
+		_, err = lib.ExecSQL(c, ctx, "insert into gha_repos(id, name) values($1, $2)", 999999999, "xxx")
+		if err != nil {
+			returnError(w, err)
+			return
+		}
 	*/
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(pl)
