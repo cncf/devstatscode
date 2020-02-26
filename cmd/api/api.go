@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -34,7 +35,22 @@ type healthPayload struct {
 	Events  int    `json:"events"`
 }
 
+type devActCntRepoGrpPayload struct {
+	Project         string   `json:"project"`
+	DB              string   `json:"db_name"`
+	Range           string   `json:"range"`
+	Metric          string   `json:"metric"`
+	RepositoryGroup string   `json:"repository_group"`
+	Country         string   `json:"country"`
+	GitHubID        string   `json:"github_id"`
+	Filter          string   `json:"filter"`
+	Rank            []int    `json:"rank"`
+	Login           []string `json:"login"`
+	Number          []int    `json:"number"`
+}
+
 func returnError(w http.ResponseWriter, err error) {
+	lib.Printf("Returning error: %+v\n", err)
 	epl := errorPayload{Error: err.Error()}
 	w.WriteHeader(http.StatusBadRequest)
 	json.NewEncoder(w).Encode(epl)
@@ -47,6 +63,23 @@ func nameToDB(name string) (db string, err error) {
 	if !ok {
 		err = fmt.Errorf("database not found for project '%s'", name)
 	}
+	return
+}
+
+func getContextAndDB(w http.ResponseWriter, db string) (ctx *lib.Ctx, c *sql.DB, passed bool) {
+	var lctx lib.Ctx
+	lctx.Init()
+	lctx.PgHost = os.Getenv("PG_HOST_RO")
+	lctx.PgUser = os.Getenv("PG_USER_RO")
+	lctx.PgPass = os.Getenv("PG_PASS_RO")
+	lctx.PgDB = db
+	c, err := lib.PgConnErr(&lctx)
+	if err != nil {
+		returnError(w, err)
+		return
+	}
+	ctx = &lctx
+	passed = true
 	return
 }
 
@@ -89,6 +122,78 @@ func getPayloadStringParam(apiName, paramName string, w http.ResponseWriter, pay
 	return
 }
 
+func periodNameToValue(c *sql.DB, ctx *lib.Ctx, apiName, periodName string) (periodValue string, err error) {
+	rows, err := lib.QuerySQL(c, ctx, "select quick_ranges_suffix from tquick_ranges where quick_ranges_name = $1", periodName)
+	if err != nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		err = rows.Scan(&periodValue)
+		if err != nil {
+			return
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		return
+	}
+	if periodValue == "" {
+		err = fmt.Errorf("API '%s' invalid period name: '%s'", apiName, periodName)
+	}
+	return
+}
+
+func allRepoGroupNameToValue(c *sql.DB, ctx *lib.Ctx, apiName, repoGroupName string) (repoGroupValue string, err error) {
+	rows, err := lib.QuerySQL(c, ctx, "select all_repo_group_value from tall_repo_groups where all_repo_group_name = $1", repoGroupName)
+	if err != nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		err = rows.Scan(&repoGroupValue)
+		if err != nil {
+			return
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		return
+	}
+	if repoGroupValue == "" {
+		err = fmt.Errorf("API '%s' invalid repository_group name: '%s'", apiName, repoGroupName)
+	}
+	return
+}
+
+func allCountryNameToValue(c *sql.DB, ctx *lib.Ctx, apiName, countryName string) (countryValue string, err error) {
+	rows, err := lib.QuerySQL(
+		c,
+		ctx,
+		"select sub.value from (select country_value as value, 0 as ord from tcountries "+
+			"where country_name = $1 union select 'all', 1 as ord) sub order by sub.ord limit 1",
+		countryName,
+	)
+	if err != nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		err = rows.Scan(&countryValue)
+		if err != nil {
+			return
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		return
+	}
+	if countryValue == "" || (countryValue == "all" && countryName != "All") {
+		err = fmt.Errorf("API '%s' invalid country name: '%s'", apiName, countryName)
+	}
+	return
+}
+
 func apiDevActCntRepoGrp(w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.DevActCntRepoGrp
 	project, db, ok := handleSharedPayload(apiName, w, payload)
@@ -103,7 +208,120 @@ func apiDevActCntRepoGrp(w http.ResponseWriter, payload map[string]interface{}) 
 		}
 		params[paramName] = paramValue
 	}
-	fmt.Printf("project:%s db:%s params:%+v\n", project, db, params)
+	metricMap := map[string]string{
+		"Approves":            "approves",
+		"Reviews":             "reviews",
+		"Comments":            "comments",
+		"Commit comments":     "commit_comments",
+		"Commits":             "commits",
+		"GitHub Events":       "events",
+		"GitHub pushes":       "pushes",
+		"Issue comments":      "issue_comments",
+		"Issues":              "issues",
+		"PRs":                 "prs",
+		"Review comments":     "review_comments",
+		"Contributions":       "contributions",
+		"Active repositories": "active_repos",
+	}
+	for _, v := range metricMap {
+		metricMap[v] = v
+	}
+	metric, ok := metricMap[params["metric"]]
+	if !ok {
+		returnError(w, fmt.Errorf("API '%s' invalid metric value: '%s'", apiName, params["metric"]))
+		return
+	}
+	ctx, c, ok := getContextAndDB(w, db)
+	if !ok {
+		return
+	}
+	defer func() { _ = c.Close() }()
+	repogroup, err := allRepoGroupNameToValue(c, ctx, apiName, params["repository_group"])
+	if err != nil {
+		returnError(w, err)
+		return
+	}
+	country, err := allCountryNameToValue(c, ctx, apiName, params["country"])
+	if err != nil {
+		returnError(w, err)
+		return
+	}
+	period, err := periodNameToValue(c, ctx, apiName, params["range"])
+	if err != nil {
+		returnError(w, err)
+		return
+	}
+	series := fmt.Sprintf("hdev_%s%s%s", metric, repogroup, country)
+	query := `
+	    select
+	      sub."Rank",
+	      sub.name as name,
+	      sub.value
+	    from (
+	      select row_number() over (order by sum(value) desc) as "Rank",
+	        split_part(name, '$$$', 1) as name,
+	        sum(value) as value
+	      from
+	        shdev
+	      where
+	        series = $1
+	        and period = $2
+	      group by
+	        split_part(name, '$$$', 1)
+	    ) sub
+	  `
+	rows, err := lib.QuerySQL(c, ctx, query, series, period)
+	if err != nil {
+		returnError(w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		rank    int
+		login   string
+		number  int
+		ranks   []int
+		logins  []string
+		numbers []int
+	)
+	ghID := params["github_id"]
+	for rows.Next() {
+		err = rows.Scan(&rank, &login, &number)
+		if err != nil {
+			returnError(w, err)
+			return
+		}
+		if ghID != "" && login != ghID {
+			continue
+		}
+		ranks = append(ranks, rank)
+		logins = append(logins, login)
+		numbers = append(numbers, number)
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(w, err)
+		return
+	}
+	filter := fmt.Sprintf("series:%s period:%s", series, period)
+	if ghID != "" {
+		filter += " github_id:" + ghID
+	}
+	pl := devActCntRepoGrpPayload{
+		Project:         project,
+		DB:              db,
+		Range:           params["range"],
+		Metric:          params["metric"],
+		RepositoryGroup: params["repository_group"],
+		Country:         params["country"],
+		GitHubID:        ghID,
+		Filter:          filter,
+		Rank:            ranks,
+		Login:           logins,
+		Number:          numbers,
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(pl)
 }
 
 func apiHealth(w http.ResponseWriter, payload map[string]interface{}) {
@@ -112,19 +330,12 @@ func apiHealth(w http.ResponseWriter, payload map[string]interface{}) {
 	if !ok {
 		return
 	}
-	var ctx lib.Ctx
-	ctx.Init()
-	ctx.PgHost = os.Getenv("PG_HOST_RO")
-	ctx.PgUser = os.Getenv("PG_USER_RO")
-	ctx.PgPass = os.Getenv("PG_PASS_RO")
-	ctx.PgDB = db
-	c, err := lib.PgConnErr(&ctx)
-	if err != nil {
-		returnError(w, err)
+	ctx, c, ok := getContextAndDB(w, db)
+	if !ok {
 		return
 	}
 	defer func() { _ = c.Close() }()
-	rows, err := lib.QuerySQL(c, &ctx, "select count(*) from gha_events")
+	rows, err := lib.QuerySQL(c, ctx, "select count(*) from gha_events")
 	if err != nil {
 		returnError(w, err)
 		return
