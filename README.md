@@ -20,3 +20,16 @@ Authors: Łukasz Gryglicki <lgryglicki@cncf.io>, Justyna Gryglicka <lgryglicka@c
 
 See `cncf/devstats-helm`:`ADDING_NEW_PROJECTS.md` for informations about how to add more projects on Kubernetes/Helm deployment.
 See `cncf/devstats`:`ADDING_NEW_PROJECT.md` for informations about how to add more projects on bare metal deployment.
+
+# API
+
+API is available on `https://devstats.cncf.io:8080/api/v1`. This is a standard REST API that expects JSON payloads and returns JSON data.
+
+You can see how to call example `Health` API call [here](https://github.com/cncf/devstatscode/blob/master/devel/api_health.sh).
+
+All API calls that result in error returns the following JSON response: `{"error": "some error message"}`.
+
+List of APIs:
+
+- Health: `{"api":"Health", "payload": {"project": "projectName"}}`. Arguments `projectName` for example: `kubernetes`, `Kuberentes`, `gRPC`, `grpc`, `all`, `All CNCF`.
+
