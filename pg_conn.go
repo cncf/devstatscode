@@ -540,6 +540,18 @@ func QuerySQL(con *sql.DB, ctx *Ctx, query string, args ...interface{}) (*sql.Ro
 	return con.Query(query, args...)
 }
 
+// QuerySQLLogErr executes given SQL on Postgres DB (and returns rowset that needs to be closed)
+func QuerySQLLogErr(con *sql.DB, ctx *Ctx, query string, args ...interface{}) (*sql.Rows, error) {
+	if ctx.QOut {
+		queryOut(query, args...)
+	}
+	rows, err := con.Query(query, args...)
+	if err != nil {
+		queryOut(query, args...)
+	}
+	return rows, err
+}
+
 // QuerySQLWithErr wrapper to QuerySQL that exists on error
 func QuerySQLWithErr(con *sql.DB, ctx *Ctx, query string, args ...interface{}) *sql.Rows {
 	// Try to handle "too many connections" error
@@ -627,6 +639,18 @@ func QuerySQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{})
 		Fatalf("too many attempts, tried %d times", len(ctx.Trials))
 	}
 	return res
+}
+
+// ExecSQLLogErr executes given SQL on Postgres DB (and return single state result, that doesn't need to be closed)
+func ExecSQLLogErr(con *sql.DB, ctx *Ctx, query string, args ...interface{}) (sql.Result, error) {
+	if ctx.QOut {
+		queryOut(query, args...)
+	}
+	res, err := con.Exec(query, args...)
+	if err != nil {
+		queryOut(query, args...)
+	}
+	return res, err
 }
 
 // ExecSQL executes given SQL on Postgres DB (and return single state result, that doesn't need to be closed)
