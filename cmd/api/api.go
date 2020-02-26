@@ -28,6 +28,12 @@ type errorPayload struct {
 	Error string `json:"error"`
 }
 
+type healthPayload struct {
+	Project string `json:"project"`
+	DB      string `json:"db_name"`
+	Events  int    `json:"events"`
+}
+
 func returnError(w http.ResponseWriter, err error) {
 	epl := errorPayload{Error: err.Error()}
 	w.WriteHeader(http.StatusBadRequest)
@@ -54,7 +60,7 @@ func apiHealth(w http.ResponseWriter, payload map[string]interface{}) {
 		returnError(w, fmt.Errorf("API 'health' missing 'project' field in 'payload' section"))
 		return
 	}
-  project, ok := iproject.(string)
+	project, ok := iproject.(string)
 	if !ok {
 		returnError(w, fmt.Errorf("API 'health' 'payload' 'project' field '%+v' is not a string", iproject))
 		return
@@ -64,7 +70,40 @@ func apiHealth(w http.ResponseWriter, payload map[string]interface{}) {
 		returnError(w, err)
 		return
 	}
-	fmt.Printf("project:%s: db:%s\n", project, db)
+	var ctx lib.Ctx
+	ctx.Init()
+	ctx.PgHost = os.Getenv("PG_HOST_RO")
+	ctx.PgUser = os.Getenv("PG_USER_RO")
+	ctx.PgPass = os.Getenv("PG_PASS_RO")
+	ctx.PgDB = db
+	c, err := lib.PgConnErr(&ctx)
+	if err != nil {
+		returnError(w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	rows, err := lib.QuerySQL(c, &ctx, "select count(*) from gha_events")
+	if err != nil {
+		returnError(w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	events := 0
+	for rows.Next() {
+		err = rows.Scan(&events)
+		if err != nil {
+			returnError(w, err)
+			return
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(w, err)
+		return
+	}
+	hpl := healthPayload{Project: project, DB: db, Events: events}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(hpl)
 }
 
 func handleAPI(w http.ResponseWriter, req *http.Request) {
@@ -76,7 +115,7 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	switch pl.API {
-	case "health":
+	case "Health":
 		apiHealth(w, pl.Payload)
 	default:
 		returnError(w, fmt.Errorf("unknown API '%s'", pl.API))

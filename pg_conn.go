@@ -448,6 +448,15 @@ func TableColumnExists(con *sql.DB, ctx *Ctx, tableName, columnName string) bool
 	return s != nil
 }
 
+// PgConnErr Connects to Postgres database
+func PgConnErr(ctx *Ctx) (*sql.DB, error) {
+	connectionString := "client_encoding=UTF8 sslmode='" + ctx.PgSSL + "' host='" + ctx.PgHost + "' port=" + ctx.PgPort + " dbname='" + ctx.PgDB + "' user='" + ctx.PgUser + "' password='" + ctx.PgPass + "'"
+	if ctx.QOut {
+		fmt.Printf("PgConnectString: %s\n", connectionString)
+	}
+	return sql.Open("postgres", connectionString)
+}
+
 // PgConn Connects to Postgres database
 func PgConn(ctx *Ctx) *sql.DB {
 	connectionString := "client_encoding=UTF8 sslmode='" + ctx.PgSSL + "' host='" + ctx.PgHost + "' port=" + ctx.PgPort + " dbname='" + ctx.PgDB + "' user='" + ctx.PgUser + "' password='" + ctx.PgPass + "'"
