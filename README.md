@@ -23,7 +23,7 @@ See `cncf/devstats`:`ADDING_NEW_PROJECT.md` for informations about how to add mo
 
 # API
 
-API is available on `https://devstats.cncf.io:8080/api/v1`. This is a standard REST API that expects JSON payloads and returns JSON data.
+API is available on `https://devstats.cncf.io/api/v1`. This is a standard REST API that expects JSON payloads and returns JSON data.
 
 You can see how to call example `Health` API call [here](https://github.com/cncf/devstatscode/blob/master/devel/api_health.sh).
 
