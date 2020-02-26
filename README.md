@@ -31,5 +31,6 @@ All API calls that result in error returns the following JSON response: `{"error
 
 List of APIs:
 
-- Health: `{"api":"Health", "payload": {"project": "projectName"}}`. Arguments `projectName` for example: `kubernetes`, `Kuberentes`, `gRPC`, `grpc`, `all`, `All CNCF`.
-
+- Health: `{"api":"Health", "payload": {"project": "projectName"}}`.
+  - Arguments: `projectName` for example: `kubernetes`, `Kuberentes`, `gRPC`, `grpc`, `all`, `All CNCF`.
+  - Returns: `{"project": "projectName", "db_name": "projectDB", "events": int}`, `events` is the total number of all GitHub events that are recorded for given project.
