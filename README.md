@@ -71,3 +71,10 @@ List of APIs:
     ]
   }
   ```
+
+# Local API deployment and testing
+
+- Start local API server via: `make; PG_PASS=... PG_PASS_RO=... PG_USER_RO=... PG_HOST_RO=127.0.0.1 ./api`.
+- Call Health API: `./devel/api_health.sh kubernetes`.
+- Call Developer Activity Counts Repository Groups API: `./devel/api_dev_act_cnt_repo_grp.sh kubernetes 'v1.17.0 - now' 'GitHub Events' 'SIG Apps' 'United States' ''`.
+- Manual `curl`: `curl -H "Content-Type: application/json" http://127.0.0.1:8080/api/v1 -d"{\"api\":\"Health\",\"payload\":{\"project\":\"kubernetes\"}}"`.

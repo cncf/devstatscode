@@ -71,63 +71,58 @@ func nameToDB(name string) (db string, err error) {
 	return
 }
 
-func getContextAndDB(apiName string, w http.ResponseWriter, db string) (ctx *lib.Ctx, c *sql.DB, passed bool) {
+func getContextAndDB(w http.ResponseWriter, db string) (ctx *lib.Ctx, c *sql.DB, err error) {
 	var lctx lib.Ctx
 	lctx.Init()
 	lctx.PgHost = os.Getenv("PG_HOST_RO")
 	lctx.PgUser = os.Getenv("PG_USER_RO")
 	lctx.PgPass = os.Getenv("PG_PASS_RO")
 	lctx.PgDB = db
-	c, err := lib.PgConnErr(&lctx)
+	c, err = lib.PgConnErr(&lctx)
 	if err != nil {
-		returnError(apiName, w, err)
 		return
 	}
 	ctx = &lctx
-	passed = true
 	return
 }
 
-func handleSharedPayload(apiName string, w http.ResponseWriter, payload map[string]interface{}) (project, db string, passed bool) {
+func handleSharedPayload(w http.ResponseWriter, payload map[string]interface{}) (project, db string, err error) {
 	if len(payload) == 0 {
-		returnError(apiName, w, fmt.Errorf("'payload' section empty or missing"))
+		err = fmt.Errorf("'payload' section empty or missing")
 		return
 	}
 	iproject, ok := payload["project"]
 	if !ok {
-		returnError(apiName, w, fmt.Errorf("missing 'project' field in 'payload' section"))
+		err = fmt.Errorf("missing 'project' field in 'payload' section")
 		return
 	}
 	project, ok = iproject.(string)
 	if !ok {
-		returnError(apiName, w, fmt.Errorf("'payload' 'project' field '%+v' is not a string", iproject))
+		err = fmt.Errorf("'payload' 'project' field '%+v' is not a string", iproject)
 		return
 	}
-	db, err := nameToDB(project)
+	db, err = nameToDB(project)
 	if err != nil {
-		returnError(apiName, w, err)
 		return
 	}
-	passed = true
 	return
 }
 
-func getPayloadStringParam(apiName, paramName string, w http.ResponseWriter, payload map[string]interface{}) (param string, passed bool) {
+func getPayloadStringParam(paramName string, w http.ResponseWriter, payload map[string]interface{}) (param string, err error) {
 	iparam, ok := payload[paramName]
 	if !ok {
-		returnError(apiName, w, fmt.Errorf("missing '%s' field in 'payload' section", paramName))
+		err = fmt.Errorf("missing '%s' field in 'payload' section", paramName)
 		return
 	}
 	param, ok = iparam.(string)
 	if !ok {
-		returnError(apiName, w, fmt.Errorf("'payload' '%s' field '%+v' is not a string", paramName, iparam))
+		err = fmt.Errorf("'payload' '%s' field '%+v' is not a string", paramName, iparam)
 		return
 	}
-	passed = true
 	return
 }
 
-func periodNameToValue(c *sql.DB, ctx *lib.Ctx, apiName, periodName string) (periodValue string, err error) {
+func periodNameToValue(c *sql.DB, ctx *lib.Ctx, periodName string) (periodValue string, err error) {
 	rows, err := lib.QuerySQLLogErr(c, ctx, "select quick_ranges_suffix from tquick_ranges where quick_ranges_name = $1", periodName)
 	if err != nil {
 		return
@@ -144,12 +139,12 @@ func periodNameToValue(c *sql.DB, ctx *lib.Ctx, apiName, periodName string) (per
 		return
 	}
 	if periodValue == "" {
-		err = fmt.Errorf("API '%s': invalid period name: '%s'", apiName, periodName)
+		err = fmt.Errorf("invalid period name: '%s'", periodName)
 	}
 	return
 }
 
-func allRepoGroupNameToValue(c *sql.DB, ctx *lib.Ctx, apiName, repoGroupName string) (repoGroupValue string, err error) {
+func allRepoGroupNameToValue(c *sql.DB, ctx *lib.Ctx, repoGroupName string) (repoGroupValue string, err error) {
 	rows, err := lib.QuerySQLLogErr(c, ctx, "select all_repo_group_value from tall_repo_groups where all_repo_group_name = $1", repoGroupName)
 	if err != nil {
 		return
@@ -166,12 +161,12 @@ func allRepoGroupNameToValue(c *sql.DB, ctx *lib.Ctx, apiName, repoGroupName str
 		return
 	}
 	if repoGroupValue == "" {
-		err = fmt.Errorf("API '%s': invalid repository_group name: '%s'", apiName, repoGroupName)
+		err = fmt.Errorf("invalid repository_group name: '%s'", repoGroupName)
 	}
 	return
 }
 
-func allCountryNameToValue(c *sql.DB, ctx *lib.Ctx, apiName, countryName string) (countryValue string, err error) {
+func allCountryNameToValue(c *sql.DB, ctx *lib.Ctx, countryName string) (countryValue string, err error) {
 	rows, err := lib.QuerySQLLogErr(
 		c,
 		ctx,
@@ -194,21 +189,27 @@ func allCountryNameToValue(c *sql.DB, ctx *lib.Ctx, apiName, countryName string)
 		return
 	}
 	if countryValue == "" || (countryValue == "all" && countryName != "All") {
-		err = fmt.Errorf("API '%s': invalid country name: '%s'", apiName, countryName)
+		err = fmt.Errorf("invalid country name: '%s'", countryName)
 	}
 	return
 }
 
-func apiDevActCntRepoGrp(w http.ResponseWriter, payload map[string]interface{}) {
+func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.DevActCntRepoGrp
-	project, db, ok := handleSharedPayload(apiName, w, payload)
-	if !ok {
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
 		return
 	}
 	params := map[string]string{"range": "", "metric": "", "repository_group": "", "country": "", "github_id": ""}
 	for paramName := range params {
-		paramValue, ok := getPayloadStringParam(apiName, paramName, w, payload)
-		if !ok {
+		paramValue, err := getPayloadStringParam(paramName, w, payload)
+		if err != nil {
+			returnError(apiName, w, err)
 			return
 		}
 		params[paramName] = paramValue
@@ -233,25 +234,27 @@ func apiDevActCntRepoGrp(w http.ResponseWriter, payload map[string]interface{}) 
 	}
 	metric, ok := metricMap[params["metric"]]
 	if !ok {
-		returnError(apiName, w, fmt.Errorf("invalid metric value: '%s'", params["metric"]))
+		err = fmt.Errorf("invalid metric value: '%s'", params["metric"])
+		returnError(apiName, w, err)
 		return
 	}
-	ctx, c, ok := getContextAndDB(apiName, w, db)
-	if !ok {
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
 		return
 	}
 	defer func() { _ = c.Close() }()
-	repogroup, err := allRepoGroupNameToValue(c, ctx, apiName, params["repository_group"])
+	repogroup, err := allRepoGroupNameToValue(c, ctx, params["repository_group"])
 	if err != nil {
 		returnError(apiName, w, err)
 		return
 	}
-	country, err := allCountryNameToValue(c, ctx, apiName, params["country"])
+	country, err := allCountryNameToValue(c, ctx, params["country"])
 	if err != nil {
 		returnError(apiName, w, err)
 		return
 	}
-	period, err := periodNameToValue(c, ctx, apiName, params["range"])
+	period, err := periodNameToValue(c, ctx, params["range"])
 	if err != nil {
 		returnError(apiName, w, err)
 		return
@@ -341,14 +344,20 @@ func apiDevActCntRepoGrp(w http.ResponseWriter, payload map[string]interface{}) 
 	json.NewEncoder(w).Encode(pl)
 }
 
-func apiHealth(w http.ResponseWriter, payload map[string]interface{}) {
+func apiHealth(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.Health
-	project, db, ok := handleSharedPayload(apiName, w, payload)
-	if !ok {
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
 		return
 	}
-	ctx, c, ok := getContextAndDB(apiName, w, db)
-	if !ok {
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
 		return
 	}
 	defer func() { _ = c.Close() }()
@@ -376,21 +385,45 @@ func apiHealth(w http.ResponseWriter, payload map[string]interface{}) {
 	json.NewEncoder(w).Encode(hpl)
 }
 
+func requestInfo(r *http.Request) string {
+	agent := ""
+	hdr := r.Header
+	if hdr != nil {
+		uAgentAry, ok := hdr["User-Agent"]
+		if ok {
+			agent = strings.Join(uAgentAry, ", ")
+		}
+	}
+	if agent != "" {
+		return fmt.Sprintf("IP: %s, agent: %s", r.RemoteAddr, agent)
+	}
+	return fmt.Sprintf("IP: %s", r.RemoteAddr)
+}
+
 func handleAPI(w http.ResponseWriter, req *http.Request) {
+	info := requestInfo(req)
+	lib.Printf("Request: %s\n", info)
 	w.Header().Set("Content-Type", "application/json")
-	var pl apiPayload
-	err := json.NewDecoder(req.Body).Decode(&pl)
+	var (
+		pl  apiPayload
+		err error
+	)
+	defer func() {
+		lib.Printf("Request(exit): %s err:%v\n", info, err)
+	}()
+	err = json.NewDecoder(req.Body).Decode(&pl)
 	if err != nil {
 		returnError("unknown", w, err)
 		return
 	}
 	switch pl.API {
 	case lib.Health:
-		apiHealth(w, pl.Payload)
+		apiHealth(info, w, pl.Payload)
 	case lib.DevActCntRepoGrp:
-		apiDevActCntRepoGrp(w, pl.Payload)
+		apiDevActCntRepoGrp(info, w, pl.Payload)
 	default:
-		returnError("unknown:"+pl.API, w, fmt.Errorf("unknown API '%s'", pl.API))
+		err = fmt.Errorf("unknown API '%s'", pl.API)
+		returnError("unknown:"+pl.API, w, err)
 	}
 }
 
