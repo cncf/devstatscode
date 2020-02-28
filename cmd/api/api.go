@@ -469,7 +469,8 @@ func serveAPI() {
 	go func() {
 		for {
 			sig := <-sigs
-			lib.Fatalf("Exiting due to signal %v\n", sig)
+			lib.Printf("Exiting due to signal %v\n", sig)
+			os.Exit(1)
 		}
 	}()
 	http.HandleFunc("/api/v1", handleAPI)
