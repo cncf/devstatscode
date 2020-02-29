@@ -90,5 +90,8 @@ const RepoNamesQuery string = "select distinct name from gha_repos where name li
 // DevActCntRepoGrp - common contant string
 const DevActCntRepoGrp string = "DevActCntRepoGrp"
 
-// Health - common contant string
+// Health - common constant string
 const Health string = "Health"
+
+// Events - common constant string
+const Events string = "Events"

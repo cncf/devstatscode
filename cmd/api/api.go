@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	lib "github.com/cncf/devstatscode"
 	yaml "gopkg.in/yaml.v2"
@@ -34,6 +35,13 @@ type healthPayload struct {
 	Project string `json:"project"`
 	DB      string `json:"db_name"`
 	Events  int    `json:"events"`
+}
+
+type eventsPayload struct {
+	Project    string      `json:"project"`
+	DB         string      `json:"db_name"`
+	TimeStamps []time.Time `json:"timestamps"`
+	Values     []int64     `json:"values"`
 }
 
 type devActCntRepoGrpPayload struct {
@@ -261,23 +269,23 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 	}
 	series := fmt.Sprintf("hdev_%s%s%s", metric, repogroup, country)
 	query := `
-	    select
-	      sub."Rank",
-	      sub.name as name,
-	      sub.value
-	    from (
-	      select row_number() over (order by sum(value) desc) as "Rank",
-	        split_part(name, '$$$', 1) as name,
-	        sum(value) as value
-	      from
-	        shdev
-	      where
-	        series = $1
-	        and period = $2
-	      group by
-	        split_part(name, '$$$', 1)
-	    ) sub
-	  `
+   select
+     sub."Rank",
+     sub.name as name,
+     sub.value
+   from (
+     select row_number() over (order by sum(value) desc) as "Rank",
+       split_part(name, '$$$', 1) as name,
+       sum(value) as value
+     from
+       shdev
+     where
+       series = $1
+       and period = $2
+     group by
+       split_part(name, '$$$', 1)
+   ) sub
+	`
 	rows, err := lib.QuerySQLLogErr(c, ctx, query, series, period)
 	if err != nil {
 		returnError(apiName, w, err)
@@ -385,6 +393,75 @@ func apiHealth(info string, w http.ResponseWriter, payload map[string]interface{
 	json.NewEncoder(w).Encode(hpl)
 }
 
+func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.Events
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	params := map[string]string{"from": "", "to": ""}
+	for paramName := range params {
+		paramValue, err := getPayloadStringParam(paramName, w, payload)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	query := `
+  select
+    time,
+    value
+  from
+    sevents_h
+  where
+    time >= $1
+    and time < $2
+  order by
+    time
+  `
+	rows, err := lib.QuerySQLLogErr(c, ctx, query, params["from"], params["to"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	times := []time.Time{}
+	values := []int64{}
+	var (
+		t time.Time
+		v int64
+	)
+	for rows.Next() {
+		err = rows.Scan(&t, &v)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		times = append(times, t)
+		values = append(values, v)
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	epl := eventsPayload{Project: project, DB: db, TimeStamps: times, Values: values}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(epl)
+}
+
 func requestInfo(r *http.Request) string {
 	agent := ""
 	hdr := r.Header
@@ -416,9 +493,12 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		returnError("unknown", w, err)
 		return
 	}
+	lib.Printf("Request: %s, Payload: %+v\n", info, pl)
 	switch pl.API {
 	case lib.Health:
 		apiHealth(info, w, pl.Payload)
+	case lib.Events:
+		apiEvents(info, w, pl.Payload)
 	case lib.DevActCntRepoGrp:
 		apiDevActCntRepoGrp(info, w, pl.Payload)
 	default:

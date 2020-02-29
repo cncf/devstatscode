@@ -35,6 +35,43 @@ List of APIs:
   - Arguments: `projectName` for example: `kubernetes`, `Kuberentes`, `gRPC`, `grpc`, `all`, `All CNCF`.
   - Returns: `{"project": "projectName", "db_name": "projectDB", "events": int}`, `events` is the total number of all GitHub events that are recorded for given project.
 
+- `Events`: `{"api": "Events", "payload": {"project": "projectName", "from": "2020-02-29", "to": "2020-03-01"}}`.
+  - Arguments:
+    - `projectName`: see `Health` API.
+    - `from`: datetime from (string that Postgres understands)
+    - `to`: datetime to.
+  - Returns:
+  ```
+  {
+    "project": "kubernetes",
+    "db_name": "gha",
+    "timestamps": [
+      "2020-02-29T00:00:00Z",
+      "2020-02-29T01:00:00Z",
+      "2020-02-29T02:00:00Z",
+      "2020-02-29T03:00:00Z",
+      "2020-02-29T04:00:00Z",
+      "2020-02-29T05:00:00Z",
+      "2020-02-29T06:00:00Z",
+      "2020-02-29T07:00:00Z",
+      "2020-02-29T08:00:00Z",
+      "2020-02-29T09:00:00Z"
+    ],
+    "values": [
+      441,
+      170,
+      225,
+      142,
+      108,
+      146,
+      102,
+      149,
+      78,
+      6
+    ]
+  }
+  ```
+
 - `DevActCntRepoGrp`: `{"api": "DevActCntRepoGrp", "payload": {"project": "projectName", "range": "range", "metric": "metric", "repository_group": "repository_group", "country": "country", "github_id": "id"}}`.
   - Arguments: (like in "Developer Activity Counts by Repository Group" DevStats dashboards).
     - `projectName`: see `Health` API.

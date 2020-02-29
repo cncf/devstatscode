@@ -2,7 +2,7 @@
 if [ -z "$1" ]
 then
   echo "$0: please specify project name as a 1st arg"
-  exit 2
+  exit 1
 fi
 if [ -z "$API_URL" ]
 then
