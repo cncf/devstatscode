@@ -98,3 +98,6 @@ const Events string = "Events"
 
 // ListAPIs - common constant string
 const ListAPIs string = "ListAPIs"
+
+// ListProjects - common constant string
+const ListProjects string = "ListProjects"

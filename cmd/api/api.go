@@ -17,12 +17,13 @@ import (
 	yaml "gopkg.in/yaml.v2"
 )
 
-// APIs - List all currently defined APIs
-var APIs = []string{
+// allAPIs - List all currently defined APIs
+var allAPIs = []string{
 	lib.DevActCntRepoGrp,
 	lib.Health,
 	lib.Events,
 	lib.ListAPIs,
+	lib.ListProjects,
 }
 
 var (
@@ -47,6 +48,11 @@ type healthPayload struct {
 
 type listAPIsPayload struct {
 	APIs []string `json:"apis"`
+}
+
+type listProjectsPayload struct {
+	Projects []string `json:"projects"`
+	DBs      []string `json:"databases"`
 }
 
 type eventsPayload struct {
@@ -366,9 +372,28 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 
 func apiListAPIs(info string, w http.ResponseWriter) {
 	apiName := lib.ListAPIs
-	lapl := listAPIsPayload{APIs: APIs}
+	lapl := listAPIsPayload{APIs: allAPIs}
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(lapl)
+	lib.Printf("%s(exit)\n", apiName)
+}
+
+func apiListProjects(info string, w http.ResponseWriter) {
+	apiName := lib.ListProjects
+	names := []string{}
+	dbs := []string{}
+	gMtx.RLock()
+	for name, db := range gNameToDB {
+		if name == db {
+			continue
+		}
+		names = append(names, name)
+		dbs = append(dbs, db)
+	}
+	gMtx.RUnlock()
+	lppl := listProjectsPayload{Projects: names, DBs: dbs}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(lppl)
 	lib.Printf("%s(exit)\n", apiName)
 }
 
@@ -519,6 +544,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiHealth(info, w, pl.Payload)
 	case lib.ListAPIs:
 		apiListAPIs(info, w)
+	case lib.ListProjects:
+		apiListProjects(info, w)
 	case lib.Events:
 		apiEvents(info, w, pl.Payload)
 	case lib.DevActCntRepoGrp:

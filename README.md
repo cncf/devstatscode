@@ -38,6 +38,9 @@ List of APIs:
 - `ListAPIs`: `{"api": "ListAPIs"}`.
   - Returns: `{"apis":["DevActCntRepoGrp","Health","Events","ListAPIs",...]}` - list of all possible APIs.
 
+- `ListProjects`: `{"api": "ListProjects"}`.
+  - Returns: `{"projects":["Kubernetes","Prometheus","All CNCF",...],"databases":["gha","prometheus","allprj",...]}` - list of all possible Projects and their databases.
+
 - `Events`: `{"api": "Events", "payload": {"project": "projectName", "from": "2020-02-29", "to": "2020-03-01"}}`.
   - Arguments:
     - `projectName`: see `Health` API.
