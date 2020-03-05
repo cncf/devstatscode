@@ -101,3 +101,6 @@ const ListAPIs string = "ListAPIs"
 
 // ListProjects - common constant string
 const ListProjects string = "ListProjects"
+
+// RepoGroups - common constant string
+const RepoGroups string = "RepoGroups"

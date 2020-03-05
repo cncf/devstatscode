@@ -24,6 +24,7 @@ var allAPIs = []string{
 	lib.Events,
 	lib.ListAPIs,
 	lib.ListProjects,
+	lib.RepoGroups,
 }
 
 var (
@@ -74,6 +75,12 @@ type devActCntRepoGrpPayload struct {
 	Rank            []int    `json:"rank"`
 	Login           []string `json:"login"`
 	Number          []int    `json:"number"`
+}
+
+type repoGroupsPayload struct {
+	Project    string   `json:"project"`
+	DB         string   `json:"db_name"`
+	RepoGroups []string `json:"repo_groups"`
 }
 
 func returnError(apiName string, w http.ResponseWriter, err error) {
@@ -134,15 +141,18 @@ func handleSharedPayload(w http.ResponseWriter, payload map[string]interface{}) 
 	return
 }
 
-func getPayloadStringParam(paramName string, w http.ResponseWriter, payload map[string]interface{}) (param string, err error) {
+func getPayloadStringParam(paramName string, w http.ResponseWriter, payload map[string]interface{}, optional bool) (param string, err error) {
 	iparam, ok := payload[paramName]
 	if !ok {
+		if optional {
+			return
+		}
 		err = fmt.Errorf("missing '%s' field in 'payload' section", paramName)
 		return
 	}
 	param, ok = iparam.(string)
 	if !ok {
-		err = fmt.Errorf("'payload' '%s' field '%+v' is not a string", paramName, iparam)
+		err = fmt.Errorf("'payload' '%s' field '%+v' is not a stringi (optional %v)", paramName, iparam, optional)
 		return
 	}
 	return
@@ -220,6 +230,31 @@ func allCountryNameToValue(c *sql.DB, ctx *lib.Ctx, countryName string) (country
 	return
 }
 
+func getStringTags(c *sql.DB, ctx *lib.Ctx, tag, col string) (values []string, err error) {
+	if col == "" || tag == "" {
+		err = fmt.Errorf("tag and col must both be non-empty, got (%s, %s)", tag, col)
+		return
+	}
+	rows, err := lib.QuerySQLLogErr(c, ctx, fmt.Sprintf("select %s from %s", col, tag))
+	if err != nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	value := ""
+	for rows.Next() {
+		err = rows.Scan(&value)
+		if err != nil {
+			return
+		}
+		values = append(values, value)
+	}
+	err = rows.Err()
+	if err != nil {
+		return
+	}
+	return
+}
+
 func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.DevActCntRepoGrp
 	var err error
@@ -233,7 +268,7 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 	}
 	params := map[string]string{"range": "", "metric": "", "repository_group": "", "country": "", "github_id": ""}
 	for paramName := range params {
-		paramValue, err := getPayloadStringParam(paramName, w, payload)
+		paramValue, err := getPayloadStringParam(paramName, w, payload, false)
 		if err != nil {
 			returnError(apiName, w, err)
 			return
@@ -358,14 +393,6 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 		Login:           logins,
 		Number:          numbers,
 	}
-	// RO connections, such operations are impossible
-	/*
-		_, err = lib.ExecSQL(c, ctx, "insert into gha_repos(id, name) values($1, $2)", 999999999, "xxx")
-		if err != nil {
-			returnError(apiName, w, err)
-			return
-		}
-	*/
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(pl)
 }
@@ -438,6 +465,47 @@ func apiHealth(info string, w http.ResponseWriter, payload map[string]interface{
 	json.NewEncoder(w).Encode(hpl)
 }
 
+func apiRepoGroups(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.RepoGroups
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	params := map[string]string{"raw": ""}
+	for paramName := range params {
+		paramValue, err := getPayloadStringParam(paramName, w, payload, true)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	repoGroups := []string{}
+	if params["raw"] == "" {
+		repoGroups, err = getStringTags(c, ctx, "tall_repo_groups", "all_repo_group_name")
+	} else {
+		repoGroups, err = getStringTags(c, ctx, "tall_repo_groups", "all_repo_group_value")
+	}
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	rgpl := repoGroupsPayload{Project: project, DB: db, RepoGroups: repoGroups}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(rgpl)
+}
+
 func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.Events
 	var err error
@@ -451,7 +519,7 @@ func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{
 	}
 	params := map[string]string{"from": "", "to": ""}
 	for paramName := range params {
-		paramValue, err := getPayloadStringParam(paramName, w, payload)
+		paramValue, err := getPayloadStringParam(paramName, w, payload, false)
 		if err != nil {
 			returnError(apiName, w, err)
 			return
@@ -548,6 +616,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiListProjects(info, w)
 	case lib.Events:
 		apiEvents(info, w, pl.Payload)
+	case lib.RepoGroups:
+		apiRepoGroups(info, w, pl.Payload)
 	case lib.DevActCntRepoGrp:
 		apiDevActCntRepoGrp(info, w, pl.Payload)
 	default:
