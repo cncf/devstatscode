@@ -17,6 +17,14 @@ import (
 	yaml "gopkg.in/yaml.v2"
 )
 
+// APIs - List all currently defined APIs
+var APIs = []string{
+	lib.DevActCntRepoGrp,
+	lib.Health,
+	lib.Events,
+	lib.ListAPIs,
+}
+
 var (
 	gNameToDB map[string]string
 	gMtx      *sync.RWMutex
@@ -35,6 +43,10 @@ type healthPayload struct {
 	Project string `json:"project"`
 	DB      string `json:"db_name"`
 	Events  int    `json:"events"`
+}
+
+type listAPIsPayload struct {
+	APIs []string `json:"apis"`
 }
 
 type eventsPayload struct {
@@ -352,6 +364,14 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 	json.NewEncoder(w).Encode(pl)
 }
 
+func apiListAPIs(info string, w http.ResponseWriter) {
+	apiName := lib.ListAPIs
+	lapl := listAPIsPayload{APIs: APIs}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(lapl)
+	lib.Printf("%s(exit)\n", apiName)
+}
+
 func apiHealth(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.Health
 	var err error
@@ -497,6 +517,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 	switch pl.API {
 	case lib.Health:
 		apiHealth(info, w, pl.Payload)
+	case lib.ListAPIs:
+		apiListAPIs(info, w)
 	case lib.Events:
 		apiEvents(info, w, pl.Payload)
 	case lib.DevActCntRepoGrp:

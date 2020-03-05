@@ -95,3 +95,6 @@ const Health string = "Health"
 
 // Events - common constant string
 const Events string = "Events"
+
+// ListAPIs - common constant string
+const ListAPIs string = "ListAPIs"
