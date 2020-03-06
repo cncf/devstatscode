@@ -29,6 +29,7 @@ var allAPIs = []string{
 
 var (
 	gNameToDB map[string]string
+	gProjects []string
 	gMtx      *sync.RWMutex
 )
 
@@ -53,7 +54,6 @@ type listAPIsPayload struct {
 
 type listProjectsPayload struct {
 	Projects []string `json:"projects"`
-	DBs      []string `json:"databases"`
 }
 
 type eventsPayload struct {
@@ -152,7 +152,7 @@ func getPayloadStringParam(paramName string, w http.ResponseWriter, payload map[
 	}
 	param, ok = iparam.(string)
 	if !ok {
-		err = fmt.Errorf("'payload' '%s' field '%+v' is not a stringi (optional %v)", paramName, iparam, optional)
+		err = fmt.Errorf("'payload' '%s' field '%+v' is not a string (optional %v)", paramName, iparam, optional)
 		return
 	}
 	return
@@ -408,17 +408,12 @@ func apiListAPIs(info string, w http.ResponseWriter) {
 func apiListProjects(info string, w http.ResponseWriter) {
 	apiName := lib.ListProjects
 	names := []string{}
-	dbs := []string{}
 	gMtx.RLock()
-	for name, db := range gNameToDB {
-		if name == db {
-			continue
-		}
+	for _, name := range gProjects {
 		names = append(names, name)
-		dbs = append(dbs, db)
 	}
 	gMtx.RUnlock()
-	lppl := listProjectsPayload{Projects: names, DBs: dbs}
+	lppl := listProjectsPayload{Projects: names}
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(lppl)
 	lib.Printf("%s(exit)\n", apiName)
@@ -653,6 +648,8 @@ func readProjects(ctx *lib.Ctx) {
 		db := projData.PDB
 		gNameToDB[projName] = db
 		gNameToDB[projData.FullName] = db
+		gNameToDB[projData.PDB] = db
+		gProjects = append(gProjects, projData.FullName)
 	}
 	gMtx = &sync.RWMutex{}
 }

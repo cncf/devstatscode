@@ -39,13 +39,19 @@ List of APIs:
   - Returns: `{"apis":["DevActCntRepoGrp","Health","Events","ListAPIs",...]}` - list of all possible APIs.
 
 - `ListProjects`: `{"api": "ListProjects"}`.
-  - Returns: `{"projects":["Kubernetes","Prometheus","All CNCF",...],"databases":["gha","prometheus","allprj",...]}` - list of all possible Projects and their databases.
+  - Returns: `{"projects":["Kubernetes","Prometheus","All CNCF",...]}` - list of all possible projects.
+
+- `RepoGroups`: `{"api": "RepoGroups", "payload": {"project": "projectName", "raw": "1"}}`.
+  - Arguments:
+    - `projectName`: see `Health` API.
+    - `raw`: optional (but must be string if used, for example "1") - will return internal repository groups names as used in actual DB filters.
+  - Returns: `{"project":"all","db_name":"allprj","repo_groups":["SPIFFE","CloudEvents",...]}`.
 
 - `Events`: `{"api": "Events", "payload": {"project": "projectName", "from": "2020-02-29", "to": "2020-03-01"}}`.
   - Arguments:
     - `projectName`: see `Health` API.
     - `from`: datetime from (string that Postgres understands)
-    - `to`: datetime to.
+    - `to`: datetime to (example '2020-02-01 11:00:00').
   - Returns:
   ```
   {
@@ -54,26 +60,12 @@ List of APIs:
     "timestamps": [
       "2020-02-29T00:00:00Z",
       "2020-02-29T01:00:00Z",
-      "2020-02-29T02:00:00Z",
-      "2020-02-29T03:00:00Z",
-      "2020-02-29T04:00:00Z",
-      "2020-02-29T05:00:00Z",
-      "2020-02-29T06:00:00Z",
-      "2020-02-29T07:00:00Z",
-      "2020-02-29T08:00:00Z",
-      "2020-02-29T09:00:00Z"
+      ...
     ],
     "values": [
       441,
       170,
-      225,
-      142,
-      108,
-      146,
-      102,
-      149,
-      78,
-      6
+      ...
     ]
   }
   ```
