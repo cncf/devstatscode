@@ -104,3 +104,6 @@ const ListProjects string = "ListProjects"
 
 // RepoGroups - common constant string
 const RepoGroups string = "RepoGroups"
+
+// Ranges - common constant string
+const Ranges string = "Ranges"

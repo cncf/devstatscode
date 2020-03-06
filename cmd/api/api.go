@@ -19,12 +19,13 @@ import (
 
 // allAPIs - List all currently defined APIs
 var allAPIs = []string{
-	lib.DevActCntRepoGrp,
 	lib.Health,
-	lib.Events,
 	lib.ListAPIs,
 	lib.ListProjects,
 	lib.RepoGroups,
+	lib.Ranges,
+	lib.Events,
+	lib.DevActCntRepoGrp,
 }
 
 var (
@@ -81,6 +82,12 @@ type repoGroupsPayload struct {
 	Project    string   `json:"project"`
 	DB         string   `json:"db_name"`
 	RepoGroups []string `json:"repo_groups"`
+}
+
+type rangesPayload struct {
+	Project string   `json:"project"`
+	DB      string   `json:"db_name"`
+	Ranges  []string `json:"ranges"`
 }
 
 func returnError(apiName string, w http.ResponseWriter, err error) {
@@ -501,6 +508,47 @@ func apiRepoGroups(info string, w http.ResponseWriter, payload map[string]interf
 	json.NewEncoder(w).Encode(rgpl)
 }
 
+func apiRanges(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.Ranges
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	params := map[string]string{"raw": ""}
+	for paramName := range params {
+		paramValue, err := getPayloadStringParam(paramName, w, payload, true)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	ranges := []string{}
+	if params["raw"] == "" {
+		ranges, err = getStringTags(c, ctx, "tquick_ranges", "quick_ranges_name")
+	} else {
+		ranges, err = getStringTags(c, ctx, "tquick_ranges", "quick_ranges_suffix")
+	}
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	rpl := rangesPayload{Project: project, DB: db, Ranges: ranges}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(rpl)
+}
+
 func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.Events
 	var err error
@@ -609,10 +657,12 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiListAPIs(info, w)
 	case lib.ListProjects:
 		apiListProjects(info, w)
-	case lib.Events:
-		apiEvents(info, w, pl.Payload)
 	case lib.RepoGroups:
 		apiRepoGroups(info, w, pl.Payload)
+	case lib.Ranges:
+		apiRanges(info, w, pl.Payload)
+	case lib.Events:
+		apiEvents(info, w, pl.Payload)
 	case lib.DevActCntRepoGrp:
 		apiDevActCntRepoGrp(info, w, pl.Payload)
 	default:
