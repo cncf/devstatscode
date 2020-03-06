@@ -47,6 +47,18 @@ List of APIs:
     - `raw`: optional (but must be string if used, for example "1") - will return internal repository groups names as used in actual DB filters.
   - Returns: `{"project":"all","db_name":"allprj","repo_groups":["SPIFFE","CloudEvents",...]}`.
 
+- `Ranges`: `{"api": "Ranges", "payload": {"project": "projectName", "raw": "1"}}`.
+  - Arguments:
+    - `projectName`: see `Health` API.
+    - `raw`: see `RepoGroups` API.
+  - Returns: `{"project":"all","db_name":"allprj","ranges":["Last decade","Since graduation",...]}`.
+
+- `Countriess`: `{"api": "RepoGroups", "payload": {"project": "projectName", "raw": "1"}}`.
+  - Arguments:
+    - `projectName`: see `Health` API.
+    - `raw`: see `RepoGroups` API.
+  - Returns: `{"project":"all","db_name":"allprj","countries":["Poland","United States",...]}`.
+
 - `Events`: `{"api": "Events", "payload": {"project": "projectName", "from": "2020-02-29", "to": "2020-03-01"}}`.
   - Arguments:
     - `projectName`: see `Health` API.
