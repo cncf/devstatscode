@@ -107,3 +107,6 @@ const RepoGroups string = "RepoGroups"
 
 // Ranges - common constant string
 const Ranges string = "Ranges"
+
+// Countries - common constant string
+const Countries string = "Countries"

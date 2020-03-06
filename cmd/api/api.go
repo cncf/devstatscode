@@ -24,6 +24,7 @@ var allAPIs = []string{
 	lib.ListProjects,
 	lib.RepoGroups,
 	lib.Ranges,
+	lib.Countries,
 	lib.Events,
 	lib.DevActCntRepoGrp,
 }
@@ -88,6 +89,12 @@ type rangesPayload struct {
 	Project string   `json:"project"`
 	DB      string   `json:"db_name"`
 	Ranges  []string `json:"ranges"`
+}
+
+type countriesPayload struct {
+	Project   string   `json:"project"`
+	DB        string   `json:"db_name"`
+	Countries []string `json:"countries"`
 }
 
 func returnError(apiName string, w http.ResponseWriter, err error) {
@@ -549,6 +556,47 @@ func apiRanges(info string, w http.ResponseWriter, payload map[string]interface{
 	json.NewEncoder(w).Encode(rpl)
 }
 
+func apiCountries(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.Countries
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	params := map[string]string{"raw": ""}
+	for paramName := range params {
+		paramValue, err := getPayloadStringParam(paramName, w, payload, true)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	countries := []string{}
+	if params["raw"] == "" {
+		countries, err = getStringTags(c, ctx, "gha_countries", "name")
+	} else {
+		countries, err = getStringTags(c, ctx, "gha_countries", "code")
+	}
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	cpl := countriesPayload{Project: project, DB: db, Countries: countries}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(cpl)
+}
+
 func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.Events
 	var err error
@@ -661,6 +709,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiRepoGroups(info, w, pl.Payload)
 	case lib.Ranges:
 		apiRanges(info, w, pl.Payload)
+	case lib.Countries:
+		apiCountries(info, w, pl.Payload)
 	case lib.Events:
 		apiEvents(info, w, pl.Payload)
 	case lib.DevActCntRepoGrp:
