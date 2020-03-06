@@ -34,6 +34,7 @@ List of APIs:
 - `Health`: `{"api": "Health", "payload": {"project": "projectName"}}`.
   - Arguments: `projectName` for example: `kubernetes`, `Kuberentes`, `gRPC`, `grpc`, `all`, `All CNCF`.
   - Returns: `{"project": "projectName", "db_name": "projectDB", "events": int}`, `events` is the total number of all GitHub events that are recorded for given project.
+  - Result contains the number of events present for the specified project.
 
 - `ListAPIs`: `{"api": "ListAPIs"}`.
   - Returns: `{"apis":["DevActCntRepoGrp","Health","Events","ListAPIs",...]}` - list of all possible APIs.
@@ -46,12 +47,14 @@ List of APIs:
     - `projectName`: see `Health` API.
     - `raw`: optional (but must be string if used, for example "1") - will return internal repository groups names as used in actual DB filters.
   - Returns: `{"project":"all","db_name":"allprj","repo_groups":["SPIFFE","CloudEvents",...]}`.
+  - Result contains all possible repository groups defined in the specified project.
 
 - `Ranges`: `{"api": "Ranges", "payload": {"project": "projectName", "raw": "1"}}`.
   - Arguments:
     - `projectName`: see `Health` API.
     - `raw`: see `RepoGroups` API.
   - Returns: `{"project":"all","db_name":"allprj","ranges":["Last decade","Since graduation",...]}`.
+  - Result contains all possible date ranges for the specified project: Last xyz, versionX - versionY, Before CNCF join, after CNCF join, since graduation and so on.
 
 - `Countriess`: `{"api": "RepoGroups", "payload": {"project": "projectName", "raw": "1"}}`.
   - Arguments:
@@ -81,6 +84,15 @@ List of APIs:
     ]
   }
   ```
+  - Result contains hourly events counts for the specified period in the specified date range.
+
+- `Repos`: `{"api": "RepoGroups", "payload": {"project": "projectName", "repository_group": ["Other", "Not specified", "SIG Apps"]}}`.
+  - Arguments:
+    - `projectName`: see `Health` API.
+    - `repository_group`: array of strings, some values are special: `"Not specified"` returns repositories without repository group defined.
+      - If you specify one element array `["All"]` - data for all repositories will be returned. If there are more than 1 items "All" has no special meaning then.
+  - Returns: `{"project":"kubernetes","db_name":"gha","repo_groups":["Other","Not specified",...],"repos":["kubernetes/application-images","kubernetes/example-not-specified",...]}`.
+  - Result contains projects repositories - repository groups configuration information.
 
 - `DevActCntRepoGrp`: `{"api": "DevActCntRepoGrp", "payload": {"project": "projectName", "range": "range", "metric": "metric", "repository_group": "repository_group", "country": "country", "github_id": "id"}}`.
   - Arguments: (like in "Developer Activity Counts by Repository Group" DevStats dashboards).
@@ -118,6 +130,7 @@ List of APIs:
     ]
   }
   ```
+  - Result contains data in the same format as "Developer Activity Counts by Repository Group" DevStats dashboard for the given project.
 
 # Local API deployment and testing
 
@@ -125,3 +138,4 @@ List of APIs:
 - Call Health API: `./devel/api_health.sh kubernetes`.
 - Call Developer Activity Counts Repository Groups API: `./devel/api_dev_act_cnt_repo_grp.sh kubernetes 'v1.17.0 - now' 'GitHub Events' 'SIG Apps' 'United States' ''`.
 - Manual `curl`: `curl -H "Content-Type: application/json" http://127.0.0.1:8080/api/v1 -d"{\"api\":\"Health\",\"payload\":{\"project\":\"kubernetes\"}}"`.
+- Call all other API scripts examples using `./devel/api_*.sh` scripts.

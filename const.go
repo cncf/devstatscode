@@ -60,6 +60,9 @@ const HideCfgFile string = "hide/hide.csv"
 // All - common constant string
 const All string = "all"
 
+// ALL - common constant string
+const ALL string = "All"
+
 // Kubernetes - common constant string
 const Kubernetes string = "kubernetes"
 
@@ -107,6 +110,9 @@ const RepoGroups string = "RepoGroups"
 
 // Ranges - common constant string
 const Ranges string = "Ranges"
+
+// Repos - common constant string
+const Repos string = "Repos"
 
 // Countries - common constant string
 const Countries string = "Countries"

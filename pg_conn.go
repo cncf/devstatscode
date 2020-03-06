@@ -508,7 +508,7 @@ func queryOut(query string, args ...interface{}) {
 			case nil:
 				s += fmt.Sprintf("%d:(null) ", vi+1)
 			default:
-				s += fmt.Sprintf("%d:%+v ", vi+1, reflect.ValueOf(vv).Elem())
+				s += fmt.Sprintf("%d:%+v ", vi+1, reflect.ValueOf(vv))
 			}
 		}
 		fmt.Printf("[%s]\n", s)
@@ -753,6 +753,17 @@ func ExecSQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{}) 
 // NValues will return values($1, $2, .., $n)
 func NValues(n int) string {
 	s := "values("
+	i := 1
+	for i <= n {
+		s += "$" + strconv.Itoa(i) + ", "
+		i++
+	}
+	return s[:len(s)-2] + ")"
+}
+
+// NArray will return values($1, $2, .., $n)
+func NArray(n int) string {
+	s := "("
 	i := 1
 	for i <= n {
 		s += "$" + strconv.Itoa(i) + ", "

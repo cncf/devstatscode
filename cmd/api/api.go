@@ -26,6 +26,7 @@ var allAPIs = []string{
 	lib.Ranges,
 	lib.Countries,
 	lib.Events,
+	lib.Repos,
 	lib.DevActCntRepoGrp,
 }
 
@@ -97,6 +98,13 @@ type countriesPayload struct {
 	Countries []string `json:"countries"`
 }
 
+type reposPayload struct {
+	Project    string   `json:"project"`
+	DB         string   `json:"db_name"`
+	RepoGroups []string `json:"repo_groups"`
+	Repos      []string `json:"repos"`
+}
+
 func returnError(apiName string, w http.ResponseWriter, err error) {
 	errStr := err.Error()
 	if !strings.HasPrefix(errStr, "API '") {
@@ -161,12 +169,40 @@ func getPayloadStringParam(paramName string, w http.ResponseWriter, payload map[
 		if optional {
 			return
 		}
-		err = fmt.Errorf("missing '%s' field in 'payload' section", paramName)
+		err = fmt.Errorf("missing '%s' field in 'payload' section (optional %v)", paramName, optional)
 		return
 	}
 	param, ok = iparam.(string)
 	if !ok {
-		err = fmt.Errorf("'payload' '%s' field '%+v' is not a string (optional %v)", paramName, iparam, optional)
+		err = fmt.Errorf("'payload' '%s' field '%+v'/%T is not a string (optional %v)", paramName, iparam, iparam, optional)
+		return
+	}
+	return
+}
+
+func getPayloadStringArrayParam(paramName string, w http.ResponseWriter, payload map[string]interface{}, optional, allowEmpty bool) (param []string, err error) {
+	iparam, ok := payload[paramName]
+	if !ok {
+		if optional {
+			return
+		}
+		err = fmt.Errorf("missing '%s' field in 'payload' section (optional %v, allow empty %v)", paramName, optional, allowEmpty)
+		return
+	}
+	iary, ok := iparam.([]interface{})
+	if !ok {
+		err = fmt.Errorf("'payload' '%s' field '%+v'/%T is not an array (optional %v, allow empty %v)", paramName, iparam, iparam, optional, allowEmpty)
+		return
+	}
+	for idx, item := range iary {
+		s, ok := item.(string)
+		if !ok {
+			err = fmt.Errorf("'payload' '%s' field '%+v' #%d item '%+v'/%T is not a string (optional %v, allow empty %v)", paramName, iary, idx+1, item, item, optional, allowEmpty)
+		}
+		param = append(param, s)
+	}
+	if !allowEmpty && len(param) == 0 {
+		err = fmt.Errorf("'payload' '%s' field '%+v' cannot be empty (optional %v, allow empty %v)", paramName, param, optional, allowEmpty)
 		return
 	}
 	return
@@ -238,7 +274,7 @@ func allCountryNameToValue(c *sql.DB, ctx *lib.Ctx, countryName string) (country
 	if err != nil {
 		return
 	}
-	if countryValue == "" || (countryValue == "all" && countryName != "All") {
+	if countryValue == "" || (countryValue == "all" && countryName != lib.ALL) {
 		err = fmt.Errorf("invalid country name: '%s'", countryName)
 	}
 	return
@@ -597,6 +633,84 @@ func apiCountries(info string, w http.ResponseWriter, payload map[string]interfa
 	json.NewEncoder(w).Encode(cpl)
 }
 
+func toInterfaceArray(stringArray []string) (interfaceArray []interface{}) {
+	for _, str := range stringArray {
+		interfaceArray = append(interfaceArray, str)
+	}
+	return
+}
+
+func apiRepos(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.Repos
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	params := map[string][]string{"repository_group": {}}
+	for paramName := range params {
+		paramValue, err := getPayloadStringArrayParam(paramName, w, payload, false, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	repositoryGroupParam := params["repository_group"]
+	var rows *sql.Rows
+	query := `
+    select
+      distinct coalesce(case repo_group when '' then 'Not specified' else repo_group end, 'Not specified') as "Repository group",
+      name as "Repository"
+    from
+      gha_repos
+    where
+      name like '%_/_%'
+      and name not like '%/%/%'
+  `
+	if len(repositoryGroupParam) == 1 && repositoryGroupParam[0] == lib.ALL {
+		rows, err = lib.QuerySQLLogErr(c, ctx, query)
+	} else {
+		query += ` and coalesce(case repo_group when '' then 'Not specified' else repo_group end, 'Not specified') in ` + lib.NArray(len(repositoryGroupParam))
+		rows, err = lib.QuerySQLLogErr(c, ctx, query, toInterfaceArray(repositoryGroupParam)...)
+	}
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	repoGroups := []string{}
+	repoGroup := ""
+	repos := []string{}
+	repo := ""
+	for rows.Next() {
+		err = rows.Scan(&repoGroup, &repo)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		repoGroups = append(repoGroups, repoGroup)
+		repos = append(repos, repo)
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	rpl := reposPayload{Project: project, DB: db, RepoGroups: repoGroups, Repos: repos}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(rpl)
+}
+
 func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.Events
 	var err error
@@ -713,6 +827,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiCountries(info, w, pl.Payload)
 	case lib.Events:
 		apiEvents(info, w, pl.Payload)
+	case lib.Repos:
+		apiRepos(info, w, pl.Payload)
 	case lib.DevActCntRepoGrp:
 		apiDevActCntRepoGrp(info, w, pl.Payload)
 	default:
