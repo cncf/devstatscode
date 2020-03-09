@@ -329,6 +329,7 @@ func metricNameToValueMap() map[string]string {
 		"Issue comments":      "issue_comments",
 		"Issues":              "issues",
 		"PRs":                 "prs",
+		"Merged PRs":          "merged_prs",
 		"Review comments":     "review_comments",
 		"Contributions":       "contributions",
 		"Active repositories": "active_repos",
