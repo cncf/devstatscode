@@ -27,6 +27,7 @@ var allAPIs = []string{
 	lib.Countries,
 	lib.Events,
 	lib.Repos,
+	lib.ComContribRepoGrp,
 	lib.DevActCntRepoGrp,
 }
 
@@ -64,6 +65,17 @@ type eventsPayload struct {
 	DB         string      `json:"db_name"`
 	TimeStamps []time.Time `json:"timestamps"`
 	Values     []int64     `json:"values"`
+}
+
+type comContribRepoGrpPayload struct {
+	Project              string      `json:"project"`
+	DB                   string      `json:"db_name"`
+	Period               string      `json:"period"`
+	RepositoryGroup      string      `json:"repository_group"`
+	Companies            []float64   `json:"companies"`
+	Developers           []float64   `json:"developers"`
+	CompaniesTimestamps  []time.Time `json:"companies_timestamps"`
+	DevelopersTimestamps []time.Time `json:"developers_timestamps"`
 }
 
 type devActCntRepoGrpPayload struct {
@@ -305,6 +317,153 @@ func getStringTags(c *sql.DB, ctx *lib.Ctx, tag, col string) (values []string, e
 	return
 }
 
+func metricNameToValueMap() map[string]string {
+	return map[string]string{
+		"Approves":            "approves",
+		"Reviews":             "reviews",
+		"Comments":            "comments",
+		"Commit comments":     "commit_comments",
+		"Commits":             "commits",
+		"GitHub Events":       "events",
+		"GitHub pushes":       "pushes",
+		"Issue comments":      "issue_comments",
+		"Issues":              "issues",
+		"PRs":                 "prs",
+		"Review comments":     "review_comments",
+		"Contributions":       "contributions",
+		"Active repositories": "active_repos",
+	}
+}
+
+func periodNameToValueMap() map[string]string {
+	return map[string]string{
+		"7 Days MA":  "d7",
+		"28 Days MA": "d28",
+		"Week":       "w",
+		"Month":      "m",
+		"Quarter":    "q",
+	}
+}
+
+func apiComContribRepoGrp(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.ComContribRepoGrp
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	params := map[string]string{"from": "", "to": "", "period": "", "repository_group": ""}
+	for paramName := range params {
+		paramValue, err := getPayloadStringParam(paramName, w, payload, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	periodMap := periodNameToValueMap()
+	for _, v := range periodMap {
+		periodMap[v] = v
+	}
+	period, ok := periodMap[params["period"]]
+	if !ok {
+		err = fmt.Errorf("invalid period value: '%s'", params["period"])
+		returnError(apiName, w, err)
+		return
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	repogroup, err := allRepoGroupNameToValue(c, ctx, params["repository_group"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	query := `
+  select
+    time,
+    value
+  from
+    snum_stats
+  where
+    time >= $1
+    and time < $2
+    and period = $3
+    and series = $4
+  order by
+    time
+	`
+	seriesComps := "nstats" + repogroup + "comps"
+	seriesDevs := "nstats" + repogroup + "devs"
+	rows, err := lib.QuerySQLLogErr(c, ctx, query, params["from"], params["to"], period, seriesComps)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		t                    time.Time
+		v                    float64
+		companies            []float64
+		developers           []float64
+		companiesTimestamps  []time.Time
+		developersTimestamps []time.Time
+	)
+	for rows.Next() {
+		err = rows.Scan(&t, &v)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		companiesTimestamps = append(companiesTimestamps, t)
+		companies = append(companies, v)
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	rows, err = lib.QuerySQLLogErr(c, ctx, query, params["from"], params["to"], period, seriesDevs)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		err = rows.Scan(&t, &v)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		developersTimestamps = append(developersTimestamps, t)
+		developers = append(developers, v)
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	pl := comContribRepoGrpPayload{
+		Project:              project,
+		DB:                   db,
+		Period:               params["period"],
+		RepositoryGroup:      params["repository_group"],
+		Companies:            companies,
+		CompaniesTimestamps:  companiesTimestamps,
+		Developers:           developers,
+		DevelopersTimestamps: developersTimestamps,
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(pl)
+}
+
 func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.DevActCntRepoGrp
 	var err error
@@ -325,21 +484,7 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 		}
 		params[paramName] = paramValue
 	}
-	metricMap := map[string]string{
-		"Approves":            "approves",
-		"Reviews":             "reviews",
-		"Comments":            "comments",
-		"Commit comments":     "commit_comments",
-		"Commits":             "commits",
-		"GitHub Events":       "events",
-		"GitHub pushes":       "pushes",
-		"Issue comments":      "issue_comments",
-		"Issues":              "issues",
-		"PRs":                 "prs",
-		"Review comments":     "review_comments",
-		"Contributions":       "contributions",
-		"Active repositories": "active_repos",
-	}
+	metricMap := metricNameToValueMap()
 	for _, v := range metricMap {
 		metricMap[v] = v
 	}
@@ -829,6 +974,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiEvents(info, w, pl.Payload)
 	case lib.Repos:
 		apiRepos(info, w, pl.Payload)
+	case lib.ComContribRepoGrp:
+		apiComContribRepoGrp(info, w, pl.Payload)
 	case lib.DevActCntRepoGrp:
 		apiDevActCntRepoGrp(info, w, pl.Payload)
 	default:
