@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"net/http"
 	"os"
 	"regexp"
@@ -1465,7 +1466,7 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg, frepo map[s
 		if err != nil {
 			lib.Printf("%v: Error http.Get:\n%v\n", dt, err)
 			if trials < ctx.HTTPRetry {
-				time.Sleep(time.Duration(10) * time.Second)
+				time.Sleep(time.Duration((1+rand.Intn(20))*trials) * time.Second)
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "%v: Error http.Get:\n%v\n", dt, err)
@@ -1479,13 +1480,14 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg, frepo map[s
 		if err != nil {
 			lib.Printf("%v: No data yet, gzip reader:\n%v\n", dt, err)
 			if trials < ctx.HTTPRetry {
-				time.Sleep(time.Duration(1) * time.Second)
+				time.Sleep(time.Duration((1+rand.Intn(3))*trials) * time.Second)
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "%v: No data yet, gzip reader:\n%v\n", dt, err)
 			if ch != nil {
 				ch <- dt
 			}
+			lib.Printf("Gave up on %+v\n", dt)
 			return
 		}
 		lib.Printf("Opened %s\n", fn)
@@ -1496,13 +1498,14 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg, frepo map[s
 		if err != nil {
 			lib.Printf("%v: Error (no data yet, ioutil readall):\n%v\n", dt, err)
 			if trials < ctx.HTTPRetry {
-				time.Sleep(time.Duration(10) * time.Second)
+				time.Sleep(time.Duration((1+rand.Intn(20))*trials) * time.Second)
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "%v: Error (no data yet, ioutil readall):\n%v\n", dt, err)
 			if ch != nil {
 				ch <- dt
 			}
+			lib.Printf("Gave up on %+v\n", dt)
 			return
 		}
 		lib.Printf("Decompressed %s\n", fn)
@@ -1548,6 +1551,7 @@ func gha2db(args []string) {
 		dTo      time.Time
 	)
 	ctx.Init()
+	rand.Seed(time.Now().UnixNano())
 
 	// Current date
 	now := time.Now()
