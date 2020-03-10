@@ -56,7 +56,7 @@ List of APIs:
   - Returns: `{"project":"all","db_name":"allprj","ranges":["Last decade","Since graduation",...]}`.
   - Result contains all possible date ranges for the specified project: Last xyz, versionX - versionY, Before CNCF join, after CNCF join, since graduation and so on.
 
-- `Countriess`: `{"api": "RepoGroups", "payload": {"project": "projectName", "raw": "1"}}`.
+- `Countries`: `{"api": "Countries", "payload": {"project": "projectName", "raw": "1"}}`.
   - Arguments:
     - `projectName`: see `Health` API.
     - `raw`: see `RepoGroups` API.
@@ -86,7 +86,7 @@ List of APIs:
   ```
   - Result contains hourly events counts for the specified period in the specified date range.
 
-- `Repos`: `{"api": "RepoGroups", "payload": {"project": "projectName", "repository_group": ["Other", "Not specified", "SIG Apps"]}}`.
+- `Repos`: `{"api": "Repos", "payload": {"project": "projectName", "repository_group": ["Other", "Not specified", "SIG Apps"]}}`.
   - Arguments:
     - `projectName`: see `Health` API.
     - `repository_group`: array of strings, some values are special: `"Not specified"` returns repositories without repository group defined.
@@ -94,12 +94,42 @@ List of APIs:
   - Returns: `{"project":"kubernetes","db_name":"gha","repo_groups":["Other","Not specified",...],"repos":["kubernetes/application-images","kubernetes/example-not-specified",...]}`.
   - Result contains projects repositories - repository groups configuration information.
 
+- `ComContribRepoGrp`: `{"api": "ComContribRepoGrp", "payload": {"project": "projectName", "from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "period": "7 Days MA", "repository_group": "repoGroupName"}}`.
+  - Arguments:
+    - `projectName`: see `Health` API.
+    - `from`: datetime from (string that Postgres understands)
+    - `to`: datetime to (example '2020-02-01 11:00:00').
+    - `period`: value from `Period` drop-down in Companies contributing in repository groups page, for example: `7 Days MA`, `28 Days MA`, `Week`, `Month`, `Quarter`.
+    - `repository_group`: value from `Repository group` drop-down in DevStats pages, for example: `All`, `Kubernetes`, `SIG Apps`.
+  - Returns:
+  ```
+  {
+    "project": "all",
+    "db_name": "allprj",
+    "period": "Month",
+    "repository_group": "All",
+    "companies": [
+      755
+    ],
+    "developers": [
+      7394
+    ],
+    "companies_timestamps": [
+      "2020-02-01T00:00:00Z"
+    ],
+    "developers_timestamps": [
+      "2020-02-01T00:00:00Z"
+    ]
+  }
+  ```
+  - Result contains data in the same format as "Companies contributing in Repository Groups" DevStats dashboard for the given project.
+
 - `DevActCntRepoGrp`: `{"api": "DevActCntRepoGrp", "payload": {"project": "projectName", "range": "range", "metric": "metric", "repository_group": "repository_group", "country": "country", "github_id": "id"}}`.
   - Arguments: (like in "Developer Activity Counts by Repository Group" DevStats dashboards).
     - `projectName`: see `Health` API.
     - `range`: value from `Range` drop-down in DevStats page, for example: `Last year`, `v1.17.0 - now`.
     - `metric`: value from `Metric` drop-down in DevStats page, for example: `Contributions`, `Issues`, `PRs`.
-    - `repository_group`: value from `Repository group` drop-down in DevStats page, for example: `All`, `Kubernetes`, `SIG Apps`.
+    - `repository_group`: value from `Repository group` drop-down in DevStats pages, for example: `All`, `Kubernetes`, `SIG Apps`.
     - `country`: value from `Country` drop-down in DevStats page, for example: `All`, `United States`, `Poland`.
     - `github_id`: can be empty but must be provided in request payload. If non-empty - returns data for GitHub login/ID matching this parameter.
   - Returns:
