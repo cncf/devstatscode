@@ -1453,40 +1453,61 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg, frepo map[s
 	fn := fmt.Sprintf("http://data.gharchive.org/%s.json.gz", lib.ToGHADate(dt))
 
 	// Get gzipped JSON array via HTTP
-	httpClient := &http.Client{Timeout: time.Minute * time.Duration(ctx.HTTPTimeout)}
-	response, err := httpClient.Get(fn)
-	if err != nil {
-		lib.Printf("%v: Error http.Get:\n%v\n", dt, err)
-		fmt.Fprintf(os.Stderr, "%v: Error http.Get:\n%v\n", dt, err)
-	}
-	lib.FatalOnError(err)
-	defer func() { _ = response.Body.Close() }()
-
-	// Decompress Gzipped response
-	reader, err := gzip.NewReader(response.Body)
-	//lib.FatalOnError(err)
-	if err != nil {
-		lib.Printf("%v: No data yet, gzip reader:\n%v\n", dt, err)
-		fmt.Fprintf(os.Stderr, "%v: No data yet, gzip reader:\n%v\n", dt, err)
-		if ch != nil {
-			ch <- dt
+	trials := 0
+	var jsonsBytes []byte
+	for {
+		trials++
+		if trials > 1 {
+			lib.Printf("Retry(%d) %+v\n", trials, dt)
 		}
-		return
-	}
-	lib.Printf("Opened %s\n", fn)
-	defer func() { _ = reader.Close() }()
-
-	jsonsBytes, err := ioutil.ReadAll(reader)
-	//lib.FatalOnError(err)
-	if err != nil {
-		lib.Printf("%v: Error (no data yet, ioutil readall):\n%v\n", dt, err)
-		fmt.Fprintf(os.Stderr, "%v: Error (no data yet, ioutil readall):\n%v\n", dt, err)
-		if ch != nil {
-			ch <- dt
+		httpClient := &http.Client{Timeout: time.Minute * time.Duration(trials*ctx.HTTPTimeout)}
+		response, err := httpClient.Get(fn)
+		if err != nil {
+			lib.Printf("%v: Error http.Get:\n%v\n", dt, err)
+			if trials < ctx.HTTPRetry {
+				time.Sleep(time.Duration(10) * time.Second)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "%v: Error http.Get:\n%v\n", dt, err)
 		}
-		return
+		lib.FatalOnError(err)
+		defer func() { _ = response.Body.Close() }()
+
+		// Decompress Gzipped response
+		reader, err := gzip.NewReader(response.Body)
+		//lib.FatalOnError(err)
+		if err != nil {
+			lib.Printf("%v: No data yet, gzip reader:\n%v\n", dt, err)
+			if trials < ctx.HTTPRetry {
+				time.Sleep(time.Duration(1) * time.Second)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "%v: No data yet, gzip reader:\n%v\n", dt, err)
+			if ch != nil {
+				ch <- dt
+			}
+			return
+		}
+		lib.Printf("Opened %s\n", fn)
+		defer func() { _ = reader.Close() }()
+
+		jsonsBytes, err = ioutil.ReadAll(reader)
+		//lib.FatalOnError(err)
+		if err != nil {
+			lib.Printf("%v: Error (no data yet, ioutil readall):\n%v\n", dt, err)
+			if trials < ctx.HTTPRetry {
+				time.Sleep(time.Duration(10) * time.Second)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "%v: Error (no data yet, ioutil readall):\n%v\n", dt, err)
+			if ch != nil {
+				ch <- dt
+			}
+			return
+		}
+		lib.Printf("Decompressed %s\n", fn)
+		break
 	}
-	lib.Printf("Decompressed %s\n", fn)
 
 	// Split JSON array into separate JSONs
 	jsonsArray := bytes.Split(jsonsBytes, []byte("\n"))

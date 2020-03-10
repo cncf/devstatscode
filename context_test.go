@@ -141,6 +141,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		TestMode:                 in.TestMode,
 		ESBulkSize:               in.ESBulkSize,
 		HTTPTimeout:              in.HTTPTimeout,
+		HTTPRetry:                in.HTTPRetry,
 		CanReconnect:             in.CanReconnect,
 		CommitsFilesStatsEnabled: in.CommitsFilesStatsEnabled,
 		CommitsLOCStatsEnabled:   in.CommitsLOCStatsEnabled,
@@ -401,7 +402,8 @@ func TestInit(t *testing.T) {
 		PidFileRoot:              "devstats",
 		TestMode:                 true,
 		ESBulkSize:               10000,
-		HTTPTimeout:              5,
+		HTTPTimeout:              1,
+		HTTPRetry:                3,
 		CanReconnect:             true,
 		CommitsFilesStatsEnabled: true,
 		CommitsLOCStatsEnabled:   true,
@@ -467,12 +469,18 @@ func TestInit(t *testing.T) {
 			),
 		},
 		{
-			"Setting non-standard HTTP timeout",
-			map[string]string{"GHA2DB_HTTP_TIMEOUT": "120"},
+			"Setting non-standard HTTP timeout/retry",
+			map[string]string{
+				"GHA2DB_HTTP_TIMEOUT": "5",
+				"GHA2DB_HTTP_RETRY":   "10",
+			},
 			dynamicSetFields(
 				t,
 				copyContext(&defaultContext),
-				map[string]interface{}{"HTTPTimeout": 120},
+				map[string]interface{}{
+					"HTTPTimeout": 5,
+					"HTTPRetry":   10,
+				},
 			),
 		},
 		{
