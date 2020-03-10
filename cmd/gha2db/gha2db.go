@@ -1509,7 +1509,11 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg, frepo map[s
 			lib.Printf("Gave up on %+v\n", dt)
 			return
 		}
-		lib.Printf("Decompressed %s\n", fn)
+		if trials > 1 {
+			lib.Printf("Recovered & decompressed %s\n", fn)
+		} else {
+			lib.Printf("Decompressed %s\n", fn)
+		}
 		break
 	}
 
