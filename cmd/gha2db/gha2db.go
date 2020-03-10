@@ -1472,12 +1472,12 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg, frepo map[s
 			fmt.Fprintf(os.Stderr, "%v: Error http.Get:\n%v\n", dt, err)
 		}
 		lib.FatalOnError(err)
-		defer func() { _ = response.Body.Close() }()
 
 		// Decompress Gzipped response
 		reader, err := gzip.NewReader(response.Body)
 		//lib.FatalOnError(err)
 		if err != nil {
+			_ = response.Body.Close()
 			lib.Printf("%v: No data yet, gzip reader:\n%v\n", dt, err)
 			if trials < ctx.HTTPRetry {
 				time.Sleep(time.Duration((1+rand.Intn(3))*trials) * time.Second)
@@ -1491,9 +1491,10 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg, frepo map[s
 			return
 		}
 		lib.Printf("Opened %s\n", fn)
-		defer func() { _ = reader.Close() }()
 
 		jsonsBytes, err = ioutil.ReadAll(reader)
+		_ = reader.Close()
+		_ = response.Body.Close()
 		//lib.FatalOnError(err)
 		if err != nil {
 			lib.Printf("%v: Error (no data yet, ioutil readall):\n%v\n", dt, err)
