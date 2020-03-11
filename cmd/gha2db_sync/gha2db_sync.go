@@ -40,6 +40,7 @@ type metric struct {
 	EnvMap            map[string]string `yaml:"env"`
 	Disabled          bool              `yaml:"disabled"`
 	Drop              string            `yaml:"drop"`
+	Project           string            `yaml:"project"`
 }
 
 // randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
@@ -404,6 +405,10 @@ func sync(ctx *lib.Ctx, args []string) {
 		metricsList := []metric{}
 		// Iterate all metrics
 		for _, metric := range allMetrics.Metrics {
+			if lib.ExcludedForProject(ctx.Project, metric.Project) {
+				lib.Printf("Metric %s have project setting %s which is skipped for the current %s project\n", metric.Name, metric.Project, ctx.Project)
+				continue
+			}
 			if metric.Histogram && metric.Drop != "" {
 				lib.Fatalf("you cannot use drop series property on histogram metrics: %+v", metric)
 			}

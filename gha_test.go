@@ -51,6 +51,70 @@ func TestMakeUniqueSort(t *testing.T) {
 	}
 }
 
+func TestExcludedForProject(t *testing.T) {
+	var testCases = []struct {
+		currentProject string
+		metricProject  string
+		expected       bool
+	}{
+		{
+			currentProject: "",
+			metricProject:  "",
+			expected:       false,
+		},
+		{
+			currentProject: "X",
+			metricProject:  "",
+			expected:       false,
+		},
+		{
+			currentProject: "",
+			metricProject:  "X",
+			expected:       false,
+		},
+		{
+			currentProject: "X",
+			metricProject:  "X",
+			expected:       false,
+		},
+		{
+			currentProject: "X",
+			metricProject:  "!X",
+			expected:       true,
+		},
+		{
+			currentProject: "Y",
+			metricProject:  "X",
+			expected:       true,
+		},
+		{
+			currentProject: "Y",
+			metricProject:  "!X",
+			expected:       false,
+		},
+		{
+			currentProject: "",
+			metricProject:  "!X",
+			expected:       false,
+		},
+		{
+			currentProject: "",
+			metricProject:  "!",
+			expected:       false,
+		},
+	}
+	for index, test := range testCases {
+		expected := test.expected
+		got := lib.ExcludedForProject(test.currentProject, test.metricProject)
+		if got != expected {
+			t.Errorf(
+				"test number %d, expected '%v', got '%v', test case: %+v",
+				index+1, expected, got, test,
+			)
+		}
+	}
+}
+
 func TestIsProjectDisabled(t *testing.T) {
 	var ctx lib.Ctx
 	var testCases = []struct {

@@ -372,6 +372,26 @@ func MakeUniqueSort(ary []string) (outAry []string) {
 	return
 }
 
+// ExcludedForProject - checks if metric defines project, if so then:
+// if metric's project is XYZ and current project is XYZ then calculate this metric
+// if metric's project is !XYZ and current project is *not* XYZ then calculate this metric
+func ExcludedForProject(currentProject, metricProject string) bool {
+	if metricProject == "" || currentProject == "" {
+		return false
+	}
+	if metricProject[:1] == "!" {
+		metricProject = metricProject[1:]
+		if currentProject == metricProject {
+			return true
+		}
+		return false
+	}
+	if currentProject != metricProject {
+		return true
+	}
+	return false
+}
+
 // GetProjectsList return list of projects to process
 // It sorts them according to projects.yaml order
 // Handles disabled/enabled projects
