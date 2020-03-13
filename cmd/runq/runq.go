@@ -70,7 +70,9 @@ func runq(sqlFile string, params []string) {
 		sqlQuery = strings.Replace(sqlQuery, from, to, -1)
 	}
 	if qr {
-		sqlQuery = lib.PrepareQuickRangeQuery(sqlQuery, qrPeriod, qrFrom, qrTo)
+		sHours := ""
+		sqlQuery, sHours = lib.PrepareQuickRangeQuery(sqlQuery, qrPeriod, qrFrom, qrTo)
+		sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
 	}
 	if ctx.Explain {
 		sqlQuery = strings.Replace(sqlQuery, "select\n", "explain select\n", -1)

@@ -24,6 +24,7 @@ type calcMetricData struct {
 	customData        bool
 	seriesNameMap     map[string]string
 	drop              []string
+	projectScale      string
 }
 
 // some metrics can define series_name_map to change internal series names generated
@@ -202,8 +203,11 @@ func calcRange(
 		// Prepare SQL query
 		sFrom := lib.ToYMDHMSDate(from)
 		sTo := lib.ToYMDHMSDate(to)
+		sHours := lib.RangeHours(from, to)
 		sqlQuery := strings.Replace(sqlQueryOrig, "{{from}}", sFrom, -1)
 		sqlQuery = strings.Replace(sqlQuery, "{{to}}", sTo, -1)
+		sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
+		sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
 
 		// Execute SQL query
 		rows := lib.QuerySQLWithErr(sqlc, ctx, sqlQuery)
@@ -528,8 +532,11 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 						return
 					}
 				}
-				sqlQuery = lib.PrepareQuickRangeQuery(sqlQuery, period, from, to)
+				sHours := ""
+				sqlQuery, sHours = lib.PrepareQuickRangeQuery(sqlQuery, period, from, to)
 				sqlQuery = strings.Replace(sqlQuery, "{{exclude_bots}}", excludeBots, -1)
+				sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
+				sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
 				if period == "" {
 					dtTo := lib.TimeParseAny(to)
 					prevHour := lib.PrevHourStart(time.Now())
@@ -549,9 +556,12 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 		if interval == lib.Quarter {
 			dbInterval = fmt.Sprintf("%d month", nIntervals*3)
 		}
+		sHours := lib.IntervalHours(dbInterval)
 		sqlQuery = strings.Replace(sqlQuery, "{{period}}", dbInterval, -1)
 		sqlQuery = strings.Replace(sqlQuery, "{{n}}", strconv.Itoa(nIntervals)+".0", -1)
 		sqlQuery = strings.Replace(sqlQuery, "{{exclude_bots}}", excludeBots, -1)
+		sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
+		sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
 	}
 
 	// Execute SQL query
@@ -1006,7 +1016,7 @@ func main() {
 	if len(os.Args) < 6 {
 		lib.Printf(
 			"Required series name, SQL file name, from, to, period " +
-				"[series_name_or_func some.sql '2015-08-03' '2017-08-21' h|d|w|m|q|y [hist,desc:time_diff_as_string,multivalue,escape_value_name,annotations_ranges,skip_past,merge_series:name,custom_data,drop:table1;table2]]\n",
+				"[series_name_or_func some.sql '2015-08-03' '2017-08-21' h|d|w|m|q|y [hist,desc:time_diff_as_string,multivalue,escape_value_name,annotations_ranges,skip_past,merge_series:name,custom_data,drop:table1;table2,project_scale:float]]\n",
 		)
 		lib.Printf(
 			"Series name (series_name_or_func) will become exact series name if " +
@@ -1017,6 +1027,7 @@ func main() {
 		os.Exit(1)
 	}
 	var cfg calcMetricData
+	cfg.projectScale = "1.0"
 	if len(os.Args) > 6 {
 		opts := strings.Split(os.Args[6], ",")
 		optMap := make(map[string]string)
@@ -1062,6 +1073,12 @@ func main() {
 		}
 		if snm, ok := optMap["series_name_map"]; ok {
 			cfg.seriesNameMap = lib.MapFromString(snm)
+		}
+		if pss, ok := optMap["project_scale"]; ok {
+			ps, err := strconv.ParseFloat(pss, 64)
+			if err == nil && ps >= 0.0 {
+				cfg.projectScale = fmt.Sprintf("%f", ps)
+			}
 		}
 	}
 	lib.Printf("%s...\n", os.Args[2])

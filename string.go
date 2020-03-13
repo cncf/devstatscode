@@ -14,7 +14,7 @@ import (
 // Values to replace are specially encoded {{period:alias.column}}
 // Can either replace with: (alias.column >= now() - 'period'::interval)
 // Or (alias.column >= 'from' and alias.column < 'to')
-func PrepareQuickRangeQuery(sql, period, from, to string) string {
+func PrepareQuickRangeQuery(sql, period, from, to string) (string, string) {
 	start := 0
 	startPatt := "{{period:"
 	startPattLen := len(startPatt)
@@ -22,9 +22,15 @@ func PrepareQuickRangeQuery(sql, period, from, to string) string {
 	endPattLen := len(endPatt)
 	lenSQL := len(sql)
 	res := ""
+	sHours := "0"
 	periodMode := false
 	if period != "" {
 		periodMode = true
+		sHours = IntervalHours(period)
+	} else {
+		if from != "" && to != "" {
+			sHours = RangeHours(TimeParseAny(from), TimeParseAny(to))
+		}
 	}
 	for {
 		idx1 := strings.Index(sql[start:], startPatt)
@@ -38,7 +44,7 @@ func PrepareQuickRangeQuery(sql, period, from, to string) string {
 			res += " (" + col + " >= now() - '" + period + "'::interval) "
 		} else {
 			if from == "" || to == "" {
-				return "You need to provide either non-empty `period` or non empty `from` and `to`"
+				return "You need to provide either non-empty `period` or non empty `from` and `to`", sHours
 			}
 			res += " (" + col + " >= '" + from + "' and " + col + " < '" + to + "') "
 		}
@@ -52,7 +58,7 @@ func PrepareQuickRangeQuery(sql, period, from, to string) string {
 		res = strings.Replace(res, "{{from}}", "'"+from+"'", -1)
 		res = strings.Replace(res, "{{to}}", "'"+to+"'", -1)
 	}
-	return res
+	return res, sHours
 }
 
 // Slugify replace all whitespace with "-", remove all non-word letters downcase

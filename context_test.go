@@ -142,6 +142,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		ESBulkSize:               in.ESBulkSize,
 		HTTPTimeout:              in.HTTPTimeout,
 		HTTPRetry:                in.HTTPRetry,
+		ProjectScale:             in.ProjectScale,
 		CanReconnect:             in.CanReconnect,
 		CommitsFilesStatsEnabled: in.CommitsFilesStatsEnabled,
 		CommitsLOCStatsEnabled:   in.CommitsLOCStatsEnabled,
@@ -180,6 +181,13 @@ func dynamicSetFields(t *testing.T, ctx *lib.Ctx, fields map[string]interface{})
 				return ctx
 			}
 			field.SetInt(int64(interfaceValue))
+		case float64:
+			// Check if types match
+			if fieldKind != reflect.Float64 {
+				t.Errorf("trying to set value %v, type %T for field \"%s\", type %v", interfaceValue, interfaceValue, fieldName, fieldKind)
+				return ctx
+			}
+			field.SetFloat(float64(interfaceValue))
 		case bool:
 			// Check if types match
 			if fieldKind != reflect.Bool {
@@ -404,6 +412,7 @@ func TestInit(t *testing.T) {
 		ESBulkSize:               10000,
 		HTTPTimeout:              3,
 		HTTPRetry:                5,
+		ProjectScale:             1.0,
 		CanReconnect:             true,
 		CommitsFilesStatsEnabled: true,
 		CommitsLOCStatsEnabled:   true,
@@ -480,6 +489,19 @@ func TestInit(t *testing.T) {
 				map[string]interface{}{
 					"HTTPTimeout": 5,
 					"HTTPRetry":   10,
+				},
+			),
+		},
+		{
+			"Setting project scale factor",
+			map[string]string{
+				"GHA2DB_PROJECT_SCALE": "3.14",
+			},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{
+					"ProjectScale": 3.14,
 				},
 			),
 		},

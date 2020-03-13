@@ -9,6 +9,82 @@ import (
 	testlib "github.com/cncf/devstatscode/test"
 )
 
+func TestIntervalHours(t *testing.T) {
+	// Test cases
+	var testCases = []struct {
+		period   string
+		expected string
+	}{
+		{period: "", expected: "0"},
+		{period: "h", expected: "1.000000"},
+		{period: "  1 h ", expected: "1.000000"},
+		{period: "1.00 h and whatever else", expected: "1.000000"},
+		{period: "2 hrs", expected: "2.000000"},
+		{period: "3  hour", expected: "3.000000"},
+		{period: "4.5 hours", expected: "4.500000"},
+		{period: "1 day", expected: "24.000000"},
+		{period: "1 week", expected: "168.000000"},
+		{period: "10 days", expected: "240.000000"},
+		{period: "1 month", expected: "730.500000"},
+		{period: "3 months", expected: "2191.500000"},
+		{period: "1 quarter", expected: "2191.500000"},
+		{period: "1 year", expected: "8766.000000"},
+		{period: "10 years", expected: "87660.000000"},
+		{period: "15 minutes", expected: "0.250000"},
+		{period: "20 mins", expected: "0.333333"},
+		{period: "180 sec", expected: "0.050000"},
+		{period: "-10 days", expected: "0.000000"},
+	}
+	// Execute test cases
+	for index, test := range testCases {
+		expected := test.expected
+		got := lib.IntervalHours(test.period)
+		if got != expected {
+			t.Errorf(
+				"test number %d, expected %v, got %v",
+				index+1, expected, got,
+			)
+		}
+	}
+}
+
+func TestRangeHours(t *testing.T) {
+	// Test cases
+	ft := testlib.YMDHMS
+	var testCases = []struct {
+		from     time.Time
+		to       time.Time
+		expected string
+	}{
+		{
+			from:     ft(2017, 8, 29, 12, 29, 3),
+			to:       ft(2017, 8, 29, 14, 29, 3),
+			expected: "2.000000",
+		},
+		{
+			from:     ft(2017, 8, 29, 14, 29, 3),
+			to:       ft(2017, 8, 29, 12, 29, 3),
+			expected: "0",
+		},
+		{
+			from:     ft(2020, 3, 13, 12, 0, 0),
+			to:       ft(2020, 3, 13, 12, 0, 1),
+			expected: "0.000278",
+		},
+	}
+	// Execute test cases
+	for index, test := range testCases {
+		expected := test.expected
+		got := lib.RangeHours(test.from, test.to)
+		if got != expected {
+			t.Errorf(
+				"test number %d, expected %v, got %v",
+				index+1, expected, got,
+			)
+		}
+	}
+}
+
 func TestComputePeriodAtThisDate(t *testing.T) {
 	// Test cases
 	// hourly period is always calculated

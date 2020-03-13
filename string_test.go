@@ -112,6 +112,7 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 		from     string
 		to       string
 		expected string
+		hours    string
 	}{
 		{
 			sql:      "simplest period {{period:a}} case",
@@ -119,6 +120,7 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "",
 			to:       "",
 			expected: "You need to provide either non-empty `period` or non empty `from` and `to`",
+			hours:    "0",
 		},
 		{
 			sql:      "simplest no-period case",
@@ -126,6 +128,7 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "",
 			to:       "",
 			expected: "simplest no-period case",
+			hours:    "0",
 		},
 		{
 			sql:      "simplest no-period case",
@@ -133,6 +136,23 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "",
 			to:       "",
 			expected: "simplest no-period case",
+			hours:    "730.500000",
+		},
+		{
+			sql:      "simplest no-period case",
+			period:   "0 month",
+			from:     "",
+			to:       "",
+			expected: "simplest no-period case",
+			hours:    "0.000000",
+		},
+		{
+			sql:      "simplest no-period case",
+			period:   "-3 days",
+			from:     "",
+			to:       "",
+			expected: "simplest no-period case",
+			hours:    "0.000000",
 		},
 		{
 			sql:      "simplest no-period case",
@@ -140,6 +160,15 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "2010-01-01 12:00:00",
 			to:       "2010-01-01 12:00:00",
 			expected: "simplest no-period case",
+			hours:    "0",
+		},
+		{
+			sql:      "simplest no-period case",
+			period:   "",
+			from:     "2010-01-01 12:00:00",
+			to:       "2010-01-01 13:00:00",
+			expected: "simplest no-period case",
+			hours:    "1.000000",
 		},
 		{
 			sql:      "simplest period {{period:a}} case",
@@ -147,6 +176,7 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "",
 			to:       "",
 			expected: "simplest period  (a >= now() - '1 day'::interval)  case",
+			hours:    "24.000000",
 		},
 		{
 			sql:      "simplest period {{period:a}} case",
@@ -154,6 +184,7 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "2010-01-01 12:00:00",
 			to:       "2015-02-02 13:00:00",
 			expected: "simplest period  (a >= '2010-01-01 12:00:00' and a < '2015-02-02 13:00:00')  case",
+			hours:    "44593.000000",
 		},
 		{
 			sql:      "simplest period {{period:a}} case",
@@ -161,6 +192,7 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "2010-01-01 12:00:00",
 			to:       "2015-02-02 13:00:00",
 			expected: "simplest period  (a >= now() - '1 week'::interval)  case",
+			hours:    "168.000000",
 		},
 		{
 			sql:      "{{period:a.b.c}}{{period:c.d.e}}",
@@ -168,6 +200,7 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "",
 			to:       "",
 			expected: " (a.b.c >= now() - '1 day'::interval)  (c.d.e >= now() - '1 day'::interval) ",
+			hours:    "24.000000",
 		},
 		{
 			sql:      "{{period:a.b.c}}{{period:c.d.e}}",
@@ -175,13 +208,15 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "",
 			to:       "",
 			expected: " (a.b.c >= now() - '10 days'::interval)  (c.d.e >= now() - '10 days'::interval) ",
+			hours:    "240.000000",
 		},
 		{
 			sql:      "{{period:a.b.c}}{{period:c.d.e}}",
 			period:   "",
-			from:     "123",
-			to:       "456",
-			expected: " (a.b.c >= '123' and a.b.c < '456')  (c.d.e >= '123' and c.d.e < '456') ",
+			from:     "2015",
+			to:       "2016",
+			expected: " (a.b.c >= '2015' and a.b.c < '2016')  (c.d.e >= '2015' and c.d.e < '2016') ",
+			hours:    "8760.000000",
 		},
 		{
 			sql:      "and ({{period:a.b.c}} and x is null) or {{period:c.d.e}}",
@@ -189,6 +224,7 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "",
 			to:       "",
 			expected: "and ( (a.b.c >= now() - '3 months'::interval)  and x is null) or  (c.d.e >= now() - '3 months'::interval) ",
+			hours:    "2191.500000",
 		},
 		{
 			sql:      "and ({{period:a.b.c}} and x is null) or {{period:c.d.e}}",
@@ -196,6 +232,7 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "1982-07-16",
 			to:       "2017-12-01",
 			expected: "and ( (a.b.c >= '1982-07-16' and a.b.c < '2017-12-01')  and x is null) or  (c.d.e >= '1982-07-16' and c.d.e < '2017-12-01') ",
+			hours:    "310128.000000",
 		},
 		{
 			sql:      "and ({{period:a.b.c}} and x is null) or {{period:c.d.e}} and {{from}} - {{to}}",
@@ -203,6 +240,7 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "1982-07-16",
 			to:       "2017-12-01",
 			expected: "and ( (a.b.c >= '1982-07-16' and a.b.c < '2017-12-01')  and x is null) or  (c.d.e >= '1982-07-16' and c.d.e < '2017-12-01')  and '1982-07-16' - '2017-12-01'",
+			hours:    "310128.000000",
 		},
 		{
 			sql:      "and ({{period:a.b.c}} and x is null) or {{period:c.d.e}} and {{from}} or {{to}}",
@@ -210,16 +248,18 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 			from:     "",
 			to:       "",
 			expected: "and ( (a.b.c >= now() - '3 months'::interval)  and x is null) or  (c.d.e >= now() - '3 months'::interval)  and (now() -'3 months'::interval) or (now())",
+			hours:    "2191.500000",
 		},
 	}
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.PrepareQuickRangeQuery(test.sql, test.period, test.from, test.to)
-		if got != expected {
+		expectedHours := test.hours
+		got, gotHours := lib.PrepareQuickRangeQuery(test.sql, test.period, test.from, test.to)
+		if got != expected || gotHours != expectedHours {
 			t.Errorf(
-				"test number %d, expected '%v', got '%v'",
-				index+1, expected, got,
+				"test number %d, expected '%v'/'%v', got '%v'/'%v'",
+				index+1, expected, expectedHours, got, gotHours,
 			)
 		}
 	}

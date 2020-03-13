@@ -475,6 +475,9 @@ func sync(ctx *lib.Ctx, args []string) {
 				continue
 			}
 			extraParams := []string{}
+			if ctx.ProjectScale != 1.0 {
+				extraParams = append(extraParams, fmt.Sprintf("project_scale:%f", ctx.ProjectScale))
+			}
 			if metric.Histogram {
 				extraParams = append(extraParams, "hist")
 			}
@@ -731,6 +734,9 @@ func getSyncArgs(ctx *lib.Ctx, osArgs []string) []string {
 			for envK, envV := range proj.Env {
 				lib.FatalOnError(os.Setenv(envK, envV))
 			}
+		}
+		if proj.ProjectScale != nil && *proj.ProjectScale >= 0.0 {
+			ctx.ProjectScale = *proj.ProjectScale
 		}
 		return proj.CommandLine
 	}

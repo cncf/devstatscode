@@ -138,6 +138,7 @@ type Ctx struct {
 	ESBulkSize               int                          // From GHA2DB_ES_BULK_SIZE, calc_metric and gha2es tools, default 10000
 	HTTPTimeout              int                          // From GHA2DB_HTTP_TIMEOUT, gha2db - data.gharchive.org timeout value in minutes, default 2
 	HTTPRetry                int                          // From GHA2DB_HTTP_RETRY, gha2db - data.gharchive.org data fetch retries, default 4 (each retry takes 1*timeout*N), so in default config it will try timeouts: 1min, 2min, 3min, but if timeout is 3 and retry is 2, it will try 3min, 6min
+	ProjectScale             float64                      // From GHA2DB_PROJECT_SCALE, calc_metric tool, project scale (default 1), some metrics can use this to adapt their SQLs to bigger/smaller projects
 	PidFileRoot              string                       // From GHA2DB_PID_FILE_ROOT, devstats tool, use '/tmp/PidFileRoot.pid' as PID file, default 'devstats' -> '/tmp/devstats.pid'
 	SharedDB                 string                       // Currently annotations tool read this from projects.yaml:shared_db and if set, outputs annotations data to the sharded DB in addition to the current DB
 	ProjectMainRepo          string                       // Used by annotations tool to store project's main repo name
@@ -770,6 +771,15 @@ func (ctx *Ctx) Init() {
 
 	// Enable drop metrics support
 	ctx.EnableMetricsDrop = os.Getenv("GHA2DB_ENABLE_METRICS_DROP") != ""
+
+	// Project Scale
+	if os.Getenv("GHA2DB_PROJECT_SCALE") == "" {
+		ctx.ProjectScale = 1.0
+	} else {
+		projectScale, err := strconv.ParseFloat(os.Getenv("GHA2DB_PROJECT_SCALE"), 64)
+		FatalNoLog(err)
+		ctx.ProjectScale = projectScale
+	}
 
 	ctx.CSVFile = os.Getenv("GHA2DB_CSVOUT")
 

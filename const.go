@@ -119,3 +119,18 @@ const Repos string = "Repos"
 
 // Countries - common constant string
 const Countries string = "Countries"
+
+// Day - common constant string
+const Day string = "day"
+
+// Week - common constant string
+const Week string = "week"
+
+// Hour - common constant string
+const Hour string = "hour"
+
+// Month - common constant string
+const Month string = "month"
+
+// Year - common constant string
+const Year string = "year"

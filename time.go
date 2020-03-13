@@ -9,6 +9,60 @@ import (
 	"time"
 )
 
+// IntervalHours - return number of hour from for a given interval
+func IntervalHours(period string) string {
+	ary := strings.Split(period, " ")
+	tokens := []string{}
+	for _, token := range ary {
+		if token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	if len(tokens) < 1 {
+		return "0"
+	}
+	n := 1.0
+	interval := tokens[0]
+	if len(tokens) > 1 {
+		var err error
+		n, err = strconv.ParseFloat(tokens[0], 64)
+		FatalOnError(err)
+		if n < 0.0 {
+			n = 0.0
+		}
+		interval = tokens[1]
+	}
+	mul := 1.0
+	switch strings.ToLower(interval) {
+	case "s", "sec", "second", "secs", "seconds":
+		mul = 1.0 / 3600.0
+	case "min", "minute", "mins", "minutes":
+		mul = 1.0 / 60.0
+	case "h", "hr", Hour, "hrs", "hours":
+	case "d", Day, "days":
+		mul = 24.0
+	case "w", Week, "weeks":
+		mul = 168.0
+	case Month, "months":
+		mul = 730.5
+	case "q", Quarter, "quarters":
+		mul = 2191.5
+	case "y", Year, "years":
+		mul = 8766.0
+	default:
+		Fatalf("unknown interval '%s'\n", interval)
+	}
+	return fmt.Sprintf("%f", n*mul)
+}
+
+// RangeHours - return number of hour from 'from' to 'to' as float64 converted to string
+func RangeHours(from, to time.Time) string {
+	if !to.After(from) {
+		return "0"
+	}
+	return fmt.Sprintf("%f", to.Sub(from).Hours())
+}
+
 // GetDateAgo returns date: 'from' - 'n hours/days' etc.
 func GetDateAgo(con *sql.DB, ctx *Ctx, from time.Time, ago string) (tm time.Time) {
 	rows := QuerySQLWithErr(
@@ -410,22 +464,22 @@ func GetIntervalFunctions(intervalAbbr string, allowUnknown bool) (interval stri
 	n = 1
 	switch strings.ToLower(intervalAbbr[0:1]) {
 	case "h":
-		interval = "hour"
+		interval = Hour
 		intervalStart = HourStart
 		nextIntervalStart = NextHourStart
 		prevIntervalStart = PrevHourStart
 	case "d":
-		interval = "day"
+		interval = Day
 		intervalStart = DayStart
 		nextIntervalStart = NextDayStart
 		prevIntervalStart = PrevDayStart
 	case "w":
-		interval = "week"
+		interval = Week
 		intervalStart = WeekStart
 		nextIntervalStart = NextWeekStart
 		prevIntervalStart = PrevWeekStart
 	case "m":
-		interval = "month"
+		interval = Month
 		intervalStart = MonthStart
 		nextIntervalStart = NextMonthStart
 		prevIntervalStart = PrevMonthStart
@@ -435,7 +489,7 @@ func GetIntervalFunctions(intervalAbbr string, allowUnknown bool) (interval stri
 		nextIntervalStart = NextQuarterStart
 		prevIntervalStart = PrevQuarterStart
 	case "y":
-		interval = "year"
+		interval = Year
 		intervalStart = YearStart
 		nextIntervalStart = NextYearStart
 		prevIntervalStart = PrevYearStart
