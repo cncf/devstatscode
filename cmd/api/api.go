@@ -25,6 +25,7 @@ var allAPIs = []string{
 	lib.RepoGroups,
 	lib.Ranges,
 	lib.Countries,
+	lib.Companies,
 	lib.Events,
 	lib.Repos,
 	lib.ComContribRepoGrp,
@@ -96,6 +97,12 @@ type repoGroupsPayload struct {
 	Project    string   `json:"project"`
 	DB         string   `json:"db_name"`
 	RepoGroups []string `json:"repo_groups"`
+}
+
+type companiesPayload struct {
+	Project   string   `json:"project"`
+	DB        string   `json:"db_name"`
+	Companies []string `json:"companies"`
 }
 
 type rangesPayload struct {
@@ -697,6 +704,34 @@ func apiRepoGroups(info string, w http.ResponseWriter, payload map[string]interf
 	json.NewEncoder(w).Encode(rgpl)
 }
 
+func apiCompanies(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.Companies
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	companies := []string{}
+	companies, err = getStringTags(c, ctx, "tcompanies", "companies_name")
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	cpl := companiesPayload{Project: project, DB: db, Companies: companies}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(cpl)
+}
+
 func apiRanges(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.Ranges
 	var err error
@@ -971,6 +1006,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiRanges(info, w, pl.Payload)
 	case lib.Countries:
 		apiCountries(info, w, pl.Payload)
+	case lib.Companies:
+		apiCompanies(info, w, pl.Payload)
 	case lib.Events:
 		apiEvents(info, w, pl.Payload)
 	case lib.Repos:

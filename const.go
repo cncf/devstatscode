@@ -120,6 +120,9 @@ const Repos string = "Repos"
 // Countries - common constant string
 const Countries string = "Countries"
 
+// Companies - common constant string
+const Companies string = "Companies"
+
 // Day - common constant string
 const Day string = "day"
 

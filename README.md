@@ -62,6 +62,12 @@ List of APIs:
     - `raw`: see `RepoGroups` API.
   - Returns: `{"project":"all","db_name":"allprj","countries":["Poland","United States",...]}`.
 
+- `Companies`: `{"api": "Companies", "payload": {"project": "projectName"}}`.
+  - Arguments:
+    - `projectName`: see `Health` API.
+  - Returns: `{"project":"all","db_name":"allprj","companies":["Google","Red Hat","Independent",...]}`.
+  - Result contains top companies contributing in the specified project.
+
 - `Events`: `{"api": "Events", "payload": {"project": "projectName", "from": "2020-02-29", "to": "2020-03-01"}}`.
   - Arguments:
     - `projectName`: see `Health` API.
