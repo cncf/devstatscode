@@ -30,6 +30,7 @@ var allAPIs = []string{
 	lib.Repos,
 	lib.ComContribRepoGrp,
 	lib.DevActCntRepoGrp,
+	lib.DevActCntComp,
 }
 
 var (
@@ -90,6 +91,21 @@ type devActCntRepoGrpPayload struct {
 	Filter          string   `json:"filter"`
 	Rank            []int    `json:"rank"`
 	Login           []string `json:"login"`
+	Number          []int    `json:"number"`
+}
+
+type devActCntCompPayload struct {
+	Project         string   `json:"project"`
+	DB              string   `json:"db_name"`
+	Range           string   `json:"range"`
+	Metric          string   `json:"metric"`
+	RepositoryGroup string   `json:"repository_group"`
+	Country         string   `json:"country"`
+	Companies       []string `json:"companies"`
+	GitHubID        string   `json:"github_id"`
+	Rank            []int    `json:"rank"`
+	Login           []string `json:"login"`
+	Company         []string `json:"company"`
 	Number          []int    `json:"number"`
 }
 
@@ -324,10 +340,8 @@ func getStringTags(c *sql.DB, ctx *lib.Ctx, tag, col string) (values []string, e
 	return
 }
 
-func metricNameToValueMap() map[string]string {
-	return map[string]string{
-		"Approves":            "approves",
-		"Reviews":             "reviews",
+func metricNameToValueMap(db string) map[string]string {
+	nameToValue := map[string]string{
 		"Comments":            "comments",
 		"Commit comments":     "commit_comments",
 		"Commits":             "commits",
@@ -341,6 +355,11 @@ func metricNameToValueMap() map[string]string {
 		"Contributions":       "contributions",
 		"Active repositories": "active_repos",
 	}
+	if db == lib.GHA {
+		nameToValue["Approves"] = "approves"
+		nameToValue["Reviews"] = "reviews"
+	}
+	return nameToValue
 }
 
 func periodNameToValueMap() map[string]string {
@@ -492,7 +511,7 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 		}
 		params[paramName] = paramValue
 	}
-	metricMap := metricNameToValueMap()
+	metricMap := metricNameToValueMap(db)
 	for _, v := range metricMap {
 		metricMap[v] = v
 	}
@@ -527,7 +546,7 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 	query := `
    select
      sub."Rank",
-     sub.name as name,
+     sub.name,
      sub.value
    from (
      select row_number() over (order by sum(value) desc) as "Rank",
@@ -598,6 +617,149 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 	}
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(pl)
+}
+
+func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.DevActCntComp
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	params := map[string]string{"range": "", "metric": "", "repository_group": "", "country": "", "github_id": ""}
+	for paramName := range params {
+		paramValue, err := getPayloadStringParam(paramName, w, payload, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	paramsAry := map[string][]string{"companies": {}}
+	for paramName := range paramsAry {
+		paramValue, err := getPayloadStringArrayParam(paramName, w, payload, false, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		paramsAry[paramName] = paramValue
+	}
+	metricMap := metricNameToValueMap(db)
+	for _, v := range metricMap {
+		metricMap[v] = v
+	}
+	metric, ok := metricMap[params["metric"]]
+	if !ok {
+		err = fmt.Errorf("invalid metric value: '%s'", params["metric"])
+		returnError(apiName, w, err)
+		return
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	repogroup, err := allRepoGroupNameToValue(c, ctx, params["repository_group"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	country, err := allCountryNameToValue(c, ctx, params["country"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	period, err := periodNameToValue(c, ctx, params["range"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	companiesParam := paramsAry["companies"]
+	var rows *sql.Rows
+	series := fmt.Sprintf("hdev_%s%s%s", metric, repogroup, country)
+	query := `
+  select
+    sub."Rank",
+    split_part(sub.name, '$$$', 1),
+    split_part(sub.name, '$$$', 2),
+    sub.value
+  from (
+    select row_number() over (order by value desc) as "Rank",
+      name,
+      value
+    from
+      shdev
+    where
+      series = $1
+      and period = $2
+  `
+	if len(companiesParam) == 1 && companiesParam[0] == lib.ALL {
+		query += ") sub"
+		rows, err = lib.QuerySQLLogErr(c, ctx, query, series, period)
+	} else {
+		query += " and split_part(name, '$$$', 2) in " + lib.NArray(len(companiesParam), 2) + ") sub"
+		rows, err = lib.QuerySQLLogErr(c, ctx, query, toInterfaceArray([]string{series, period}, companiesParam, []string{})...)
+	}
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		rank      int
+		login     string
+		company   string
+		number    int
+		ranks     []int
+		logins    []string
+		companies []string
+		numbers   []int
+	)
+	ghID := params["github_id"]
+	for rows.Next() {
+		err = rows.Scan(&rank, &login, &company, &number)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		if ghID != "" && login != ghID {
+			continue
+		}
+		ranks = append(ranks, rank)
+		logins = append(logins, login)
+		companies = append(companies, company)
+		numbers = append(numbers, number)
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	if len(ranks) == 0 {
+		returnError(apiName, w, fmt.Errorf("github_id '%s' not found in results", ghID))
+		return
+	}
+	cpl := devActCntCompPayload{
+		Project:         project,
+		DB:              db,
+		Range:           params["range"],
+		Metric:          params["metric"],
+		RepositoryGroup: params["repository_group"],
+		Country:         params["country"],
+		Companies:       companiesParam,
+		GitHubID:        ghID,
+		Rank:            ranks,
+		Login:           logins,
+		Company:         companies,
+		Number:          numbers,
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(cpl)
 }
 
 func apiListAPIs(info string, w http.ResponseWriter) {
@@ -814,8 +976,14 @@ func apiCountries(info string, w http.ResponseWriter, payload map[string]interfa
 	json.NewEncoder(w).Encode(cpl)
 }
 
-func toInterfaceArray(stringArray []string) (interfaceArray []interface{}) {
+func toInterfaceArray(beforeArray, stringArray, afterArray []string) (interfaceArray []interface{}) {
+	for _, str := range beforeArray {
+		interfaceArray = append(interfaceArray, str)
+	}
 	for _, str := range stringArray {
+		interfaceArray = append(interfaceArray, str)
+	}
+	for _, str := range afterArray {
 		interfaceArray = append(interfaceArray, str)
 	}
 	return
@@ -861,8 +1029,8 @@ func apiRepos(info string, w http.ResponseWriter, payload map[string]interface{}
 	if len(repositoryGroupParam) == 1 && repositoryGroupParam[0] == lib.ALL {
 		rows, err = lib.QuerySQLLogErr(c, ctx, query)
 	} else {
-		query += ` and coalesce(case repo_group when '' then 'Not specified' else repo_group end, 'Not specified') in ` + lib.NArray(len(repositoryGroupParam))
-		rows, err = lib.QuerySQLLogErr(c, ctx, query, toInterfaceArray(repositoryGroupParam)...)
+		query += ` and coalesce(case repo_group when '' then 'Not specified' else repo_group end, 'Not specified') in ` + lib.NArray(len(repositoryGroupParam), 0)
+		rows, err = lib.QuerySQLLogErr(c, ctx, query, toInterfaceArray([]string{}, repositoryGroupParam, []string{})...)
 	}
 	if err != nil {
 		returnError(apiName, w, err)
@@ -1016,6 +1184,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiComContribRepoGrp(info, w, pl.Payload)
 	case lib.DevActCntRepoGrp:
 		apiDevActCntRepoGrp(info, w, pl.Payload)
+	case lib.DevActCntComp:
+		apiDevActCntComp(info, w, pl.Payload)
 	default:
 		err = fmt.Errorf("unknown API '%s'", pl.API)
 		returnError("unknown:"+pl.API, w, err)

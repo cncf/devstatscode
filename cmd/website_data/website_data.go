@@ -68,7 +68,7 @@ func getIntValue(con *sql.DB, ctx *lib.Ctx, sql string) (ival int) {
 
 func generateJSONData(ctx *lib.Ctx, name, excludeBots, lastTagCmd, repo string, stats *projectStats) {
 	if name == lib.Kubernetes {
-		name = "gha"
+		name = lib.GHA
 	} else if name == lib.All {
 		name = "allprj"
 	}

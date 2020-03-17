@@ -762,9 +762,10 @@ func NValues(n int) string {
 }
 
 // NArray will return values($1, $2, .., $n)
-func NArray(n int) string {
+func NArray(n, offset int) string {
 	s := "("
-	i := 1
+	i := 1 + offset
+	n += offset
 	for i <= n {
 		s += "$" + strconv.Itoa(i) + ", "
 		i++
