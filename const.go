@@ -99,6 +99,9 @@ const DevActCntComp string = "DevActCntComp"
 // ComContribRepoGrp - common contant string
 const ComContribRepoGrp string = "ComContribRepoGrp"
 
+// CompaniesTable - common contant string
+const CompaniesTable string = "CompaniesTable"
+
 // Health - common constant string
 const Health string = "Health"
 

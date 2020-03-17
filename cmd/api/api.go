@@ -28,6 +28,7 @@ var allAPIs = []string{
 	lib.Companies,
 	lib.Events,
 	lib.Repos,
+	lib.CompaniesTable,
 	lib.ComContribRepoGrp,
 	lib.DevActCntRepoGrp,
 	lib.DevActCntComp,
@@ -67,6 +68,16 @@ type eventsPayload struct {
 	DB         string      `json:"db_name"`
 	TimeStamps []time.Time `json:"timestamps"`
 	Values     []int64     `json:"values"`
+}
+
+type companiesTablePayload struct {
+	Project string    `json:"project"`
+	DB      string    `json:"db_name"`
+	Range   string    `json:"range"`
+	Metric  string    `json:"metric"`
+	Rank    []int     `json:"rank"`
+	Company []string  `json:"company"`
+	Number  []float64 `json:"number"`
 }
 
 type comContribRepoGrpPayload struct {
@@ -340,26 +351,53 @@ func getStringTags(c *sql.DB, ctx *lib.Ctx, tag, col string) (values []string, e
 	return
 }
 
-func metricNameToValueMap(db string) map[string]string {
-	nameToValue := map[string]string{
-		"Comments":            "comments",
-		"Commit comments":     "commit_comments",
-		"Commits":             "commits",
-		"GitHub Events":       "events",
-		"GitHub pushes":       "pushes",
-		"Issue comments":      "issue_comments",
-		"Issues":              "issues",
-		"PRs":                 "prs",
-		"Merged PRs":          "merged_prs",
-		"Review comments":     "review_comments",
-		"Contributions":       "contributions",
-		"Active repositories": "active_repos",
+func metricNameToValueMap(db, apiName string) (nameToValue map[string]string, err error) {
+	switch apiName {
+	case lib.CompaniesTable:
+		nameToValue = map[string]string{
+			"Commenters":                   "commenters",
+			"Comments":                     "comments",
+			"Commit commenters":            "commitcommenters",
+			"Commits":                      "commits",
+			"Committers":                   "committers",
+			"Documentation commits":        "documentationcommits",
+			"Documentation committers":     "documentationcommitters",
+			"Pushers":                      "pushers",
+			"GitHub Events":                "events",
+			"Forkers":                      "forkers",
+			"Issue commenters":             "issuecommenters",
+			"Issuers":                      "issues",
+			"PR authors":                   "prcreators",
+			"PR reviews":                   "prreviewers",
+			"Pull requests":                "prs",
+			"Contributing in repositories": "repositories",
+			"Contributors":                 "contributors",
+			"Contributions":                "contributions",
+			"Watchers":                     "watchers",
+		}
+	case lib.DevActCntRepoGrp, lib.DevActCntComp:
+		nameToValue = map[string]string{
+			"Comments":            "comments",
+			"Commit comments":     "commit_comments",
+			"Commits":             "commits",
+			"GitHub Events":       "events",
+			"GitHub pushes":       "pushes",
+			"Issue comments":      "issue_comments",
+			"Issues":              "issues",
+			"PRs":                 "prs",
+			"Merged PRs":          "merged_prs",
+			"Review comments":     "review_comments",
+			"Contributions":       "contributions",
+			"Active repositories": "active_repos",
+		}
+		if db == lib.GHA {
+			nameToValue["Approves"] = "approves"
+			nameToValue["Reviews"] = "reviews"
+		}
+	default:
+		return nil, fmt.Errorf("metricNameToValueMap: unknown db/api pair: '%s'/'%s'", db, apiName)
 	}
-	if db == lib.GHA {
-		nameToValue["Approves"] = "approves"
-		nameToValue["Reviews"] = "reviews"
-	}
-	return nameToValue
+	return nameToValue, nil
 }
 
 func periodNameToValueMap() map[string]string {
@@ -491,6 +529,97 @@ func apiComContribRepoGrp(info string, w http.ResponseWriter, payload map[string
 	json.NewEncoder(w).Encode(pl)
 }
 
+func apiCompaniesTable(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.CompaniesTable
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	params := map[string]string{"range": "", "metric": ""}
+	for paramName := range params {
+		paramValue, err := getPayloadStringParam(paramName, w, payload, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	metricMap, err := metricNameToValueMap(db, apiName)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	for _, v := range metricMap {
+		metricMap[v] = v
+	}
+	metric, ok := metricMap[params["metric"]]
+	if !ok {
+		err = fmt.Errorf("invalid metric value: '%s'", params["metric"])
+		returnError(apiName, w, err)
+		return
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	period, err := periodNameToValue(c, ctx, params["range"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	series := fmt.Sprintf("hcom%s", metric)
+	query := `
+    select (row_number() over (order by value desc) -1), name, value from shcom where series = $1 and period = $2
+	`
+	rows, err := lib.QuerySQLLogErr(c, ctx, query, series, period)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		rank      int
+		company   string
+		number    float64
+		ranks     []int
+		companies []string
+		numbers   []float64
+	)
+	for rows.Next() {
+		err = rows.Scan(&rank, &company, &number)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		ranks = append(ranks, rank)
+		companies = append(companies, company)
+		numbers = append(numbers, number)
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	pl := companiesTablePayload{
+		Project: project,
+		DB:      db,
+		Range:   params["range"],
+		Metric:  params["metric"],
+		Rank:    ranks,
+		Company: companies,
+		Number:  numbers,
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(pl)
+}
+
 func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.DevActCntRepoGrp
 	var err error
@@ -511,7 +640,11 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 		}
 		params[paramName] = paramValue
 	}
-	metricMap := metricNameToValueMap(db)
+	metricMap, err := metricNameToValueMap(db, apiName)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
 	for _, v := range metricMap {
 		metricMap[v] = v
 	}
@@ -594,7 +727,7 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 		returnError(apiName, w, err)
 		return
 	}
-	if len(ranks) == 0 {
+	if len(ranks) == 0 && ghID != "" {
 		returnError(apiName, w, fmt.Errorf("github_id '%s' not found in results", ghID))
 		return
 	}
@@ -648,7 +781,11 @@ func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]int
 		}
 		paramsAry[paramName] = paramValue
 	}
-	metricMap := metricNameToValueMap(db)
+	metricMap, err := metricNameToValueMap(db, apiName)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
 	for _, v := range metricMap {
 		metricMap[v] = v
 	}
@@ -740,7 +877,7 @@ func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]int
 		returnError(apiName, w, err)
 		return
 	}
-	if len(ranks) == 0 {
+	if len(ranks) == 0 && ghID != "" {
 		returnError(apiName, w, fmt.Errorf("github_id '%s' not found in results", ghID))
 		return
 	}
@@ -1180,6 +1317,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiEvents(info, w, pl.Payload)
 	case lib.Repos:
 		apiRepos(info, w, pl.Payload)
+	case lib.CompaniesTable:
+		apiCompaniesTable(info, w, pl.Payload)
 	case lib.ComContribRepoGrp:
 		apiComContribRepoGrp(info, w, pl.Payload)
 	case lib.DevActCntRepoGrp:

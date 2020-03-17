@@ -77,6 +77,52 @@ List of APIs:
   - Returns: `{"project":"kubernetes","db_name":"gha","repo_groups":["Other","Not specified",...],"repos":["kubernetes/application-images","kubernetes/example-not-specified",...]}`.
   - Result contains projects repositories - repository groups configuration information.
 
+- `CompaniesTable`: `{"api": "CompaniesTable", "payload": {"project": "projectName", "range": "range", "metric": "metric"}}`.
+  - Arguments: (like in "Companies Table" DevStats dashboards).
+    - `projectName`: see `Health` API.
+    - `range`: value from `Range` drop-down in DevStats page, for example: `Last year`, `v1.17.0 - now`.
+    - `metric`: value from `Metric` drop-down in DevStats page, for example: `Contributions`, `Issues`, `PRs`.
+  - Returns:
+  ```
+  {
+    "project": "all",
+    "db_name": "allprj",
+    "range": "Last week",
+    "metric": "Commit commenters",
+    "rank": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "company": [
+      "All",
+      "Synadia",
+      "Google",
+      "Grafana Labs",
+      "MayaData",
+      "Postmates",
+      "The Scale Factory",
+      "Transit"
+    ],
+    "number": [
+      16,
+      2,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ]
+  }
+  ```
+  - Result contains data in the same format as "Companies Table" DevStats dashboard for the given project.
+
 - `ComContribRepoGrp`: `{"api": "ComContribRepoGrp", "payload": {"project": "projectName", "from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "period": "7 Days MA", "repository_group": "repoGroupName"}}`.
   - Arguments:
     - `projectName`: see `Health` API.
