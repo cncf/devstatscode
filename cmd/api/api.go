@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -1269,6 +1270,8 @@ func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{
 func requestInfo(r *http.Request) string {
 	agent := ""
 	hdr := r.Header
+	method := r.Method
+	path := html.EscapeString(r.URL.Path)
 	if hdr != nil {
 		uAgentAry, ok := hdr["User-Agent"]
 		if ok {
@@ -1276,9 +1279,9 @@ func requestInfo(r *http.Request) string {
 		}
 	}
 	if agent != "" {
-		return fmt.Sprintf("IP: %s, agent: %s", r.RemoteAddr, agent)
+		return fmt.Sprintf("IP: %s, agent: %s, method: %s, path: %s", r.RemoteAddr, agent, method, path)
 	}
-	return fmt.Sprintf("IP: %s", r.RemoteAddr)
+	return fmt.Sprintf("IP: %s, method: %s, path: %s", r.RemoteAddr, method, path)
 }
 
 func handleAPI(w http.ResponseWriter, req *http.Request) {
