@@ -768,8 +768,8 @@ func importAffs(jsonFN string) int {
 	// If there are still multiple such we're taking one with most entries
 	// And then if more than 1 with the same number of entries, then pick up first
 	unique, nonUnique, allAffs, nonUniquePrio := 0, 0, 0, 0
-	defaultStartDate := time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
-	defaultEndDate := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+	defaultStartDate := time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)
+	defaultEndDate := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 	companies := make(stringSet)
 	var affList []affData
 	for login, prios := range loginAffs {

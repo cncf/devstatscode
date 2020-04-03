@@ -154,7 +154,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 							sq += "\"" + col + "\" double precision not null default 0.0, "
 							//indices = append(indices, "create index if not exists \""+makePsqlName("i"+mergeS[1:]+col, false)+"\" on \""+mergeS+"\"(\""+col+"\")")
 						} else if ty == 1 {
-							sq += "\"" + col + "\" timestamp not null default '1970-01-01 00:00:00', "
+							sq += "\"" + col + "\" timestamp not null default '1900-01-01 00:00:00', "
 						} else {
 							sq += "\"" + col + "\" text not null default '', "
 						}
@@ -178,7 +178,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 							sqls = append(sqls, "alter table \""+mergeS+"\" add column if not exists \""+col+"\" double precision not null default 0.0")
 							//sqls = append(sqls, "create index if not exists \""+makePsqlName("i"+mergeS[1:]+col, false)+"\" on \""+mergeS+"\"(\""+col+"\")")
 						} else if ty == 1 {
-							sqls = append(sqls, "alter table \""+mergeS+"\" add column if not exists \""+col+"\" timestamp not null default '1970-01-01 00:00:00'")
+							sqls = append(sqls, "alter table \""+mergeS+"\" add column if not exists \""+col+"\" timestamp not null default '1900-01-01 00:00:00'")
 						} else {
 							sqls = append(sqls, "alter table \""+mergeS+"\" add column if not exists \""+col+"\" text not null default ''")
 						}
@@ -204,7 +204,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 						sq += "\"" + col + "\" double precision not null default 0.0, "
 						//indices = append(indices, "create index if not exists \""+makePsqlName("i"+name[1:]+col, false)+"\" on \""+name+"\"(\""+col+"\")")
 					} else if ty == 1 {
-						sq += "\"" + col + "\" timestamp not null default '1970-01-01 00:00:00', "
+						sq += "\"" + col + "\" timestamp not null default '1900-01-01 00:00:00', "
 					} else {
 						sq += "\"" + col + "\" text not null default '', "
 					}
@@ -222,7 +222,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 							sqls = append(sqls, "alter table \""+name+"\" add column if not exists \""+col+"\" double precision not null default 0.0")
 							//sqls = append(sqls, "create index if not exists \""+makePsqlName("i"+name[1:]+col, false)+"\" on \""+name+"\"(\""+col+"\")")
 						} else if ty == 1 {
-							sqls = append(sqls, "alter table \""+name+"\" add column if not exists \""+col+"\" timestamp not null default '1970-01-01 00:00:00'")
+							sqls = append(sqls, "alter table \""+name+"\" add column if not exists \""+col+"\" timestamp not null default '1900-01-01 00:00:00'")
 						} else {
 							sqls = append(sqls, "alter table \""+name+"\" add column if not exists \""+col+"\" text not null default ''")
 						}
