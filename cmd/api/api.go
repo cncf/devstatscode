@@ -179,6 +179,26 @@ func returnError(apiName string, w http.ResponseWriter, err error) {
 	json.NewEncoder(w).Encode(epl)
 }
 
+func timeParseAny(dtStr string) (time.Time, error) {
+	formats := []string{
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02 15",
+		"2006-01-02",
+		"2006-01",
+		"2006",
+	}
+	for _, format := range formats {
+		t, e := time.Parse(format, dtStr)
+		if e == nil {
+			return t, nil
+		}
+	}
+	err := fmt.Errorf("cannot parse datetime: '%s'\n", dtStr)
+	return time.Now(), err
+}
+
 func nameToDB(name string) (db string, err error) {
 	gMtx.RLock()
 	db, ok := gNameToDB[name]
@@ -392,6 +412,20 @@ func metricNameToValueMap(db, apiName string) (nameToValue map[string]string, er
 			"Contributions":                "contributions",
 			"Watchers":                     "watchers",
 		}
+	case lib.ComStatsRepoGrp:
+		nameToValue = map[string]string{
+			"All activity":          "activity",
+			"Active authors":        "authors",
+			"Issues created":        "issues",
+			"Pull requests created": "prs",
+			"Commits":               "commits",
+			"Committers":            "committers",
+			"Pushers":               "pushers",
+			"Pushes":                "pushes",
+			"Contributions":         "contributions",
+			"Contributors":          "contributors",
+			"Comments":              "comments",
+		}
 	case lib.DevActCntRepoGrp, lib.DevActCntComp:
 		nameToValue = map[string]string{
 			"Comments":            "comments",
@@ -417,13 +451,27 @@ func metricNameToValueMap(db, apiName string) (nameToValue map[string]string, er
 	return nameToValue, nil
 }
 
-func periodNameToValueMap() map[string]string {
-	return map[string]string{
-		"7 Days MA":  "d7",
-		"28 Days MA": "d28",
-		"Week":       "w",
-		"Month":      "m",
-		"Quarter":    "q",
+func periodNameToValueMap(db, apiName string) (map[string]string, error) {
+	switch apiName {
+	case lib.ComContribRepoGrp:
+		return map[string]string{
+			"7 Days MA":  "d7",
+			"28 Days MA": "d28",
+			"Week":       "w",
+			"Month":      "m",
+			"Quarter":    "q",
+		}, nil
+	case lib.ComStatsRepoGrp:
+		return map[string]string{
+			"Day":       "d",
+			"7 Days MA": "d7",
+			"Week":      "w",
+			"Month":     "m",
+			"Quarter":   "q",
+			"Year":      "y",
+		}, nil
+	default:
+		return nil, fmt.Errorf("periodNameToValueMap: unknown db/api pair: '%s'/'%s'", db, apiName)
 	}
 }
 
@@ -447,7 +495,21 @@ func apiComContribRepoGrp(info string, w http.ResponseWriter, payload map[string
 		}
 		params[paramName] = paramValue
 	}
-	periodMap := periodNameToValueMap()
+	_, err = timeParseAny(params["from"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	_, err = timeParseAny(params["to"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	periodMap, err := periodNameToValueMap(db, apiName)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
 	for _, v := range periodMap {
 		periodMap[v] = v
 	}
@@ -834,6 +896,11 @@ func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]int
 		return
 	}
 	companiesParam := paramsAry["companies"]
+	if len(companiesParam) == 0 {
+		err = fmt.Errorf("you need to specify at least one company, for example 'All'")
+		returnError(apiName, w, err)
+		return
+	}
 	var rows *sql.Rows
 	series := fmt.Sprintf("hdev_%s%s%s", metric, repogroup, country)
 	query := `
@@ -1214,6 +1281,144 @@ func apiRepos(info string, w http.ResponseWriter, payload map[string]interface{}
 	json.NewEncoder(w).Encode(rpl)
 }
 
+func apiComStatsRepoGrp(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.ComStatsRepoGrp
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	params := map[string]string{"from": "", "to": "", "period": "", "metric": "", "repository_group": ""}
+	for paramName := range params {
+		paramValue, err := getPayloadStringParam(paramName, w, payload, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	_, err = timeParseAny(params["from"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	_, err = timeParseAny(params["to"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	periodMap, err := periodNameToValueMap(db, apiName)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	for _, v := range periodMap {
+		periodMap[v] = v
+	}
+	period, ok := periodMap[params["period"]]
+	if !ok {
+		err = fmt.Errorf("invalid period value: '%s'", params["period"])
+		returnError(apiName, w, err)
+		return
+	}
+	metricMap, err := metricNameToValueMap(db, apiName)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	for _, v := range metricMap {
+		metricMap[v] = v
+	}
+	metric, ok := metricMap[params["metric"]]
+	if !ok {
+		err = fmt.Errorf("invalid metric value: '%s'", params["metric"])
+		returnError(apiName, w, err)
+		return
+	}
+	paramsAry := map[string][]string{"companies": {}}
+	for paramName := range paramsAry {
+		paramValue, err := getPayloadStringArrayParam(paramName, w, payload, false, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		paramsAry[paramName] = paramValue
+	}
+	companiesParam := paramsAry["companies"]
+	if len(companiesParam) == 0 {
+		err = fmt.Errorf("you need to specify at least one company, for example 'All'")
+		returnError(apiName, w, err)
+		return
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	repogroup, err := allRepoGroupNameToValue(c, ctx, params["repository_group"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	query := "select "
+	if len(companiesParam) == 1 && companiesParam[0] == lib.ALL {
+		query += "*"
+	} else {
+    query += "time, "
+		for _, company := range companiesParam {
+			query += "\"" + company + "\", "
+		}
+		query = query[0 : len(query)-2]
+	}
+	query += " from scompany_activity where time >= $1 and time < $2 and period = $3 and series = $4 order by time"
+	series := "company" + repogroup + metric
+	rows, err := lib.QuerySQLLogErr(c, ctx, query, params["from"], params["to"], period, series)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	columns, err := rows.Columns()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	vals := make([]interface{}, len(columns))
+	for i := range columns {
+		vals[i] = new([]byte)
+	}
+	/*
+		defer func() { _ = rows.Close() }()
+		times := []time.Time{}
+		values := []int64{}
+		var (
+			t time.Time
+			v int64
+		)
+		for rows.Next() {
+			err = rows.Scan(&t, &v)
+			if err != nil {
+				returnError(apiName, w, err)
+				return
+			}
+			times = append(times, t)
+			values = append(values, v)
+		}
+		err = rows.Err()
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		epl := eventsPayload{Project: project, DB: db, TimeStamps: times, Values: values, From: params["from"], To: params["to"]}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(epl)
+	*/
+}
+
 func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.Events
 	var err error
@@ -1233,6 +1438,16 @@ func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{
 			return
 		}
 		params[paramName] = paramValue
+	}
+	_, err = timeParseAny(params["from"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	_, err = timeParseAny(params["to"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
 	}
 	ctx, c, err := getContextAndDB(w, db)
 	if err != nil {
@@ -1340,6 +1555,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiCompaniesTable(info, w, pl.Payload)
 	case lib.ComContribRepoGrp:
 		apiComContribRepoGrp(info, w, pl.Payload)
+	case lib.ComStatsRepoGrp:
+		apiComStatsRepoGrp(info, w, pl.Payload)
 	case lib.DevActCntRepoGrp:
 		apiDevActCntRepoGrp(info, w, pl.Payload)
 	case lib.DevActCntComp:
