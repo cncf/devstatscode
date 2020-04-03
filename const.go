@@ -102,6 +102,9 @@ const ComContribRepoGrp string = "ComContribRepoGrp"
 // CompaniesTable - common contant string
 const CompaniesTable string = "CompaniesTable"
 
+// ComStatsRepoGrp - common constant string
+const ComStatsRepoGrp string = "ComStatsRepoGrp"
+
 // Health - common constant string
 const Health string = "Health"
 

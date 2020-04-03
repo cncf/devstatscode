@@ -33,6 +33,7 @@ var allAPIs = []string{
 	lib.ComContribRepoGrp,
 	lib.DevActCntRepoGrp,
 	lib.DevActCntComp,
+	lib.ComStatsRepoGrp,
 }
 
 var (
@@ -68,6 +69,8 @@ type eventsPayload struct {
 	Project    string      `json:"project"`
 	DB         string      `json:"db_name"`
 	TimeStamps []time.Time `json:"timestamps"`
+	From       string      `json:"from"`
+	To         string      `json:"to"`
 	Values     []int64     `json:"values"`
 }
 
@@ -119,6 +122,19 @@ type devActCntCompPayload struct {
 	Login           []string `json:"login"`
 	Company         []string `json:"company"`
 	Number          []int    `json:"number"`
+}
+
+type comStatsRepoGrpPayload struct {
+	Project         string               `json:"project"`
+	DB              string               `json:"db_name"`
+	Period          string               `json:"period"`
+	Metric          string               `json:"metric"`
+	RepositoryGroup string               `json:"repository_group"`
+	Companies       []string             `json:"companies"`
+	From            string               `json:"from"`
+	To              string               `json:"to"`
+	Values          []map[string]float64 `json:"values"`
+	Timestamps      []time.Time          `json:"timestamps"`
 }
 
 type repoGroupsPayload struct {
@@ -1262,7 +1278,7 @@ func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{
 		returnError(apiName, w, err)
 		return
 	}
-	epl := eventsPayload{Project: project, DB: db, TimeStamps: times, Values: values}
+	epl := eventsPayload{Project: project, DB: db, TimeStamps: times, Values: values, From: params["from"], To: params["to"]}
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(epl)
 }

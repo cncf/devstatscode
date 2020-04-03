@@ -55,6 +55,8 @@ List of APIs:
   {
     "project": "kubernetes",
     "db_name": "gha",
+    "from": "2020-03-01",
+    "to": "2020-04-01",
     "timestamps": [
       "2020-02-29T00:00:00Z",
       "2020-02-29T01:00:00Z",
