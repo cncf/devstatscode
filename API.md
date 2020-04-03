@@ -260,6 +260,62 @@ List of APIs:
   ```
   - Result contains data in the same format as "Developer Activity Counts by Companies" DevStats dashboard for the given project.
 
+- `ComStatsRepoGrp`: `{"api":"ComStatsRepoGrp","payload":{"project":"projectName","from":"2019-01-01","to":"2020-01-01","period":"Day","metric":"Contributors","repository_group":"SIG Apps","companies":["Google", "Red Hat", ...]}}`.
+  - Arguments: (like in "Companies Statistics by Repository Group" DevStats dashboards).
+    - `projectName`: see `Health` API. Example: `Kubernetes`, `All`, `Harbor`.
+    - `from`: datetime from (string that Postgres understands)
+    - `to`: datetime to (example '2020-02-01 11:00:00').
+    - `period`: value from `Period` drop-down in Companies Statistics by Repository Group page, for example: `Day`, `7 Days MA`, `Week`, `Month`, `Quarter`, `Year`.
+    - `metric`: value from `Metric` drop-down in Companies Statistics by Repository Group page, for example: `Contributions`, `Contributors`, `All activity`, `Active authors`.
+    - `repository_group`: value from `Repository group` drop-down in DevStats pages, for example: `All`, `Kubernetes`, `SIG Apps`.
+    - `companies`: values from `Companies` drop-down in DevStats pages, for example: ["Google", "Red Hat", "Independent"] - array of companies selections.
+      - If you specify one element array `["All"]` - data for all companies will be returned. If there are more than 1 items `"All"` has no special meaning then.
+  - Returns:
+  ```
+  {
+    "project": "all",
+    "db_name": "allprj",
+    "period": "Week",
+    "metric": "Contributors",
+    "repository_group": "Kubernetes",
+    "companies": [
+      "Google",
+      "Red Hat",
+      "VMware",
+      "Independent"
+    ],
+    "from": "2020-03-01",
+    "to": "2020-05-01",
+    "values": [
+      {
+        "Google": 102,
+        "Independent": 16,
+        "Red Hat": 59,
+        "VMware": 38
+      },
+      {
+        "Google": 88,
+        "Independent": 21,
+        "Red Hat": 58,
+        "VMware": 34
+      },
+      {
+        "Google": 101,
+        "Independent": 20,
+        "Red Hat": 52,
+        "VMware": 34
+      }
+    ],
+    "timestamps": [
+      "2020-03-02T00:00:00Z",
+      "2020-03-09T00:00:00Z",
+      "2020-03-23T00:00:00Z"
+    ]
+  }
+  ```
+  - Result contains data in the same format as "Companies Statistics by Repository Group" DevStats dashboard for the given project.
+  - Example API call: `./devel/api_com_stats_repo_grp.sh all 2019-01-01 2020-05-01 Week 'Contributors' Kubernetes '["Google", "Red Hat", "VMware", "Independent"]'`
+
 
 # Local API deployment and testing
 

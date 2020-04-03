@@ -51,6 +51,12 @@ const Unset string = "{{unset}}"
 // TimeCol - common constant string
 const TimeCol string = "time"
 
+// SeriesCol - common constant string
+const SeriesCol string = "series"
+
+// PeriodCol - common constant string
+const PeriodCol string = "period"
+
 // Null - common constant string
 const Null string = "null"
 

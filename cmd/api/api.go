@@ -1369,7 +1369,7 @@ func apiComStatsRepoGrp(info string, w http.ResponseWriter, payload map[string]i
 	if len(companiesParam) == 1 && companiesParam[0] == lib.ALL {
 		query += "*"
 	} else {
-    query += "time, "
+		query += "time, "
 		for _, company := range companiesParam {
 			query += "\"" + company + "\", "
 		}
@@ -1382,41 +1382,74 @@ func apiComStatsRepoGrp(info string, w http.ResponseWriter, payload map[string]i
 		returnError(apiName, w, err)
 		return
 	}
+	defer func() { _ = rows.Close() }()
 	columns, err := rows.Columns()
 	if err != nil {
 		returnError(apiName, w, err)
 		return
 	}
 	vals := make([]interface{}, len(columns))
-	for i := range columns {
-		vals[i] = new([]byte)
-	}
-	/*
-		defer func() { _ = rows.Close() }()
-		times := []time.Time{}
-		values := []int64{}
-		var (
-			t time.Time
-			v int64
-		)
-		for rows.Next() {
-			err = rows.Scan(&t, &v)
-			if err != nil {
-				returnError(apiName, w, err)
-				return
-			}
-			times = append(times, t)
-			values = append(values, v)
+	for i, column := range columns {
+		switch column {
+		case lib.TimeCol:
+			vals[i] = new(time.Time)
+		case lib.SeriesCol, lib.PeriodCol:
+			vals[i] = new(string)
+		default:
+			vals[i] = new(float64)
 		}
-		err = rows.Err()
+	}
+	times := []time.Time{}
+	values := []map[string]float64{}
+	now := time.Now()
+	for rows.Next() {
+		err = rows.Scan(vals...)
 		if err != nil {
 			returnError(apiName, w, err)
 			return
 		}
-		epl := eventsPayload{Project: project, DB: db, TimeStamps: times, Values: values, From: params["from"], To: params["to"]}
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(epl)
-	*/
+		vMap := make(map[string]float64)
+		for index, val := range vals {
+			column := columns[index]
+			switch column {
+			case lib.TimeCol:
+				if val != nil {
+					times = append(times, *(val.(*time.Time)))
+				} else {
+					times = append(times, now)
+				}
+				continue
+			case lib.SeriesCol, lib.PeriodCol:
+				continue
+			default:
+				if val != nil {
+					vMap[column] = *val.(*float64)
+				} else {
+					vMap[column] = 0.0
+				}
+			}
+		}
+		values = append(values, vMap)
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	pl := comStatsRepoGrpPayload{
+		Project:         project,
+		DB:              db,
+		From:            params["from"],
+		To:              params["to"],
+		Period:          params["period"],
+		Metric:          params["metric"],
+		RepositoryGroup: params["repository_group"],
+		Companies:       companiesParam,
+		Timestamps:      times,
+		Values:          values,
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(pl)
 }
 
 func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
