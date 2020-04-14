@@ -846,6 +846,10 @@ func importAffs(jsonFN string) int {
 		if company == "" {
 			continue
 		}
+		l := len(company)
+		if l > 63 {
+			company = company[:30] + company[l-30:]
+		}
 		lib.ExecSQLWithErr(con, &ctx,
 			lib.InsertIgnore("into gha_companies(name) "+lib.NValues(1)),
 			lib.AnyArray{maybeHide(lib.TruncToBytes(company, 160))}...,
