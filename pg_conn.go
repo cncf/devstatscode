@@ -393,7 +393,7 @@ func makePsqlName(name string, fatal bool) string {
 			return name
 		}
 		Printf("Notice: postgresql identifier name too long (%d, %s)", l, name)
-		newName := name[:32] + name[l-31:]
+		newName := StripUnicode(name[:32] + name[l-31:])
 		return newName
 	}
 	return name

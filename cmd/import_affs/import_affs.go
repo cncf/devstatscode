@@ -848,7 +848,7 @@ func importAffs(jsonFN string) int {
 		}
 		l := len(company)
 		if l > 63 {
-			company = company[:30] + company[l-30:]
+			company = lib.StripUnicode(company[:32] + company[l-31:])
 		}
 		lib.ExecSQLWithErr(con, &ctx,
 			lib.InsertIgnore("into gha_companies(name) "+lib.NValues(1)),
