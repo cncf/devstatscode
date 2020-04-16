@@ -15,6 +15,7 @@ import (
 	"time"
 
 	lib "github.com/cncf/devstatscode"
+	"github.com/rs/cors"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -1648,8 +1649,10 @@ func serveAPI() {
 			os.Exit(1)
 		}
 	}()
-	http.HandleFunc("/api/v1", handleAPI)
-	lib.FatalOnError(http.ListenAndServe("0.0.0.0:8080", nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1", handleAPI)
+	handler := cors.AllowAll().Handler(mux)
+	lib.FatalOnError(http.ListenAndServe("0.0.0.0:8080", handler))
 }
 
 func main() {

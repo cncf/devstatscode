@@ -16,9 +16,19 @@ then
 fi
 if [ -z "$API_URL" ]
 then
-  API_URL="http://127.0.0.1:8080/api/v1"
+  export API_URL="http://127.0.0.1:8080/api/v1"
+fi
+if [ -z "$ORIGIN" ]
+then
+  export ORIGIN='https://teststats.cncf.io'
 fi
 project="${1}"
 from="${2}"
 to="${3}"
-curl -H "Content-Type: application/json" "${API_URL}" -d"{\"api\":\"Events\",\"payload\":{\"project\":\"${project}\",\"from\":\"${from}\",\"to\":\"${to}\"}}" 2>/dev/null | jq
+if [ -z "$DEBUG" ]
+then
+  curl -s -H "Origin: ${ORIGIN}" -H "Content-Type: application/json" "${API_URL}" -d"{\"api\":\"Events\",\"payload\":{\"project\":\"${project}\",\"from\":\"${from}\",\"to\":\"${to}\"}}" | jq
+else
+  echo curl -i -s -H "Origin: ${ORIGIN}" -H "Content-Type: application/json" "${API_URL}" -d"{\"api\":\"Events\",\"payload\":{\"project\":\"${project}\",\"from\":\"${from}\",\"to\":\"${to}\"}}"
+  curl -i -s -H "Origin: ${ORIGIN}" -H "Content-Type: application/json" "${API_URL}" -d"{\"api\":\"Events\",\"payload\":{\"project\":\"${project}\",\"from\":\"${from}\",\"to\":\"${to}\"}}"
+fi
