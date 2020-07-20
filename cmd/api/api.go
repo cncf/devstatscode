@@ -196,7 +196,7 @@ func timeParseAny(dtStr string) (time.Time, error) {
 			return t, nil
 		}
 	}
-	err := fmt.Errorf("cannot parse datetime: '%s'\n", dtStr)
+	err := fmt.Errorf("cannot parse datetime: '%s'", dtStr)
 	return time.Now(), err
 }
 
