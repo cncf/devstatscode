@@ -30,7 +30,10 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 	merge := false
 	mergeS := ""
 	if mergeSeries != "" {
-		mergeS = makePsqlName("s"+mergeSeries, true)
+		if !checkPsqlName("s" + mergeSeries) {
+			return
+		}
+		mergeS = "s" + mergeSeries
 		merge = true
 	}
 	tags := make(map[string]map[string]struct{})
@@ -39,28 +42,39 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 		if p.tags != nil {
 			name := p.name
 			if !merge {
-				name = makePsqlName("t"+p.name, true)
+				if !checkPsqlName("t" + p.name) {
+					continue
+				}
+				name = "t" + p.name
 			}
 			_, ok := tags[name]
 			if !ok {
 				tags[name] = make(map[string]struct{})
 			}
 			for tagName := range p.tags {
-				tName := makePsqlName(tagName, true)
-				tags[name][tName] = struct{}{}
+				if !checkPsqlName(tagName) {
+					continue
+				}
+				tags[name][tagName] = struct{}{}
 			}
 		}
 		if p.fields != nil {
 			name := p.name
 			if !merge {
-				name = makePsqlName("s"+p.name, true)
+				if !checkPsqlName("s" + p.name) {
+					continue
+				}
+				name = "s" + p.name
 			}
 			_, ok := fields[name]
 			if !ok {
 				fields[name] = make(map[string]int)
 			}
 			for fieldName, fieldValue := range p.fields {
-				fName := makePsqlName(fieldName, true)
+				if !checkPsqlName(fieldName) {
+					continue
+				}
+				fName := fieldName
 				t, ok := fields[name][fName]
 				if !ok {
 					t = -1
@@ -252,13 +266,19 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 	ns := 0
 	for _, p := range *pts {
 		if p.tags != nil {
-			name := makePsqlName("t"+p.name, true)
+			if !checkPsqlName("t" + p.name) {
+				continue
+			}
+			name := "t" + p.name
 			namesI := []string{"time"}
 			argsI := []string{"$1"}
 			vals := []interface{}{p.t}
 			i := 2
 			for tagName, tagValue := range p.tags {
-				namesI = append(namesI, "\""+makePsqlName(tagName, true)+"\"")
+				if !checkPsqlName(tagName) {
+					continue
+				}
+				namesI = append(namesI, "\""+tagName+"\"")
 				argsI = append(argsI, "$"+strconv.Itoa(i))
 				vals = append(vals, tagValue)
 				i++
@@ -268,7 +288,10 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 			namesU := []string{}
 			argsU := []string{}
 			for tagName, tagValue := range p.tags {
-				namesU = append(namesU, "\""+makePsqlName(tagName, true)+"\"")
+				if !checkPsqlName(tagName) {
+					continue
+				}
+				namesU = append(namesU, "\""+tagName+"\"")
 				argsU = append(argsU, "$"+strconv.Itoa(i))
 				vals = append(vals, tagValue)
 				i++
@@ -291,13 +314,19 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 			ns++
 		}
 		if p.fields != nil && !merge {
-			name := makePsqlName("s"+p.name, true)
+			if !checkPsqlName("s" + p.name) {
+				continue
+			}
+			name := "s" + p.name
 			namesI := []string{"time", "period"}
 			argsI := []string{"$1", "$2"}
 			vals := []interface{}{p.t, p.period}
 			i := 3
 			for fieldName, fieldValue := range p.fields {
-				namesI = append(namesI, "\""+makePsqlName(fieldName, true)+"\"")
+				if !checkPsqlName(fieldName) {
+					continue
+				}
+				namesI = append(namesI, "\""+fieldName+"\"")
 				argsI = append(argsI, "$"+strconv.Itoa(i))
 				vals = append(vals, fieldValue)
 				i++
@@ -307,7 +336,10 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 			namesU := []string{}
 			argsU := []string{}
 			for fieldName, fieldValue := range p.fields {
-				namesU = append(namesU, "\""+makePsqlName(fieldName, true)+"\"")
+				if !checkPsqlName(fieldName) {
+					continue
+				}
+				namesU = append(namesU, "\""+fieldName+"\"")
 				argsU = append(argsU, "$"+strconv.Itoa(i))
 				vals = append(vals, fieldValue)
 				i++
@@ -337,7 +369,10 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 			vals := []interface{}{p.t, p.period, p.name}
 			i := 4
 			for fieldName, fieldValue := range p.fields {
-				namesI = append(namesI, "\""+makePsqlName(fieldName, true)+"\"")
+				if !checkPsqlName(fieldName) {
+					continue
+				}
+				namesI = append(namesI, "\""+fieldName+"\"")
 				argsI = append(argsI, "$"+strconv.Itoa(i))
 				vals = append(vals, fieldValue)
 				i++
@@ -347,7 +382,10 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 			namesU := []string{}
 			argsU := []string{}
 			for fieldName, fieldValue := range p.fields {
-				namesU = append(namesU, "\""+makePsqlName(fieldName, true)+"\"")
+				if !checkPsqlName(fieldName) {
+					continue
+				}
+				namesU = append(namesU, "\""+fieldName+"\"")
 				argsU = append(argsU, "$"+strconv.Itoa(i))
 				vals = append(vals, fieldValue)
 				i++
@@ -397,6 +435,17 @@ func makePsqlName(name string, fatal bool) string {
 		return newName
 	}
 	return name
+}
+
+// checkPsqlName - prints warning when psql name exceeds 63 bytes
+// return: true - name is OK, false: name is too long (warning is issued)
+func checkPsqlName(name string) bool {
+	l := len(name)
+	if l > 63 {
+		Printf("Notice: postgresql identifier name too long (%d, %s)", l, name)
+		return false
+	}
+	return true
 }
 
 // GetTagValues returns tag values for a given key
