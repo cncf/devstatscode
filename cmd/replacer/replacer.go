@@ -114,8 +114,9 @@ func main() {
 		os.Exit(1)
 	}
 	to := os.Getenv("TO")
-	if to == "" {
-		fmt.Printf("You need to set 'TO' env variable\n")
+	noTo := os.Getenv("NO_TO")
+	if to == "" && noTo == "" {
+		fmt.Printf("You need to set 'TO' env variable or specify NO_TO\n")
 		os.Exit(1)
 	}
 	mode := os.Getenv("MODE")
