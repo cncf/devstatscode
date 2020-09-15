@@ -158,6 +158,34 @@ func createSeriesFromFormula(def string) (result []string) {
 	return
 }
 
+// If env variable ends with ? then only set this value when not already defined
+func processEnvMap(inMap map[string]string) (outMap map[string]string) {
+	conditional := false
+	for k := range inMap {
+		if strings.HasSuffix(k, "?") {
+			conditional = true
+			break
+		}
+	}
+	if !conditional {
+		outMap = inMap
+		return
+	}
+	outMap = make(map[string]string)
+	for k, v := range inMap {
+		if strings.HasSuffix(k, "?") {
+			k2 := k[0 : len(k)-1]
+			_, ok := os.LookupEnv(k2)
+			if !ok {
+				outMap[k2] = v
+			}
+			continue
+		}
+		outMap[k] = v
+	}
+	return
+}
+
 func sync(ctx *lib.Ctx, args []string) {
 	// Strip function to be used by MapString
 	stripFunc := func(x string) string { return strings.TrimSpace(x) }
@@ -556,6 +584,7 @@ func sync(ctx *lib.Ctx, args []string) {
 						}
 						dropProcessed = true
 					}
+					envMap := processEnvMap(metric.EnvMap)
 					if metric.Histogram {
 						lib.Printf("Scheduled histogram metric %v, period %v, desc: '%v', aggregate: '%v' ...\n", metric.Name, period, metric.Desc, aggrSuffix)
 						hists = append(
@@ -570,7 +599,7 @@ func sync(ctx *lib.Ctx, args []string) {
 								strings.Join(extraParams, ","),
 							},
 						)
-						envMaps = append(envMaps, metric.EnvMap)
+						envMaps = append(envMaps, envMap)
 					} else {
 						lib.Printf("Calculate metric %v, period %v, desc: '%v', aggregate: '%v' ...\n", metric.Name, period, metric.Desc, aggrSuffix)
 						_, err = lib.ExecCommand(
@@ -584,7 +613,7 @@ func sync(ctx *lib.Ctx, args []string) {
 								periodAggr,
 								strings.Join(eParams, ","),
 							},
-							metric.EnvMap,
+							envMap,
 						)
 						lib.FatalOnError(err)
 					}
