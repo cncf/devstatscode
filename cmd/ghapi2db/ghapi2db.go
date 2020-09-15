@@ -303,19 +303,37 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 	}
 
 	// Author email
+	mEmail := maybeHide(lib.TruncToBytes(authorEmail, 120))
 	lib.ExecSQLTxWithErr(
 		tx,
 		ctx,
-		lib.InsertIgnore("into gha_actors_emails(actor_id, email) "+lib.NValues(2)),
-		lib.AnyArray{authorID, maybeHide(lib.TruncToBytes(authorEmail, 120))}...,
+		//lib.InsertIgnore("into gha_actors_emails(actor_id, email) "+lib.NValues(2)),
+		fmt.Sprintf(
+			"insert into gha_actors_emails(actor_id, email) %s on conflict(actor_id, email) "+
+				"do update set origin = 1 where gha_actors_emails.actor_id = %s "+
+				"and gha_actors_emails.email = %s",
+			lib.NValues(2),
+			lib.NValue(3),
+			lib.NValue(4),
+		),
+		lib.AnyArray{authorID, mEmail, authorID, mEmail}...,
 	)
 	// Committer email
 	if committerEmail != authorEmail {
+		mEmail = maybeHide(lib.TruncToBytes(committerEmail, 120))
 		lib.ExecSQLTxWithErr(
 			tx,
 			ctx,
-			lib.InsertIgnore("into gha_actors_emails(actor_id, email) "+lib.NValues(2)),
-			lib.AnyArray{committerID, maybeHide(lib.TruncToBytes(committerEmail, 120))}...,
+			//lib.InsertIgnore("into gha_actors_emails(actor_id, email) "+lib.NValues(2)),
+			fmt.Sprintf(
+				"insert into gha_actors_emails(actor_id, email) %s on conflict(actor_id, email) "+
+					"do update set origin = 1 where gha_actors_emails.actor_id = %s "+
+					"and gha_actors_emails.email = %s",
+				lib.NValues(2),
+				lib.NValue(3),
+				lib.NValue(4),
+			),
+			lib.AnyArray{authorID, mEmail, authorID, mEmail}...,
 		)
 	}
 	// Author name

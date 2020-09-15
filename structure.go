@@ -101,6 +101,7 @@ func Structure(ctx *Ctx) {
 				"gha_actors_emails("+
 					"actor_id bigint not null, "+
 					"email varchar(120) not null, "+
+					"origin smallint not null default 0, "+
 					"primary key(actor_id, email)"+
 					")",
 			),
