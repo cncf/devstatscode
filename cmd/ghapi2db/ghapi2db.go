@@ -333,23 +333,41 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 				lib.NValue(3),
 				lib.NValue(4),
 			),
-			lib.AnyArray{authorID, mEmail, authorID, mEmail}...,
+			lib.AnyArray{committerID, mEmail, committerID, mEmail}...,
 		)
 	}
 	// Author name
+	mName := maybeHide(lib.TruncToBytes(authorName, 120))
 	lib.ExecSQLTxWithErr(
 		tx,
 		ctx,
-		lib.InsertIgnore("into gha_actors_names(actor_id, name) "+lib.NValues(2)),
-		lib.AnyArray{authorID, maybeHide(lib.TruncToBytes(authorName, 120))}...,
+		//lib.InsertIgnore("into gha_actors_names(actor_id, name) "+lib.NValues(2)),
+		fmt.Sprintf(
+			"insert into gha_actors_names(actor_id, name) %s on conflict(actor_id, name) "+
+				"do update set origin = 1 where gha_actors_names.actor_id = %s "+
+				"and gha_actors_names.name = %s",
+			lib.NValues(2),
+			lib.NValue(3),
+			lib.NValue(4),
+		),
+		lib.AnyArray{authorID, mName, authorID, mName}...,
 	)
 	// Committer name
 	if committerName != authorName {
+		mName = maybeHide(lib.TruncToBytes(committerName, 120))
 		lib.ExecSQLTxWithErr(
 			tx,
 			ctx,
-			lib.InsertIgnore("into gha_actors_names(actor_id, name) "+lib.NValues(2)),
-			lib.AnyArray{committerID, maybeHide(lib.TruncToBytes(committerName, 120))}...,
+			//lib.InsertIgnore("into gha_actors_names(actor_id, name) "+lib.NValues(2)),
+			fmt.Sprintf(
+				"insert into gha_actors_names(actor_id, name) %s on conflict(actor_id, name) "+
+					"do update set origin = 1 where gha_actors_names.actor_id = %s "+
+					"and gha_actors_names.name = %s",
+				lib.NValues(2),
+				lib.NValue(3),
+				lib.NValue(4),
+			),
+			lib.AnyArray{committerID, mName, committerID, mName}...,
 		)
 	}
 
