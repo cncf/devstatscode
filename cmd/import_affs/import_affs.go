@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha256"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	lib "github.com/cncf/devstatscode"
+	jsoniter "github.com/json-iterator/go"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -466,7 +466,7 @@ func importAffs(jsonFN string) int {
 		lib.FatalOnError(err)
 		return 1
 	}
-	lib.FatalOnError(json.Unmarshal(data, &users))
+	lib.FatalOnError(jsoniter.Unmarshal(data, &users))
 
 	// Process users affiliations
 	emptyVal := struct{}{}

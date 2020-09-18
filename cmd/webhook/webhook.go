@@ -18,6 +18,7 @@ import (
 	"time"
 
 	lib "github.com/cncf/devstatscode"
+	jsoniter "github.com/json-iterator/go"
 )
 
 // Payload signature verification based on:
@@ -255,7 +256,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	//pretty := lib.PrettyPrintJSON([]byte(jsonStr))
 	var payload payload
-	err := json.Unmarshal([]byte(jsonStr), &payload)
+	err := jsoniter.Unmarshal([]byte(jsonStr), &payload)
 	if checkError(true, true, w, err) {
 		return
 	}

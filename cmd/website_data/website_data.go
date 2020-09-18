@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	lib "github.com/cncf/devstatscode"
+	jsoniter "github.com/json-iterator/go"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -289,7 +289,7 @@ func generateWebsiteData() {
 
 	// Marshal JSON
 	jprojs.Timestamp = time.Now()
-	jsonBytes, err := json.Marshal(jprojs)
+	jsonBytes, err := jsoniter.Marshal(jprojs)
 	lib.FatalOnError(err)
 	pretty := lib.PrettyPrintJSON(jsonBytes)
 	fn := ctx.JSONsDir + "projects.json"
@@ -310,7 +310,7 @@ func generateWebsiteData() {
 			go func(ch chan struct{}, name string, stats projectStats) {
 				generateJSONData(&ctx, name, excludeBots, lastTagCmd, projects.Projects[name].MainRepo, &stats)
 				stats.Timestamp = time.Now()
-				jsonBytes, err := json.Marshal(stats)
+				jsonBytes, err := jsoniter.Marshal(stats)
 				lib.FatalOnError(err)
 				pretty := lib.PrettyPrintJSON(jsonBytes)
 				fn := ctx.JSONsDir + name + ".json"
@@ -331,7 +331,7 @@ func generateWebsiteData() {
 		lib.Printf("Using single threaded version\n")
 		for name, stats := range pstats {
 			generateJSONData(&ctx, name, excludeBots, lastTagCmd, projects.Projects[name].MainRepo, &stats)
-			jsonBytes, err := json.Marshal(stats)
+			jsonBytes, err := jsoniter.Marshal(stats)
 			lib.FatalOnError(err)
 			pretty := lib.PrettyPrintJSON(jsonBytes)
 			fn := ctx.JSONsDir + name + ".json"

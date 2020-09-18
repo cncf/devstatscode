@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	lib "github.com/cncf/devstatscode"
+	jsoniter "github.com/json-iterator/go"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -270,7 +270,7 @@ func importJsons(ctx *lib.Ctx, dbFile string, jsons []string) {
 	for rows.Next() {
 		var dd dashboardData
 		lib.FatalOnError(rows.Scan(&dd.id, &dd.data, &dd.title, &dd.slug, &dd.uid))
-		lib.FatalOnError(json.Unmarshal([]byte(dd.data), &dd.dash))
+		lib.FatalOnError(jsoniter.Unmarshal([]byte(dd.data), &dd.dash))
 		if dd.title != dd.dash.Title {
 			lib.Printf("SQLite internal inconsistency (title): %s != %s: %+v, using value from dashboard table, not from JSON\n", dd.title, dd.dash.Title, dd)
 			dd.dash.Title = dd.title
@@ -293,7 +293,7 @@ func importJsons(ctx *lib.Ctx, dbFile string, jsons []string) {
 		var dd dashboardData
 		bytes, err := lib.ReadFile(ctx, j)
 		lib.FatalOnError(err)
-		lib.FatalOnError(json.Unmarshal(bytes, &dd.dash))
+		lib.FatalOnError(jsoniter.Unmarshal(bytes, &dd.dash))
 		dbDash, ok := dbMap[dd.dash.UID]
 		if !ok {
 			dd.data = string(lib.PrettyPrintJSON(bytes))

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	lib "github.com/cncf/devstatscode"
+	jsoniter "github.com/json-iterator/go"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -1364,9 +1364,9 @@ func parseJSON(con *sql.DB, ctx *lib.Ctx, idx, njsons int, jsonStr []byte, dt ti
 		actorName string
 	)
 	if ctx.OldFormat {
-		err = json.Unmarshal(jsonStr, &hOld)
+		err = jsoniter.Unmarshal(jsonStr, &hOld)
 	} else {
-		err = json.Unmarshal(jsonStr, &h)
+		err = jsoniter.Unmarshal(jsonStr, &h)
 	}
 	// jsonStr = bytes.Replace(jsonStr, []byte("\x00"), []byte(""), -1)
 	if err != nil {
