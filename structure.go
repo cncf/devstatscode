@@ -1366,6 +1366,22 @@ func Structure(ctx *Ctx) {
 			),
 		)
 	}
+	// Bot logins table
+	if ctx.Table {
+		ExecSQLWithErr(c, ctx, "drop table if exists gha_bot_logins")
+		ExecSQLWithErr(
+			c,
+			ctx,
+			CreateTable(
+				"gha_bot_logins("+
+					"pattern text primary key"+
+					")",
+			),
+		)
+	}
+	if ctx.Index {
+		ExecSQLWithErr(c, ctx, "create index gha_bot_logins_pattern_idx on gha_bot_logins(pattern)")
+	}
 	// Foreign keys are not needed - they slow down processing a lot
 
 	// Tools (like views and functions needed for generating metrics)
@@ -1402,6 +1418,16 @@ func Structure(ctx *Ctx) {
 		if ctx.Debug > 0 {
 			dtEnd := time.Now()
 			Printf("Executed countries script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+		}
+		dtStart = time.Now()
+		script = "util_sql/exclude_bots_table_insert.sql"
+		bytes, err = ReadFile(ctx, dataPrefix+script)
+		FatalOnError(err)
+		sql = string(bytes)
+		ExecSQLWithErr(c, ctx, sql)
+		if ctx.Debug > 0 {
+			dtEnd := time.Now()
+			Printf("Executed bot logins table insert script: %s: took %v\n", script, dtEnd.Sub(dtStart))
 		}
 	}
 }
