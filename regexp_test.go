@@ -158,6 +158,18 @@ func TestAnnotationRegexp(t *testing.T) {
 		{re: `(?i)^(ibuildthecloud|rancher)\/.*k3(s|d).*$`, str: "Rancher/myk3s", match: true},
 		{re: `(?i)^(ibuildthecloud|rancher)\/.*k3(s|d).*$`, str: "Rancher/k3docker", match: true},
 		{re: `(?i)^(ibuildthecloud|rancher)\/.*k3(s|d).*$`, str: "IBuildTheCloud/new-K3S-v.2", match: true},
+		{re: `^v?\d+\.\d+(\.0)?$`, str: "v2.0", match: true},
+		{re: `^v?\d+\.\d+(\.0)?$`, str: "v2.1", match: true},
+		{re: `^v?\d+\.\d+(\.0)?$`, str: "1.0", match: true},
+		{re: `^v?\d+\.\d+(\.0)?$`, str: "1.2", match: true},
+		{re: `^v?\d+\.\d+(\.0)?$`, str: "2.3.0", match: true},
+		{re: `^v?\d+\.\d+(\.0)?$`, str: "v2.0.0", match: true},
+		{re: `^v?\d+\.\d+(\.0)?$`, str: "v2.15.0", match: true},
+		{re: `^v?\d+\.\d+(\.0)?$`, str: "v2", match: false},
+		{re: `^v?\d+\.\d+(\.0)?$`, str: "20", match: false},
+		{re: `^v?\d+\.\d+(\.0)?$`, str: "v2.0.1", match: false},
+		{re: `^v?\d+\.\d+(\.0)?$`, str: "2.3.5", match: false},
+		{re: `^v?\d+\.\d+(\.0)?$`, str: "v2.0.0.0", match: false},
 	}
 	// Execute test cases
 	for index, test := range testCases {
