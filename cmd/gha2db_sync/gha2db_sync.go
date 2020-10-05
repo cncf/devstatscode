@@ -620,7 +620,7 @@ func sync(ctx *lib.Ctx, args []string) {
 						)
 						if !metric.AllowFail {
 							lib.FatalOnError(err)
-						} else {
+						} else if err != nil {
 							lib.Printf("WARNING: %+v failed: %+v\n", metric, err)
 							err = nil
 						}
@@ -727,7 +727,7 @@ func calcHistogram(ch chan bool, ctx *lib.Ctx, hist []string, envMap map[string]
 	)
 	if !allowFail {
 		lib.FatalOnError(err)
-	} else {
+	} else if err != nil {
 		lib.Printf("WARNING: histogram %+v %+v failed: %+v\n", envMap, hist, err)
 		err = nil
 	}
