@@ -41,6 +41,7 @@ type metric struct {
 	Disabled          bool              `yaml:"disabled"`
 	Drop              string            `yaml:"drop"`
 	Project           string            `yaml:"project"`
+	AllowFail         bool              `yaml:"allow_fail"`
 }
 
 // randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
@@ -421,6 +422,7 @@ func sync(ctx *lib.Ctx, args []string) {
 		// Keep all histograms here
 		var hists [][]string
 		var envMaps []map[string]string
+		var allowFails []bool
 		onlyMetrics := false
 		if len(ctx.OnlyMetrics) > 0 {
 			onlyMetrics = true
@@ -600,6 +602,7 @@ func sync(ctx *lib.Ctx, args []string) {
 							},
 						)
 						envMaps = append(envMaps, envMap)
+						allowFails = append(allowFails, metric.AllowFail)
 					} else {
 						lib.Printf("Calculate metric %v, period %v, desc: '%v', aggregate: '%v' ...\n", metric.Name, period, metric.Desc, aggrSuffix)
 						_, err = lib.ExecCommand(
@@ -615,7 +618,12 @@ func sync(ctx *lib.Ctx, args []string) {
 							},
 							envMap,
 						)
-						lib.FatalOnError(err)
+						if !metric.AllowFail {
+							lib.FatalOnError(err)
+						} else {
+							lib.Printf("WARNING: %+v failed: %+v\n", metric, err)
+							err = nil
+						}
 					}
 				}
 			}
@@ -629,6 +637,7 @@ func sync(ctx *lib.Ctx, args []string) {
 				func(i, j int) {
 					hists[i], hists[j] = hists[j], hists[i]
 					envMaps[i], envMaps[j] = envMaps[j], envMaps[i]
+					allowFails[i], allowFails[j] = allowFails[j], allowFails[i]
 				},
 			)
 		}
@@ -640,7 +649,7 @@ func sync(ctx *lib.Ctx, args []string) {
 			ch := make(chan bool)
 			nThreads := 0
 			for idx, hist := range hists {
-				go calcHistogram(ch, ctx, hist, envMaps[idx])
+				go calcHistogram(ch, ctx, hist, envMaps[idx], allowFails[idx])
 				nThreads++
 				if nThreads == thrN {
 					<-ch
@@ -655,7 +664,7 @@ func sync(ctx *lib.Ctx, args []string) {
 		} else {
 			lib.Printf("Now processing %d histograms using ST version\n", len(hists))
 			for idx, hist := range hists {
-				calcHistogram(nil, ctx, hist, envMaps[idx])
+				calcHistogram(nil, ctx, hist, envMaps[idx], allowFails[idx])
 			}
 		}
 
@@ -689,7 +698,7 @@ func sync(ctx *lib.Ctx, args []string) {
 }
 
 // calcHistogram - calculate single histogram by calling "calc_metric" program with parameters from "hist"
-func calcHistogram(ch chan bool, ctx *lib.Ctx, hist []string, envMap map[string]string) {
+func calcHistogram(ch chan bool, ctx *lib.Ctx, hist []string, envMap map[string]string, allowFail bool) {
 	if len(hist) != 7 {
 		lib.Fatalf("calcHistogram, expected 7 strings, got: %d: %v", len(hist), hist)
 	}
@@ -716,7 +725,12 @@ func calcHistogram(ch chan bool, ctx *lib.Ctx, hist []string, envMap map[string]
 		},
 		envMap,
 	)
-	lib.FatalOnError(err)
+	if !allowFail {
+		lib.FatalOnError(err)
+	} else {
+		lib.Printf("WARNING: histogram %+v %+v failed: %+v\n", envMap, hist, err)
+		err = nil
+	}
 	// Synchronize go routine
 	if ch != nil {
 		ch <- true
