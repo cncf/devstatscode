@@ -1434,7 +1434,7 @@ func syncLangs(ctx *lib.Ctx) {
 			allLOC += loc
 		}
 		if allLOC == 0 {
-			lib.Printf("All LOC sum to 0 for: %s/%s\n", org, repo)
+			lib.Printf("All BOC sum to 0 for: %s/%s\n", org, repo)
 			noLangs()
 			return
 		}

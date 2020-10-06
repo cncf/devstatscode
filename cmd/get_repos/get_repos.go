@@ -311,7 +311,7 @@ func processCommitsLOC(ch chan dbCommits, ctx *lib.Ctx, db, query string) {
 	var commits dbCommits
 
 	// Get list of unprocessed commits for current DB
-	lib.Printf("LOC stats running on database: %s\n", db)
+	lib.Printf("BOC stats running on database: %s\n", db)
 	dtStart := time.Now()
 	// Connect to Postgres `db` database.
 	con := lib.PgConnDB(ctx, db)
@@ -330,7 +330,7 @@ func processCommitsLOC(ch chan dbCommits, ctx *lib.Ctx, db, query string) {
 	}
 	lib.FatalOnError(rows.Err())
 	dtEnd := time.Now()
-	lib.Printf("LOC stats database '%s' processed took %v, new commits: %d\n", db, dtEnd.Sub(dtStart), len(commits.shas))
+	lib.Printf("BOC stats database '%s' processed took %v, new commits: %d\n", db, dtEnd.Sub(dtStart), len(commits.shas))
 	commits.con = con
 	ch <- commits
 }
@@ -379,7 +379,7 @@ func getCommitLOC(ch chan int, ctx *lib.Ctx, con *sql.DB, repo, sha string) {
 	// We cannot chdir because this is a multithreaded app
 	// And all threads share CWD (current working directory)
 	if ctx.Debug > 1 {
-		lib.Printf("Getting LOC stats for commit %s:%s\n", repo, sha)
+		lib.Printf("Getting BOC stats for commit %s:%s\n", repo, sha)
 	}
 	dtStart := time.Now()
 	rwd := ctx.ReposDir + repo
@@ -782,7 +782,7 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 		allCommits = append(allCommits, commits)
 	}
 	dtEnd := time.Now()
-	lib.Printf("Got %d DBs new commits LOC stats: took %v\n", len(allCommits), dtEnd.Sub(dtStart))
+	lib.Printf("Got %d DBs new commits BOC stats: took %v\n", len(allCommits), dtEnd.Sub(dtStart))
 
 	// Create final commits LOC stats
 	dtStart = time.Now()
@@ -831,7 +831,7 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 		perc = float64(statuses[1]) * 100.0 / (float64(all))
 	}
 	lib.Printf(
-		"Got %d (%.2f%%) new commit's LOC stats, %d without stats, %d failed, all %d, took %v\n",
+		"Got %d (%.2f%%) new commit's BOC stats, %d without stats, %d failed, all %d, took %v\n",
 		statuses[1],
 		perc,
 		statuses[0],
