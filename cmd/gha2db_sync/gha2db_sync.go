@@ -18,6 +18,7 @@ type metrics struct {
 }
 
 // metric contain each metric data
+// some metrics can be allowed to fail
 type metric struct {
 	Name              string            `yaml:"name"`
 	Periods           string            `yaml:"periods"`
