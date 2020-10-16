@@ -605,7 +605,7 @@ func sync(ctx *lib.Ctx, args []string) {
 						envMaps = append(envMaps, envMap)
 						allowFails = append(allowFails, metric.AllowFail)
 					} else {
-						lib.Printf("Calculate metric %v, period %v, desc: '%v', aggregate: '%v' ...\n", metric.Name, period, metric.Desc, aggrSuffix)
+						lib.Printf("Calculate metric %v, period %v, desc: '%v', aggregate: '%v', allow fail: %v ...\n", metric.Name, period, metric.Desc, aggrSuffix, metric.AllowFail)
 						_, err = lib.ExecCommand(
 							ctx,
 							[]string{
