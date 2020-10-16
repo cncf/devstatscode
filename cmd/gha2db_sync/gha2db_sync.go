@@ -605,7 +605,11 @@ func sync(ctx *lib.Ctx, args []string) {
 						envMaps = append(envMaps, envMap)
 						allowFails = append(allowFails, metric.AllowFail)
 					} else {
-						lib.Printf("Calculate metric %v, period %v, desc: '%v', aggregate: '%v', allow fail: %v ...\n", metric.Name, period, metric.Desc, aggrSuffix, metric.AllowFail)
+						lib.Printf("Calculate metric %v, period %v, desc: '%v', aggregate: '%v' ...\n", metric.Name, period, metric.Desc, aggrSuffix)
+						execFatal := ctx.ExecFatal
+						if metric.AllowFail {
+							ctx.ExecFatal = false
+						}
 						_, err = lib.ExecCommand(
 							ctx,
 							[]string{
@@ -619,6 +623,9 @@ func sync(ctx *lib.Ctx, args []string) {
 							},
 							envMap,
 						)
+						if metric.AllowFail {
+							ctx.ExecFatal = execFatal
+						}
 						if !metric.AllowFail {
 							lib.FatalOnError(err)
 						} else if err != nil {
@@ -712,6 +719,10 @@ func calcHistogram(ch chan bool, ctx *lib.Ctx, hist []string, envMap map[string]
 		hist[5],
 		hist[6],
 	)
+	execFatal := ctx.ExecFatal
+	if allowFail {
+		ctx.ExecFatal = false
+	}
 	// Execute "calc_metric"
 	_, err := lib.ExecCommand(
 		ctx,
@@ -726,6 +737,9 @@ func calcHistogram(ch chan bool, ctx *lib.Ctx, hist []string, envMap map[string]
 		},
 		envMap,
 	)
+	if allowFail {
+		ctx.ExecFatal = execFatal
+	}
 	if !allowFail {
 		lib.FatalOnError(err)
 	} else if err != nil {
