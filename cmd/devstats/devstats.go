@@ -186,7 +186,7 @@ func syncAllProjects() bool {
 						}
 						break
 					} else {
-						if sleepTime >= 60 {
+						if sleepTime >= 90 {
 							lib.Fatalf("something really bad happened, tried to clear running flag 60 times without success")
 						}
 						lib.Printf("Failed to clear running flag on %s: %+v, retrying after %d seconds\n", db, err, sleepTime)

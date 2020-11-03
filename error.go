@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -23,16 +24,16 @@ func FatalOnError(err error) string {
 			} else if errName == "cannot_connect_now" {
 				Printf("PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
 				Printf("Warning: DB shutting down: %+v: '%s'\n", tm, err.Error())
-				// Fixme
+				// FIXME
 				return Reconnect
 			}
 			Printf("PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
 			fmt.Fprintf(os.Stderr, "PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
 		default:
-			Printf("ErrorType: %T\n", e)
-			fmt.Fprintf(os.Stderr, "ErrorType: %T\n", e)
+			Printf("ErrorType: %T, error: %+v\n", e, e)
+			fmt.Fprintf(os.Stderr, "ErrorType: %T, error: %+v\n", e, e)
 		}
-		if err.Error() == "driver: bad connection" {
+		if strings.Contains(err.Error(), "driver: bad connection") {
 			// FIXME
 			Printf("Warning: bad driver, retrying\n")
 			return Reconnect
