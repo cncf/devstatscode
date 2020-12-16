@@ -510,55 +510,57 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 	ExecSQLTxWithErr(
 		tc,
 		ctx,
-		fmt.Sprintf(
-			"insert into gha_pull_requests("+
-				"id, event_id, user_id, base_sha, head_sha, merged_by_id, assignee_id, milestone_id, "+
-				"number, state, title, body, created_at, updated_at, closed_at, merged_at, "+
-				"merge_commit_sha, merged, mergeable, mergeable_state, comments, "+
-				"maintainer_can_modify, commits, additions, deletions, changed_files, "+
-				"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-				"dup_user_login, dupn_assignee_login, dupn_merged_by_login) values("+
-				"%s, %s, %s, %s, %s, %s, %s, %s, "+
-				"%s, %s, %s, %s, %s, %s, %s, %s, "+
-				"%s, %s, %s, %s, %s, "+
-				"%s, %s, %s, %s, %s, "+
-				"%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s, "+
-				"%s, %s, %s)",
-			NValue(1),
-			NValue(2),
-			NValue(3),
-			NValue(4),
-			NValue(5),
-			NValue(6),
-			NValue(7),
-			NValue(8),
-			NValue(9),
-			NValue(10),
-			NValue(11),
-			NValue(12),
-			NValue(13),
-			NValue(14),
-			NValue(15),
-			NValue(16),
-			NValue(17),
-			NValue(18),
-			NValue(19),
-			NValue(20),
-			NValue(21),
-			NValue(22),
-			NValue(23),
-			NValue(24),
-			NValue(25),
-			NValue(26),
-			NValue(27),
-			NValue(28),
-			NValue(29),
-			NValue(30),
-			NValue(31),
-			NValue(32),
-			NValue(33),
-			NValue(34),
-			NValue(35),
+		InsertIgnore(
+			fmt.Sprintf(
+				"into gha_pull_requests("+
+					"id, event_id, user_id, base_sha, head_sha, merged_by_id, assignee_id, milestone_id, "+
+					"number, state, title, body, created_at, updated_at, closed_at, merged_at, "+
+					"merge_commit_sha, merged, mergeable, mergeable_state, comments, "+
+					"maintainer_can_modify, commits, additions, deletions, changed_files, "+
+					"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
+					"dup_user_login, dupn_assignee_login, dupn_merged_by_login) values("+
+					"%s, %s, %s, %s, %s, %s, %s, %s, "+
+					"%s, %s, %s, %s, %s, %s, %s, %s, "+
+					"%s, %s, %s, %s, %s, "+
+					"%s, %s, %s, %s, %s, "+
+					"%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s, "+
+					"%s, %s, %s)",
+				NValue(1),
+				NValue(2),
+				NValue(3),
+				NValue(4),
+				NValue(5),
+				NValue(6),
+				NValue(7),
+				NValue(8),
+				NValue(9),
+				NValue(10),
+				NValue(11),
+				NValue(12),
+				NValue(13),
+				NValue(14),
+				NValue(15),
+				NValue(16),
+				NValue(17),
+				NValue(18),
+				NValue(19),
+				NValue(20),
+				NValue(21),
+				NValue(22),
+				NValue(23),
+				NValue(24),
+				NValue(25),
+				NValue(26),
+				NValue(27),
+				NValue(28),
+				NValue(29),
+				NValue(30),
+				NValue(31),
+				NValue(32),
+				NValue(33),
+				NValue(34),
+				NValue(35),
+			),
 		),
 		AnyArray{
 			prid,
@@ -702,7 +704,9 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 			ExecSQLTxWithErr(
 				tc,
 				ctx,
-				"insert into gha_pull_requests_assignees(pull_request_id, event_id, assignee_id) "+NValues(3),
+				InsertIgnore(
+					"into gha_pull_requests_assignees(pull_request_id, event_id, assignee_id) "+NValues(3),
+				),
 				AnyArray{prid, eventID, assignee.ID}...,
 			)
 		}
@@ -721,7 +725,9 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 			ExecSQLTxWithErr(
 				tc,
 				ctx,
-				"insert into gha_pull_requests_requested_reviewers(pull_request_id, event_id, requested_reviewer_id) "+NValues(3),
+				InsertIgnore(
+					"into gha_pull_requests_requested_reviewers(pull_request_id, event_id, requested_reviewer_id) "+NValues(3),
+				),
 				AnyArray{prid, eventID, reviewer.ID}...,
 			)
 		}
@@ -805,39 +811,41 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 	ExecSQLTxWithErr(
 		tc,
 		ctx,
-		fmt.Sprintf(
-			"insert into gha_issues("+
-				"id, event_id, assignee_id, body, closed_at, comments, created_at, "+
-				"locked, milestone_id, number, state, title, updated_at, user_id, "+
-				"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-				"dup_user_login, dupn_assignee_login, is_pull_request) "+
-				"values(%s, %s, %s, %s, %s, %s, %s, "+
-				"%s, %s, %s, %s, %s, %s, %s, "+
-				"%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s, "+
-				"%s, %s, %s) ",
-			NValue(1),
-			NValue(2),
-			NValue(3),
-			NValue(4),
-			NValue(5),
-			NValue(6),
-			NValue(7),
-			NValue(8),
-			NValue(9),
-			NValue(10),
-			NValue(11),
-			NValue(12),
-			NValue(13),
-			NValue(14),
-			NValue(15),
-			NValue(16),
-			NValue(17),
-			NValue(18),
-			NValue(19),
-			NValue(20),
-			NValue(21),
-			NValue(22),
-			NValue(23),
+		InsertIgnore(
+			fmt.Sprintf(
+				"into gha_issues("+
+					"id, event_id, assignee_id, body, closed_at, comments, created_at, "+
+					"locked, milestone_id, number, state, title, updated_at, user_id, "+
+					"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
+					"dup_user_login, dupn_assignee_login, is_pull_request) "+
+					"values(%s, %s, %s, %s, %s, %s, %s, "+
+					"%s, %s, %s, %s, %s, %s, %s, "+
+					"%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s, "+
+					"%s, %s, %s) ",
+				NValue(1),
+				NValue(2),
+				NValue(3),
+				NValue(4),
+				NValue(5),
+				NValue(6),
+				NValue(7),
+				NValue(8),
+				NValue(9),
+				NValue(10),
+				NValue(11),
+				NValue(12),
+				NValue(13),
+				NValue(14),
+				NValue(15),
+				NValue(16),
+				NValue(17),
+				NValue(18),
+				NValue(19),
+				NValue(20),
+				NValue(21),
+				NValue(22),
+				NValue(23),
+			),
 		),
 		AnyArray{
 			iid,
@@ -992,12 +1000,14 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 		ExecSQLTxWithErr(
 			tc,
 			ctx,
-			fmt.Sprintf(
-				"insert into gha_issues_assignees(issue_id, event_id, assignee_id) "+
-					"values(%s, %s, %s)",
-				NValue(1),
-				NValue(2),
-				NValue(3),
+			InsertIgnore(
+				fmt.Sprintf(
+					"into gha_issues_assignees(issue_id, event_id, assignee_id) "+
+						"values(%s, %s, %s)",
+					NValue(1),
+					NValue(2),
+					NValue(3),
+				),
 			),
 			AnyArray{
 				iid,
