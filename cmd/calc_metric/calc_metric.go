@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
@@ -171,6 +172,10 @@ func mergeESSeriesName(mergeSeries, sqlFile string) string {
 	return series
 }
 
+func randString() string {
+	return fmt.Sprintf("%d", rand.Uint64())
+}
+
 func calcRange(
 	ch chan bool,
 	ctx *lib.Ctx,
@@ -196,6 +201,7 @@ func calcRange(
 	var pts lib.TSPoints
 	sqlQueryOrig = strings.Replace(sqlQueryOrig, "{{n}}", strconv.Itoa(nIntervals)+".0", -1)
 	sqlQueryOrig = strings.Replace(sqlQueryOrig, "{{exclude_bots}}", excludeBots, -1)
+	sqlQueryOrig = strings.Replace(sqlQueryOrig, "{{rnd}}", randString(), -1)
 	for idx, dt := range dtAry {
 		from := fromAry[idx]
 		to := toAry[idx]
@@ -559,6 +565,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 		sHours := lib.IntervalHours(dbInterval)
 		sqlQuery = strings.Replace(sqlQuery, "{{period}}", dbInterval, -1)
 		sqlQuery = strings.Replace(sqlQuery, "{{n}}", strconv.Itoa(nIntervals)+".0", -1)
+		sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", randString(), -1)
 		sqlQuery = strings.Replace(sqlQuery, "{{exclude_bots}}", excludeBots, -1)
 		sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
 		sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
@@ -1013,6 +1020,7 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 
 func main() {
 	dtStart := time.Now()
+	rand.Seed(time.Now().UnixNano())
 	if len(os.Args) < 6 {
 		lib.Printf(
 			"Required series name, SQL file name, from, to, period " +
