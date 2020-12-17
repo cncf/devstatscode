@@ -160,7 +160,10 @@ func createSeriesFromFormula(def string) (result []string) {
 	return
 }
 
-// If env variable ends with ? then only set this value when not already defined
+// If env variable ends with ? then only set this value when it's not yet set or is empty
+// If env variable ends with ?? then only set this value when not already defined
+//   so if env variable is defined but empty, it will not set its value
+//   while version with a single ? will
 func processEnvMap(inMap map[string]string) (outMap map[string]string) {
 	conditional := false
 	for k := range inMap {
@@ -175,10 +178,18 @@ func processEnvMap(inMap map[string]string) (outMap map[string]string) {
 	}
 	outMap = make(map[string]string)
 	for k, v := range inMap {
-		if strings.HasSuffix(k, "?") {
-			k2 := k[0 : len(k)-1]
+		if strings.HasSuffix(k, "??") {
+			k2 := k[0 : len(k)-2]
 			_, ok := os.LookupEnv(k2)
 			if !ok {
+				outMap[k2] = v
+			}
+			continue
+		}
+		if strings.HasSuffix(k, "?") {
+			k2 := k[0 : len(k)-1]
+			val := os.Getenv(k2)
+			if val == "" {
 				outMap[k2] = v
 			}
 			continue
