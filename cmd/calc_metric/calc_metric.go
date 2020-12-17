@@ -201,7 +201,6 @@ func calcRange(
 	var pts lib.TSPoints
 	sqlQueryOrig = strings.Replace(sqlQueryOrig, "{{n}}", strconv.Itoa(nIntervals)+".0", -1)
 	sqlQueryOrig = strings.Replace(sqlQueryOrig, "{{exclude_bots}}", excludeBots, -1)
-	sqlQueryOrig = strings.Replace(sqlQueryOrig, "{{rnd}}", randString(), -1)
 	for idx, dt := range dtAry {
 		from := fromAry[idx]
 		to := toAry[idx]
@@ -214,6 +213,7 @@ func calcRange(
 		sqlQuery = strings.Replace(sqlQuery, "{{to}}", sTo, -1)
 		sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
 		sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
+		sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", randString(), -1)
 
 		// Execute SQL query
 		rows := lib.QuerySQLWithErr(sqlc, ctx, sqlQuery)
