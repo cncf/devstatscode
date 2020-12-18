@@ -543,6 +543,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 				sqlQuery = strings.Replace(sqlQuery, "{{exclude_bots}}", excludeBots, -1)
 				sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
 				sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
+				sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", randString(), -1)
 				if period == "" {
 					dtTo := lib.TimeParseAny(to)
 					prevHour := lib.PrevHourStart(time.Now())
