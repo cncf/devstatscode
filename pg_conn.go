@@ -302,14 +302,23 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				namesUA = "(" + namesUA + ")"
 				argsUA = "(" + argsUA + ")"
 			}
-			argT := "$" + strconv.Itoa(i)
-			vals = append(vals, p.t)
-			q := fmt.Sprintf(
-				"insert into \"%[1]s\"("+namesIA+") values("+argsIA+") "+
-					"on conflict(time) do update set "+namesUA+" = "+argsUA+" "+
-					"where \"%[1]s\".time = "+argT,
-				name,
-			)
+			var q string
+			if len(namesU) > 0 {
+				argT := "$" + strconv.Itoa(i)
+				vals = append(vals, p.t)
+				q = fmt.Sprintf(
+					"insert into \"%[1]s\"("+namesIA+") values("+argsIA+") "+
+						"on conflict(time) do update set "+namesUA+" = "+argsUA+" "+
+						"where \"%[1]s\".time = "+argT,
+					name,
+				)
+			} else {
+				q = fmt.Sprintf(
+					"insert into \"%[1]s\"(" + namesIA + ") values(" + argsIA + ") " +
+						"on conflict(time) do nothing" +
+						name,
+				)
+			}
 			ExecSQLWithErr(con, ctx, q, vals...)
 			ns++
 		}
@@ -350,16 +359,25 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				namesUA = "(" + namesUA + ")"
 				argsUA = "(" + argsUA + ")"
 			}
-			argT := "$" + strconv.Itoa(i)
-			argP := "$" + strconv.Itoa(i+1)
-			vals = append(vals, p.t)
-			vals = append(vals, p.period)
-			q := fmt.Sprintf(
-				"insert into \"%[1]s\"("+namesIA+") values("+argsIA+") "+
-					"on conflict(time, period) do update set "+namesUA+" = "+argsUA+" "+
-					"where \"%[1]s\".time = "+argT+" and \"%[1]s\".period = "+argP,
-				name,
-			)
+			var q string
+			if len(namesU) > 0 {
+				argT := "$" + strconv.Itoa(i)
+				argP := "$" + strconv.Itoa(i+1)
+				vals = append(vals, p.t)
+				vals = append(vals, p.period)
+				q = fmt.Sprintf(
+					"insert into \"%[1]s\"("+namesIA+") values("+argsIA+") "+
+						"on conflict(time, period) do update set "+namesUA+" = "+argsUA+" "+
+						"where \"%[1]s\".time = "+argT+" and \"%[1]s\".period = "+argP,
+					name,
+				)
+			} else {
+				q = fmt.Sprintf(
+					"insert into \"%[1]s\"(" + namesIA + ") values(" + argsIA + ") " +
+						"on conflict(time, period) do nothing" +
+						name,
+				)
+			}
 			ExecSQLWithErr(con, ctx, q, vals...)
 			ns++
 		}
@@ -396,18 +414,27 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				namesUA = "(" + namesUA + ")"
 				argsUA = "(" + argsUA + ")"
 			}
-			argT := "$" + strconv.Itoa(i)
-			argP := "$" + strconv.Itoa(i+1)
-			argS := "$" + strconv.Itoa(i+2)
-			vals = append(vals, p.t)
-			vals = append(vals, p.period)
-			vals = append(vals, p.name)
-			q := fmt.Sprintf(
-				"insert into \"%[1]s\"("+namesIA+") values("+argsIA+") "+
-					"on conflict(time, series, period) do update set "+namesUA+" = "+argsUA+" "+
-					"where \"%[1]s\".time = "+argT+" and \"%[1]s\".period = "+argP+" and \"%[1]s\".series = "+argS,
-				mergeS,
-			)
+			var q string
+			if len(namesU) > 0 {
+				argT := "$" + strconv.Itoa(i)
+				argP := "$" + strconv.Itoa(i+1)
+				argS := "$" + strconv.Itoa(i+2)
+				vals = append(vals, p.t)
+				vals = append(vals, p.period)
+				vals = append(vals, p.name)
+				q = fmt.Sprintf(
+					"insert into \"%[1]s\"("+namesIA+") values("+argsIA+") "+
+						"on conflict(time, series, period) do update set "+namesUA+" = "+argsUA+" "+
+						"where \"%[1]s\".time = "+argT+" and \"%[1]s\".period = "+argP+" and \"%[1]s\".series = "+argS,
+					mergeS,
+				)
+			} else {
+				q = fmt.Sprintf(
+					"insert into \"%[1]s\"(" + namesIA + ") values(" + argsIA + ") " +
+						"on conflict(time, series, period) do nothing" +
+						mergeS,
+				)
+			}
 			ExecSQLWithErr(con, ctx, q, vals...)
 			ns++
 		}
@@ -430,7 +457,7 @@ func makePsqlName(name string, fatal bool) string {
 			Fatalf("postgresql identifier name too long (%d, %s)", l, name)
 			return name
 		}
-		Printf("Notice: postgresql identifier name too long (%d, %s)", l, name)
+		Printf("Notice: makePsqlName: postgresql identifier name too long (%d, %s)\n", l, name)
 		newName := StripUnicode(name[:32] + name[l-31:])
 		return newName
 	}
@@ -442,7 +469,7 @@ func makePsqlName(name string, fatal bool) string {
 func checkPsqlName(name string) bool {
 	l := len(name)
 	if l > 63 {
-		Printf("Notice: postgresql identifier name too long (%d, %s)", l, name)
+		Printf("Notice: checkPsqlName: postgresql identifier name too long (%d, %s)\n", l, name)
 		return false
 	}
 	return true
