@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -1544,6 +1546,18 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg, frepo map[s
 	}
 }
 
+func getMemUsage() string {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return fmt.Sprintf("alloc:%dM heap-alloc:%dM(%dk objs) total:%dM sys:%dM #gc:%d", m.Alloc>>20, m.HeapAlloc>>20, m.HeapObjects>>10, m.TotalAlloc>>20, m.Sys>>20, m.NumGC)
+}
+
+func runGC() {
+	lib.Printf(getMemUsage() + "\n")
+	runtime.GC()
+	lib.Printf(getMemUsage() + "\n")
+}
+
 // gha2db - main work horse
 func gha2db(args []string) {
 	// Environment context parse
@@ -1555,11 +1569,13 @@ func gha2db(args []string) {
 		dFrom    time.Time
 		dTo      time.Time
 	)
+	// Current date
+	now := time.Now()
+	// Init stuff
+	debug.SetGCPercent(25)
 	ctx.Init()
 	rand.Seed(time.Now().UnixNano())
 
-	// Current date
-	now := time.Now()
 	startD, startH, endD, endH := args[0], args[1], args[2], args[3]
 
 	// Parse from day & hour
@@ -1670,6 +1686,14 @@ func gha2db(args []string) {
 		skipDates[lib.ToYMDHDate(date)] = struct{}{}
 	}
 
+	igc := 0
+	maybeGC := func() {
+		igc++
+		if igc%24 == 0 {
+			runGC()
+		}
+	}
+
 	dt := dFrom
 	if thrN > 1 {
 		ch := make(chan time.Time)
@@ -1686,6 +1710,7 @@ func gha2db(args []string) {
 				delete(mp, prcdt)
 				nThreads--
 				dateToFunc()
+				maybeGC()
 			}
 		}
 		lib.Printf("Final threads join\n")
@@ -1701,6 +1726,7 @@ func gha2db(args []string) {
 			delete(mp, prcdt)
 			nThreads--
 			dateToFunc()
+			maybeGC()
 		}
 	} else {
 		lib.Printf("Using single threaded version\n")
@@ -1708,6 +1734,7 @@ func gha2db(args []string) {
 			dateToFunc()
 			getGHAJSON(nil, &ctx, dt, org, repo, orgRE, repoRE, shaMap, skipDates)
 			dt = dt.Add(time.Hour)
+			maybeGC()
 		}
 	}
 	// Finished
