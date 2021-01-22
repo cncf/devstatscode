@@ -1495,7 +1495,7 @@ func TestInit(t *testing.T) {
 		{
 			"Set compute periods mode 3",
 			map[string]string{
-				"GHA2DB_FORCE_PERIODS": "m:t,m:f,q2:t,y10:f",
+				"GHA2DB_FORCE_PERIODS": "m:t,m:f,q2:t,y10:f,y3:t",
 			},
 			dynamicSetFields(
 				t,
@@ -1511,6 +1511,9 @@ func TestInit(t *testing.T) {
 						},
 						"y10": {
 							false: {},
+						},
+						"y3": {
+							true: {},
 						},
 					},
 				},
