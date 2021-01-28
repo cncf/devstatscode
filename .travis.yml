@@ -11,6 +11,7 @@ before_install:
   - go get -u github.com/olivere/elastic
   - go get -u github.com/rs/cors
   - go get -u github.com/json-iterator/go
+  - go get -u github.com/google/go-github/github
 #  - go get -u github.com/google/go-github/github
 #  - go get -u github.com/lib/pq
 #  - go get -u golang.org/x/oauth2
