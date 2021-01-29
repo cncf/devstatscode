@@ -23,7 +23,6 @@ GO_INSTALL=go install -ldflags "-s -w -X github.com/cncf/devstatscode.BuildStamp
 GO_FMT=gofmt -s -w
 GO_LINT=golint -set_exit_status
 GO_VET=go vet
-GO_CONST=goconst -ignore 'vendor'
 GO_IMPORTS=goimports -w
 GO_USEDEXPORTS=usedexports -ignore 'sqlitedb.go|vendor'
 GO_ERRCHECK=errcheck -asserts -ignore '[FS]?[Pp]rint*' -ignoretests
@@ -114,9 +113,6 @@ vet: ${GO_BIN_FILES} ${GO_LIB_FILES} ${GO_TEST_FILES} ${GO_DBTEST_FILES} ${GO_LI
 imports: ${GO_BIN_FILES} ${GO_LIB_FILES} ${GO_TEST_FILES} ${GO_DBTEST_FILES} ${GO_LIBTEST_FILES}
 	./for_each_go_file.sh "${GO_IMPORTS}"
 
-const: ${GO_BIN_FILES} ${GO_LIB_FILES} ${GO_TEST_FILES} ${GO_DBTEST_FILES} ${GO_LIBTEST_FILES}
-	${GO_CONST} ./...
-
 usedexports: ${GO_BIN_FILES} ${GO_LIB_FILES} ${GO_TEST_FILES} ${GO_DBTEST_FILES} ${GO_LIBTEST_FILES}
 	${GO_USEDEXPORTS} ./...
 
@@ -129,7 +125,7 @@ test:
 dbtest:
 	${GO_TEST} ${GO_DBTEST_FILES}
 
-check: fmt lint imports vet const usedexports errcheck
+check: fmt lint imports vet usedexports errcheck
 
 install: ${BINARIES}
 	cp -v ${UTIL_SCRIPTS} ${GOPATH}/bin
