@@ -44,6 +44,7 @@ func TestNormalizeName(t *testing.T) {
 		{str: "Contributions (issues, PRs, git pushes)", expected: "contributionsissuesprsgitpushes"},
 		{str: "Exclude (ro[bot]nik)", expected: "excluderobotnik"},
 		{str: "comment\"sallcoted'ivoire", expected: "commentsallcotedivoire"},
+		{str: "Piraeus-Datastore", expected: "piraeusdatastore"},
 	}
 	// Execute test cases
 	for index, test := range testCases {
