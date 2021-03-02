@@ -116,12 +116,11 @@ func tzOffset(db *sql.DB, ctx *lib.Ctx, ptz *string, cache map[string]*int) *int
 // Search for given actor using his/her login
 // Returns first author found with maximum ID or sets ok=false when not found
 func findActor(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) string) (actor lib.Actor, csd csData, ok bool) {
-	// IMPL
-	if login == "kkosaka" {
-		defer func() {
-			lib.Printf("findActor %s -> (%+v, %+v, %v)\n", login, actor, csd, ok)
-		}()
-	}
+	//if login == "kkosaka" {
+	//	defer func() {
+	//		lib.Printf("findActor %s -> (%+v, %+v, %v)\n", login, actor, csd, ok)
+	//	}()
+	//}
 	login = maybeHide(login)
 	rows := lib.QuerySQLWithErr(
 		db,
@@ -165,12 +164,11 @@ func findActor(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) st
 // Return list of actor IDs correlated with that login (downcased) - search deep by lower(login)/id correlations
 func findActors(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) string) (actIDs []int, actLogins []string) {
 	login = maybeHide(login)
-	// IMPL
-	if login == "kkosaka" {
-		defer func() {
-			lib.Printf("findActors: %s -> (%+v, %+v)\n", login, actIDs, actLogins)
-		}()
-	}
+	//if login == "kkosaka" {
+	//	defer func() {
+	//		lib.Printf("findActors: %s -> (%+v, %+v)\n", login, actIDs, actLogins)
+	//	}()
+	//}
 	ids := make(map[int]struct{})
 	logins := make(map[string]struct{})
 	logins[login] = struct{}{}
@@ -703,10 +701,9 @@ func importAffs(jsonFN string) int {
 				unlock()
 			}
 		}
-		// IMPL
-		if login == "kkosaka" {
-			lib.Printf("processLoginCSData: %s -> (%s, %+v, %v) -> %+v\n", login, name, names, foundName, actor)
-		}
+		//if login == "kkosaka" {
+		//	lib.Printf("processLoginCSData: %s -> (%s, %+v, %v) -> %+v\n", login, name, names, foundName, actor)
+		//}
 	}
 	if thrN > 1 {
 		lib.Printf("Processing using MT%d version\n", thrN)
@@ -1120,10 +1117,9 @@ func importAffs(jsonFN string) int {
 		actLogins, okL := cacheActLogins[login]
 		actIDs, okI := cacheActIDs[login]
 		unlock()
-		// IMPL
-		if login == "kkosaka" {
-			lib.Printf("processRoll: %s -> (%+v, %+v)\n", login, actLogins, actIDs)
-		}
+		//if login == "kkosaka" {
+		//	lib.Printf("processRoll: %s -> (%+v, %+v)\n", login, actLogins, actIDs)
+		//}
 		if !okL || !okI {
 			actIDs, actLogins = findActors(con, &ctx, login, maybeHide)
 			if len(actIDs) < 1 {
