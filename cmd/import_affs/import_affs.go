@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	lib "github.com/cncf/devstatscode"
@@ -115,6 +116,12 @@ func tzOffset(db *sql.DB, ctx *lib.Ctx, ptz *string, cache map[string]*int) *int
 // Search for given actor using his/her login
 // Returns first author found with maximum ID or sets ok=false when not found
 func findActor(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) string) (actor lib.Actor, csd csData, ok bool) {
+	// IMPL
+	if login == "kkosaka" {
+		defer func() {
+			lib.Printf("findActor %s -> (%+v, %+v, %v)\n", login, actor, csd, ok)
+		}()
+	}
 	login = maybeHide(login)
 	rows := lib.QuerySQLWithErr(
 		db,
@@ -158,6 +165,12 @@ func findActor(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) st
 // Return list of actor IDs correlated with that login (downcased) - search deep by lower(login)/id correlations
 func findActors(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) string) (actIDs []int, actLogins []string) {
 	login = maybeHide(login)
+	// IMPL
+	if login == "kkosaka" {
+		defer func() {
+			lib.Printf("findActors: %s -> (%+v, %+v)\n", login, actIDs, actLogins)
+		}()
+	}
 	ids := make(map[int]struct{})
 	logins := make(map[string]struct{})
 	logins[login] = struct{}{}
@@ -370,6 +383,7 @@ func importAffs(jsonFN string) int {
 		// Local or cron mode?
 		jsonFN = dataPrefix + ctx.AffiliationsJSON
 	}
+	lib.Printf("Importing %s\n", jsonFN)
 
 	// Connect to Postgres DB
 	con := lib.PgConn(&ctx)
@@ -403,9 +417,6 @@ func importAffs(jsonFN string) int {
 			return 0
 		}
 	}
-
-	// To handle GDPR
-	maybeHide := lib.MaybeHideFunc(lib.GetHidden(lib.HideCfgFile))
 
 	// Read company acquisitions mapping
 	var (
@@ -478,6 +489,7 @@ func importAffs(jsonFN string) int {
 	sourceToPrio := map[string]int{"notfound": -20, "domain": -10, "": 0, "config": 10, "manual": 20, "user_manual": 30, "user": 40}
 	prioToSource := map[int]string{-20: "notfound", -10: "domain", 0: "", 10: "config", 20: "manual", 30: "user_manual", 40: "user"}
 	eNames, eEmails, eAffs := 0, 0, 0
+	lib.Printf("Processing %d JSON entries\n", len(users))
 	for _, user := range users {
 		// Email decode ! --> @
 		user.Email = strings.ToLower(emailDecode(user.Email))
@@ -563,27 +575,74 @@ func importAffs(jsonFN string) int {
 		return 2
 	}
 
+	// Threads
+	thrN := lib.GetThreadsNum(&ctx)
+	var (
+		mtx       *sync.Mutex
+		hmtx      *sync.Mutex
+		ch        chan struct{}
+		maybeHide func(string) string
+		lock      func()
+		unlock    func()
+	)
+	if thrN > 1 {
+		if thrN > 32 {
+			thrN = 32
+		}
+		ch = make(chan struct{})
+		mtx = &sync.Mutex{}
+		hmtx = &sync.Mutex{}
+		lock = func() {
+			mtx.Lock()
+		}
+		unlock = func() {
+			mtx.Unlock()
+		}
+		maybeHideInternal := lib.MaybeHideFunc(lib.GetHidden(lib.HideCfgFile))
+		maybeHide = func(arg string) string {
+			hmtx.Lock()
+			result := maybeHideInternal(arg)
+			hmtx.Unlock()
+			return result
+		}
+	} else {
+		maybeHide = lib.MaybeHideFunc(lib.GetHidden(lib.HideCfgFile))
+		lock = func() {}
+		unlock = func() {}
+	}
 	// Login - Names should be 1:1 (also handle records without name set)
 	added, updated, noName, mulNames, notChanged := 0, 0, 0, 0, 0
-	//for login, names := range loginNames {
-	for login, csD := range loginCSData {
+	processLoginCSData := func(ch chan struct{}, login string, csD csData) {
+		if ch != nil {
+			defer func() {
+				ch <- struct{}{}
+			}()
+		}
+		lock()
 		names, foundName := loginNames[login]
+		unlock()
 		name := ""
 		if foundName {
 			// Other option would be to join all names via ", " - but it's better to query gha_actors_names then
 			name = firstKey(names)
 			if len(names) > 1 {
+				lock()
 				mulNames++
+				unlock()
 			}
 		} else {
+			lock()
 			noName++
+			unlock()
 		}
 		// Try to find actor by login
 		actor, csd, ok := findActor(con, &ctx, login, maybeHide)
 		if !ok {
 			// If no such actor, add with artificial ID (just like data from pre-2015)
 			addActor(con, &ctx, login, name, csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide)
+			lock()
 			added++
+			unlock()
 		} else {
 			if (foundName && name != actor.Name) || !lib.CompareStringPtr(csd.CountryID, csD.CountryID) ||
 				!lib.CompareStringPtr(csd.Sex, csD.Sex) || !lib.CompareFloat64Ptr(csd.SexProb, csD.SexProb) ||
@@ -635,10 +694,40 @@ func importAffs(jsonFN string) int {
 						}...,
 					)
 				}
+				lock()
 				updated++
+				unlock()
 			} else {
+				lock()
 				notChanged++
+				unlock()
 			}
+		}
+		// IMPL
+		if login == "kkosaka" {
+			lib.Printf("processLoginCSData: %s -> (%s, %+v, %v) -> %+v\n", login, name, names, foundName, actor)
+		}
+	}
+	if thrN > 1 {
+		lib.Printf("Processing using MT%d version\n", thrN)
+		nThreads := 0
+		for login, csD := range loginCSData {
+			go processLoginCSData(ch, login, csD)
+			nThreads++
+			if nThreads == thrN {
+				<-ch
+				nThreads--
+			}
+		}
+		lib.Printf("Final threads join\n")
+		for nThreads > 0 {
+			<-ch
+			nThreads--
+		}
+	} else {
+		lib.Printf("Processing using ST version\n")
+		for login, csD := range loginCSData {
+			processLoginCSData(nil, login, csD)
 		}
 	}
 	lib.Printf("Added actors: %d, updated actors: %d, empty names: %d, non-unique names: %d, non-changed: %d\n", added, updated, noName, mulNames, notChanged)
@@ -648,18 +737,49 @@ func importAffs(jsonFN string) int {
 	cacheActLogins := make(mapStringArray)
 
 	// Login - Possible multiple logins, possibly multiple affs
-	added = 0
-	for login := range loginAffs {
+	findActorData := func(ch chan struct{}, login string) {
+		if ch != nil {
+			defer func() {
+				ch <- struct{}{}
+			}()
+		}
 		actIDs, actLogins := findActors(con, &ctx, login, maybeHide)
 		if len(actIDs) < 1 {
+			lock()
 			csD := loginCSData[login]
-			actIDs = append(actIDs, addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide))
+			unlock()
+			aID := addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide)
+			lock()
+			actIDs = append(actIDs, aID)
 			added++
+			unlock()
 		}
 		// Store given login's actor IDs in the case
+		lock()
 		for _, aLogin := range actLogins {
 			cacheActIDs[aLogin] = actIDs
 			cacheActLogins[aLogin] = actLogins
+		}
+		unlock()
+	}
+	added = 0
+	if thrN > 1 {
+		nThreads := 0
+		for login := range loginAffs {
+			go findActorData(ch, login)
+			nThreads++
+			if nThreads == thrN {
+				<-ch
+				nThreads--
+			}
+		}
+		for nThreads > 0 {
+			<-ch
+			nThreads--
+		}
+	} else {
+		for login := range loginAffs {
+			findActorData(nil, login)
 		}
 	}
 	if added > 0 {
@@ -704,18 +824,30 @@ func importAffs(jsonFN string) int {
 
 	// Login - Email(s) 1:N
 	added, allEmails := 0, 0
-	for login, emails := range loginEmails {
+	processEmails := func(ch chan struct{}, login string, emails stringSet) {
+		if ch != nil {
+			defer func() {
+				ch <- struct{}{}
+			}()
+		}
 		actIDs, actLogins := findActors(con, &ctx, login, maybeHide)
 		if len(actIDs) < 1 {
+			lock()
 			csD := loginCSData[login]
-			// Shoudl not happen
-			actIDs = append(actIDs, addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide))
+			unlock()
+			// Should not happen
+			aID := addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide)
+			lock()
+			actIDs = append(actIDs, aID)
 			added++
+			unlock()
 		}
+		lock()
 		for _, aLogin := range actLogins {
 			cacheActIDs[aLogin] = actIDs
 			cacheActLogins[aLogin] = actLogins
 		}
+		unlock()
 		for email := range emails {
 			// One actor can have multiple emails but...
 			// One email can also belong to multiple actors
@@ -727,8 +859,29 @@ func importAffs(jsonFN string) int {
 					lib.InsertIgnore("into gha_actors_emails(actor_id, email) "+lib.NValues(2)),
 					lib.AnyArray{aid, maybeHide(lib.TruncToBytes(email, 120))}...,
 				)
+				lock()
 				allEmails++
+				unlock()
 			}
+		}
+	}
+	if thrN > 1 {
+		nThreads := 0
+		for login, emails := range loginEmails {
+			go processEmails(ch, login, emails)
+			nThreads++
+			if nThreads == thrN {
+				<-ch
+				nThreads--
+			}
+		}
+		for nThreads > 0 {
+			<-ch
+			nThreads--
+		}
+	} else {
+		for login, emails := range loginEmails {
+			processEmails(nil, login, emails)
 		}
 	}
 	if added > 0 {
@@ -738,16 +891,23 @@ func importAffs(jsonFN string) int {
 
 	// Login - Names(s) 1:N
 	allNames := 0
-	for login, names := range loginNames {
+	processNames := func(ch chan struct{}, login string, names stringSet) {
+		if ch != nil {
+			defer func() {
+				ch <- struct{}{}
+			}()
+		}
 		actIDs, actLogins := findActors(con, &ctx, login, maybeHide)
 		if len(actIDs) < 1 {
 			lib.Fatalf("actor login not found %s", login)
 		}
 		// Store given login's actor IDs in the case
+		lock()
 		for _, aLogin := range actLogins {
 			cacheActIDs[aLogin] = actIDs
 			cacheActLogins[aLogin] = actLogins
 		}
+		unlock()
 		for name := range names {
 			// One actor can have multiple names but...
 			// One name can also belong to multiple actors
@@ -756,8 +916,29 @@ func importAffs(jsonFN string) int {
 					lib.InsertIgnore("into gha_actors_names(actor_id, name) "+lib.NValues(2)),
 					lib.AnyArray{aid, maybeHide(lib.TruncToBytes(name, 120))}...,
 				)
+				lock()
 				allNames++
+				unlock()
 			}
+		}
+	}
+	if thrN > 1 {
+		nThreads := 0
+		for login, names := range loginNames {
+			go processNames(ch, login, names)
+			nThreads++
+			if nThreads == thrN {
+				<-ch
+				nThreads--
+			}
+		}
+		for nThreads > 0 {
+			<-ch
+			nThreads--
+		}
+	} else {
+		for login, names := range loginNames {
+			processNames(nil, login, names)
 		}
 	}
 	lib.Printf("Added up to %d actors names\n", allNames)
@@ -772,7 +953,12 @@ func importAffs(jsonFN string) int {
 	defaultEndDate := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 	companies := make(stringSet)
 	var affList []affData
-	for login, prios := range loginAffs {
+	processAffs := func(ch chan struct{}, login string, prios mapIntSet) {
+		if ch != nil {
+			defer func() {
+				ch <- struct{}{}
+			}()
+		}
 		aPrios := []int{}
 		for prio := range prios {
 			aPrios = append(aPrios, prio)
@@ -780,7 +966,9 @@ func importAffs(jsonFN string) int {
 		sort.Ints(aPrios)
 		nPrios := len(aPrios)
 		if nPrios > 1 {
+			lock()
 			nonUniquePrio++
+			unlock()
 		}
 		maxPrio := aPrios[nPrios-1]
 		source, _ := prioToSource[maxPrio]
@@ -807,11 +995,15 @@ func importAffs(jsonFN string) int {
 				}
 			}
 			// Count this as non-unique
+			lock()
 			nonUnique++
+			unlock()
 		} else {
 			// This is a good definition, only one list of companies affiliation for this GitHub user login
 			affsAry = strings.Split(firstKey(affs), ", ")
+			lock()
 			unique++
+			unlock()
 		}
 		// Affiliation has a form "com1 < dt1, com2 < dt2, ..., com(N-1) < dt(N-1), comN"
 		// We have array of companies affiliation with eventual end date: array item is:
@@ -833,18 +1025,41 @@ func importAffs(jsonFN string) int {
 			if company == "" {
 				continue
 			}
+			lock()
 			companies[company] = emptyVal
 			affList = append(affList, affData{Login: login, Company: company, From: dtFrom, To: dtTo, Source: source})
 			prevDate = dtTo
 			allAffs++
+			unlock()
+		}
+	}
+	if thrN > 1 {
+		nThreads := 0
+		for login, prios := range loginAffs {
+			go processAffs(ch, login, prios)
+			nThreads++
+			if nThreads == thrN {
+				<-ch
+				nThreads--
+			}
+		}
+		for nThreads > 0 {
+			<-ch
+			nThreads--
+		}
+	} else {
+		for login, prios := range loginAffs {
+			processAffs(nil, login, prios)
 		}
 	}
 	lib.Printf("Affiliations unique: %d, non-unique: %d, with multiple priorities: %d, all user-company connections: %d\n", unique, nonUnique, nonUniquePrio, allAffs)
 
 	// Add companies
-	for company := range companies {
-		if company == "" {
-			continue
+	processCompany := func(ch chan struct{}, company string) {
+		if ch != nil {
+			defer func() {
+				ch <- struct{}{}
+			}()
 		}
 		l := len(company)
 		if l > 63 {
@@ -854,7 +1069,9 @@ func importAffs(jsonFN string) int {
 			lib.InsertIgnore("into gha_companies(name) "+lib.NValues(1)),
 			lib.AnyArray{maybeHide(lib.TruncToBytes(company, 160))}...,
 		)
+		lock()
 		mappedCompany := mapCompanyName(comMap, acqMap, stat, company)
+		unlock()
 		if mappedCompany != company {
 			lib.ExecSQLWithErr(con, &ctx,
 				lib.InsertIgnore("into gha_companies(name) "+lib.NValues(1)),
@@ -862,34 +1079,79 @@ func importAffs(jsonFN string) int {
 			)
 		}
 	}
+	if thrN > 1 {
+		nThreads := 0
+		for company := range companies {
+			if company == "" {
+				continue
+			}
+			go processCompany(ch, company)
+			nThreads++
+			if nThreads == thrN {
+				<-ch
+				nThreads--
+			}
+		}
+		for nThreads > 0 {
+			<-ch
+			nThreads--
+		}
+	} else {
+		for company := range companies {
+			if company == "" {
+				continue
+			}
+			processCompany(nil, company)
+		}
+	}
 	lib.Printf("Processed %d companies\n", len(companies))
 
 	// Add affiliations
 	added, nonCached, addedAffs := 0, 0, 0
-	for _, aff := range affList {
+	processRoll := func(ch chan struct{}, aff affData) {
+		if ch != nil {
+			defer func() {
+				ch <- struct{}{}
+			}()
+		}
 		login := aff.Login
 		// Check if we have that actor IDs cached
+		lock()
 		actLogins, okL := cacheActLogins[login]
 		actIDs, okI := cacheActIDs[login]
+		unlock()
+		// IMPL
+		if login == "kkosaka" {
+			lib.Printf("processRoll: %s -> (%+v, %+v)\n", login, actLogins, actIDs)
+		}
 		if !okL || !okI {
 			actIDs, actLogins = findActors(con, &ctx, login, maybeHide)
 			if len(actIDs) < 1 {
+				lock()
 				csD := loginCSData[login]
+				unlock()
 				// Should not happen
-				actIDs = append(actIDs, addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide))
+				aID := addActor(con, &ctx, login, "", csD.CountryID, csD.Sex, csD.Tz, csD.SexProb, csD.TzOffset, csD.Age, maybeHide)
+				lock()
+				actIDs = append(actIDs, aID)
 				added++
+				unlock()
 			}
+			lock()
 			for _, aLogin := range actLogins {
 				cacheActIDs[aLogin] = actIDs
 				cacheActLogins[aLogin] = actLogins
 			}
 			nonCached++
+			unlock()
 		}
 		company := aff.Company
 		if company == "" {
-			continue
+			return
 		}
+		lock()
 		mappedCompany := mapCompanyName(comMap, acqMap, stat, company)
+		unlock()
 		dtFrom := aff.From
 		dtTo := aff.To
 		source := lib.TruncToBytes(aff.Source, 30)
@@ -899,7 +1161,28 @@ func importAffs(jsonFN string) int {
 					"into gha_actors_affiliations(actor_id, company_name, original_company_name, dt_from, dt_to, source) "+lib.NValues(6)),
 				lib.AnyArray{aid, maybeHide(lib.TruncToBytes(mappedCompany, 160)), maybeHide(lib.TruncToBytes(company, 160)), dtFrom, dtTo, source}...,
 			)
+			lock()
 			addedAffs++
+			unlock()
+		}
+	}
+	if thrN > 1 {
+		nThreads := 0
+		for _, aff := range affList {
+			go processRoll(ch, aff)
+			nThreads++
+			if nThreads == thrN {
+				<-ch
+				nThreads--
+			}
+		}
+		for nThreads > 0 {
+			<-ch
+			nThreads--
+		}
+	} else {
+		for _, aff := range affList {
+			processRoll(nil, aff)
 		}
 	}
 	if added > 0 {

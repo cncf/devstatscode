@@ -69,8 +69,8 @@ func Slugify(arg string) string {
 }
 
 // GetHidden - return list of shas to replace
-func GetHidden(configFile string) map[string]string {
-	shaMap := make(map[string]string)
+func GetHidden(configFile string) (shaMap map[string]string) {
+	shaMap = make(map[string]string)
 	f, err := os.Open(configFile)
 	if err == nil {
 		defer func() { _ = f.Close() }()
@@ -89,13 +89,13 @@ func GetHidden(configFile string) map[string]string {
 			shaMap[sha] = "anon-" + sha
 		}
 	}
-	return shaMap
+	return
 }
 
 // MaybeHideFunc - use closure as a data storage
-func MaybeHideFunc(shas map[string]string) func(string) string {
+func MaybeHideFunc(shas map[string]string) (f func(string) string) {
 	cache := make(map[string]string)
-	return func(arg string) string {
+	f = func(arg string) string {
 		var sha string
 		sha, ok := cache[arg]
 		if !ok {
@@ -111,4 +111,5 @@ func MaybeHideFunc(shas map[string]string) func(string) string {
 		}
 		return arg
 	}
+	return f
 }
