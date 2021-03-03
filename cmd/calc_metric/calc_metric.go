@@ -933,8 +933,8 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 
 	// Run
 	lib.Printf(
-		"calc_metric.go: %s: Running (on %d CPUs): %v - %v with interval %s, descriptions '%s', multivalue: %v, escape_value_name: %v, custom_data: %v\n",
-		sqlFile, thrN, dFrom, dTo, interval, cfg.desc, cfg.multivalue, cfg.escapeValueName, cfg.customData,
+		"calc_metric.go: %s: Running (on %d CPUs): %v - %v with interval %d %s, descriptions '%s', multivalue: %v, escape_value_name: %v, custom_data: %v\n",
+		sqlFile, thrN, dFrom, dTo, nIntervals, interval, cfg.desc, cfg.multivalue, cfg.escapeValueName, cfg.customData,
 	)
 
 	dt := dFrom
