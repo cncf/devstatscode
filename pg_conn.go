@@ -283,6 +283,12 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				vals = append(vals, tagValue)
 				i++
 			}
+			if i == 2 {
+				if ctx.Debug >= 0 {
+					Printf("tag %s has no values, skipping\n", name)
+				}
+				continue
+			}
 			namesIA := strings.Join(namesI, ", ")
 			argsIA := strings.Join(argsI, ", ")
 			namesU := []string{}
@@ -314,9 +320,9 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				)
 			} else {
 				q = fmt.Sprintf(
-					"insert into \"%[1]s\"(" + namesIA + ") values(" + argsIA + ") " +
-						"on conflict(time) do nothing" +
-						name,
+					"insert into \"%[1]s\"("+namesIA+") values("+argsIA+") "+
+						"on conflict(time) do nothing",
+					name,
 				)
 			}
 			ExecSQLWithErr(con, ctx, q, vals...)
@@ -339,6 +345,12 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				argsI = append(argsI, "$"+strconv.Itoa(i))
 				vals = append(vals, fieldValue)
 				i++
+			}
+			if i == 3 {
+				if ctx.Debug >= 0 {
+					Printf("field %s has no values other than time and period, skipping\n", name)
+				}
+				continue
 			}
 			namesIA := strings.Join(namesI, ", ")
 			argsIA := strings.Join(argsI, ", ")
@@ -373,9 +385,9 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				)
 			} else {
 				q = fmt.Sprintf(
-					"insert into \"%[1]s\"(" + namesIA + ") values(" + argsIA + ") " +
-						"on conflict(time, period) do nothing" +
-						name,
+					"insert into \"%[1]s\"("+namesIA+") values("+argsIA+") "+
+						"on conflict(time, period) do nothing",
+					name,
 				)
 			}
 			ExecSQLWithErr(con, ctx, q, vals...)
@@ -394,6 +406,12 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				argsI = append(argsI, "$"+strconv.Itoa(i))
 				vals = append(vals, fieldValue)
 				i++
+			}
+			if i == 4 {
+				if ctx.Debug >= 0 {
+					Printf("field %s has no values other than time, period and series, skipping\n", mergeS)
+				}
+				continue
 			}
 			namesIA := strings.Join(namesI, ", ")
 			argsIA := strings.Join(argsI, ", ")
@@ -430,9 +448,9 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				)
 			} else {
 				q = fmt.Sprintf(
-					"insert into \"%[1]s\"(" + namesIA + ") values(" + argsIA + ") " +
-						"on conflict(time, series, period) do nothing" +
-						mergeS,
+					"insert into \"%[1]s\"("+namesIA+") values("+argsIA+") "+
+						"on conflict(time, series, period) do nothing",
+					mergeS,
 				)
 			}
 			ExecSQLWithErr(con, ctx, q, vals...)
@@ -449,7 +467,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 // non-fatal: only when used for create index if not exists
 // to use `create index if not exists` we must give it a name
 // (so postgres can detect if index exists), name is created from table and column names
-// so if this is too long, just amke it shorter - hence non-fatal
+// so if this is too long, just make it shorter - hence non-fatal
 func makePsqlName(name string, fatal bool) string {
 	l := len(name)
 	if l > 63 {
