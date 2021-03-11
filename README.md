@@ -12,7 +12,7 @@ Authors: Łukasz Gryglicki <lgryglicki@cncf.io>, Justyna Gryglicka <lgryglicka@c
 - Follow [this guide](https://github.com/cncf/devstats-helm-example/blob/master/README.md) to see how to deploy on Kubernetes using Helm.
 - Follow [this guide](https://github.com/cncf/devstats-helm-graphql/blob/master/README.md) to see GraphQL deployment using Kubernetes & Helm.
 - Follow [this guide](https://github.com/cncf/devstats/blob/master/INSTALL_UBUNTU18.md#devstats-installation-on-ubuntu) for installing on bare metal.
-- Follow [this guide](https://github.com/cncf/devstats-example/blob/master/README.md) to deploy your oiwn project on bare metal (this example deployes Homebrew statistics).
+- Follow [this guide](https://github.com/cncf/devstats-example/blob/master/README.md) to deploy your own project on bare metal (this example deployes Homebrew statistics).
 - Fetch dependency libraries.
 - `make` then `make test` finally `make install`.
 
