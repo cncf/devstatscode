@@ -138,6 +138,9 @@ const Countries string = "Countries"
 // Companies - common constant string
 const Companies string = "Companies"
 
+// SiteStats - common constant string
+const SiteStats string = "SiteStats"
+
 // Day - common constant string
 const Day string = "day"
 

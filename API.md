@@ -332,6 +332,22 @@ List of APIs:
   - Result contains data in the same format as "Companies Statistics by Repository Group" DevStats dashboard for the given project.
   - Example API call: `./devel/api_com_stats_repo_grp.sh all 2019-01-01 2020-05-01 Week 'Contributors' Kubernetes '["Google", "Red Hat", "VMware", "Independent"]'`
 
+- `SiteStats`: `{"api": "SiteStats", "payload": {"project": "projectName"}}`.
+  - Arguments:
+    - `projectName`: see `Health` API.
+  - Returns:
+  ```
+  {
+    "project": "all",
+    "db_name": "allprj",
+    "contributors": 121239,
+    "contributions": 5833526,
+    "boc": 2023522655
+  }
+  ```
+  - Example API call: `./devel/api_site_stats.sh all`.
+
+
 
 # Local API deployment and testing
 

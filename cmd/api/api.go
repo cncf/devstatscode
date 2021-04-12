@@ -35,6 +35,7 @@ var allAPIs = []string{
 	lib.DevActCntRepoGrp,
 	lib.DevActCntComp,
 	lib.ComStatsRepoGrp,
+	lib.SiteStats,
 }
 
 var (
@@ -73,6 +74,14 @@ type eventsPayload struct {
 	From       string      `json:"from"`
 	To         string      `json:"to"`
 	Values     []int64     `json:"values"`
+}
+
+type siteStatsPayload struct {
+	Project       string `json:"project"`
+	DB            string `json:"db_name"`
+	Contributors  int64  `json:"contributors"`
+	Contributions int64  `json:"contributions"`
+	BOC           int64  `json:"boc"`
 }
 
 type companiesTablePayload struct {
@@ -1532,6 +1541,105 @@ func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{
 	json.NewEncoder(w).Encode(epl)
 }
 
+func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.SiteStats
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	query := `
+  select
+    name,
+    value
+  from
+    spstat
+  where
+    series = 'pstatall'
+    and period = 'y10'
+    and name in ('Contributors', 'Contributions')
+  `
+	rows, err := lib.QuerySQLLogErr(c, ctx, query)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	sspl := siteStatsPayload{Project: project, DB: db}
+	var (
+		value float64
+		name  string
+	)
+	for rows.Next() {
+		err = rows.Scan(&name, &value)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		if name == "Contributors" {
+			sspl.Contributors = int64(value)
+		} else {
+			sspl.Contributions = int64(value)
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	query = `
+  select
+    sum(rl.lang_loc)
+  from
+    gha_repos r,
+    gha_repos_langs rl
+  where
+    r.name = rl.repo_name
+    and (r.name, r.id) = (
+      select i.name,
+        i.id
+      from
+        gha_repos i
+      where
+        i.alias = r.alias
+        and i.name like '%_/_%'
+        and i.name not like '%/%/%'
+      limit 1
+    )
+  `
+	rows2, err := lib.QuerySQLLogErr(c, ctx, query)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = rows2.Close() }()
+	for rows.Next() {
+		err = rows.Scan(&value)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		sspl.BOC = int64(value)
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(sspl)
+}
+
 func requestInfo(r *http.Request) string {
 	agent := ""
 	hdr := r.Header
@@ -1595,6 +1703,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiDevActCntRepoGrp(info, w, pl.Payload)
 	case lib.DevActCntComp:
 		apiDevActCntComp(info, w, pl.Payload)
+	case lib.SiteStats:
+		apiSiteStats(info, w, pl.Payload)
 	default:
 		err = fmt.Errorf("unknown API '%s'", pl.API)
 		returnError("unknown:"+pl.API, w, err)
