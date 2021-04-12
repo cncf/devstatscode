@@ -1623,15 +1623,15 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		return
 	}
 	defer func() { _ = rows2.Close() }()
-	for rows.Next() {
-		err = rows.Scan(&value)
+	for rows2.Next() {
+		err = rows2.Scan(&value)
 		if err != nil {
 			returnError(apiName, w, err)
 			return
 		}
 		sspl.BOC = int64(value)
 	}
-	err = rows.Err()
+	err = rows2.Err()
 	if err != nil {
 		returnError(apiName, w, err)
 		return
