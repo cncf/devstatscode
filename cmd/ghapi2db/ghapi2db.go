@@ -702,6 +702,16 @@ func syncEvents(ctx *lib.Ctx) {
 	eventTypes["base_ref_force_pushed"] = struct{}{}
 	eventTypes["connected"] = struct{}{}
 	eventTypes["disconnected"] = struct{}{}
+	eventTypes["convert_to_draft"] = struct{}{}
+	eventTypes["base_ref_deleted"] = struct{}{}
+	eventTypes["automatic_base_change_succeeded"] = struct{}{}
+	eventTypes["automatic_base_change_failed"] = struct{}{}
+	eventTypes["auto_merge_enabled"] = struct{}{}
+	eventTypes["auto_merge_disabled"] = struct{}{}
+	eventTypes["auto_squash_enabled"] = struct{}{}
+	eventTypes["auto_squash_disabled"] = struct{}{}
+	eventTypes["auto_rebase_enabled"] = struct{}{}
+	eventTypes["auto_rebase_disabled"] = struct{}{}
 
 	// Get number of CPUs available
 	thrN := lib.GetThreadsNum(ctx)
