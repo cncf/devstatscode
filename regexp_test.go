@@ -12,6 +12,11 @@ func TestAnnotationRegexp(t *testing.T) {
 		str   string
 		match bool
 	}{
+		{re: `^(v\d+\.\d+\.\d+|release-\d{4}-\d{2}-\d{2})$`, str: "v1.2.3", match: true},
+		{re: `^(v\d+\.\d+\.\d+|release-\d{4}-\d{2}-\d{2})$`, str: "v1.2", match: false},
+		{re: `^(v\d+\.\d+\.\d+|release-\d{4}-\d{2}-\d{2})$`, str: "v1.2.3.4", match: false},
+		{re: `^(v\d+\.\d+\.\d+|release-\d{4}-\d{2}-\d{2})$`, str: "release-2021-05-15", match: true},
+		{re: `^(v\d+\.\d+\.\d+|release-\d{4}-\d{2}-\d{2})$`, str: "release-201-05-15", match: false},
 		{re: `^v((0\.\d+)|(\d+\.\d+\.0))$`, str: "v0.0", match: true},
 		{re: `^v((0\.\d+)|(\d+\.\d+\.0))$`, str: "v1.0", match: false},
 		{re: `^v((0\.\d+)|(\d+\.\d+\.0))$`, str: "0.0", match: false},
