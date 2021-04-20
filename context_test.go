@@ -8,13 +8,12 @@ import (
 	"testing"
 	"time"
 
-	lib "github.com/cncf/devstatscode"
 	testlib "github.com/cncf/devstatscode/test"
 )
 
 // Copies Ctx structure
-func copyContext(in *lib.Ctx) *lib.Ctx {
-	out := lib.Ctx{
+func copyContext(in *Ctx) *Ctx {
+	out := Ctx{
 		DataDir:                  in.DataDir,
 		Debug:                    in.Debug,
 		CmdDebug:                 in.CmdDebug,
@@ -152,7 +151,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 }
 
 // Dynamically sets Ctx fields (uses map of field names into their new values)
-func dynamicSetFields(t *testing.T, ctx *lib.Ctx, fields map[string]interface{}) *lib.Ctx {
+func dynamicSetFields(t *testing.T, ctx *Ctx, fields map[string]interface{}) *Ctx {
 	// Prepare mapping field name -> index
 	valueOf := reflect.Indirect(reflect.ValueOf(*ctx))
 	nFields := valueOf.Type().NumField()
@@ -280,11 +279,11 @@ func TestInit(t *testing.T) {
 	// This is the expected default struct state
 	pass := os.Getenv("PG_PASS")
 	if pass == "" {
-		pass = lib.Password
+		pass = Password
 	}
 	defaultDur, _ := time.ParseDuration("6h")
 	testDur, _ := time.ParseDuration("1h45m")
-	defaultContext := lib.Ctx{
+	defaultContext := Ctx{
 		DataDir:                  "/etc/gha2db/",
 		Debug:                    0,
 		CmdDebug:                 0,
@@ -425,7 +424,7 @@ func TestInit(t *testing.T) {
 	var testCases = []struct {
 		name            string
 		environment     map[string]string
-		expectedContext *lib.Ctx
+		expectedContext *Ctx
 	}{
 		{
 			"Default values",
@@ -1803,7 +1802,7 @@ func TestInit(t *testing.T) {
 
 	// Execute test cases
 	for index, test := range testCases {
-		var gotContext lib.Ctx
+		var gotContext Ctx
 
 		// Because GitHubOAuth is depending on /etc/github/oauth* files
 		// We can't test this, because user test environment can have those files or not

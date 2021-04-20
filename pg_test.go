@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	lib "github.com/cncf/devstatscode"
 	testlib "github.com/cncf/devstatscode/test"
 )
 
@@ -24,7 +23,7 @@ func TestCleanUTF8(t *testing.T) {
 	}
 	// Execute test cases
 	for index, test := range testCases {
-		got := lib.CleanUTF8(test.value)
+		got := CleanUTF8(test.value)
 		if got != test.expected {
 			t.Errorf("test number %d, expected %v, got %v", index+1, test.expected, got)
 		}
@@ -72,7 +71,7 @@ func TestTruncToBytes(t *testing.T) {
 	}
 	// Execute test cases
 	for index, test := range testCases {
-		gotStr := lib.TruncToBytes(test.value, test.n)
+		gotStr := TruncToBytes(test.value, test.n)
 		if gotStr != test.expectedStr {
 			t.Errorf("test number %d, expected string %v, got %v", index+1, test.expectedStr, gotStr)
 		}
@@ -114,7 +113,7 @@ func TestTruncStringOrNil(t *testing.T) {
 	}
 	// Execute test cases
 	for index, test := range testCases {
-		got := lib.TruncStringOrNil(test.value, test.n)
+		got := TruncStringOrNil(test.value, test.n)
 		if got != test.expected {
 			t.Errorf("test number %d, expected %v, got %v", index+1, test.expected, got)
 		}
@@ -122,24 +121,24 @@ func TestTruncStringOrNil(t *testing.T) {
 }
 
 func TestBoolOrNil(t *testing.T) {
-	result := lib.BoolOrNil(nil)
+	result := BoolOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
 	val := true
-	result = lib.BoolOrNil(&val)
+	result = BoolOrNil(&val)
 	if result != val {
 		t.Errorf("expected true, got %v", result)
 	}
 }
 
 func TestNegatedBoolOrNil(t *testing.T) {
-	result := lib.NegatedBoolOrNil(nil)
+	result := NegatedBoolOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
 	val := true
-	result = lib.NegatedBoolOrNil(&val)
+	result = NegatedBoolOrNil(&val)
 	expected := !val
 	if result != expected {
 		t.Errorf("expected %v, got %v", expected, result)
@@ -147,24 +146,24 @@ func TestNegatedBoolOrNil(t *testing.T) {
 }
 
 func TestTimeOrNil(t *testing.T) {
-	result := lib.TimeOrNil(nil)
+	result := TimeOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
 	val := time.Now()
-	result = lib.TimeOrNil(&val)
+	result = TimeOrNil(&val)
 	if result != val {
 		t.Errorf("expected %v, got %v", val, result)
 	}
 }
 
 func TestIntOrNil(t *testing.T) {
-	result := lib.IntOrNil(nil)
+	result := IntOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
 	val := 2
-	result = lib.IntOrNil(&val)
+	result = IntOrNil(&val)
 	if result != val {
 		t.Errorf("expected %v, got %v", val, result)
 	}
@@ -189,7 +188,7 @@ func TestFirstIntOrNil(t *testing.T) {
 	}
 	// Execute test cases
 	for index, test := range testCases {
-		got := lib.FirstIntOrNil(test.array)
+		got := FirstIntOrNil(test.array)
 		if got != test.expected {
 			t.Errorf("test number %d, expected %v, got %v", index+1, test.expected, got)
 		}
@@ -197,13 +196,13 @@ func TestFirstIntOrNil(t *testing.T) {
 }
 
 func TestStringOrNil(t *testing.T) {
-	result := lib.StringOrNil(nil)
+	result := StringOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
 	val := "hello\x00 world"
 	expected := "hello world"
-	result = lib.StringOrNil(&val)
+	result = StringOrNil(&val)
 	if result != expected {
 		t.Errorf("expected %v, got %v", val, result)
 	}
@@ -211,7 +210,7 @@ func TestStringOrNil(t *testing.T) {
 
 func TestPostgres(t *testing.T) {
 	// Environment context parse
-	var ctx lib.Ctx
+	var ctx Ctx
 	ctx.Init()
 	ctx.TestMode = true
 
@@ -222,10 +221,10 @@ func TestPostgres(t *testing.T) {
 	}
 
 	// Drop database if exists
-	lib.DropDatabaseIfExists(&ctx)
+	DropDatabaseIfExists(&ctx)
 
 	// Create database if needed
-	createdDatabase := lib.CreateDatabaseIfNeeded(&ctx)
+	createdDatabase := CreateDatabaseIfNeeded(&ctx)
 	if !createdDatabase {
 		t.Errorf("failed to create database \"%s\"", ctx.PgDB)
 	}
@@ -233,43 +232,43 @@ func TestPostgres(t *testing.T) {
 	// Drop database after tests
 	defer func() {
 		// Drop database after tests
-		lib.DropDatabaseIfExists(&ctx)
+		DropDatabaseIfExists(&ctx)
 	}()
 
 	// Connect to Postgres DB
-	c := lib.PgConn(&ctx)
-	defer func() { lib.FatalOnError(c.Close()) }()
+	c := PgConn(&ctx)
+	defer func() { FatalOnError(c.Close()) }()
 
 	// Create example table
-	lib.ExecSQLWithErr(
+	ExecSQLWithErr(
 		c,
 		&ctx,
-		lib.CreateTable(
+		CreateTable(
 			"test(an_int int, a_string text, a_dt {{ts}}, primary key(an_int))",
 		),
 	)
 
 	// Insert single row
-	lib.ExecSQLWithErr(
+	ExecSQLWithErr(
 		c,
 		&ctx,
-		"insert into test(an_int, a_string, a_dt) "+lib.NValues(3),
-		lib.AnyArray{1, "string", time.Now()}...,
+		"insert into test(an_int, a_string, a_dt) "+NValues(3),
+		AnyArray{1, "string", time.Now()}...,
 	)
 
 	// Get inserted int
 	i := 0
-	lib.FatalOnError(lib.QueryRowSQL(c, &ctx, "select an_int from test").Scan(&i))
+	FatalOnError(QueryRowSQL(c, &ctx, "select an_int from test").Scan(&i))
 	if i != 1 {
 		t.Errorf("expected to insert 1, got %v", i)
 	}
 
 	// Insert another row
-	lib.ExecSQLWithErr(
+	ExecSQLWithErr(
 		c,
 		&ctx,
-		"insert into test(an_int, a_string, a_dt) "+lib.NValues(3),
-		lib.AnyArray{11, "another string", time.Now()}...,
+		"insert into test(an_int, a_string, a_dt) "+NValues(3),
+		AnyArray{11, "another string", time.Now()}...,
 	)
 
 	// Get all ints from database
@@ -287,15 +286,15 @@ func TestPostgres(t *testing.T) {
 	}
 
 	// Insert another row
-	lib.ExecSQLTxWithErr(
+	ExecSQLTxWithErr(
 		tx,
 		&ctx,
-		"insert into test(an_int, a_string, a_dt) "+lib.NValues(3),
-		lib.AnyArray{21, "this will be rolled back", time.Now()}...,
+		"insert into test(an_int, a_string, a_dt) "+NValues(3),
+		AnyArray{21, "this will be rolled back", time.Now()}...,
 	)
 
 	// Rollback transaction
-	lib.FatalOnError(tx.Rollback())
+	FatalOnError(tx.Rollback())
 
 	// Get all ints from database
 	gotArr = getInts(c, &ctx)
@@ -311,15 +310,15 @@ func TestPostgres(t *testing.T) {
 	}
 
 	// Insert another row
-	lib.ExecSQLTxWithErr(
+	ExecSQLTxWithErr(
 		tx,
 		&ctx,
-		"insert into test(an_int, a_string, a_dt) "+lib.NValues(3),
-		lib.AnyArray{31, "this will be committed", time.Now()}...,
+		"insert into test(an_int, a_string, a_dt) "+NValues(3),
+		AnyArray{31, "this will be committed", time.Now()}...,
 	)
 
 	// Commit transaction
-	lib.FatalOnError(tx.Commit())
+	FatalOnError(tx.Commit())
 
 	// Get all ints from database
 	gotArr = getInts(c, &ctx)
@@ -330,11 +329,11 @@ func TestPostgres(t *testing.T) {
 	}
 
 	// Insert ignore row (that violetes primary key constraint)
-	lib.ExecSQLWithErr(
+	ExecSQLWithErr(
 		c,
 		&ctx,
-		lib.InsertIgnore("into test(an_int, a_string, a_dt) "+lib.NValues(3)),
-		lib.AnyArray{1, "conflicting key", time.Now()}...,
+		InsertIgnore("into test(an_int, a_string, a_dt) "+NValues(3)),
+		AnyArray{1, "conflicting key", time.Now()}...,
 	)
 
 	// Get all ints from database
@@ -346,19 +345,19 @@ func TestPostgres(t *testing.T) {
 }
 
 // getInts - gets all ints from database, sorted
-func getInts(c *sql.DB, ctx *lib.Ctx) []int {
+func getInts(c *sql.DB, ctx *Ctx) []int {
 	// Get inserted values
-	rows := lib.QuerySQLWithErr(c, ctx, "select an_int from test order by an_int asc")
-	defer func() { lib.FatalOnError(rows.Close()) }()
+	rows := QuerySQLWithErr(c, ctx, "select an_int from test order by an_int asc")
+	defer func() { FatalOnError(rows.Close()) }()
 
 	var (
 		i   int
 		arr []int
 	)
 	for rows.Next() {
-		lib.FatalOnError(rows.Scan(&i))
+		FatalOnError(rows.Scan(&i))
 		arr = append(arr, i)
 	}
-	lib.FatalOnError(rows.Err())
+	FatalOnError(rows.Err())
 	return arr
 }

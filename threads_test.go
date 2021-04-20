@@ -2,18 +2,16 @@ package devstatscode
 
 import (
 	"testing"
-
-	lib "github.com/cncf/devstatscode"
 )
 
 func TestGetThreadsNum(t *testing.T) {
 	// Environment context parse
-	var ctx lib.Ctx
+	var ctx Ctx
 	ctx.Init()
 	ctx.TestMode = true
 
 	// Get actual number of threads available
-	nThreads := lib.GetThreadsNum(&ctx)
+	nThreads := GetThreadsNum(&ctx)
 
 	// Set context's ST/NCPUs manually (don't need to repeat tests from context_test.go)
 	var testCases = []struct {
@@ -36,7 +34,7 @@ func TestGetThreadsNum(t *testing.T) {
 		ctx.ST = test.ST
 		ctx.NCPUs = test.NCPUs
 		expected := test.expected
-		got := lib.GetThreadsNum(&ctx)
+		got := GetThreadsNum(&ctx)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected to return %d threads, got %d (default is %d on this machine)",

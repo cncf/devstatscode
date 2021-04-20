@@ -5,14 +5,13 @@ import (
 	"testing"
 	"time"
 
-	lib "github.com/cncf/devstatscode"
 	testlib "github.com/cncf/devstatscode/test"
 )
 
 // Return array of arrays of any values from TSDB result
 func getTSDBResult(rows *sql.Rows) (ret [][]interface{}) {
 	columns, err := rows.Columns()
-	lib.FatalOnError(err)
+	FatalOnError(err)
 
 	// Vals to hold any type as []interface{}
 	vals := make([]interface{}, len(columns))
@@ -21,7 +20,7 @@ func getTSDBResult(rows *sql.Rows) (ret [][]interface{}) {
 	}
 
 	for rows.Next() {
-		lib.FatalOnError(rows.Scan(vals...))
+		FatalOnError(rows.Scan(vals...))
 		row := []interface{}{}
 		for _, val := range vals {
 			value := ""
@@ -32,7 +31,7 @@ func getTSDBResult(rows *sql.Rows) (ret [][]interface{}) {
 		}
 		ret = append(ret, row)
 	}
-	lib.FatalOnError(rows.Err())
+	FatalOnError(rows.Err())
 	return
 }
 
@@ -79,7 +78,7 @@ func getTSDBResultFiltered(rows *sql.Rows, additionalSkip bool, skipI []int) (re
 
 func TestProcessAnnotations(t *testing.T) {
 	// Environment context parse
-	var ctx lib.Ctx
+	var ctx Ctx
 	ctx.Init()
 	ctx.TestMode = true
 
@@ -89,22 +88,22 @@ func TestProcessAnnotations(t *testing.T) {
 		return
 	}
 	// Drop database if exists
-	lib.DropDatabaseIfExists(&ctx)
+	DropDatabaseIfExists(&ctx)
 
 	// Create database if needed
-	createdDatabase := lib.CreateDatabaseIfNeeded(&ctx)
+	createdDatabase := CreateDatabaseIfNeeded(&ctx)
 	if !createdDatabase {
 		t.Errorf("failed to create database \"%s\"", ctx.PgDB)
 	}
 
 	// Connect to Postgres DB
-	c := lib.PgConn(&ctx)
+	c := PgConn(&ctx)
 
 	// Drop database after tests
 	defer func() {
-		lib.FatalOnError(c.Close())
+		FatalOnError(c.Close())
 		// Drop database after tests
-		lib.DropDatabaseIfExists(&ctx)
+		DropDatabaseIfExists(&ctx)
 	}()
 
 	// Test cases (they will create and close new connection inside ProcessAnnotations)
@@ -115,7 +114,7 @@ func TestProcessAnnotations(t *testing.T) {
 	middleLateDate := ft(2017)
 	lateDate := ft(2018)
 	var testCases = []struct {
-		annotations         lib.Annotations
+		annotations         Annotations
 		startDate           *time.Time
 		joinDate            *time.Time
 		incubatingDate      *time.Time
@@ -127,8 +126,8 @@ func TestProcessAnnotations(t *testing.T) {
 		skipI               []int
 	}{
 		{
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 0.0.0",
 						Description: "desc 0.0.0",
@@ -162,8 +161,8 @@ func TestProcessAnnotations(t *testing.T) {
 			skipI:          []int{10},
 		},
 		{
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 0.0.0",
 						Description: "desc 0.0.0",
@@ -191,8 +190,8 @@ func TestProcessAnnotations(t *testing.T) {
 			},
 		},
 		{
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 0.0.0",
 						Description: "desc 0.0.0",
@@ -220,8 +219,8 @@ func TestProcessAnnotations(t *testing.T) {
 			},
 		},
 		{
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 0.0.0",
 						Description: "desc 0.0.0",
@@ -249,8 +248,8 @@ func TestProcessAnnotations(t *testing.T) {
 			},
 		},
 		{
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 0.0.0",
 						Description: "desc 0.0.0",
@@ -277,8 +276,8 @@ func TestProcessAnnotations(t *testing.T) {
 		},
 		{
 			joinDate: &earlyDate,
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 0.0.0",
 						Description: "desc 0.0.0",
@@ -306,8 +305,8 @@ func TestProcessAnnotations(t *testing.T) {
 		},
 		{
 			joinDate: &lateDate,
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 0.0.0",
 						Description: "desc 0.0.0",
@@ -334,7 +333,7 @@ func TestProcessAnnotations(t *testing.T) {
 			},
 		},
 		{
-			annotations:         lib.Annotations{Annotations: []lib.Annotation{}},
+			annotations:         Annotations{Annotations: []Annotation{}},
 			expectedAnnotations: [][]interface{}{},
 			expectedQuickRanges: [][]interface{}{
 				{"d;1 day;;", "Last day", "d"},
@@ -350,8 +349,8 @@ func TestProcessAnnotations(t *testing.T) {
 			},
 		},
 		{
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 4.0.0",
 						Description: "desc 4.0.0",
@@ -405,8 +404,8 @@ func TestProcessAnnotations(t *testing.T) {
 			},
 		},
 		{
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "v1.0",
 						Description: "desc v1.0",
@@ -467,8 +466,8 @@ func TestProcessAnnotations(t *testing.T) {
 			},
 		},
 		{
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 0.0.0",
 						Description: "desc 0.0.0",
@@ -511,8 +510,8 @@ func TestProcessAnnotations(t *testing.T) {
 			skipI:          []int{10, 12},
 		},
 		{
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 0.0.0",
 						Description: "desc 0.0.0",
@@ -549,8 +548,8 @@ func TestProcessAnnotations(t *testing.T) {
 			skipI:          []int{10, 12},
 		},
 		{
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 0.0.0",
 						Description: "desc 0.0.0",
@@ -588,8 +587,8 @@ func TestProcessAnnotations(t *testing.T) {
 			skipI:          []int{10, 12},
 		},
 		{
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 0.0.0",
 						Description: "desc 0.0.0",
@@ -627,8 +626,8 @@ func TestProcessAnnotations(t *testing.T) {
 			skipI:          []int{10, 12},
 		},
 		{
-			annotations: lib.Annotations{
-				Annotations: []lib.Annotation{
+			annotations: Annotations{
+				Annotations: []Annotation{
 					{
 						Name:        "release 0.0.0",
 						Description: "desc 0.0.0",
@@ -671,12 +670,12 @@ func TestProcessAnnotations(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		// Execute annotations & quick ranges call
-		lib.ProcessAnnotations(&ctx, &test.annotations, []*time.Time{test.startDate, test.joinDate, test.incubatingDate, test.graduatedDate, test.archivedDate})
+		ProcessAnnotations(&ctx, &test.annotations, []*time.Time{test.startDate, test.joinDate, test.incubatingDate, test.graduatedDate, test.archivedDate})
 
 		// Check annotations created
-		rows := lib.QuerySQLWithErr(c, &ctx, "select time, description, title from \"sannotations\" order by time asc")
+		rows := QuerySQLWithErr(c, &ctx, "select time, description, title from \"sannotations\" order by time asc")
 		gotAnnotations := getTSDBResult(rows)
-		lib.FatalOnError(rows.Close())
+		FatalOnError(rows.Close())
 		if !testlib.CompareSlices2D(test.expectedAnnotations, gotAnnotations) {
 			t.Errorf(
 				"test number %d: join date: %+v\nannotations: %+v\nExpected annotations:\n%+v\n%+v\ngot.",
@@ -685,13 +684,13 @@ func TestProcessAnnotations(t *testing.T) {
 		}
 
 		// Clean up for next test
-		lib.ExecSQLWithErr(c, &ctx, "delete from \"sannotations\"")
+		ExecSQLWithErr(c, &ctx, "delete from \"sannotations\"")
 
 		// Check Quick Ranges created
 		// Results contains some time values depending on current time ..Filtered func handles this
-		rows = lib.QuerySQLWithErr(c, &ctx, "select time, quick_ranges_data, quick_ranges_name, quick_ranges_suffix, 0 from \"tquick_ranges\" order by time asc")
+		rows = QuerySQLWithErr(c, &ctx, "select time, quick_ranges_data, quick_ranges_name, quick_ranges_suffix, 0 from \"tquick_ranges\" order by time asc")
 		gotQuickRanges := getTSDBResultFiltered(rows, test.additionalSkip, test.skipI)
-		lib.FatalOnError(rows.Close())
+		FatalOnError(rows.Close())
 		if !testlib.CompareSlices2D(test.expectedQuickRanges, gotQuickRanges) {
 			t.Errorf(
 				"test number %d: join date: %+v\nannotations: %+v\nExpected quick ranges:\n%+v\n%+v\ngot",
@@ -699,6 +698,6 @@ func TestProcessAnnotations(t *testing.T) {
 			)
 		}
 		// Clean up for next test
-		lib.ExecSQLWithErr(c, &ctx, "delete from \"tquick_ranges\"")
+		ExecSQLWithErr(c, &ctx, "delete from \"tquick_ranges\"")
 	}
 }

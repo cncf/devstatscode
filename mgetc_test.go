@@ -2,13 +2,11 @@ package devstatscode
 
 import (
 	"testing"
-
-	lib "github.com/cncf/devstatscode"
 )
 
 func TestMgetc(t *testing.T) {
 	// Environment context parse
-	var ctx lib.Ctx
+	var ctx Ctx
 	ctx.Init()
 	ctx.TestMode = true
 
@@ -16,7 +14,7 @@ func TestMgetc(t *testing.T) {
 	ctx.Mgetc = "y"
 
 	expected := "y"
-	got := lib.Mgetc(&ctx)
+	got := Mgetc(&ctx)
 	if got != expected {
 		t.Errorf("expected %v, got %v", expected, got)
 	}

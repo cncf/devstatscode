@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	lib "github.com/cncf/devstatscode"
 	testlib "github.com/cncf/devstatscode/test"
 )
 
@@ -38,7 +37,7 @@ func TestIntervalHours(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.IntervalHours(test.period)
+		got := IntervalHours(test.period)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -75,7 +74,7 @@ func TestRangeHours(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.RangeHours(test.from, test.to)
+		got := RangeHours(test.from, test.to)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -288,7 +287,7 @@ func TestComputePeriodAtThisDate(t *testing.T) {
 	}
 
 	// Environment context parse
-	var ctx lib.Ctx
+	var ctx Ctx
 	ctx.Init()
 	ctx.TestMode = true
 
@@ -298,7 +297,7 @@ func TestComputePeriodAtThisDate(t *testing.T) {
 		ctx.TmOffset = test.tmOffset
 		ctx.ComputeAll = test.computeAll
 		ctx.ComputePeriods = test.computePeriods
-		got := lib.ComputePeriodAtThisDate(&ctx, test.period, test.dt, test.hist)
+		got := ComputePeriodAtThisDate(&ctx, test.period, test.dt, test.hist)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected '%v' from period '%v', hist '%v' for date '%v', got '%v'",
@@ -336,7 +335,7 @@ func TestDescriblePeriodInHours(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.DescriblePeriodInHours(test.hours)
+		got := DescriblePeriodInHours(test.hours)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected '%v' from %v hours, got '%v'",
@@ -369,7 +368,7 @@ func TestPeriodParse(t *testing.T) {
 	for index, test := range testCases {
 		expectedBool := test.expectedBool
 		expectedDuration := test.expectedDuration
-		gotDuration, gotBool := lib.PeriodParse(test.periodStr)
+		gotDuration, gotBool := PeriodParse(test.periodStr)
 		if gotBool != expectedBool {
 			t.Errorf(
 				"test number %d, expected boolean %v, got %v",
@@ -399,7 +398,7 @@ func TestHourStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.HourStart(test.time)
+		got := HourStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -424,7 +423,7 @@ func TestNextHourStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.NextHourStart(test.time)
+		got := NextHourStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -449,7 +448,7 @@ func TestPrevHourStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.PrevHourStart(test.time)
+		got := PrevHourStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -473,7 +472,7 @@ func TestDayStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.DayStart(test.time)
+		got := DayStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -498,7 +497,7 @@ func TestNextDayStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.NextDayStart(test.time)
+		got := NextDayStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -523,7 +522,7 @@ func TestPrevDayStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.PrevDayStart(test.time)
+		got := PrevDayStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -550,7 +549,7 @@ func TestWeekStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.WeekStart(test.time)
+		got := WeekStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -577,7 +576,7 @@ func TestNextWeekStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.NextWeekStart(test.time)
+		got := NextWeekStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -604,7 +603,7 @@ func TestPrevWeekStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.PrevWeekStart(test.time)
+		got := PrevWeekStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -628,7 +627,7 @@ func TestMonthStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.MonthStart(test.time)
+		got := MonthStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -652,7 +651,7 @@ func TestNextMonthStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.NextMonthStart(test.time)
+		got := NextMonthStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -676,7 +675,7 @@ func TestPrevMonthStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.PrevMonthStart(test.time)
+		got := PrevMonthStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -701,7 +700,7 @@ func TestQuarterStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.QuarterStart(test.time)
+		got := QuarterStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -726,7 +725,7 @@ func TestNextQuarterStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.NextQuarterStart(test.time)
+		got := NextQuarterStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -751,7 +750,7 @@ func TestPrevQuarterStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.PrevQuarterStart(test.time)
+		got := PrevQuarterStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -774,7 +773,7 @@ func TestYearStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.YearStart(test.time)
+		got := YearStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -797,7 +796,7 @@ func TestNextYearStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.NextYearStart(test.time)
+		got := NextYearStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -820,7 +819,7 @@ func TestPrevYearStart(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.PrevYearStart(test.time)
+		got := PrevYearStart(test.time)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -843,36 +842,36 @@ func TestAddNIntervals(t *testing.T) {
 		{
 			time:     ft(2017, 1, 1, 13, 15),
 			n:        3,
-			next:     lib.NextHourStart,
-			prev:     lib.PrevHourStart,
+			next:     NextHourStart,
+			prev:     PrevHourStart,
 			expected: ft(2017, 1, 1, 16),
 		},
 		{
 			time:     ft(2017, 1, 1, 13, 15),
 			n:        -3,
-			next:     lib.NextHourStart,
-			prev:     lib.PrevHourStart,
+			next:     NextHourStart,
+			prev:     PrevHourStart,
 			expected: ft(2017, 1, 1, 10),
 		},
 		{
 			time:     ft(2017, 1, 1, 13, 15),
 			n:        0,
-			next:     lib.NextDayStart,
-			prev:     lib.PrevQuarterStart,
+			next:     NextDayStart,
+			prev:     PrevQuarterStart,
 			expected: ft(2017, 1, 1, 13, 15),
 		},
 		{
 			time:     ft(2017, 9, 27),
 			n:        -7,
-			next:     lib.NextDayStart,
-			prev:     lib.PrevDayStart,
+			next:     NextDayStart,
+			prev:     PrevDayStart,
 			expected: ft(2017, 9, 20),
 		},
 	}
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.AddNIntervals(test.time, test.n, test.next, test.prev)
+		got := AddNIntervals(test.time, test.n, test.next, test.prev)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -898,90 +897,90 @@ func TestGetIntervalFunctions(t *testing.T) {
 			periodAbbr:        "h",
 			expectedPeriod:    "hour",
 			expectedN:         1,
-			expectedStart:     lib.HourStart,
-			expectedNextStart: lib.NextHourStart,
-			expectedPrevStart: lib.PrevHourStart,
+			expectedStart:     HourStart,
+			expectedNextStart: NextHourStart,
+			expectedPrevStart: PrevHourStart,
 		},
 		{
 			allowUnknown:      false,
 			periodAbbr:        "d",
 			expectedPeriod:    "day",
 			expectedN:         1,
-			expectedStart:     lib.DayStart,
-			expectedNextStart: lib.NextDayStart,
-			expectedPrevStart: lib.PrevDayStart,
+			expectedStart:     DayStart,
+			expectedNextStart: NextDayStart,
+			expectedPrevStart: PrevDayStart,
 		},
 		{
 			allowUnknown:      false,
 			periodAbbr:        "w",
 			expectedPeriod:    "week",
 			expectedN:         1,
-			expectedStart:     lib.WeekStart,
-			expectedNextStart: lib.NextWeekStart,
-			expectedPrevStart: lib.PrevWeekStart,
+			expectedStart:     WeekStart,
+			expectedNextStart: NextWeekStart,
+			expectedPrevStart: PrevWeekStart,
 		},
 		{
 			allowUnknown:      false,
 			periodAbbr:        "m",
 			expectedPeriod:    "month",
 			expectedN:         1,
-			expectedStart:     lib.MonthStart,
-			expectedNextStart: lib.NextMonthStart,
-			expectedPrevStart: lib.PrevMonthStart,
+			expectedStart:     MonthStart,
+			expectedNextStart: NextMonthStart,
+			expectedPrevStart: PrevMonthStart,
 		},
 		{
 			allowUnknown:      false,
 			periodAbbr:        "q",
 			expectedPeriod:    "quarter",
 			expectedN:         1,
-			expectedStart:     lib.QuarterStart,
-			expectedNextStart: lib.NextQuarterStart,
-			expectedPrevStart: lib.PrevQuarterStart,
+			expectedStart:     QuarterStart,
+			expectedNextStart: NextQuarterStart,
+			expectedPrevStart: PrevQuarterStart,
 		},
 		{
 			allowUnknown:      false,
 			periodAbbr:        "y",
 			expectedPeriod:    "year",
 			expectedN:         1,
-			expectedStart:     lib.YearStart,
-			expectedNextStart: lib.NextYearStart,
-			expectedPrevStart: lib.PrevYearStart,
+			expectedStart:     YearStart,
+			expectedNextStart: NextYearStart,
+			expectedPrevStart: PrevYearStart,
 		},
 		{
 			allowUnknown:      false,
 			periodAbbr:        "y2",
 			expectedPeriod:    "year",
 			expectedN:         2,
-			expectedStart:     lib.YearStart,
-			expectedNextStart: lib.NextYearStart,
-			expectedPrevStart: lib.PrevYearStart,
+			expectedStart:     YearStart,
+			expectedNextStart: NextYearStart,
+			expectedPrevStart: PrevYearStart,
 		},
 		{
 			allowUnknown:      false,
 			periodAbbr:        "d7",
 			expectedPeriod:    "day",
 			expectedN:         7,
-			expectedStart:     lib.DayStart,
-			expectedNextStart: lib.NextDayStart,
-			expectedPrevStart: lib.PrevDayStart,
+			expectedStart:     DayStart,
+			expectedNextStart: NextDayStart,
+			expectedPrevStart: PrevDayStart,
 		},
 		{
 			allowUnknown:      false,
 			periodAbbr:        "q0",
 			expectedPeriod:    "quarter",
 			expectedN:         1,
-			expectedStart:     lib.QuarterStart,
-			expectedNextStart: lib.NextQuarterStart,
-			expectedPrevStart: lib.PrevQuarterStart,
+			expectedStart:     QuarterStart,
+			expectedNextStart: NextQuarterStart,
+			expectedPrevStart: PrevQuarterStart,
 		},
 		{
 			allowUnknown:      false,
 			periodAbbr:        "m-2",
 			expectedPeriod:    "month",
 			expectedN:         1,
-			expectedStart:     lib.MonthStart,
-			expectedNextStart: lib.NextMonthStart,
-			expectedPrevStart: lib.PrevMonthStart,
+			expectedStart:     MonthStart,
+			expectedNextStart: NextMonthStart,
+			expectedPrevStart: PrevMonthStart,
 		},
 		{
 			allowUnknown:      true,
@@ -1004,7 +1003,7 @@ func TestGetIntervalFunctions(t *testing.T) {
 	}
 	// Execute test cases
 	for index, test := range testCases {
-		gotPeriod, gotN, gotStart, gotNextStart, gotPrevStart := lib.GetIntervalFunctions(test.periodAbbr, test.allowUnknown)
+		gotPeriod, gotN, gotStart, gotNextStart, gotPrevStart := GetIntervalFunctions(test.periodAbbr, test.allowUnknown)
 		if gotPeriod != test.expectedPeriod {
 			t.Errorf(
 				"test number %d, expected period %v, got %v",

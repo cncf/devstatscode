@@ -2,8 +2,6 @@ package devstatscode
 
 import (
 	"testing"
-
-	lib "github.com/cncf/devstatscode"
 )
 
 func TestStripUnicode(t *testing.T) {
@@ -19,7 +17,7 @@ func TestStripUnicode(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.StripUnicode(test.str)
+		got := StripUnicode(test.str)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -49,7 +47,7 @@ func TestNormalizeName(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.NormalizeName(test.str)
+		got := NormalizeName(test.str)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected %v, got %v",

@@ -3,8 +3,6 @@ package devstatscode
 import (
 	"math"
 	"testing"
-
-	lib "github.com/cncf/devstatscode"
 )
 
 func TestGetFloatFromInterface(t *testing.T) {
@@ -36,7 +34,7 @@ func TestGetFloatFromInterface(t *testing.T) {
 	for index, test := range testCases {
 		expectedFloat := test.expectedFloat
 		expectedOK := test.expectedOK
-		gotFloat, gotOK := lib.GetFloatFromInterface(test.input)
+		gotFloat, gotOK := GetFloatFromInterface(test.input)
 		if gotOK != expectedOK {
 			t.Errorf(
 				"test number %d, expected %v, got %v",

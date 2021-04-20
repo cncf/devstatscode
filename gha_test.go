@@ -4,8 +4,6 @@ import (
 	"reflect"
 	"regexp"
 	"testing"
-
-	lib "github.com/cncf/devstatscode"
 )
 
 func TestMakeUniqueSort(t *testing.T) {
@@ -41,7 +39,7 @@ func TestMakeUniqueSort(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.MakeUniqueSort(test.input)
+		got := MakeUniqueSort(test.input)
 		if (len(got) > 0 || len(expected) > 0) && !reflect.DeepEqual(got, expected) {
 			t.Errorf(
 				"test number %d, expected '%v', got '%v', test case: %+v",
@@ -105,7 +103,7 @@ func TestExcludedForProject(t *testing.T) {
 	}
 	for index, test := range testCases {
 		expected := test.expected
-		got := lib.ExcludedForProject(test.currentProject, test.metricProject)
+		got := ExcludedForProject(test.currentProject, test.metricProject)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected '%v', got '%v', test case: %+v",
@@ -116,7 +114,7 @@ func TestExcludedForProject(t *testing.T) {
 }
 
 func TestIsProjectDisabled(t *testing.T) {
-	var ctx lib.Ctx
+	var ctx Ctx
 	var testCases = []struct {
 		overrides    map[string]bool
 		proj         string
@@ -164,7 +162,7 @@ func TestIsProjectDisabled(t *testing.T) {
 	for index, test := range testCases {
 		expected := test.expected
 		ctx.ProjectsOverride = test.overrides
-		got := lib.IsProjectDisabled(&ctx, test.proj, test.yamlDisabled)
+		got := IsProjectDisabled(&ctx, test.proj, test.yamlDisabled)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected '%v', got '%v', test case: %+v",
@@ -177,7 +175,7 @@ func TestIsProjectDisabled(t *testing.T) {
 func TestActorHit(t *testing.T) {
 	// Variables
 	var (
-		ctx       lib.Ctx
+		ctx       Ctx
 		nilRegexp *regexp.Regexp
 	)
 
@@ -281,7 +279,7 @@ func TestActorHit(t *testing.T) {
 		ctx.ActorsFilter = test.actorsFilter
 		ctx.ActorsAllow = test.actorsAllow
 		ctx.ActorsForbid = test.actorsForbid
-		got := lib.ActorHit(&ctx, test.actorName)
+		got := ActorHit(&ctx, test.actorName)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected '%v', got '%v', test case: %+v",
@@ -293,7 +291,7 @@ func TestActorHit(t *testing.T) {
 
 func TestRepoHit(t *testing.T) {
 	// Test cases
-	var ctx lib.Ctx
+	var ctx Ctx
 	var testCases = []struct {
 		excludes map[string]bool
 		exact    bool
@@ -690,7 +688,7 @@ func TestRepoHit(t *testing.T) {
 		expected := test.hit
 		ctx.ExcludeRepos = test.excludes
 		ctx.Exact = test.exact
-		got := lib.RepoHit(&ctx, test.fullName, test.forg, test.frepo, test.orgRE, test.repoRE)
+		got := RepoHit(&ctx, test.fullName, test.forg, test.frepo, test.orgRE, test.repoRE)
 		if got != expected {
 			t.Errorf(
 				"test number %d, expected '%v', got '%v', test case: %+v",
@@ -701,152 +699,152 @@ func TestRepoHit(t *testing.T) {
 }
 
 func TestOrgIDOrNil(t *testing.T) {
-	result := lib.OrgIDOrNil(nil)
+	result := OrgIDOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
-	result = lib.OrgIDOrNil(&lib.Org{ID: 2})
+	result = OrgIDOrNil(&Org{ID: 2})
 	if result != 2 {
 		t.Errorf("test ID=2 case: expected 2, got %v", result)
 	}
 }
 
 func TestRepoIDOrNil(t *testing.T) {
-	result := lib.RepoIDOrNil(nil)
+	result := RepoIDOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
-	result = lib.RepoIDOrNil(&lib.Repo{ID: 2})
+	result = RepoIDOrNil(&Repo{ID: 2})
 	if result != 2 {
 		t.Errorf("test ID=2 case: expected 2, got %v", result)
 	}
 }
 
 func TestRepoNameOrNil(t *testing.T) {
-	result := lib.RepoNameOrNil(nil)
+	result := RepoNameOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
 	expected := "kubernetes"
-	result = lib.RepoNameOrNil(&lib.Repo{Name: expected})
+	result = RepoNameOrNil(&Repo{Name: expected})
 	if result != expected {
 		t.Errorf("test Name=%s case: expected %s, got %v", expected, expected, result)
 	}
 }
 
 func TestIssueIDOrNil(t *testing.T) {
-	result := lib.IssueIDOrNil(nil)
+	result := IssueIDOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
-	result = lib.IssueIDOrNil(&lib.Issue{ID: 2})
+	result = IssueIDOrNil(&Issue{ID: 2})
 	if result != 2 {
 		t.Errorf("test ID=2 case: expected 2, got %v", result)
 	}
 }
 
 func TestPullRequestIDOrNil(t *testing.T) {
-	result := lib.PullRequestIDOrNil(nil)
+	result := PullRequestIDOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
-	result = lib.PullRequestIDOrNil(&lib.PullRequest{ID: 2})
+	result = PullRequestIDOrNil(&PullRequest{ID: 2})
 	if result != 2 {
 		t.Errorf("test ID=2 case: expected 2, got %v", result)
 	}
 }
 
 func TestCommentIDOrNil(t *testing.T) {
-	result := lib.CommentIDOrNil(nil)
+	result := CommentIDOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
-	result = lib.CommentIDOrNil(&lib.Comment{ID: 2})
+	result = CommentIDOrNil(&Comment{ID: 2})
 	if result != 2 {
 		t.Errorf("test ID=2 case: expected 2, got %v", result)
 	}
 }
 
 func TestForkeeIDOrNil(t *testing.T) {
-	result := lib.ForkeeIDOrNil(nil)
+	result := ForkeeIDOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
-	result = lib.ForkeeIDOrNil(&lib.Forkee{ID: 2})
+	result = ForkeeIDOrNil(&Forkee{ID: 2})
 	if result != 2 {
 		t.Errorf("test ID=2 case: expected 2, got %v", result)
 	}
 }
 
 func TestForkeeOldIDOrNil(t *testing.T) {
-	result := lib.ForkeeOldIDOrNil(nil)
+	result := ForkeeOldIDOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
-	result = lib.ForkeeOldIDOrNil(&lib.ForkeeOld{ID: 2})
+	result = ForkeeOldIDOrNil(&ForkeeOld{ID: 2})
 	if result != 2 {
 		t.Errorf("test ID=2 case: expected 2, got %v", result)
 	}
 }
 
 func TestForkeeNameOrNil(t *testing.T) {
-	result := lib.ForkeeNameOrNil(nil)
+	result := ForkeeNameOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
 	expected := "kubernetes"
-	result = lib.ForkeeNameOrNil(&lib.Forkee{Name: expected})
+	result = ForkeeNameOrNil(&Forkee{Name: expected})
 	if result != expected {
 		t.Errorf("test Name=%s case: expected %s, got %v", expected, expected, result)
 	}
 }
 
 func TestActorIDOrNil(t *testing.T) {
-	result := lib.ActorIDOrNil(nil)
+	result := ActorIDOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
-	result = lib.ActorIDOrNil(&lib.Actor{ID: 2})
+	result = ActorIDOrNil(&Actor{ID: 2})
 	if result != 2 {
 		t.Errorf("test ID=2 case: expected 2, got %v", result)
 	}
 }
 
 func TestActorLoginOrNil(t *testing.T) {
-	result := lib.ActorLoginOrNil(nil, func(a string) string { return a })
+	result := ActorLoginOrNil(nil, func(a string) string { return a })
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
 	expected := "lukaszgryglicki"
-	result = lib.ActorLoginOrNil(&lib.Actor{Login: expected}, func(a string) string { return a })
+	result = ActorLoginOrNil(&Actor{Login: expected}, func(a string) string { return a })
 	if result != expected {
 		t.Errorf("test Login=%s case: expected %s, got %v", expected, expected, result)
 	}
 	login := "forbidden"
 	expected = "anon-1"
-	result = lib.ActorLoginOrNil(&lib.Actor{Login: login}, func(a string) string { return "anon-1" })
+	result = ActorLoginOrNil(&Actor{Login: login}, func(a string) string { return "anon-1" })
 	if result != expected {
 		t.Errorf("test Login=%s case: expected %s, got %v", login, expected, result)
 	}
 }
 
 func TestReleaseIDOrNil(t *testing.T) {
-	result := lib.ReleaseIDOrNil(nil)
+	result := ReleaseIDOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
-	result = lib.ReleaseIDOrNil(&lib.Release{ID: 2})
+	result = ReleaseIDOrNil(&Release{ID: 2})
 	if result != 2 {
 		t.Errorf("test ID=2 case: expected 2, got %v", result)
 	}
 }
 
 func TestMilestoneIDOrNil(t *testing.T) {
-	result := lib.MilestoneIDOrNil(nil)
+	result := MilestoneIDOrNil(nil)
 	if result != nil {
 		t.Errorf("test nil case: expected <nil>, got %v", result)
 	}
-	result = lib.MilestoneIDOrNil(&lib.Milestone{ID: 2})
+	result = MilestoneIDOrNil(&Milestone{ID: 2})
 	if result != 2 {
 		t.Errorf("test ID=2 case: expected 2, got %v", result)
 	}
@@ -856,27 +854,27 @@ func TestCompareStringPtr(t *testing.T) {
 	s1 := "string1"
 	s2 := "string2"
 	s3 := "string1"
-	result := lib.CompareStringPtr(nil, nil)
+	result := CompareStringPtr(nil, nil)
 	if result != true {
 		t.Errorf("test nil, nil case: expected true, got %v", result)
 	}
-	result = lib.CompareStringPtr(nil, &s1)
+	result = CompareStringPtr(nil, &s1)
 	if result != false {
 		t.Errorf("test nil, &s1 case: expected false, got %v", result)
 	}
-	result = lib.CompareStringPtr(&s2, nil)
+	result = CompareStringPtr(&s2, nil)
 	if result != false {
 		t.Errorf("test &s2, nil case: expected false, got %v", result)
 	}
-	result = lib.CompareStringPtr(&s1, &s2)
+	result = CompareStringPtr(&s1, &s2)
 	if result != false {
 		t.Errorf("test &s1, &s2 case: expected false, got %v", result)
 	}
-	result = lib.CompareStringPtr(&s1, &s1)
+	result = CompareStringPtr(&s1, &s1)
 	if result != true {
 		t.Errorf("test &s1, &s1 case: expected true, got %v", result)
 	}
-	result = lib.CompareStringPtr(&s1, &s3)
+	result = CompareStringPtr(&s1, &s3)
 	if result != true {
 		t.Errorf("test &s1, &s1 case: expected true, got %v", result)
 	}
@@ -886,27 +884,27 @@ func TestCompareIntPtr(t *testing.T) {
 	i1 := 1
 	i2 := 2
 	i3 := 1
-	result := lib.CompareIntPtr(nil, nil)
+	result := CompareIntPtr(nil, nil)
 	if result != true {
 		t.Errorf("test nil, nil case: expected true, got %v", result)
 	}
-	result = lib.CompareIntPtr(nil, &i1)
+	result = CompareIntPtr(nil, &i1)
 	if result != false {
 		t.Errorf("test nil, &i1 case: expected false, got %v", result)
 	}
-	result = lib.CompareIntPtr(&i2, nil)
+	result = CompareIntPtr(&i2, nil)
 	if result != false {
 		t.Errorf("test &i2, nil case: expected false, got %v", result)
 	}
-	result = lib.CompareIntPtr(&i1, &i2)
+	result = CompareIntPtr(&i1, &i2)
 	if result != false {
 		t.Errorf("test &i1, &i2 case: expected false, got %v", result)
 	}
-	result = lib.CompareIntPtr(&i1, &i1)
+	result = CompareIntPtr(&i1, &i1)
 	if result != true {
 		t.Errorf("test &i1, &i1 case: expected true, got %v", result)
 	}
-	result = lib.CompareIntPtr(&i1, &i3)
+	result = CompareIntPtr(&i1, &i3)
 	if result != true {
 		t.Errorf("test &i1, &i1 case: expected true, got %v", result)
 	}
@@ -917,31 +915,31 @@ func TestCompareFloat64Ptr(t *testing.T) {
 	f2 := 1.2
 	f3 := 1.1
 	f4 := 1.10000000001
-	result := lib.CompareFloat64Ptr(nil, nil)
+	result := CompareFloat64Ptr(nil, nil)
 	if result != true {
 		t.Errorf("test nil, nil case: expected true, got %v", result)
 	}
-	result = lib.CompareFloat64Ptr(nil, &f1)
+	result = CompareFloat64Ptr(nil, &f1)
 	if result != false {
 		t.Errorf("test nil, &f1 case: expected false, got %v", result)
 	}
-	result = lib.CompareFloat64Ptr(&f2, nil)
+	result = CompareFloat64Ptr(&f2, nil)
 	if result != false {
 		t.Errorf("test &f2, nil case: expected false, got %v", result)
 	}
-	result = lib.CompareFloat64Ptr(&f1, &f2)
+	result = CompareFloat64Ptr(&f1, &f2)
 	if result != false {
 		t.Errorf("test &f1, &f2 case: expected false, got %v", result)
 	}
-	result = lib.CompareFloat64Ptr(&f1, &f1)
+	result = CompareFloat64Ptr(&f1, &f1)
 	if result != true {
 		t.Errorf("test &f1, &f1 case: expected true, got %v", result)
 	}
-	result = lib.CompareFloat64Ptr(&f1, &f3)
+	result = CompareFloat64Ptr(&f1, &f3)
 	if result != true {
 		t.Errorf("test &f1, &f1 case: expected true, got %v", result)
 	}
-	result = lib.CompareFloat64Ptr(&f1, &f4)
+	result = CompareFloat64Ptr(&f1, &f4)
 	if result != true {
 		t.Errorf("test &f1, &f4 case: expected true, got %v", result)
 	}

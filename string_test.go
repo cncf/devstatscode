@@ -2,8 +2,6 @@ package devstatscode
 
 import (
 	"testing"
-
-	lib "github.com/cncf/devstatscode"
 )
 
 func TestSlugify(t *testing.T) {
@@ -31,7 +29,7 @@ func TestSlugify(t *testing.T) {
 	}
 	// Execute test cases
 	for index, test := range testCases {
-		after := lib.Slugify(test.before)
+		after := Slugify(test.before)
 		if after != test.after {
 			t.Errorf(
 				"test number %d, expected '%v', got '%v'",
@@ -91,7 +89,7 @@ func TestMaybeHideFunc(t *testing.T) {
 	}
 	// Execute test cases
 	for index, test := range testCases {
-		f := lib.MaybeHideFunc(test.shas)
+		f := MaybeHideFunc(test.shas)
 		for i, arg := range test.args {
 			res := f(arg)
 			if res != test.results[i] {
@@ -255,7 +253,7 @@ func TestPrepareQuickRangeQuery(t *testing.T) {
 	for index, test := range testCases {
 		expected := test.expected
 		expectedHours := test.hours
-		got, gotHours := lib.PrepareQuickRangeQuery(test.sql, test.period, test.from, test.to)
+		got, gotHours := PrepareQuickRangeQuery(test.sql, test.period, test.from, test.to)
 		if got != expected || gotHours != expectedHours {
 			t.Errorf(
 				"test number %d, expected '%v'/'%v', got '%v'/'%v'",

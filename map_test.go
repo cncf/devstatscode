@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	lib "github.com/cncf/devstatscode"
 	testlib "github.com/cncf/devstatscode/test"
 )
 
@@ -27,7 +26,7 @@ func TestMapFromString(t *testing.T) {
 	}
 	// Execute test cases
 	for index, test := range testCases {
-		got := lib.MapFromString(test.value)
+		got := MapFromString(test.value)
 		expected := test.expected
 		testlib.MakeComparableMapStr(&expected)
 		oriGot := got
@@ -59,7 +58,7 @@ func TestSkipEmpty(t *testing.T) {
 	}
 	// Execute test cases
 	for index, test := range testCases {
-		got := lib.SkipEmpty(test.values)
+		got := SkipEmpty(test.values)
 		if !testlib.CompareStringSlices(got, test.expected) {
 			t.Errorf(
 				"test number %d, expected %v length %d, got %v length %d",
@@ -97,7 +96,7 @@ func TestStringsMapToArray(t *testing.T) {
 	}
 	// Execute test cases
 	for index, test := range testCases {
-		got := lib.StringsMapToArray(test.function, test.values)
+		got := StringsMapToArray(test.function, test.values)
 		if !testlib.CompareStringSlices(got, test.expected) {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -140,7 +139,7 @@ func TestStringsMapToSet(t *testing.T) {
 	}
 	// Execute test cases
 	for index, test := range testCases {
-		got := lib.StringsMapToSet(test.function, test.values)
+		got := StringsMapToSet(test.function, test.values)
 		if !testlib.CompareSets(got, test.expected) {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
@@ -171,7 +170,7 @@ func TestStringsSetKeys(t *testing.T) {
 	}
 	// Execute test cases
 	for index, test := range testCases {
-		got := lib.StringsSetKeys(test.set)
+		got := StringsSetKeys(test.set)
 		if !testlib.CompareStringSlices(got, test.expected) {
 			t.Errorf(
 				"test number %d, expected %v, got %v",
