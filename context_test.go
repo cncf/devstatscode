@@ -147,6 +147,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		CommitsFilesStatsEnabled: in.CommitsFilesStatsEnabled,
 		CommitsLOCStatsEnabled:   in.CommitsLOCStatsEnabled,
 		EnableMetricsDrop:        in.EnableMetricsDrop,
+		RecalcReciprocal:         in.RecalcReciprocal,
 	}
 	return &out
 }
@@ -417,6 +418,7 @@ func TestInit(t *testing.T) {
 		CommitsFilesStatsEnabled: true,
 		CommitsLOCStatsEnabled:   true,
 		EnableMetricsDrop:        false,
+		RecalcReciprocal:         50,
 	}
 
 	var nilRegexp *regexp.Regexp
@@ -1793,6 +1795,33 @@ func TestInit(t *testing.T) {
 					"InputDBs": []string{"db1", "db2", "db3"},
 					"OutputDB": "db4",
 				},
+			),
+		},
+		{
+			"Setting recalc reciprocal to 1",
+			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "1"},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{"RecalcReciprocal": 1},
+			),
+		},
+		{
+			"Setting recalc reciprocal to 0",
+			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "0"},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{"RecalcReciprocal": 50},
+			),
+		},
+		{
+			"Setting recalc reciprocal to -2",
+			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "-2"},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{"RecalcReciprocal": 50},
 			),
 		},
 	}
