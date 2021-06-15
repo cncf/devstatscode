@@ -469,6 +469,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 // (so postgres can detect if index exists), name is created from table and column names
 // so if this is too long, just make it shorter - hence non-fatal
 func makePsqlName(name string, fatal bool) string {
+	name = strings.Replace(name, `"`, `""`, -1)
 	l := len(name)
 	if l > 63 {
 		if fatal {
