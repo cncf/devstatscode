@@ -298,6 +298,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				if !checkPsqlName(tagName) {
 					continue
 				}
+				tagName = escapeName(tagName)
 				namesU = append(namesU, "\""+tagName+"\"")
 				argsU = append(argsU, "$"+strconv.Itoa(i))
 				vals = append(vals, tagValue)
@@ -362,6 +363,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				if !checkPsqlName(fieldName) {
 					continue
 				}
+				fieldName = escapeName(fieldName)
 				namesU = append(namesU, "\""+fieldName+"\"")
 				argsU = append(argsU, "$"+strconv.Itoa(i))
 				vals = append(vals, fieldValue)
@@ -424,6 +426,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				if !checkPsqlName(fieldName) {
 					continue
 				}
+				fieldName = escapeName(fieldName)
 				namesU = append(namesU, "\""+fieldName+"\"")
 				argsU = append(argsU, "$"+strconv.Itoa(i))
 				vals = append(vals, fieldValue)
