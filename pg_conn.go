@@ -278,6 +278,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				if !checkPsqlName(tagName) {
 					continue
 				}
+				tagName = escapeName(tagName)
 				namesI = append(namesI, "\""+tagName+"\"")
 				argsI = append(argsI, "$"+strconv.Itoa(i))
 				vals = append(vals, tagValue)
@@ -341,6 +342,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				if !checkPsqlName(fieldName) {
 					continue
 				}
+				fieldName = escapeName(fieldName)
 				namesI = append(namesI, "\""+fieldName+"\"")
 				argsI = append(argsI, "$"+strconv.Itoa(i))
 				vals = append(vals, fieldValue)
@@ -402,6 +404,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				if !checkPsqlName(fieldName) {
 					continue
 				}
+				fieldName = escapeName(fieldName)
 				namesI = append(namesI, "\""+fieldName+"\"")
 				argsI = append(argsI, "$"+strconv.Itoa(i))
 				vals = append(vals, fieldValue)
@@ -483,9 +486,15 @@ func makePsqlName(name string, fatal bool) string {
 	return name
 }
 
+// escapeName - escapes " into "" in psql table/column names
+func escapeName(name string) string {
+	return strings.Replace(name, `"`, `""`, -1)
+}
+
 // checkPsqlName - prints warning when psql name exceeds 63 bytes
 // return: true - name is OK, false: name is too long (warning is issued)
 func checkPsqlName(name string) bool {
+	name = strings.Replace(name, `"`, `""`, -1)
 	l := len(name)
 	if l > 63 {
 		Printf("Notice: checkPsqlName: postgresql identifier name too long (%d, %s)\n", l, name)
