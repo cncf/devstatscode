@@ -124,9 +124,9 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 			sq += "time timestamp primary key, "
 			indices := []string{}
 			for col := range data {
-				sq += "\"" + col + "\" text, "
+				sq += "\"" + escapeName(col) + "\" text, "
 				iname := makePsqlName("i"+name[1:]+col, false)
-				indices = append(indices, "create index if not exists \""+iname+"\" on \""+name+"\"(\""+col+"\")")
+				indices = append(indices, "create index if not exists \""+iname+"\" on \""+name+"\"(\""+escapeName(col)+"\")")
 			}
 			l := len(sq)
 			sq = sq[:l-2] + ")"
@@ -136,12 +136,13 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 			sqls = append(sqls, "grant select on \""+name+"\" to devstats_team")
 		} else {
 			for col := range data {
-				colExists = TableColumnExists(con, ctx, name, col)
+				eCol := escapeName(col)
+				colExists = TableColumnExists(con, ctx, name, eCol)
 				if !colExists {
-					sq := "alter table \"" + name + "\" add column if not exists \"" + col + "\" text"
+					sq := "alter table \"" + name + "\" add column if not exists \"" + eCol + "\" text"
 					sqls = append(sqls, sq)
 					iname := makePsqlName("i"+name[1:]+col, false)
-					sqls = append(sqls, "create index if not exists \""+iname+"\" on \""+name+"\"(\""+col+"\")")
+					sqls = append(sqls, "create index if not exists \""+iname+"\" on \""+name+"\"(\""+eCol+"\")")
 				}
 			}
 		}
@@ -164,8 +165,10 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 						"create index if not exists \"" + makePsqlName("i"+mergeS[1:]+"p", false) + "\" on \"" + mergeS + "\"(period)",
 					}
 					for col, ty := range data {
+						col = escapeName(col)
 						if ty == 0 {
 							sq += "\"" + col + "\" double precision not null default 0.0, "
+							// if uncommented then avoid double escape of " in col
 							//indices = append(indices, "create index if not exists \""+makePsqlName("i"+mergeS[1:]+col, false)+"\" on \""+mergeS+"\"(\""+col+"\")")
 						} else if ty == 1 {
 							sq += "\"" + col + "\" timestamp not null default '1900-01-01 00:00:00', "
@@ -183,6 +186,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				bTable = true
 			}
 			for col, ty := range data {
+				col = escapeName(col)
 				_, ok := colMap[col]
 				if !ok {
 					colExists = TableColumnExists(con, ctx, mergeS, col)
@@ -190,6 +194,7 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 					if !colExists {
 						if ty == 0 {
 							sqls = append(sqls, "alter table \""+mergeS+"\" add column if not exists \""+col+"\" double precision not null default 0.0")
+							// if uncommented then avoid double escape of " in col
 							//sqls = append(sqls, "create index if not exists \""+makePsqlName("i"+mergeS[1:]+col, false)+"\" on \""+mergeS+"\"(\""+col+"\")")
 						} else if ty == 1 {
 							sqls = append(sqls, "alter table \""+mergeS+"\" add column if not exists \""+col+"\" timestamp not null default '1900-01-01 00:00:00'")
@@ -214,8 +219,10 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 					"create index if not exists \"" + makePsqlName("i"+name[1:]+"p", false) + "\" on \"" + name + "\"(period)",
 				}
 				for col, ty := range data {
+					col = escapeName(col)
 					if ty == 0 {
 						sq += "\"" + col + "\" double precision not null default 0.0, "
+						// if uncommented then avoid double escape of " in col
 						//indices = append(indices, "create index if not exists \""+makePsqlName("i"+name[1:]+col, false)+"\" on \""+name+"\"(\""+col+"\")")
 					} else if ty == 1 {
 						sq += "\"" + col + "\" timestamp not null default '1900-01-01 00:00:00', "
@@ -230,10 +237,12 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				sqls = append(sqls, "grant select on \""+name+"\" to devstats_team")
 			} else {
 				for col, ty := range data {
+					col = escapeName(col)
 					colExists = TableColumnExists(con, ctx, name, col)
 					if !colExists {
 						if ty == 0 {
 							sqls = append(sqls, "alter table \""+name+"\" add column if not exists \""+col+"\" double precision not null default 0.0")
+							// if uncommented then avoid double escape of " in col
 							//sqls = append(sqls, "create index if not exists \""+makePsqlName("i"+name[1:]+col, false)+"\" on \""+name+"\"(\""+col+"\")")
 						} else if ty == 1 {
 							sqls = append(sqls, "alter table \""+name+"\" add column if not exists \""+col+"\" timestamp not null default '1900-01-01 00:00:00'")
