@@ -210,6 +210,9 @@ List of APIs:
   - Example API call: `./devel/api_dev_act_cnt.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'SIG Apps' 'United States' idvoretskyi`.
   - Example API call: `./devel/api_dev_act_cnt_repos.sh kubernetes 'Last year' Contributions 'kubernetes/kubernetes' 'United States'`.
   - Example API call: `./devel/api_dev_act_cnt_repos.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'kubernetes/test-infra' 'United States' idvoretskyi`.
+  - You can also use arbitrary date ranges in this API, just use 'range:YYYY-MM-DD,YYYY-MM-DD' as a parameter (note that those ranges aren't precalculated, because DevStats cannot guess all of them, so calculating a new date range for the first time can be very time consuming, but the next calls will reuse the calculated data.
+  - Example API call: `./devel/api_dev_act_cnt.sh kubernetes 'range:2021-08-20,2021-09' 'Approves' 'SIG Apps' 'United States'`.
+
 
 - `DevActCntComp`: `{"api": "DevActCntComp", "payload": {"project": "projectName", "range": "range", "metric": "metric", "repository_group": "repository_group", "country": "country", "companies": ["Google", "Red Hat", ...], "github_id": "id"}}`.
   - Arguments: (like in "Developer Activity Counts by Companies" DevStats dashboards).
@@ -280,6 +283,8 @@ List of APIs:
   - Repository mode `./devel/api_dev_act_cnt_comp_repos.sh` is only allowed for Kubernetes project.
   - Example API call: `./devel/api_dev_act_cnt_comp.sh kubernetes 'Last decade' 'PRs' 'SIG Apps' 'United States' '["Google", "Amazon"]'`.
   - Example API call: `./devel/api_dev_act_cnt_comp_repos.sh kubernetes 'Last decade' 'PRs' 'kubernetes/test-infra' 'United States' '["Google", "Amazon"]'`.
+  - You can also use arbitrary date ranges in this API, just use 'range:YYYY-MM-DD,YYYY-MM-DD' as a parameter (note that those ranges aren't precalculated, because DevStats cannot guess all of them, so calculating a new date range for the first time can be very time consuming, but the next calls will reuse the calculated data.
+  - Example API call: `./devel/api_dev_act_cnt_comp.sh kubernetes 'range:2021-08-20,2021-09' 'Reviews' 'SIG Apps' 'United States' '["Google", "Amazon"]'`.
 
 - `ComStatsRepoGrp`: `{"api":"ComStatsRepoGrp","payload":{"project":"projectName","from":"2019-01-01","to":"2020-01-01","period":"Day","metric":"Contributors","repository_group":"SIG Apps","companies":["Google", "Red Hat", ...]}}`.
   - Arguments: (like in "Companies Statistics by Repository Group" DevStats dashboards).

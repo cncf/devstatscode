@@ -363,11 +363,11 @@ func periodNameToValue(c *sql.DB, ctx *lib.Ctx, periodName string, allowManual b
 	return
 }
 
-func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, period string, reposMode bool) (err error) {
+func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, period string, reposMode, bg bool) (err error) {
 	file, mode, extra := "", "", ""
 	switch apiName {
 	case lib.DevActCnt, lib.DevActCntComp:
-		file, mode, extra = "project_developer_stats", "multi_row_single_column", "hist,merge_series:hdev"
+		file, mode = "project_developer_stats", "multi_row_single_column"
 		if metric == "approves" {
 			if db != lib.GHA {
 				err = fmt.Errorf("ensureManualData: approves mode only allowed for kubernetes projectreturn (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
@@ -391,14 +391,16 @@ func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, per
 	if reposMode {
 		file += "_repos"
 	}
-	// fmt.Printf("file detected: %s\n", file)
+	// lib.Printf("file detected: %s\n", file)
 	query := ""
 	var args []interface{}
 	switch file {
 	case "hist_reviewers", "hist_approvers", "project_developer_stats":
+		extra = "hist,merge_series:hdev"
 		query = "select 1 from shdev where period = $1 and series like $2 limit 1"
 		args = []interface{}{period, "hdev_" + metric + "%"}
 	case "hist_reviewers_repos", "hist_approvers_repos", "project_developer_stats_repos":
+		extra = "hist,merge_series:hdev_repos"
 		query = "select 1 from shdev_repos where period = $1 and series like $2 limit 1"
 		args = []interface{}{period, "hdev_" + metric + "%"}
 	default:
@@ -406,7 +408,7 @@ func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, per
 		return
 	}
 	file += ".sql"
-	// fmt.Printf("query,args: %s,%+v\n", query, args)
+	// lib.Printf("query,args: %s,%+v\n", query, args)
 	rows, err := lib.QuerySQLLogErr(c, ctx, query, args...)
 	if err != nil {
 		return
@@ -424,34 +426,39 @@ func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, per
 	if err != nil {
 		return
 	}
-	// fmt.Printf("dummy=%d\n", dummy)
+	// lib.Printf("dummy=%d\n", dummy)
 	if dummy != 0 {
 		return
 	}
 	dtNow := lib.ToYMDHDate(time.Now())
 	// GHA2DB_PROJECT=project calc_metric multi_row_single_column /etc/gha2db/metrics/project/project_developer_stats.sql '2021-08-25 0' '2021-08-25 0' 'range:2021-08-20,2022' 'hist,merge_series:hdev'
 	// range:2021-08-20 00:00:00,2022-01-01 00:00:00
-	ctx.ExecFatal = false
-	ctx.ExecOutput = true
-	var data string
-	data, err = lib.ExecCommand(
-		ctx,
-		[]string{
-			"calc_metric",
-			mode,
-			"/etc/gha2db/metrics/" + project + "/" + file,
-			dtNow,
-			dtNow,
-			period,
-			extra,
-		},
-		map[string]string{"GHA2DB_PROJECT": project},
-	)
-	if err != nil {
-		return
+	calc := func() {
+		var data string
+		data, err = lib.ExecCommand(
+			ctx,
+			[]string{
+				"calc_metric",
+				mode,
+				"/etc/gha2db/metrics/" + project + "/" + file,
+				dtNow,
+				dtNow,
+				period,
+				extra,
+			},
+			map[string]string{"GHA2DB_PROJECT": project},
+		)
+		if err != nil {
+			return
+		}
+		lib.Printf("Calculated manually:\n")
+		lib.Printf("%s\n", data)
 	}
-	// FIXME:
-	fmt.Printf("data=%s\n", data)
+	if bg {
+		go calc()
+	} else {
+		calc()
+	}
 	return
 }
 
@@ -877,6 +884,11 @@ func apiDevActCntRepos(apiName, project, db, info string, w http.ResponseWriter,
 		}
 		params[paramName] = paramValue
 	}
+	bg := false
+	sbg, _ := getPayloadStringParam("bg", w, payload, true)
+	if sbg != "" {
+		bg = true
+	}
 	metricMap, err := metricNameToValueMap(db, apiName)
 	if err != nil {
 		returnError(apiName, w, err)
@@ -913,7 +925,7 @@ func apiDevActCntRepos(apiName, project, db, info string, w http.ResponseWriter,
 		return
 	}
 	if manual {
-		err = ensureManualData(c, ctx, project, db, apiName, metric, period, true)
+		err = ensureManualData(c, ctx, project, db, apiName, metric, period, true, bg)
 		if err != nil {
 			returnError(apiName, w, err)
 			return
@@ -1024,6 +1036,11 @@ func apiDevActCnt(info string, w http.ResponseWriter, payload map[string]interfa
 		}
 		params[paramName] = paramValue
 	}
+	bg := false
+	sbg, _ := getPayloadStringParam("bg", w, payload, true)
+	if sbg != "" {
+		bg = true
+	}
 	metricMap, err := metricNameToValueMap(db, apiName)
 	if err != nil {
 		returnError(apiName, w, err)
@@ -1060,7 +1077,7 @@ func apiDevActCnt(info string, w http.ResponseWriter, payload map[string]interfa
 		return
 	}
 	if manual {
-		err = ensureManualData(c, ctx, project, db, apiName, metric, period, false)
+		err = ensureManualData(c, ctx, project, db, apiName, metric, period, false, bg)
 		if err != nil {
 			returnError(apiName, w, err)
 			return
@@ -1166,6 +1183,11 @@ func apiDevActCntCompRepos(apiName, project, db, info string, w http.ResponseWri
 		}
 		paramsAry[paramName] = paramValue
 	}
+	bg := false
+	sbg, _ := getPayloadStringParam("bg", w, payload, true)
+	if sbg != "" {
+		bg = true
+	}
 	metricMap, err := metricNameToValueMap(db, apiName)
 	if err != nil {
 		returnError(apiName, w, err)
@@ -1208,7 +1230,7 @@ func apiDevActCntCompRepos(apiName, project, db, info string, w http.ResponseWri
 		return
 	}
 	if manual {
-		err = ensureManualData(c, ctx, project, db, apiName, metric, period, true)
+		err = ensureManualData(c, ctx, project, db, apiName, metric, period, true, bg)
 		if err != nil {
 			returnError(apiName, w, err)
 			return
@@ -1324,6 +1346,11 @@ func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]int
 		}
 		params[paramName] = paramValue
 	}
+	bg := false
+	sbg, _ := getPayloadStringParam("bg", w, payload, true)
+	if sbg != "" {
+		bg = true
+	}
 	paramsAry := map[string][]string{"companies": {}}
 	for paramName := range paramsAry {
 		paramValue, err := getPayloadStringArrayParam(paramName, w, payload, false, false)
@@ -1375,7 +1402,7 @@ func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]int
 		return
 	}
 	if manual {
-		err = ensureManualData(c, ctx, project, db, apiName, metric, period, false)
+		err = ensureManualData(c, ctx, project, db, apiName, metric, period, false, bg)
 		if err != nil {
 			returnError(apiName, w, err)
 			return
@@ -2217,6 +2244,8 @@ func readProjects(ctx *lib.Ctx) {
 func serveAPI() {
 	var ctx lib.Ctx
 	ctx.Init()
+	ctx.ExecFatal = false
+	ctx.ExecOutput = true
 	lib.Printf("Starting API server\n")
 	checkEnv()
 	readProjects(&ctx)
