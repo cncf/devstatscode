@@ -565,6 +565,8 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 			}
 			sHours, from, to, period := "", ary[0], ary[1], ""
 			sqlQuery, sHours = lib.PrepareQuickRangeQuery(sqlQuery, period, from, to)
+			from = lib.ToYMDHMSDate(lib.TimeParseAny(from))
+			to = lib.ToYMDHMSDate(lib.TimeParseAny(to))
 			sqlQuery = strings.Replace(sqlQuery, "{{exclude_bots}}", excludeBots, -1)
 			sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
 			sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
