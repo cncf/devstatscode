@@ -29,7 +29,11 @@ func PrepareQuickRangeQuery(sql, period, from, to string) (string, string) {
 		sHours = IntervalHours(period)
 	} else {
 		if from != "" && to != "" {
-			sHours = RangeHours(TimeParseAny(from), TimeParseAny(to))
+			tFrom := TimeParseAny(from)
+			tTo := TimeParseAny(to)
+			from = ToYMDHMSDate(tFrom)
+			to = ToYMDHMSDate(tTo)
+			sHours = RangeHours(tFrom, tTo)
 		}
 	}
 	for {

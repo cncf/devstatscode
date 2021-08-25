@@ -804,6 +804,7 @@ func apiDevActCntRepos(apiName, project, db, info string, w http.ResponseWriter,
 		returnError(apiName, w, err)
 		return
 	}
+	// calc_metric multi_row_single_column ./metrics/shared/project_developer_stats.sql '2021-08-25 0' '2021-08-25 0' 'range:2021-08-01,2021-09-01' 'hist,merge_series:hdev'
 	period, err := periodNameToValue(c, ctx, params["range"])
 	if err != nil {
 		returnError(apiName, w, err)
