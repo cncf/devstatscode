@@ -15,7 +15,7 @@ List of APIs:
   - Example API call (see last line of that script): `./devel/api_health.sh kubernetes`.
 
 - `ListAPIs`: `{"api": "ListAPIs"}`.
-  - Returns: `{"apis":["DevActCntRepoGrp","Health","Events","ListAPIs",...]}` - list of all possible APIs.
+  - Returns: `{"apis":["DevActCnt","Health","Events","ListAPIs",...]}` - list of all possible APIs.
   - Example API call: `./devel/api_list_apis.sh`.
 
 - `ListProjects`: `{"api": "ListProjects"}`.
@@ -168,7 +168,7 @@ List of APIs:
   - Result contains data in the same format as "Companies contributing in Repository Groups" DevStats dashboard for the given project.
   - Example API call: `./devel/api_com_contrib_repo_grp.sh kubernetes 2020-01-01 2020-04-01 'SIG Apps' Week`.
 
-- `DevActCntRepoGrp`: `{"api": "DevActCntRepoGrp", "payload": {"project": "projectName", "range": "range", "metric": "metric", "repository_group": "repository_group", "country": "country", "github_id": "id"}}`.
+- `DevActCnt`: `{"api": "DevActCnt", "payload": {"project": "projectName", "range": "range", "metric": "metric", "repository_group": "repository_group", "country": "country", "github_id": "id"}}`.
   - Arguments: (like in "Developer Activity Counts by Repository Group" DevStats dashboards).
     - `projectName`: see `Health` API.
     - `range`: value from `Range` drop-down in DevStats page, for example: `Last year`, `v1.17.0 - now`.
@@ -204,9 +204,11 @@ List of APIs:
     ]
   }
   ```
-  - Result contains data in the same format as "Developer Activity Counts by Repository Group" DevStats dashboard for the given project.
-  - Example API call: `./devel/api_dev_act_cnt_repo_grp.sh all 'Last year' Contributions Prometheus 'United States'`.
-  -Example API call: `./devel/api_dev_act_cnt_repo_grp.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'SIG Apps' 'United States' idvoretskyi`.
+  - Result contains data in the same format as "Developer Activity Counts by Repository Group/Repository" DevStats dashboard for the given project.
+  - Example API call: `./devel/api_dev_act_cnt.sh all 'Last year' Contributions Prometheus 'United States'`.
+  - Example API call: `./devel/api_dev_act_cnt.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'SIG Apps' 'United States' idvoretskyi`.
+  - Example API call: `./devel/api_dev_act_cnt_repos.sh prometheus 'Last year' Contributions 'prometheus/prometheus' 'United States'`.
+  - Example API call: `./devel/api_dev_act_cnt.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'kubernetes/test-infra' 'United States' idvoretskyi`.
 
 - `DevActCntComp`: `{"api": "DevActCntComp", "payload": {"project": "projectName", "range": "range", "metric": "metric", "repository_group": "repository_group", "country": "country", "companies": ["Google", "Red Hat", ...], "github_id": "id"}}`.
   - Arguments: (like in "Developer Activity Counts by Companies" DevStats dashboards).
@@ -275,6 +277,7 @@ List of APIs:
   ```
   - Result contains data in the same format as "Developer Activity Counts by Companies" DevStats dashboard for the given project.
   - Example API call: `./devel/api_dev_act_cnt_comp.sh kubernetes 'Last decade' 'PRs' 'SIG Apps' 'United States' '["Google", "Amazon"]'`.
+  - Example API call: `./devel/api_dev_act_cnt_comp_repos.sh kubernetes 'Last decade' 'PRs' 'kubernetes/test-infra' 'United States' '["Google", "Amazon"]'`.
 
 - `ComStatsRepoGrp`: `{"api":"ComStatsRepoGrp","payload":{"project":"projectName","from":"2019-01-01","to":"2020-01-01","period":"Day","metric":"Contributors","repository_group":"SIG Apps","companies":["Google", "Red Hat", ...]}}`.
   - Arguments: (like in "Companies Statistics by Repository Group" DevStats dashboards).
@@ -353,6 +356,6 @@ List of APIs:
 
 - Start local API server via: `make; PG_PASS=... PG_PASS_RO=... PG_USER_RO=... PG_HOST_RO=127.0.0.1 ./api`.
 - Call Health API: `./devel/api_health.sh kubernetes`.
-- Call Developer Activity Counts Repository Groups API: `./devel/api_dev_act_cnt_repo_grp.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'SIG Apps' 'United States' ''`.
+- Call Developer Activity Counts Repository Groups API: `./devel/api_dev_act_cnt.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'SIG Apps' 'United States' ''`.
 - Manual `curl`: `curl -H "Content-Type: application/json" http://127.0.0.1:8080/api/v1 -d"{\"api\":\"Health\",\"payload\":{\"project\":\"kubernetes\"}}"`.
 - Call all other API scripts examples using `./devel/api_*.sh` scripts.

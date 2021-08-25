@@ -32,7 +32,7 @@ var allAPIs = []string{
 	lib.Repos,
 	lib.CompaniesTable,
 	lib.ComContribRepoGrp,
-	lib.DevActCntRepoGrp,
+	lib.DevActCnt,
 	lib.DevActCntComp,
 	lib.ComStatsRepoGrp,
 	lib.SiteStats,
@@ -105,7 +105,7 @@ type comContribRepoGrpPayload struct {
 	DevelopersTimestamps []time.Time `json:"developers_timestamps"`
 }
 
-type devActCntRepoGrpPayload struct {
+type devActCntPayload struct {
 	Project         string   `json:"project"`
 	DB              string   `json:"db_name"`
 	Range           string   `json:"range"`
@@ -117,6 +117,20 @@ type devActCntRepoGrpPayload struct {
 	Rank            []int    `json:"rank"`
 	Login           []string `json:"login"`
 	Number          []int    `json:"number"`
+}
+
+type devActCntReposPayload struct {
+	Project    string   `json:"project"`
+	DB         string   `json:"db_name"`
+	Range      string   `json:"range"`
+	Metric     string   `json:"metric"`
+	Repository string   `json:"repository"`
+	Country    string   `json:"country"`
+	GitHubID   string   `json:"github_id"`
+	Filter     string   `json:"filter"`
+	Rank       []int    `json:"rank"`
+	Login      []string `json:"login"`
+	Number     []int    `json:"number"`
 }
 
 type devActCntCompPayload struct {
@@ -132,6 +146,21 @@ type devActCntCompPayload struct {
 	Login           []string `json:"login"`
 	Company         []string `json:"company"`
 	Number          []int    `json:"number"`
+}
+
+type devActCntCompReposPayload struct {
+	Project    string   `json:"project"`
+	DB         string   `json:"db_name"`
+	Range      string   `json:"range"`
+	Metric     string   `json:"metric"`
+	Repository string   `json:"repository"`
+	Country    string   `json:"country"`
+	Companies  []string `json:"companies"`
+	GitHubID   string   `json:"github_id"`
+	Rank       []int    `json:"rank"`
+	Login      []string `json:"login"`
+	Company    []string `json:"company"`
+	Number     []int    `json:"number"`
 }
 
 type comStatsRepoGrpPayload struct {
@@ -345,6 +374,28 @@ func allRepoGroupNameToValue(c *sql.DB, ctx *lib.Ctx, repoGroupName string) (rep
 	return
 }
 
+func repoNameToValue(c *sql.DB, ctx *lib.Ctx, repoName string) (repoValue string, err error) {
+	rows, err := lib.QuerySQLLogErr(c, ctx, "select repo_value from trepos where repo_name = $1", repoName)
+	if err != nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		err = rows.Scan(&repoValue)
+		if err != nil {
+			return
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		return
+	}
+	if repoValue == "" {
+		err = fmt.Errorf("invalid repository name: '%s'", repoName)
+	}
+	return
+}
+
 func allCountryNameToValue(c *sql.DB, ctx *lib.Ctx, countryName string) (countryValue string, err error) {
 	rows, err := lib.QuerySQLLogErr(
 		c,
@@ -436,7 +487,7 @@ func metricNameToValueMap(db, apiName string) (nameToValue map[string]string, er
 			"Contributors":          "contributors",
 			"Comments":              "comments",
 		}
-	case lib.DevActCntRepoGrp, lib.DevActCntComp:
+	case lib.DevActCnt, lib.DevActCntComp:
 		nameToValue = map[string]string{
 			"Comments":            "comments",
 			"Commit comments":     "commit_comments",
@@ -709,8 +760,134 @@ func apiCompaniesTable(info string, w http.ResponseWriter, payload map[string]in
 	json.NewEncoder(w).Encode(pl)
 }
 
-func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]interface{}) {
-	apiName := lib.DevActCntRepoGrp
+func apiDevActCntRepos(apiName, project, db, info string, w http.ResponseWriter, payload map[string]interface{}) {
+	var err error
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	params := map[string]string{"range": "", "metric": "", "repository": "", "country": "", "github_id": ""}
+	for paramName := range params {
+		paramValue, err := getPayloadStringParam(paramName, w, payload, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	metricMap, err := metricNameToValueMap(db, apiName)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	for _, v := range metricMap {
+		metricMap[v] = v
+	}
+	metric, ok := metricMap[params["metric"]]
+	if !ok {
+		err = fmt.Errorf("invalid metric value: '%s'", params["metric"])
+		returnError(apiName, w, err)
+		return
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	repo, err := repoNameToValue(c, ctx, params["repository"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	country, err := allCountryNameToValue(c, ctx, params["country"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	period, err := periodNameToValue(c, ctx, params["range"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	series := fmt.Sprintf("hdev_%s%s%s", metric, repo, country)
+	query := `
+   select
+     sub."Rank",
+     sub.name,
+     sub.value
+   from (
+     select row_number() over (order by sum(value) desc) as "Rank",
+       split_part(name, '$$$', 1) as name,
+       sum(value) as value
+     from
+       shdev_repos
+     where
+       series = $1
+       and period = $2
+     group by
+       split_part(name, '$$$', 1)
+   ) sub
+	`
+	rows, err := lib.QuerySQLLogErr(c, ctx, query, series, period)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		rank    int
+		login   string
+		number  int
+		ranks   []int
+		logins  []string
+		numbers []int
+	)
+	ghID := params["github_id"]
+	for rows.Next() {
+		err = rows.Scan(&rank, &login, &number)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		if ghID != "" && login != ghID {
+			continue
+		}
+		ranks = append(ranks, rank)
+		logins = append(logins, login)
+		numbers = append(numbers, number)
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	if len(ranks) == 0 && ghID != "" {
+		returnError(apiName, w, fmt.Errorf("github_id '%s' not found in results", ghID))
+		return
+	}
+	filter := fmt.Sprintf("series:%s period:%s", series, period)
+	if ghID != "" {
+		filter += " github_id:" + ghID
+	}
+	pl := devActCntReposPayload{
+		Project:    project,
+		DB:         db,
+		Range:      params["range"],
+		Metric:     params["metric"],
+		Repository: params["repository"],
+		Country:    params["country"],
+		GitHubID:   ghID,
+		Filter:     filter,
+		Rank:       ranks,
+		Login:      logins,
+		Number:     numbers,
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(pl)
+}
+
+func apiDevActCnt(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.DevActCnt
 	var err error
 	project, db, err := handleSharedPayload(w, payload)
 	defer func() {
@@ -718,6 +895,12 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 	}()
 	if err != nil {
 		returnError(apiName, w, err)
+		return
+	}
+	paramValue, err := getPayloadStringParam("repository", w, payload, true)
+	if paramValue != "" {
+		// Repository mode
+		apiDevActCntRepos(apiName, project, db, info, w, payload)
 		return
 	}
 	params := map[string]string{"range": "", "metric": "", "repository_group": "", "country": "", "github_id": ""}
@@ -824,7 +1007,7 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 	if ghID != "" {
 		filter += " github_id:" + ghID
 	}
-	pl := devActCntRepoGrpPayload{
+	pl := devActCntPayload{
 		Project:         project,
 		DB:              db,
 		Range:           params["range"],
@@ -841,6 +1024,152 @@ func apiDevActCntRepoGrp(info string, w http.ResponseWriter, payload map[string]
 	json.NewEncoder(w).Encode(pl)
 }
 
+func apiDevActCntCompRepos(apiName, project, db, info string, w http.ResponseWriter, payload map[string]interface{}) {
+	var err error
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	params := map[string]string{"range": "", "metric": "", "repository": "", "country": "", "github_id": ""}
+	for paramName := range params {
+		paramValue, err := getPayloadStringParam(paramName, w, payload, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	paramsAry := map[string][]string{"companies": {}}
+	for paramName := range paramsAry {
+		paramValue, err := getPayloadStringArrayParam(paramName, w, payload, false, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		paramsAry[paramName] = paramValue
+	}
+	metricMap, err := metricNameToValueMap(db, apiName)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	for _, v := range metricMap {
+		metricMap[v] = v
+	}
+	metric, ok := metricMap[params["metric"]]
+	if !ok {
+		err = fmt.Errorf("invalid metric value: '%s'", params["metric"])
+		returnError(apiName, w, err)
+		return
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	repo, err := repoNameToValue(c, ctx, params["repository"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	country, err := allCountryNameToValue(c, ctx, params["country"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	period, err := periodNameToValue(c, ctx, params["range"])
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	companiesParam := paramsAry["companies"]
+	if len(companiesParam) == 0 {
+		err = fmt.Errorf("you need to specify at least one company, for example 'All'")
+		returnError(apiName, w, err)
+		return
+	}
+	var rows *sql.Rows
+	series := fmt.Sprintf("hdev_%s%s%s", metric, repo, country)
+	query := `
+  select
+    sub."Rank",
+    split_part(sub.name, '$$$', 1),
+    split_part(sub.name, '$$$', 2),
+    sub.value
+  from (
+    select row_number() over (order by value desc) as "Rank",
+      name,
+      value
+    from
+      shdev_repos
+    where
+      series = $1
+      and period = $2
+  `
+	if len(companiesParam) == 1 && companiesParam[0] == lib.ALL {
+		query += ") sub"
+		rows, err = lib.QuerySQLLogErr(c, ctx, query, series, period)
+	} else {
+		query += " and split_part(name, '$$$', 2) in " + lib.NArray(len(companiesParam), 2) + ") sub"
+		rows, err = lib.QuerySQLLogErr(c, ctx, query, toInterfaceArray([]string{series, period}, companiesParam, []string{})...)
+	}
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		rank      int
+		login     string
+		company   string
+		number    int
+		ranks     []int
+		logins    []string
+		companies []string
+		numbers   []int
+	)
+	ghID := params["github_id"]
+	for rows.Next() {
+		err = rows.Scan(&rank, &login, &company, &number)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		if ghID != "" && login != ghID {
+			continue
+		}
+		ranks = append(ranks, rank)
+		logins = append(logins, login)
+		companies = append(companies, company)
+		numbers = append(numbers, number)
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	if len(ranks) == 0 && ghID != "" {
+		returnError(apiName, w, fmt.Errorf("github_id '%s' not found in results", ghID))
+		return
+	}
+	cpl := devActCntCompReposPayload{
+		Project:    project,
+		DB:         db,
+		Range:      params["range"],
+		Metric:     params["metric"],
+		Repository: params["repository"],
+		Country:    params["country"],
+		Companies:  companiesParam,
+		GitHubID:   ghID,
+		Rank:       ranks,
+		Login:      logins,
+		Company:    companies,
+		Number:     numbers,
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(cpl)
+}
+
 func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.DevActCntComp
 	var err error
@@ -850,6 +1179,12 @@ func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]int
 	}()
 	if err != nil {
 		returnError(apiName, w, err)
+		return
+	}
+	paramValue, err := getPayloadStringParam("repository", w, payload, true)
+	if paramValue != "" {
+		// Repository mode
+		apiDevActCntCompRepos(apiName, project, db, info, w, payload)
 		return
 	}
 	params := map[string]string{"range": "", "metric": "", "repository_group": "", "country": "", "github_id": ""}
@@ -1699,8 +2034,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiComContribRepoGrp(info, w, pl.Payload)
 	case lib.ComStatsRepoGrp:
 		apiComStatsRepoGrp(info, w, pl.Payload)
-	case lib.DevActCntRepoGrp:
-		apiDevActCntRepoGrp(info, w, pl.Payload)
+	case lib.DevActCnt:
+		apiDevActCnt(info, w, pl.Payload)
 	case lib.DevActCntComp:
 		apiDevActCntComp(info, w, pl.Payload)
 	case lib.SiteStats:
