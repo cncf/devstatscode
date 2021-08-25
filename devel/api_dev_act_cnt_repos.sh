@@ -35,4 +35,4 @@ if [ -z "$github_id" ]
 then
   github_id=''
 fi
-curl -H "Content-Type: application/json" "${API_URL}" -d"{\"api\":\"DevActCnt\",\"payload\":{\"project\":\"${project}\",\"range\":\"${range}\",\"metric\":\"${metric}\",\"repository\":\"${repository}\",\"country\":\"${country}\",\"github_id\":\"${github_id}\"}}" 2>/dev/null | jq
+curl -H "Content-Type: application/json" "${API_URL}" -d"{\"api\":\"DevActCnt\",\"payload\":{\"project\":\"${project}\",\"range\":\"${range}\",\"metric\":\"${metric}\",\"repository\":\"${repository}\",\"country\":\"${country}\",\"github_id\":\"${github_id}\",\"bg\":\"${BG}\"}}" 2>/dev/null | jq -rS .

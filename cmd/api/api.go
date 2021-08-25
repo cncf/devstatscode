@@ -255,6 +255,8 @@ func getContextAndDB(w http.ResponseWriter, db string) (ctx *lib.Ctx, c *sql.DB,
 	lctx.PgUser = os.Getenv("PG_USER_RO")
 	lctx.PgPass = os.Getenv("PG_PASS_RO")
 	lctx.PgDB = db
+	lctx.ExecFatal = false
+	lctx.ExecOutput = true
 	c, err = lib.PgConnErr(&lctx)
 	if err != nil {
 		return
@@ -2244,8 +2246,6 @@ func readProjects(ctx *lib.Ctx) {
 func serveAPI() {
 	var ctx lib.Ctx
 	ctx.Init()
-	ctx.ExecFatal = false
-	ctx.ExecOutput = true
 	lib.Printf("Starting API server\n")
 	checkEnv()
 	readProjects(&ctx)
