@@ -165,7 +165,7 @@ List of APIs:
     ]
   }
   ```
-  - Result contains data in the same format as "Companies contributing in Repository Groups" DevStats dashboard for the given project.
+  - Result contains data in the same format as "Companies contributing in Repository Groups/Repositories" DevStats dashboard for the given project.
   - Example API call: `./devel/api_com_contrib_repo_grp.sh kubernetes 2020-01-01 2020-04-01 'SIG Apps' Week`.
 
 - `DevActCnt`: `{"api": "DevActCnt", "payload": {"project": "projectName", "range": "range", "metric": "metric", "repository_group": "repository_group", "country": "country", "github_id": "id"}}`.
