@@ -330,7 +330,18 @@ func getPayloadStringArrayParam(paramName string, w http.ResponseWriter, payload
 	return
 }
 
-func periodNameToValue(c *sql.DB, ctx *lib.Ctx, periodName string) (periodValue string, err error) {
+func periodNameToValue(c *sql.DB, ctx *lib.Ctx, periodName string, allowManual bool) (periodValue string, manual bool, err error) {
+	if allowManual && strings.HasPrefix(periodName, "range:") {
+		ary := strings.Split(periodName[6:], ",")
+		if len(ary) != 2 {
+			err = fmt.Errorf("range should be specified as 'range:YYYY[-MM[-DD [HH[-MM[-SS]]]]],YYYY[-MM[-DD [HH[-MM[-SS]]]]]'")
+			return
+		}
+		from, to := lib.ToYMDHMSDate(lib.TimeParseAny(ary[0])), lib.ToYMDHMSDate(lib.TimeParseAny(ary[1]))
+		periodValue = "range:" + from + "," + to
+		manual = true
+		return
+	}
 	rows, err := lib.QuerySQLLogErr(c, ctx, "select quick_ranges_suffix from tquick_ranges where quick_ranges_name = $1", periodName)
 	if err != nil {
 		return
@@ -349,6 +360,74 @@ func periodNameToValue(c *sql.DB, ctx *lib.Ctx, periodName string) (periodValue 
 	if periodValue == "" {
 		err = fmt.Errorf("invalid period name: '%s'", periodName)
 	}
+	return
+}
+
+func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, period string, reposMode bool) (err error) {
+	file := ""
+	switch apiName {
+	case lib.DevActCnt, lib.DevActCntComp:
+		file = "project_developer_stats"
+		if metric == "approves" {
+			if db != lib.GHA {
+				err = fmt.Errorf("ensureManualData: approves mode only allowed for kubernetes projectreturn (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
+			}
+			file = "hist_approvers"
+		}
+		if metric == "reviews" {
+			if db != lib.GHA {
+				err = fmt.Errorf("ensureManualData: reviews mode only allowed for kubernetes projectreturn (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
+			}
+			file = "hist_reviewers"
+		}
+	default:
+		err = fmt.Errorf("ensureManualData: unknown API configuration (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
+		return
+	}
+	if file == "" {
+		err = fmt.Errorf("ensureManualData: cannot find manual SQL file for configuration (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
+		return
+	}
+	if reposMode {
+		file += "_repos"
+	}
+	// FIXME
+	fmt.Printf("file detected: %s\n", file)
+	query := ""
+	var args []interface{}
+	switch file {
+	case "hist_reviewers", "hist_approvers", "project_developer_stats":
+		query = "select 1 from shdev where period = $1 and series like $2 limit 1"
+		args = []interface{}{period, "hdev_" + metric + "%%"}
+	case "hist_reviewers_repos", "hist_approvers_repos", "project_developer_stats_repos":
+		query = "select 1 from shdev_repos where period = $1 and series like $2 limit 1"
+		args = []interface{}{period, "hdev_" + metric + "%%"}
+	default:
+		err = fmt.Errorf("ensureManualData: don't know how to check for existing data for configuration (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
+		return
+	}
+	file += ".sql"
+	// FIXME
+	fmt.Printf("query,args: %s,%+v\n", query, args)
+	rows, err := lib.QuerySQLLogErr(c, ctx, query, args...)
+	if err != nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	dummy := 0
+	for rows.Next() {
+		err = rows.Scan(&dummy)
+		if err != nil {
+			return
+		}
+		break
+	}
+	err = rows.Err()
+	if err != nil {
+		return
+	}
+	// FIXME
+	fmt.Printf("dummy=%d\n", dummy)
 	return
 }
 
@@ -709,7 +788,7 @@ func apiCompaniesTable(info string, w http.ResponseWriter, payload map[string]in
 		return
 	}
 	defer func() { _ = c.Close() }()
-	period, err := periodNameToValue(c, ctx, params["range"])
+	period, _, err := periodNameToValue(c, ctx, params["range"], false)
 	if err != nil {
 		returnError(apiName, w, err)
 		return
@@ -804,11 +883,19 @@ func apiDevActCntRepos(apiName, project, db, info string, w http.ResponseWriter,
 		returnError(apiName, w, err)
 		return
 	}
-	// calc_metric multi_row_single_column ./metrics/shared/project_developer_stats.sql '2021-08-25 0' '2021-08-25 0' 'range:2021-08-01,2021-09-01' 'hist,merge_series:hdev'
-	period, err := periodNameToValue(c, ctx, params["range"])
+	// GHA2DB_PROJECT=project calc_metric multi_row_single_column /etc/gha2db/metrics/project/project_developer_stats.sql '2021-08-25 0' '2021-08-25 0' 'range:2021-08-20,2022' 'hist,merge_series:hdev'
+	// range:2021-08-20 00:00:00,2022-01-01 00:00:00
+	period, manual, err := periodNameToValue(c, ctx, params["range"], true)
 	if err != nil {
 		returnError(apiName, w, err)
 		return
+	}
+	if manual {
+		err = ensureManualData(c, ctx, project, db, apiName, metric, period, true)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
 	}
 	series := fmt.Sprintf("hdev_%s%s%s", metric, repo, country)
 	query := `
@@ -945,10 +1032,17 @@ func apiDevActCnt(info string, w http.ResponseWriter, payload map[string]interfa
 		returnError(apiName, w, err)
 		return
 	}
-	period, err := periodNameToValue(c, ctx, params["range"])
+	period, manual, err := periodNameToValue(c, ctx, params["range"], true)
 	if err != nil {
 		returnError(apiName, w, err)
 		return
+	}
+	if manual {
+		err = ensureManualData(c, ctx, project, db, apiName, metric, period, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
 	}
 	series := fmt.Sprintf("hdev_%s%s%s", metric, repogroup, country)
 	query := `
@@ -1080,7 +1174,7 @@ func apiDevActCntCompRepos(apiName, project, db, info string, w http.ResponseWri
 		returnError(apiName, w, err)
 		return
 	}
-	period, err := periodNameToValue(c, ctx, params["range"])
+	period, manual, err := periodNameToValue(c, ctx, params["range"], true)
 	if err != nil {
 		returnError(apiName, w, err)
 		return
@@ -1090,6 +1184,13 @@ func apiDevActCntCompRepos(apiName, project, db, info string, w http.ResponseWri
 		err = fmt.Errorf("you need to specify at least one company, for example 'All'")
 		returnError(apiName, w, err)
 		return
+	}
+	if manual {
+		err = ensureManualData(c, ctx, project, db, apiName, metric, period, true)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
 	}
 	var rows *sql.Rows
 	series := fmt.Sprintf("hdev_%s%s%s", metric, repo, country)
@@ -1240,7 +1341,7 @@ func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]int
 		returnError(apiName, w, err)
 		return
 	}
-	period, err := periodNameToValue(c, ctx, params["range"])
+	period, manual, err := periodNameToValue(c, ctx, params["range"], true)
 	if err != nil {
 		returnError(apiName, w, err)
 		return
@@ -1250,6 +1351,13 @@ func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]int
 		err = fmt.Errorf("you need to specify at least one company, for example 'All'")
 		returnError(apiName, w, err)
 		return
+	}
+	if manual {
+		err = ensureManualData(c, ctx, project, db, apiName, metric, period, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
 	}
 	var rows *sql.Rows
 	series := fmt.Sprintf("hdev_%s%s%s", metric, repogroup, country)
