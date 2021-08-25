@@ -910,7 +910,11 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 	excludeBots := string(bytes)
 
 	// Process interval
-	interval, nIntervals, intervalStart, nextIntervalStart, prevIntervalStart := lib.GetIntervalFunctions(intervalAbbr, cfg.annotationsRanges)
+	allowUnknowns := cfg.annotationsRanges
+	if !allowUnknowns {
+		allowUnknowns = strings.HasPrefix(intervalAbbr, "range:")
+	}
+	interval, nIntervals, intervalStart, nextIntervalStart, prevIntervalStart := lib.GetIntervalFunctions(intervalAbbr, allowUnknowns)
 
 	if cfg.hist {
 		calcHistogram(
