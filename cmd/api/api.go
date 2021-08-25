@@ -343,8 +343,14 @@ func periodNameToValue(c *sql.DB, ctx *lib.Ctx, periodName string, allowManual b
 			err = fmt.Errorf("range should be specified as 'range:YYYY[-MM[-DD [HH[-MM[-SS]]]]],YYYY[-MM[-DD [HH[-MM[-SS]]]]]'")
 			return
 		}
-		from, to := lib.ToYMDHMSDate(lib.TimeParseAny(ary[0])), lib.ToYMDHMSDate(lib.TimeParseAny(ary[1]))
-		periodValue = "range:" + from + "," + to
+		from, to := lib.TimeParseAny(ary[0]), lib.TimeParseAny(ary[1])
+		sFrom, sTo := lib.ToYMDHMSDate(from), lib.ToYMDHMSDate(to)
+		maxDt := time.Now().AddDate(0, 0, -1)
+		if from.After(maxDt) || to.After(maxDt) || !from.Before(to) {
+			err = fmt.Errorf("from (%s) and to (%s) dates must not be after %v, from date must be before to date", sFrom, sTo, maxDt)
+			return
+		}
+		periodValue = "range:" + sFrom + "," + sTo
 		manual = true
 		return
 	}
