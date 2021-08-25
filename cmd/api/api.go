@@ -45,6 +45,7 @@ var (
 	gBgMtx    *sync.RWMutex
 	gNumBg    = 0
 	gMaxBg    = 3
+	gBgMap    = map[string]struct{}{}
 )
 
 type apiPayload struct {
@@ -438,14 +439,20 @@ func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, per
 	dtNow := lib.ToYMDHDate(time.Now())
 	// GHA2DB_PROJECT=project calc_metric multi_row_single_column /etc/gha2db/metrics/project/project_developer_stats.sql '2021-08-25 0' '2021-08-25 0' 'range:2021-08-20,2022' 'hist,merge_series:hdev'
 	// range:2021-08-20 00:00:00,2022-01-01 00:00:00
+	var key string
+	if bg {
+		key = project + file + mode + period + extra
+	}
 	calc := func(bg bool) {
 		if bg {
 			gBgMtx.Lock()
 			gNumBg++
+			gBgMap[key] = struct{}{}
 			gBgMtx.Unlock()
 			defer func() {
 				gBgMtx.Lock()
 				gNumBg--
+				delete(gBgMap, key)
 				gBgMtx.Unlock()
 			}()
 		}
@@ -475,7 +482,12 @@ func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, per
 	if bg {
 		gBgMtx.RLock()
 		num := gNumBg
+		_, runs := gBgMap[key]
 		gBgMtx.RUnlock()
+		if runs {
+			err = fmt.Errorf("configuration already running in background (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
+			return
+		}
 		if num >= gMaxBg {
 			err = fmt.Errorf("too many background calculations: %d", num)
 			return
@@ -2181,7 +2193,14 @@ func requestInfo(r *http.Request) string {
 
 func handleAPI(w http.ResponseWriter, req *http.Request) {
 	info := requestInfo(req)
-	lib.Printf("Request: %s\n", info)
+	gBgMtx.RLock()
+	num := gNumBg
+	gBgMtx.RUnlock()
+	if num == 0 {
+		lib.Printf("Request: %s\n", info)
+	} else {
+		lib.Printf("Request (%d bg runners): %s\n", num, info)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	var (
 		pl  apiPayload
