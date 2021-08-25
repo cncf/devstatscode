@@ -897,11 +897,13 @@ func apiDevActCnt(info string, w http.ResponseWriter, payload map[string]interfa
 		returnError(apiName, w, err)
 		return
 	}
-	paramValue, err := getPayloadStringParam("repository", w, payload, true)
-	if paramValue != "" {
-		// Repository mode
-		apiDevActCntRepos(apiName, project, db, info, w, payload)
-		return
+	if db == "gha" {
+		paramValue, _ := getPayloadStringParam("repository", w, payload, true)
+		if paramValue != "" {
+			// Repository mode
+			apiDevActCntRepos(apiName, project, db, info, w, payload)
+			return
+		}
 	}
 	params := map[string]string{"range": "", "metric": "", "repository_group": "", "country": "", "github_id": ""}
 	for paramName := range params {
@@ -1181,11 +1183,13 @@ func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]int
 		returnError(apiName, w, err)
 		return
 	}
-	paramValue, err := getPayloadStringParam("repository", w, payload, true)
-	if paramValue != "" {
-		// Repository mode
-		apiDevActCntCompRepos(apiName, project, db, info, w, payload)
-		return
+	if db == "gha" {
+		paramValue, _ := getPayloadStringParam("repository", w, payload, true)
+		if paramValue != "" {
+			// Repository mode
+			apiDevActCntCompRepos(apiName, project, db, info, w, payload)
+			return
+		}
 	}
 	params := map[string]string{"range": "", "metric": "", "repository_group": "", "country": "", "github_id": ""}
 	for paramName := range params {

@@ -205,10 +205,11 @@ List of APIs:
   }
   ```
   - Result contains data in the same format as "Developer Activity Counts by Repository Group/Repository" DevStats dashboard for the given project.
+  - Repository mode `./devel/api_dev_act_cnt_repos.sh` is only allowed for Kubernetes project.
   - Example API call: `./devel/api_dev_act_cnt.sh all 'Last year' Contributions Prometheus 'United States'`.
   - Example API call: `./devel/api_dev_act_cnt.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'SIG Apps' 'United States' idvoretskyi`.
-  - Example API call: `./devel/api_dev_act_cnt_repos.sh prometheus 'Last year' Contributions 'prometheus/prometheus' 'United States'`.
-  - Example API call: `./devel/api_dev_act_cnt.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'kubernetes/test-infra' 'United States' idvoretskyi`.
+  - Example API call: `./devel/api_dev_act_cnt_repos.sh kubernetes 'Last year' Contributions 'kubernetes/kubernetes' 'United States'`.
+  - Example API call: `./devel/api_dev_act_cnt_repos.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'kubernetes/test-infra' 'United States' idvoretskyi`.
 
 - `DevActCntComp`: `{"api": "DevActCntComp", "payload": {"project": "projectName", "range": "range", "metric": "metric", "repository_group": "repository_group", "country": "country", "companies": ["Google", "Red Hat", ...], "github_id": "id"}}`.
   - Arguments: (like in "Developer Activity Counts by Companies" DevStats dashboards).
@@ -276,6 +277,7 @@ List of APIs:
   }
   ```
   - Result contains data in the same format as "Developer Activity Counts by Companies" DevStats dashboard for the given project.
+  - Repository mode `./devel/api_dev_act_cnt_comp_repos.sh` is only allowed for Kubernetes project.
   - Example API call: `./devel/api_dev_act_cnt_comp.sh kubernetes 'Last decade' 'PRs' 'SIG Apps' 'United States' '["Google", "Amazon"]'`.
   - Example API call: `./devel/api_dev_act_cnt_comp_repos.sh kubernetes 'Last decade' 'PRs' 'kubernetes/test-infra' 'United States' '["Google", "Amazon"]'`.
 
