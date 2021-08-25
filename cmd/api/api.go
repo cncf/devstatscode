@@ -42,6 +42,9 @@ var (
 	gNameToDB map[string]string
 	gProjects []string
 	gMtx      *sync.RWMutex
+	gBgMtx    *sync.RWMutex
+	gNumBg    = 0
+	gMaxBg    = 3
 )
 
 type apiPayload struct {
@@ -435,7 +438,17 @@ func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, per
 	dtNow := lib.ToYMDHDate(time.Now())
 	// GHA2DB_PROJECT=project calc_metric multi_row_single_column /etc/gha2db/metrics/project/project_developer_stats.sql '2021-08-25 0' '2021-08-25 0' 'range:2021-08-20,2022' 'hist,merge_series:hdev'
 	// range:2021-08-20 00:00:00,2022-01-01 00:00:00
-	calc := func() {
+	calc := func(bg bool) {
+		if bg {
+			gBgMtx.Lock()
+			gNumBg++
+			gBgMtx.Unlock()
+			defer func() {
+				gBgMtx.Lock()
+				gNumBg--
+				gBgMtx.Unlock()
+			}()
+		}
 		var data string
 		data, err = lib.ExecCommand(
 			ctx,
@@ -448,7 +461,10 @@ func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, per
 				period,
 				extra,
 			},
-			map[string]string{"GHA2DB_PROJECT": project},
+			map[string]string{
+				"PG_DB":          db,
+				"GHA2DB_PROJECT": project,
+			},
 		)
 		if err != nil {
 			return
@@ -457,9 +473,16 @@ func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, per
 		lib.Printf("%s\n", data)
 	}
 	if bg {
-		go calc()
+		gBgMtx.RLock()
+		num := gNumBg
+		gBgMtx.RUnlock()
+		if num >= gMaxBg {
+			err = fmt.Errorf("too many background calculations: %d", num)
+			return
+		}
+		go calc(true)
 	} else {
-		calc()
+		calc(false)
 	}
 	return
 }
@@ -2249,6 +2272,7 @@ func serveAPI() {
 	lib.Printf("Starting API server\n")
 	checkEnv()
 	readProjects(&ctx)
+	gBgMtx = &sync.RWMutex{}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGUSR1, syscall.SIGALRM)
 	go func() {

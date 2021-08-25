@@ -31,3 +31,8 @@ API_URL='https://teststats.cncf.io/api/v1' ./devel/api_dev_act_cnt.sh kubernetes
 API_URL='https://devstats.cncf.io/api/v1' ./devel/api_dev_act_cnt_comp.sh kubernetes 'v1.17.0 - now' 'Reviews' 'SIG Apps' 'All' '["Google", "Red Hat"]' 'janetkuo'
 API_URL='https://devstats.cncf.io/api/v1' ./devel/api_dev_act_cnt_comp.sh all 'Last month' 'PRs' 'Prometheus' 'All' '["Google", "Red Hat"]'
 API_URL='https://devstats.cncf.io/api/v1' ./devel/api_dev_act_cnt_comp.sh all
+
+BG=1 API_URL="https://teststats.cncf.io/api/v1" ./devel/api_dev_act_cnt.sh kubernetes 'range:2021-08-10,2021-08-15' 'Contributions' 'SIG Apps' 'United States' ''
+BG=1 API_URL="https://teststats.cncf.io/api/v1" ./devel/api_dev_act_cnt_repos.sh kubernetes 'range:2021-08-10,2021-08-15' 'Commits' 'kubernetes/test-infra' 'United States' ''
+BG=1 API_URL='https://teststats.cncf.io/api/v1' ./devel/api_dev_act_cnt_comp.sh kubernetes 'range:2021-08-10,2021-08-15' 'Reviews' 'SIG Apps' 'All' '["Google", "Red Hat"]' ''
+BG=1 API_URL='https://teststats.cncf.io/api/v1' ./devel/api_dev_act_cnt_comp_repos.sh kubernetes 'range:2021-08-10,2021-08-15' 'Reviews' 'kubernetes/test-infra' 'All' '["Google", "Red Hat"]' ''
