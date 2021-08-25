@@ -364,10 +364,10 @@ func periodNameToValue(c *sql.DB, ctx *lib.Ctx, periodName string, allowManual b
 }
 
 func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, period string, reposMode bool) (err error) {
-	file := ""
+	file, mode, extra := "", "", ""
 	switch apiName {
 	case lib.DevActCnt, lib.DevActCntComp:
-		file = "project_developer_stats"
+		file, mode, extra = "project_developer_stats", "multi_row_single_column", "hist,merge_series:hdev"
 		if metric == "approves" {
 			if db != lib.GHA {
 				err = fmt.Errorf("ensureManualData: approves mode only allowed for kubernetes projectreturn (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
@@ -391,24 +391,22 @@ func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, per
 	if reposMode {
 		file += "_repos"
 	}
-	// FIXME
-	fmt.Printf("file detected: %s\n", file)
+	// fmt.Printf("file detected: %s\n", file)
 	query := ""
 	var args []interface{}
 	switch file {
 	case "hist_reviewers", "hist_approvers", "project_developer_stats":
 		query = "select 1 from shdev where period = $1 and series like $2 limit 1"
-		args = []interface{}{period, "hdev_" + metric + "%%"}
+		args = []interface{}{period, "hdev_" + metric + "%"}
 	case "hist_reviewers_repos", "hist_approvers_repos", "project_developer_stats_repos":
 		query = "select 1 from shdev_repos where period = $1 and series like $2 limit 1"
-		args = []interface{}{period, "hdev_" + metric + "%%"}
+		args = []interface{}{period, "hdev_" + metric + "%"}
 	default:
 		err = fmt.Errorf("ensureManualData: don't know how to check for existing data for configuration (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
 		return
 	}
 	file += ".sql"
-	// FIXME
-	fmt.Printf("query,args: %s,%+v\n", query, args)
+	// fmt.Printf("query,args: %s,%+v\n", query, args)
 	rows, err := lib.QuerySQLLogErr(c, ctx, query, args...)
 	if err != nil {
 		return
@@ -426,8 +424,34 @@ func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, per
 	if err != nil {
 		return
 	}
-	// FIXME
-	fmt.Printf("dummy=%d\n", dummy)
+	// fmt.Printf("dummy=%d\n", dummy)
+	if dummy != 0 {
+		return
+	}
+	dtNow := lib.ToYMDHDate(time.Now())
+	// GHA2DB_PROJECT=project calc_metric multi_row_single_column /etc/gha2db/metrics/project/project_developer_stats.sql '2021-08-25 0' '2021-08-25 0' 'range:2021-08-20,2022' 'hist,merge_series:hdev'
+	// range:2021-08-20 00:00:00,2022-01-01 00:00:00
+	ctx.ExecFatal = false
+	ctx.ExecOutput = true
+	var data string
+	data, err = lib.ExecCommand(
+		ctx,
+		[]string{
+			"calc_metric",
+			mode,
+			"/etc/gha2db/metrics/" + project + "/" + file,
+			dtNow,
+			dtNow,
+			period,
+			extra,
+		},
+		map[string]string{"GHA2DB_PROJECT": project},
+	)
+	if err != nil {
+		return
+	}
+	// FIXME:
+	fmt.Printf("data=%s\n", data)
 	return
 }
 
@@ -883,8 +907,6 @@ func apiDevActCntRepos(apiName, project, db, info string, w http.ResponseWriter,
 		returnError(apiName, w, err)
 		return
 	}
-	// GHA2DB_PROJECT=project calc_metric multi_row_single_column /etc/gha2db/metrics/project/project_developer_stats.sql '2021-08-25 0' '2021-08-25 0' 'range:2021-08-20,2022' 'hist,merge_series:hdev'
-	// range:2021-08-20 00:00:00,2022-01-01 00:00:00
 	period, manual, err := periodNameToValue(c, ctx, params["range"], true)
 	if err != nil {
 		returnError(apiName, w, err)
