@@ -558,18 +558,31 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 			lib.Fatalf("quick range not found: '%s' known quick ranges: %+v", intervalAbbr, quickRanges)
 		}
 	} else {
-		// Prepare SQL query
-		dbInterval := fmt.Sprintf("%d %s", nIntervals, interval)
-		if interval == lib.Quarter {
-			dbInterval = fmt.Sprintf("%d month", nIntervals*3)
+		if strings.HasPrefix(intervalAbbr, "range:") {
+			ary := strings.Split(intervalAbbr[6:], ",")
+			if len(ary) != 2 {
+				lib.Fatalf("range should be specified as 'range:YYYY-MM-DD,YYYY-MM-DD'\n")
+			}
+			sHours, from, to, period := "", ary[0], ary[1], ""
+			sqlQuery, sHours = lib.PrepareQuickRangeQuery(sqlQuery, period, from, to)
+			sqlQuery = strings.Replace(sqlQuery, "{{exclude_bots}}", excludeBots, -1)
+			sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
+			sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
+			sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", randString(), -1)
+		} else {
+			// Prepare SQL query
+			dbInterval := fmt.Sprintf("%d %s", nIntervals, interval)
+			if interval == lib.Quarter {
+				dbInterval = fmt.Sprintf("%d month", nIntervals*3)
+			}
+			sHours := lib.IntervalHours(dbInterval)
+			sqlQuery = strings.Replace(sqlQuery, "{{period}}", dbInterval, -1)
+			sqlQuery = strings.Replace(sqlQuery, "{{n}}", strconv.Itoa(nIntervals)+".0", -1)
+			sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", randString(), -1)
+			sqlQuery = strings.Replace(sqlQuery, "{{exclude_bots}}", excludeBots, -1)
+			sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
+			sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
 		}
-		sHours := lib.IntervalHours(dbInterval)
-		sqlQuery = strings.Replace(sqlQuery, "{{period}}", dbInterval, -1)
-		sqlQuery = strings.Replace(sqlQuery, "{{n}}", strconv.Itoa(nIntervals)+".0", -1)
-		sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", randString(), -1)
-		sqlQuery = strings.Replace(sqlQuery, "{{exclude_bots}}", excludeBots, -1)
-		sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
-		sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
 	}
 
 	// Execute SQL query
