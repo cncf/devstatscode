@@ -2207,7 +2207,14 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		err error
 	)
 	defer func() {
-		lib.Printf("Request(exit): %s err:%v\n", info, err)
+		gBgMtx.RLock()
+		num := gNumBg
+		gBgMtx.RUnlock()
+		if num == 0 {
+			lib.Printf("Request(exit): %s err:%v\n", info, err)
+		} else {
+			lib.Printf("Request(exit, %d bg runners): %s err:%v\n", num, info, err)
+		}
 	}()
 	err = json.NewDecoder(req.Body).Decode(&pl)
 	if err != nil {
