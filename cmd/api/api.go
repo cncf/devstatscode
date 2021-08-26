@@ -483,7 +483,7 @@ func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, per
 			return
 		}
 		lib.Printf("Calculated manually:\n")
-		lib.Printf("%s\n", data)
+		lib.Printf("%s", data)
 	}
 	if bg {
 		gBgMtx.RLock()
