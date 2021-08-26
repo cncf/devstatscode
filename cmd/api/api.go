@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"html"
 	"io/ioutil"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	lib "github.com/cncf/devstatscode"
+	jsoniter "github.com/json-iterator/go"
 	"github.com/rs/cors"
 	yaml "gopkg.in/yaml.v2"
 )
@@ -219,7 +219,7 @@ func returnError(apiName string, w http.ResponseWriter, err error) {
 	lib.Printf(errStr + "\n")
 	epl := errorPayload{Error: errStr}
 	w.WriteHeader(http.StatusBadRequest)
-	json.NewEncoder(w).Encode(epl)
+	jsoniter.NewEncoder(w).Encode(epl)
 }
 
 func timeParseAny(dtStr string) (time.Time, error) {
@@ -343,7 +343,16 @@ func periodNameToValue(c *sql.DB, ctx *lib.Ctx, periodName string, allowManual b
 			err = fmt.Errorf("range should be specified as 'range:YYYY[-MM[-DD [HH[-MM[-SS]]]]],YYYY[-MM[-DD [HH[-MM[-SS]]]]]'")
 			return
 		}
-		from, to := lib.TimeParseAny(ary[0]), lib.TimeParseAny(ary[1])
+		from, e := timeParseAny(ary[0])
+		if e != nil {
+			err = e
+			return
+		}
+		to, e := timeParseAny(ary[1])
+		if e != nil {
+			err = e
+			return
+		}
 		sFrom, sTo := lib.ToYMDHMSDate(from), lib.ToYMDHMSDate(to)
 		maxDt := lib.DayStart(time.Now().AddDate(0, 0, -1))
 		if from.After(maxDt) || to.After(maxDt) || !from.Before(to) {
@@ -819,7 +828,7 @@ func apiComContribRepoGrp(info string, w http.ResponseWriter, payload map[string
 		DevelopersTimestamps: developersTimestamps,
 	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(pl)
+	jsoniter.NewEncoder(w).Encode(pl)
 }
 
 func apiCompaniesTable(info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -910,7 +919,7 @@ func apiCompaniesTable(info string, w http.ResponseWriter, payload map[string]in
 		Number:  numbers,
 	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(pl)
+	jsoniter.NewEncoder(w).Encode(pl)
 }
 
 func apiDevActCntRepos(apiName, project, db, info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -1048,7 +1057,7 @@ func apiDevActCntRepos(apiName, project, db, info string, w http.ResponseWriter,
 		Number:     numbers,
 	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(pl)
+	jsoniter.NewEncoder(w).Encode(pl)
 }
 
 func apiDevActCnt(info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -1200,7 +1209,7 @@ func apiDevActCnt(info string, w http.ResponseWriter, payload map[string]interfa
 		Number:          numbers,
 	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(pl)
+	jsoniter.NewEncoder(w).Encode(pl)
 }
 
 func apiDevActCntCompRepos(apiName, project, db, info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -1358,7 +1367,7 @@ func apiDevActCntCompRepos(apiName, project, db, info string, w http.ResponseWri
 		Number:     numbers,
 	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(cpl)
+	jsoniter.NewEncoder(w).Encode(cpl)
 }
 
 func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -1530,14 +1539,14 @@ func apiDevActCntComp(info string, w http.ResponseWriter, payload map[string]int
 		Number:          numbers,
 	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(cpl)
+	jsoniter.NewEncoder(w).Encode(cpl)
 }
 
 func apiListAPIs(info string, w http.ResponseWriter) {
 	apiName := lib.ListAPIs
 	lapl := listAPIsPayload{APIs: allAPIs}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(lapl)
+	jsoniter.NewEncoder(w).Encode(lapl)
 	lib.Printf("%s(exit)\n", apiName)
 }
 
@@ -1551,7 +1560,7 @@ func apiListProjects(info string, w http.ResponseWriter) {
 	gMtx.RUnlock()
 	lppl := listProjectsPayload{Projects: names}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(lppl)
+	jsoniter.NewEncoder(w).Encode(lppl)
 	lib.Printf("%s(exit)\n", apiName)
 }
 
@@ -1593,7 +1602,7 @@ func apiHealth(info string, w http.ResponseWriter, payload map[string]interface{
 	}
 	hpl := healthPayload{Project: project, DB: db, Events: events}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(hpl)
+	jsoniter.NewEncoder(w).Encode(hpl)
 }
 
 func apiRepoGroups(info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -1634,7 +1643,7 @@ func apiRepoGroups(info string, w http.ResponseWriter, payload map[string]interf
 	}
 	rgpl := repoGroupsPayload{Project: project, DB: db, RepoGroups: repoGroups}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(rgpl)
+	jsoniter.NewEncoder(w).Encode(rgpl)
 }
 
 func apiCompanies(info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -1662,7 +1671,7 @@ func apiCompanies(info string, w http.ResponseWriter, payload map[string]interfa
 	}
 	cpl := companiesPayload{Project: project, DB: db, Companies: companies}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(cpl)
+	jsoniter.NewEncoder(w).Encode(cpl)
 }
 
 func apiRanges(info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -1703,7 +1712,7 @@ func apiRanges(info string, w http.ResponseWriter, payload map[string]interface{
 	}
 	rpl := rangesPayload{Project: project, DB: db, Ranges: ranges}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(rpl)
+	jsoniter.NewEncoder(w).Encode(rpl)
 }
 
 func apiCountries(info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -1744,7 +1753,7 @@ func apiCountries(info string, w http.ResponseWriter, payload map[string]interfa
 	}
 	cpl := countriesPayload{Project: project, DB: db, Countries: countries}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(cpl)
+	jsoniter.NewEncoder(w).Encode(cpl)
 }
 
 func toInterfaceArray(beforeArray, stringArray, afterArray []string) (interfaceArray []interface{}) {
@@ -1828,7 +1837,7 @@ func apiRepos(info string, w http.ResponseWriter, payload map[string]interface{}
 	}
 	rpl := reposPayload{Project: project, DB: db, RepoGroups: repoGroups, Repos: repos}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(rpl)
+	jsoniter.NewEncoder(w).Encode(rpl)
 }
 
 func apiComStatsRepoGrp(info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -1999,7 +2008,7 @@ func apiComStatsRepoGrp(info string, w http.ResponseWriter, payload map[string]i
 		Values:          values,
 	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(pl)
+	jsoniter.NewEncoder(w).Encode(pl)
 }
 
 func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -2078,7 +2087,7 @@ func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{
 	}
 	epl := eventsPayload{Project: project, DB: db, TimeStamps: times, Values: values, From: params["from"], To: params["to"]}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(epl)
+	jsoniter.NewEncoder(w).Encode(epl)
 }
 
 func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -2177,7 +2186,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(sspl)
+	jsoniter.NewEncoder(w).Encode(sspl)
 }
 
 func requestInfo(r *http.Request) string {
@@ -2222,7 +2231,7 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 			lib.Printf("Request(exit, %d bg runners): %s err:%v\n", num, info, err)
 		}
 	}()
-	err = json.NewDecoder(req.Body).Decode(&pl)
+	err = jsoniter.NewDecoder(req.Body).Decode(&pl)
 	if err != nil {
 		returnError("unknown", w, err)
 		return
