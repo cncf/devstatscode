@@ -171,7 +171,7 @@ List of APIs:
 - `DevActCnt`: `{"api": "DevActCnt", "payload": {"project": "projectName", "range": "range", "metric": "metric", "repository_group": "repository_group", "country": "country", "github_id": "id"}}`.
   - Arguments: (like in "Developer Activity Counts by Repository Group" DevStats dashboards).
     - `projectName`: see `Health` API.
-    - `range`: value from `Range` drop-down in DevStats page, for example: `Last year`, `v1.17.0 - now`.
+    - `range`: value from `Range` drop-down in DevStats page, for example: `Last year`, `v1.17.0 - now`, `range:YYYY-MM-DD,YYYY-MM-DD`.
     - `metric`: value from `Metric` drop-down in DevStats page, for example: `Contributions`, `Issues`, `PRs`.
     - `repository_group`: value from `Repository group` drop-down in DevStats pages, for example: `All`, `Kubernetes`, `SIG Apps`.
     - `country`: value from `Country` drop-down in DevStats page, for example: `All`, `United States`, `Poland`.
@@ -211,14 +211,15 @@ List of APIs:
   - Example API call: `./devel/api_dev_act_cnt_repos.sh kubernetes 'Last year' Contributions 'kubernetes/kubernetes' 'United States'`.
   - Example API call: `./devel/api_dev_act_cnt_repos.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'kubernetes/test-infra' 'United States' idvoretskyi`.
   - You can also use arbitrary date ranges in this API, just use 'range:YYYY-MM-DD,YYYY-MM-DD' as a parameter (note that those ranges aren't precalculated, because DevStats cannot guess all of them, so calculating a new date range for the first time can be very time consuming, but the next calls will reuse the calculated data.
-  - Specifying `BG=1` allows to run the calculation in the background (BG) - API call will immediatelly return 9and there will be no data if this is a new range never calculated so far), but the next call (say after 3 minutes) will return data that was calculated. That way you can calculate longer periods.
+  - Specifying `BG=1` allows to run the calculation in the background (BG) - API call will immediatelly return (and there will be no data if this is a new range never calculated so far), but the next call (say after 3 minutes) will return data that was calculated. That way you can calculate longer periods.
+  - Date rnage cannot contain from/to dayes after one day before the current date, this is to avoid calculating ranges that include future, because once calculated they will be reused.
   - Example API call with arbitrary date range: `[BG=1] ./devel/api_dev_act_cnt.sh kubernetes 'range:2021-08-20,2021-09' 'Approves' 'SIG Apps' 'United States'`.
 
 
 - `DevActCntComp`: `{"api": "DevActCntComp", "payload": {"project": "projectName", "range": "range", "metric": "metric", "repository_group": "repository_group", "country": "country", "companies": ["Google", "Red Hat", ...], "github_id": "id"}}`.
   - Arguments: (like in "Developer Activity Counts by Companies" DevStats dashboards).
     - `projectName`: see `Health` API.
-    - `range`: value from `Range` drop-down in DevStats page, for example: `Last year`, `v1.17.0 - now`.
+    - `range`: value from `Range` drop-down in DevStats page, for example: `Last year`, `v1.17.0 - now`, `range:YYYY-MM-DD,YYYY-MM-DD`.
     - `metric`: value from `Metric` drop-down in DevStats page, for example: `Contributions`, `Issues`, `PRs`.
     - `repository_group`: value from `Repository group` drop-down in DevStats pages, for example: `All`, `Kubernetes`, `SIG Apps`.
     - `companies`: values from `Companies` drop-down in DevStats pages, for example: ["Google", "Red Hat", "Independent"] - array of companies selections.
@@ -285,7 +286,8 @@ List of APIs:
   - Example API call: `./devel/api_dev_act_cnt_comp.sh kubernetes 'Last decade' 'PRs' 'SIG Apps' 'United States' '["Google", "Amazon"]'`.
   - Example API call: `./devel/api_dev_act_cnt_comp_repos.sh kubernetes 'Last decade' 'PRs' 'kubernetes/test-infra' 'United States' '["Google", "Amazon"]'`.
   - You can also use arbitrary date ranges in this API, just use 'range:YYYY-MM-DD,YYYY-MM-DD' as a parameter (note that those ranges aren't precalculated, because DevStats cannot guess all of them, so calculating a new date range for the first time can be very time consuming, but the next calls will reuse the calculated data.
-  - Specifying `BG=1` allows to run the calculation in the background (BG) - API call will immediatelly return 9and there will be no data if this is a new range never calculated so far), but the next call (say after 3 minutes) will return data that was calculated. That way you can calculate longer periods.
+  - Specifying `BG=1` allows to run the calculation in the background (BG) - API call will immediatelly return (and there will be no data if this is a new range never calculated so far), but the next call (say after 3 minutes) will return data that was calculated. That way you can calculate longer periods.
+  - Date rnage cannot contain from/to dayes after one day before the current date, this is to avoid calculating ranges that include future, because once calculated they will be reused.
   - Example API call with arbitrary date range: `[BG=1]./devel/api_dev_act_cnt_comp.sh kubernetes 'range:2021-08-20,2021-09' 'Reviews' 'SIG Apps' 'United States' '["Google", "Amazon"]'`.
 
 - `ComStatsRepoGrp`: `{"api":"ComStatsRepoGrp","payload":{"project":"projectName","from":"2019-01-01","to":"2020-01-01","period":"Day","metric":"Contributors","repository_group":"SIG Apps","companies":["Google", "Red Hat", ...]}}`.
