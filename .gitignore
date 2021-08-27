@@ -34,6 +34,7 @@ jsons/*.yaml
 /z2influx
 /api
 /devstats_api_server
+/tsplit
 /FROM
 /TO
 errors.txt
