@@ -284,7 +284,10 @@ func HandlePossibleError(err error, cfg, info string) string {
 			}
 		}
 		errStr := err.Error()
-		if strings.Contains(errStr, "404 Not Found") {
+		if strings.Contains(errStr, "410 This issue was deleted") {
+			Printf("Issue was deleted (%s) for %v: %v\n", info, cfg, err)
+			return IssueIsDeleted
+		} else if strings.Contains(errStr, "404 Not Found") {
 			Printf("Not found (%s) for %v: %v\n", info, cfg, err)
 			return NotFound
 		} else if strings.Contains(errStr, "502 Server Error") {

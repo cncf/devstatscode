@@ -158,7 +158,12 @@ func syncIssues(ctx *lib.Ctx) {
 						time.Sleep(wait)
 					}
 					if res == lib.NotFound {
-						lib.Printf("Warning: not found: %s/%s %d", org, repo, number)
+						lib.Printf("Warning: not found: %s/%s %d\n", org, repo, number)
+						ch <- false
+						return
+					}
+					if res == lib.IssueIsDeleted {
+						lib.Printf("Warning: issue is deleted: %s/%s %d\n", org, repo, number)
 						ch <- false
 						return
 					}
