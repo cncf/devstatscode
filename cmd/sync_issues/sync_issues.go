@@ -167,6 +167,11 @@ func syncIssues(ctx *lib.Ctx) {
 						ch <- false
 						return
 					}
+					if res == lib.MovedPermanently {
+						lib.Printf("Warning: This issue has been transferred: %s/%s %d\n", org, repo, number)
+						ch <- false
+						return
+					}
 					continue
 				} else {
 					thrMutex.Lock()
@@ -185,6 +190,17 @@ func syncIssues(ctx *lib.Ctx) {
 				lib.Fatalf("GetRateLimit call failed %d times while getting issue, aborting", ctx.MaxGHAPIRetry)
 				os.Exit(2)
 			}
+
+			// Notice: If the issue number changes, it means that the issue has been transferred to a new repository.
+			currNumber := issue.GetNumber()
+			currRepo := issue.GetRepository()
+			if currNumber != 0 && currNumber != number {
+				lib.Printf("Warning: This issue has been transferred from %s/%s#%d to %s/%s#%d\n",
+					org, repo, number, currRepo.GetOwner().GetName(), currRepo.GetName(), currNumber)
+				ch <- false
+				return
+			}
+
 			cfg := lib.IssueConfig{Repo: orgRepo}
 			if issue.Milestone != nil {
 				cfg.MilestoneID = issue.Milestone.ID

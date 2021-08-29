@@ -296,6 +296,9 @@ func HandlePossibleError(err error, cfg, info string) string {
 		} else if strings.Contains(errStr, "409 Git Repository is empty") {
 			Printf("Git repository empty (%s) for %v: %v\n", info, cfg, err)
 			return NotFound
+		} else if strings.Contains(errStr, "301") {
+			Printf("Moved Permanently (%s) for %v: %v\n", info, cfg, err)
+			return MovedPermanently
 		}
 		//FatalOnError(err)
 		Printf("%s error: %T:%v, non fatal, exiting 0 status\n", os.Args[0], err, err)
