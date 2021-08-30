@@ -13,7 +13,7 @@ import (
 	"time"
 
 	lib "github.com/cncf/devstatscode"
-	"github.com/google/go-github/github"
+	"github.com/google/go-github/v38/github"
 )
 
 // getAPIParams connects to GitHub and Postgres
