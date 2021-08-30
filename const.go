@@ -78,6 +78,12 @@ const Abuse string = "abuse"
 // NotFound - common constant string
 const NotFound string = "not_found"
 
+// IssueIsDeleted - common constant string
+const IssueIsDeleted string = "issue_is_deleted"
+
+// MovedPermanently - common constant string
+const MovedPermanently string = "moved_permanently"
+
 // Merged - common constant string
 const Merged string = "merged"
 
