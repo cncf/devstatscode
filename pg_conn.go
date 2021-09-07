@@ -1063,3 +1063,20 @@ func CreateDatabaseIfNeededExtended(ctx *Ctx, extraParams string) bool {
 	// Return whatever we created DB or not
 	return !exists
 }
+
+// ClearOrphanedAffsLock clears aff_lock DB mtx on 'devstats' database, if it is older than 30 hours
+// It clears logs on `devstats` database
+func ClearOrphanedAffsLock() {
+	// Environment context parse
+	var ctx Ctx
+	ctx.Init()
+	if ctx.SkipPDB {
+		return
+	}
+	// Point to logs database
+	ctx.PgDB = Devstats
+	// Connect to DB
+	c := PgConn(&ctx)
+	defer func() { _ = c.Close() }()
+	ExecSQLWithErr(c, &ctx, "delete from gha_computed where metric = 'affs_lock' and and dt < now() - '30 hours'::interval")
+}
