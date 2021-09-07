@@ -73,7 +73,7 @@ func patch(namespace, cronjob, field, patch string) {
 
 // idxt/idxp == -1 -> kubernetes
 // idxt/idxp == -2 -> all cncf
-func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt, idxp, nt, np int, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours float64) {
+func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt, idxp, nt, np int, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours float64) {
 	minutesToCron := func(minA, minS int) (cronA, cronS string) {
 		minutesA := minA % 60
 		hoursA := (minA / 60) % 24
@@ -103,7 +103,11 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 		} else {
 			minuteA, minuteS = int((kubernetesHours+intervalT*float64(idxt))*60.), int((float64(idxt)*minutes)/float64(nt))
 		}
+		minuteA += int(offsetHours * 60.0)
 		minuteA += cWeekHours * 30.0
+		if minuteA < 0 {
+			minuteA += cWeekMinutes
+		}
 		if minuteA > cWeekMinutes {
 			minuteA -= cWeekMinutes
 		}
@@ -127,6 +131,13 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			minuteA, minuteS = 60*int(cWeekHours-allHours), int(minutes/2.0)
 		} else {
 			minuteA, minuteS = int((kubernetesHours+intervalP*float64(idxp))*60.), int((float64(idxp)*minutes)/float64(np))
+		}
+		minuteA += int(offsetHours * 60.0)
+		if minuteA < 0 {
+			minuteA += cWeekMinutes
+		}
+		if minuteA > cWeekMinutes {
+			minuteA -= cWeekMinutes
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
 		// fmt.Printf("prod: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxp, np, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
@@ -153,7 +164,7 @@ func generateCronValues(inFile, outFile string) {
 	lib.FatalOnError(yaml.Unmarshal(data, &values))
 	fmt.Printf("read %s\n", inFile)
 
-	kubernetesHoursI := 18
+	kubernetesHoursI := 15
 	str := os.Getenv("KUBERNETES_HOURS")
 	if str != "" {
 		var err error
@@ -161,7 +172,7 @@ func generateCronValues(inFile, outFile string) {
 		lib.FatalOnError(err)
 	}
 	kubernetesHours := float64(kubernetesHoursI)
-	allHoursI := 18
+	allHoursI := 12
 	str = os.Getenv("ALL_HOURS")
 	if str != "" {
 		var err error
@@ -169,7 +180,7 @@ func generateCronValues(inFile, outFile string) {
 		lib.FatalOnError(err)
 	}
 	allHours := float64(allHoursI)
-	ghaOffsetI := 5
+	ghaOffsetI := 4
 	str = os.Getenv("GHA_OFFSET")
 	if str != "" {
 		var err error
@@ -184,6 +195,14 @@ func generateCronValues(inFile, outFile string) {
 		syncHoursI, err = strconv.Atoi(os.Getenv("SYNC_HOURS"))
 		lib.FatalOnError(err)
 	}
+	offsetHoursI := -4
+	str = os.Getenv("OFFSET_HOURS")
+	if str != "" {
+		var err error
+		offsetHoursI, err = strconv.Atoi(os.Getenv("OFFSET_HOURS"))
+		lib.FatalOnError(err)
+	}
+	offsetHours := float64(offsetHoursI)
 	syncHours := float64(syncHoursI)
 	minutes := syncHours * (60.0 - ghaOffset)
 	hours := 7.0*24.0 - (kubernetesHours + allHours)
@@ -208,22 +227,24 @@ func generateCronValues(inFile, outFile string) {
 	}
 	intervalT := hours / float64(kt)
 	intervalP := hours / float64(kp)
-	fmt.Printf("sync happens from HH:%02.0f, every %.0f hours, which gives %.0fmin for hourly syncs\n", ghaOffset, syncHours, minutes)
-	fmt.Printf("test: Kubernetes(#%d) needs %.0fh, All(#%d) needs %.0fh, %d others all have %.0fh, interval is %f.1min\n", kubernetesIdx, kubernetesHours, allIdx, allHours, kt, hours, intervalT*60.)
-	fmt.Printf("prod: Kubernetes(#%d) needs %.0fh, All(#%d) needs %.0fh, %d others all have %.0fh, interval is %f.1min\n", kubernetesIdx, kubernetesHours, allIdx, allHours, kp, hours, intervalP*60.)
+	intervalST := (60. * minutes) / float64(kt)
+	intervalSP := (60. * minutes) / float64(kp)
+	fmt.Printf("sync happens from HH:%02.0f, every %.0f hours, which gives %.0fmin for hourly syncs, middle of weekend offset is %.0fh\n", ghaOffset, syncHours, minutes, offsetHours)
+	fmt.Printf("test: Kubernetes(#%d) needs %.0fh, All(#%d) needs %.0fh, %d others all have %.0fh, intervals are %.1fmin, %.1fs\n", kubernetesIdx, kubernetesHours, allIdx, allHours, kt, hours, intervalT*60., intervalST)
+	fmt.Printf("prod: Kubernetes(#%d) needs %.0fh, All(#%d) needs %.0fh, %d others all have %.0fh, intervals are %.1fmin, %.1fs\n", kubernetesIdx, kubernetesHours, allIdx, allHours, kp, hours, intervalP*60., intervalSP)
 	it, ip := 0, 0
 	for i, project := range values.Projects {
 		if project.DB == "gha" {
-			generateCronEntries(&values, i, true, true, -1, -1, kt, kp, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
+			generateCronEntries(&values, i, true, true, -1, -1, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
 			continue
 		}
 		if project.DB == "allprj" {
-			generateCronEntries(&values, i, true, true, -2, -2, kt, kp, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
+			generateCronEntries(&values, i, true, true, -2, -2, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
 			continue
 		}
 		t := !project.SuspendCronTest && project.Domains[0] != 0
 		p := !project.SuspendCronProd && project.Domains[1] != 0
-		generateCronEntries(&values, i, t, p, it, ip, kt, kp, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
+		generateCronEntries(&values, i, t, p, it, ip, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
 		if t {
 			it++
 		} else {

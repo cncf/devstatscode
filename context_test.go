@@ -351,7 +351,7 @@ func TestInit(t *testing.T) {
 		VarsFnYaml:               "vars.yaml",
 		GitHubOAuth:              "not_use",
 		ClearDBPeriod:            "1 week",
-		ClearAffsLockPeriod:      "30 hours",
+		ClearAffsLockPeriod:      "20 hours",
 		ClearGiantLockPeriod:     "60 hours",
 		Trials:                   []int{10, 30, 60, 120, 300, 600, 1200},
 		LogTime:                  true,
