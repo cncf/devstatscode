@@ -249,8 +249,8 @@ func syncAllProjects() bool {
 		lib.Printf("Updated git repos, took: %v\n", dtEnd.Sub(dtStart))
 	}
 
-	// If there is an affs_lock mtx set on 'devstats' database and it is older than 30 hours - remove it (so other affs can start importing)
-	lib.ClearOrphanedAffsLock()
+	// If there is an affs_lock/giant_lock mtx set on 'devstats' database and it is older than 30/60 hours - remove it (so other affs can start importing)
+	lib.ClearOrphanedLocks()
 
 	// Sync all projects
 	for i, name := range names {

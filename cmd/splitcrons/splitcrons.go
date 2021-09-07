@@ -36,10 +36,10 @@ type devstatsValues struct {
 }
 
 const (
-	// WeekHours - hours in week
-	WeekHours = 24.0 * 7.0
-	// WeekMinutes - minutes in week
-	WeekMinutes = 60.0 * 24.0 * 7.0
+	// cWeekHours - hours in week
+	cWeekHours = 24.0 * 7.0
+	// cWeekMinutes - minutes in week
+	cWeekMinutes = 60.0 * 24.0 * 7.0
 )
 
 var (
@@ -99,13 +99,13 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			//minuteA, minuteS = 0, int(ghaOffset)
 			minuteA, minuteS = 0, 0
 		} else if idxt == -2 {
-			minuteA, minuteS = 60*int(WeekHours-allHours), int(minutes/2.0)
+			minuteA, minuteS = 60*int(cWeekHours-allHours), int(minutes/2.0)
 		} else {
 			minuteA, minuteS = int((kubernetesHours+intervalT*float64(idxt))*60.), int((float64(idxt)*minutes)/float64(nt))
 		}
-		minuteA += WeekHours * 30.0
-		if minuteA > WeekMinutes {
-			minuteA -= WeekMinutes
+		minuteA += cWeekHours * 30.0
+		if minuteA > cWeekMinutes {
+			minuteA -= cWeekMinutes
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
 		// fmt.Printf("test: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxt, nt, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
@@ -124,7 +124,7 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			//minuteA, minuteS = 0, int(ghaOffset)
 			minuteA, minuteS = 0, 0
 		} else if idxp == -2 {
-			minuteA, minuteS = 60*int(WeekHours-allHours), int(minutes/2.0)
+			minuteA, minuteS = 60*int(cWeekHours-allHours), int(minutes/2.0)
 		} else {
 			minuteA, minuteS = int((kubernetesHours+intervalP*float64(idxp))*60.), int((float64(idxp)*minutes)/float64(np))
 		}

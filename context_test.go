@@ -78,6 +78,8 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		VarsFnYaml:               in.VarsFnYaml,
 		GitHubOAuth:              in.GitHubOAuth,
 		ClearDBPeriod:            in.ClearDBPeriod,
+		ClearAffsLockPeriod:      in.ClearAffsLockPeriod,
+		ClearGiantLockPeriod:     in.ClearGiantLockPeriod,
 		Trials:                   in.Trials,
 		LogTime:                  in.LogTime,
 		WebHookRoot:              in.WebHookRoot,
@@ -349,6 +351,8 @@ func TestInit(t *testing.T) {
 		VarsFnYaml:               "vars.yaml",
 		GitHubOAuth:              "not_use",
 		ClearDBPeriod:            "1 week",
+		ClearAffsLockPeriod:      "30 hours",
+		ClearGiantLockPeriod:     "60 hours",
 		Trials:                   []int{10, 30, 60, 120, 300, 600, 1200},
 		LogTime:                  true,
 		WebHookRoot:              "/hook",
@@ -1023,11 +1027,19 @@ func TestInit(t *testing.T) {
 		},
 		{
 			"Setting clear DB logs period",
-			map[string]string{"GHA2DB_MAXLOGAGE": "3 days"},
+			map[string]string{
+				"GHA2DB_MAXLOGAGE":          "3 days",
+				"GHA2DB_MAX_AFFS_LOCK_AGE":  "2 days",
+				"GHA2DB_MAX_GIANT_LOCK_AGE": "4 days",
+			},
 			dynamicSetFields(
 				t,
 				copyContext(&defaultContext),
-				map[string]interface{}{"ClearDBPeriod": "3 days"},
+				map[string]interface{}{
+					"ClearDBPeriod":        "3 days",
+					"ClearAffsLockPeriod":  "2 days",
+					"ClearGiantLockPeriod": "4 days",
+				},
 			),
 		},
 		{

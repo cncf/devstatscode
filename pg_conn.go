@@ -1064,9 +1064,9 @@ func CreateDatabaseIfNeededExtended(ctx *Ctx, extraParams string) bool {
 	return !exists
 }
 
-// ClearOrphanedAffsLock clears aff_lock DB mtx on 'devstats' database, if it is older than 30 hours
+// ClearOrphanedLocks clears affs_lock/giant_lock DB mtx on 'devstats' database, if it is older than 30/60 hours
 // It clears logs on `devstats` database
-func ClearOrphanedAffsLock() {
+func ClearOrphanedLocks() {
 	// Environment context parse
 	var ctx Ctx
 	ctx.Init()
@@ -1078,6 +1078,6 @@ func ClearOrphanedAffsLock() {
 	// Connect to DB
 	c := PgConn(&ctx)
 	defer func() { _ = c.Close() }()
-	ExecSQLWithErr(c, &ctx, "delete from gha_computed where metric = 'affs_lock' and dt < now() - '30 hours'::interval")
-	ExecSQLWithErr(c, &ctx, "delete from gha_computed where metric = 'giant_lock' and dt < now() - '60 hours'::interval")
+	ExecSQLWithErr(c, &ctx, "delete from gha_computed where metric = 'affs_lock' and dt < now() - '"+ctx.ClearAffsLockPeriod+"'::interval")
+	ExecSQLWithErr(c, &ctx, "delete from gha_computed where metric = 'giant_lock' and dt < now() - '"+ctx.ClearGiantLockPeriod+"'::interval")
 }
