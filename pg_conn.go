@@ -1078,5 +1078,6 @@ func ClearOrphanedAffsLock() {
 	// Connect to DB
 	c := PgConn(&ctx)
 	defer func() { _ = c.Close() }()
-	ExecSQLWithErr(c, &ctx, "delete from gha_computed where metric = 'affs_lock' and and dt < now() - '30 hours'::interval")
+	ExecSQLWithErr(c, &ctx, "delete from gha_computed where metric = 'affs_lock' and dt < now() - '30 hours'::interval")
+	ExecSQLWithErr(c, &ctx, "delete from gha_computed where metric = 'giant_lock' and dt < now() - '60 hours'::interval")
 }
