@@ -64,9 +64,9 @@ func patch(namespace, cronjob, field, patch string) {
 		cmdAndArgs,
 		nil,
 	)
-	fmt.Printf("%+v:\n%s\n", cmdAndArgs, res)
+	//fmt.Printf("%+v:\n%s\n", cmdAndArgs, res)
 	if err != nil {
-		fmt.Printf("%+v: error: %+v\n", cmdAndArgs, err)
+		fmt.Printf("%+v: error: %+v\n%s\n", cmdAndArgs, err, res)
 	}
 }
 
@@ -143,6 +143,7 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 func generateCronValues(inFile, outFile string) {
 	ctx.Init()
 	ctx.ExecFatal = false
+	ctx.ExecOutput = true
 
 	data, err := ioutil.ReadFile(inFile)
 	lib.FatalOnError(err)
