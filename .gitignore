@@ -59,6 +59,8 @@ sqlite/*.sql
 *.secret
 /error.yaml
 /in.json
+/new-values.yaml
+/values.yaml
 !/contributors_and_emails.csv
 !/contributing_actors*.csv
 !/k8s_contributors_and_emails.csv

@@ -11,24 +11,24 @@ import (
 )
 
 type devstatsProject struct {
-	Proj            string `yaml:"proj"`            // kubernetes
-	URL             string `yaml:"url"`             // k8s
-	DB              string `yaml:"db"`              // gha
-	Icon            string `yaml:"icon"`            // 'k8s'
-	Org             string `yaml:"org"`             // 'Kubernetes'
-	Repo            string `yaml:"repo"`            // 'kubernetes/kubernetes'
-	CronTest        string `yaml:"cronTest"`        // '37 * * * *'
-	CronProd        string `yaml:"cronProd"`        // '7 * * * *'
-	AffCronTest     string `yaml:"affCronTest"`     // '0 23 * * 0'
-	AffCronProd     string `yaml:"affCronProd"`     // '0 11 * * 0'
-	SuspendCronTest bool   `yaml:"suspendCronTest"` // false
-	SuspendCronProd bool   `yaml:"suspendCronProd"` // false
-	AffSkipTemp     string `yaml:"affSkipTemp"`     // '1'
-	Disk            string `yaml:"disk"`            // 50Gi
-	Domains         [4]int `yaml:"domains"`         // [1, 1, 0, 0]
-	GA              string `yaml:"ga"`              // 'UA-108085315-1'
-	I               int    `yaml:"i"`               // 0
-	CertNum         int    `yaml:"certNum"`         // 1
+	Proj            string `yaml:"proj"`                      // kubernetes
+	URL             string `yaml:"url"`                       // k8s
+	DB              string `yaml:"db"`                        // gha
+	Icon            string `yaml:"icon"`                      // 'k8s'
+	Org             string `yaml:"org"`                       // 'Kubernetes'
+	Repo            string `yaml:"repo"`                      // 'kubernetes/kubernetes'
+	CronTest        string `yaml:"cronTest"`                  // '37 * * * *'
+	CronProd        string `yaml:"cronProd"`                  // '7 * * * *'
+	AffCronTest     string `yaml:"affCronTest"`               // '0 23 * * 0'
+	AffCronProd     string `yaml:"affCronProd"`               // '0 11 * * 0'
+	SuspendCronTest bool   `yaml:"suspendCronTest,omitempty"` // false
+	SuspendCronProd bool   `yaml:"suspendCronProd,omitempty"` // false
+	AffSkipTemp     string `yaml:"affSkipTemp"`               // '1'
+	Disk            string `yaml:"disk"`                      // 50Gi
+	Domains         [4]int `yaml:"domains,flow"`              // [1, 1, 0, 0]
+	GA              string `yaml:"ga"`                        // 'UA-108085315-1'
+	I               int    `yaml:"i"`                         // 0
+	CertNum         int    `yaml:"certNum"`                   // 1
 }
 
 type devstatsValues struct {
@@ -41,6 +41,34 @@ const (
 	// WeekMinutes - minutes in week
 	WeekMinutes = 60.0 * 24.0 * 7.0
 )
+
+var (
+	ctx lib.Ctx
+)
+
+// kubectl patch cronjob -n devstats-test devstats-affiliations-oras -p '{"spec":{"schedule": "40 4 * * 2"}}'
+func patch(namespace, cronjob, field, patch string) {
+	patchSpec := fmt.Sprintf(`{"spec":{"%s":%s}}`, field, patch)
+	cmdAndArgs := []string{
+		"kubectl",
+		"patch",
+		"cronjob",
+		"-n",
+		namespace,
+		cronjob,
+		"-p",
+		patchSpec,
+	}
+	res, err := lib.ExecCommand(
+		&ctx,
+		cmdAndArgs,
+		nil,
+	)
+	fmt.Printf("%+v:\n%s\n", cmdAndArgs, res)
+	if err != nil {
+		fmt.Printf("%+v: error: %+v\n", cmdAndArgs, err)
+	}
+}
 
 // idxt/idxp == -1 -> kubernetes
 // idxt/idxp == -2 -> all cncf
@@ -79,7 +107,15 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			minuteA -= WeekMinutes
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
-		fmt.Printf("test: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxt, nt, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
+		// fmt.Printf("test: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxt, nt, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
+		if values.Projects[idx].AffCronTest != cronA {
+			values.Projects[idx].AffCronTest = cronA
+			patch("devstats-test", "devstats-affiliations-"+values.Projects[idx].Proj, "schedule", `"`+cronA+`"`)
+		}
+		if values.Projects[idx].CronTest != cronS {
+			values.Projects[idx].CronTest = cronS
+			patch("devstats-test", "devstats-"+values.Projects[idx].Proj, "schedule", `"`+cronS+`"`)
+		}
 	}
 	if prod {
 		minuteA, minuteS := -1, -1
@@ -92,16 +128,28 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			minuteA, minuteS = int((kubernetesHours+intervalP*float64(idxp))*60.), int((float64(idxp)*minutes)/float64(np))
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
-		fmt.Printf("prod: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxp, np, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
+		// fmt.Printf("prod: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxp, np, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
+		if values.Projects[idx].AffCronProd != cronA {
+			values.Projects[idx].AffCronProd = cronA
+			patch("devstats-prod", "devstats-affiliations-"+values.Projects[idx].Proj, "schedule", `"`+cronA+`"`)
+		}
+		if values.Projects[idx].CronProd != cronS {
+			values.Projects[idx].CronProd = cronS
+			patch("devstats-prod", "devstats-"+values.Projects[idx].Proj, "schedule", `"`+cronS+`"`)
+		}
 	}
 }
 
 func generateCronValues(inFile, outFile string) {
+	ctx.Init()
+	ctx.ExecFatal = false
+
 	data, err := ioutil.ReadFile(inFile)
 	lib.FatalOnError(err)
 
 	var values devstatsValues
 	lib.FatalOnError(yaml.Unmarshal(data, &values))
+	fmt.Printf("read %s\n", inFile)
 
 	kubernetesHoursI := 18
 	str := os.Getenv("KUBERNETES_HOURS")
@@ -149,10 +197,10 @@ func generateCronValues(inFile, outFile string) {
 			allIdx = i
 			continue
 		}
-		if !project.SuspendCronTest && project.Domains[1] != 0 {
+		if !project.SuspendCronTest && project.Domains[0] != 0 {
 			kt++
 		}
-		if !project.SuspendCronProd && project.Domains[0] != 0 {
+		if !project.SuspendCronProd && project.Domains[1] != 0 {
 			kp++
 		}
 	}
@@ -171,27 +219,32 @@ func generateCronValues(inFile, outFile string) {
 			generateCronEntries(&values, i, true, true, -2, -2, kt, kp, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
 			continue
 		}
-		t := !project.SuspendCronTest && project.Domains[1] != 0
-		p := !project.SuspendCronProd && project.Domains[0] != 0
+		t := !project.SuspendCronTest && project.Domains[0] != 0
+		p := !project.SuspendCronProd && project.Domains[1] != 0
 		generateCronEntries(&values, i, t, p, it, ip, kt, kp, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
 		if t {
 			it++
 		} else {
-			project.SuspendCronTest = true
+			if values.Projects[i].SuspendCronTest != true {
+				patch("devstats-test", "devstats-"+values.Projects[i].Proj, "suspend", "true")
+				patch("devstats-test", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", "true")
+			}
+			values.Projects[i].SuspendCronTest = true
 		}
 		if p {
 			ip++
 		} else {
-			project.SuspendCronProd = true
+			if values.Projects[i].SuspendCronProd != true {
+				patch("devstats-prod", "devstats-"+values.Projects[i].Proj, "suspend", "true")
+				patch("devstats-prod", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", "true")
+			}
+			values.Projects[i].SuspendCronProd = true
 		}
 	}
-
-	/*
-		  jsonBytes, err := jsoniter.Marshal(values)
-		  lib.FatalOnError(err)
-		  pretty := lib.PrettyPrintJSON(jsonBytes)
-			fmt.Printf("%s\n", string(pretty))
-	*/
+	yamlBytes, err := yaml.Marshal(values)
+	lib.FatalOnError(err)
+	lib.FatalOnError(ioutil.WriteFile(outFile, yamlBytes, 0644))
+	fmt.Printf("written %s\n", outFile)
 	return
 }
 
