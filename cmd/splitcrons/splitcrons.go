@@ -29,6 +29,7 @@ type devstatsProject struct {
 	GA              string `yaml:"ga"`                        // 'UA-108085315-1'
 	I               int    `yaml:"i"`                         // 0
 	CertNum         int    `yaml:"certNum"`                   // 1
+	MaxHist         int    `yaml:"maxHist,omitempty"`         // 8
 }
 
 type devstatsValues struct {
