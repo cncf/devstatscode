@@ -164,7 +164,29 @@ func createSeriesFromFormula(def string) (result []string) {
 // If env variable ends with ?? then only set this value when not already defined
 //   so if env variable is defined but empty, it will not set its value
 //   while version with a single ? will
-func processEnvMap(inMap map[string]string) (outMap map[string]string) {
+// If key contains @ (for example key-name@period-name) that means a key key-name should only be set for period=period-name
+// If key contains ! (for example key-name!period-name) that means a key key-name should only be set for period!=period-name
+// Most complex example GHA2DB_NCPUS?@d7=4 - set GHA2DB_NCPUS=4 only when calculating period d7
+//   and that variable was not already set to non-empty value
+func processEnvMap(in map[string]string, period string) (outMap map[string]string) {
+	inMap := make(map[string]string)
+	for k, v := range in {
+		if strings.Contains(k, "@") {
+			ary := strings.Split(k, "@")
+			if ary[1] == period && ary[0] != "" {
+				inMap[ary[0]] = v
+			}
+			continue
+		}
+		if strings.Contains(k, "!") {
+			ary := strings.Split(k, "!")
+			if ary[1] != period && ary[0] != "" {
+				inMap[ary[0]] = v
+			}
+			continue
+		}
+		inMap[k] = v
+	}
 	conditional := false
 	for k := range inMap {
 		if strings.HasSuffix(k, "?") {
@@ -606,7 +628,7 @@ func sync(ctx *lib.Ctx, args []string) {
 						}
 						dropProcessed = true
 					}
-					envMap := processEnvMap(metric.EnvMap)
+					envMap := processEnvMap(metric.EnvMap, periodAggr)
 					if metric.Histogram {
 						lib.Printf("Scheduled histogram metric %v, period %v, desc: '%v', aggregate: '%v' ...\n", metric.Name, period, metric.Desc, aggrSuffix)
 						hists = append(
@@ -671,6 +693,9 @@ func sync(ctx *lib.Ctx, args []string) {
 		// Process histograms (possibly MT)
 		// Get number of CPUs available
 		thrN := lib.GetThreadsNum(ctx)
+		if ctx.MaxHistograms > 0 && thrN > ctx.MaxHistograms {
+			thrN = ctx.MaxHistograms
+		}
 		if thrN > 1 {
 			lib.Printf("Now processing %d histograms using MT%d version\n", len(hists), thrN)
 			ch := make(chan bool)

@@ -150,6 +150,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		CommitsLOCStatsEnabled:   in.CommitsLOCStatsEnabled,
 		EnableMetricsDrop:        in.EnableMetricsDrop,
 		RecalcReciprocal:         in.RecalcReciprocal,
+		MaxHistograms:            in.MaxHistograms,
 	}
 	return &out
 }
@@ -423,6 +424,7 @@ func TestInit(t *testing.T) {
 		CommitsLOCStatsEnabled:   true,
 		EnableMetricsDrop:        false,
 		RecalcReciprocal:         24,
+		MaxHistograms:            0,
 	}
 
 	var nilRegexp *regexp.Regexp
@@ -1843,6 +1845,15 @@ func TestInit(t *testing.T) {
 				t,
 				copyContext(&defaultContext),
 				map[string]interface{}{"RecalcReciprocal": 24},
+			),
+		},
+		{
+			"Setting max histograms to 16",
+			map[string]string{"GHA2DB_MAX_HIST": "16"},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{"MaxHistograms": 16},
 			),
 		},
 	}

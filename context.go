@@ -149,6 +149,7 @@ type Ctx struct {
 	CommitsFilesStatsEnabled bool                         // True, can be disabled by GHA2DB_SKIP_COMMITS_FILES, get_repos tool
 	CommitsLOCStatsEnabled   bool                         // True, can be disabled by GHA2DB_SKIP_COMMITS_LOC, get_repos tool
 	RecalcReciprocal         int                          // From GHA2DB_RECALC_RECIPROCAL: 1/RecalcReciprocal of recalc metric at given datetime, even if it should be calculated at this datetime, default 24 (means 4.1(6)%, or about once/day)
+	MaxHistograms            int                          // From GHA2DB_MAX_HIST: maximum histogram concurrency, default: 0 - means unlimited
 }
 
 // Init - get context from environment variables
@@ -807,6 +808,15 @@ func (ctx *Ctx) Init() {
 			ctx.RecalcReciprocal = rr
 		} else {
 			ctx.RecalcReciprocal = 24
+		}
+	}
+
+	// MaxHistograms
+	if os.Getenv("GHA2DB_MAX_HIST") != "" {
+		mh, err := strconv.Atoi(os.Getenv("GHA2DB_MAX_HIST"))
+		FatalNoLog(err)
+		if mh > 0 {
+			ctx.MaxHistograms = mh
 		}
 	}
 
