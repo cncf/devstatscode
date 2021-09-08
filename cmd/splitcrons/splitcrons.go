@@ -43,11 +43,16 @@ const (
 )
 
 var (
-	ctx lib.Ctx
+	ctx        lib.Ctx
+	gPatched   int
+	gAttempted int
+	gNever     bool
+	gAllways   bool
 )
 
 // kubectl patch cronjob -n devstats-test devstats-affiliations-oras -p '{"spec":{"schedule": "40 4 * * 2"}}'
 func patch(namespace, cronjob, field, patch string) {
+	gAttempted++
 	patchSpec := fmt.Sprintf(`{"spec":{"%s":%s}}`, field, patch)
 	cmdAndArgs := []string{
 		"kubectl",
@@ -68,7 +73,9 @@ func patch(namespace, cronjob, field, patch string) {
 	if err != nil {
 		// fmt.Printf("%+v: error: %+v\n%s\n", cmdAndArgs, err, res)
 		fmt.Printf("%+v: error: %+v\n", cmdAndArgs, err)
+		return
 	}
+	gPatched++
 }
 
 // idxt/idxp == -1 -> kubernetes
@@ -113,11 +120,11 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
 		// fmt.Printf("test: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxt, nt, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
-		if values.Projects[idx].AffCronTest != cronA {
+		if !gNever && (gAllways || values.Projects[idx].AffCronTest != cronA) {
 			values.Projects[idx].AffCronTest = cronA
 			patch("devstats-test", "devstats-affiliations-"+values.Projects[idx].Proj, "schedule", `"`+cronA+`"`)
 		}
-		if values.Projects[idx].CronTest != cronS {
+		if !gNever && (gAllways || values.Projects[idx].CronTest != cronS) {
 			values.Projects[idx].CronTest = cronS
 			patch("devstats-test", "devstats-"+values.Projects[idx].Proj, "schedule", `"`+cronS+`"`)
 		}
@@ -141,11 +148,11 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
 		// fmt.Printf("prod: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxp, np, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
-		if values.Projects[idx].AffCronProd != cronA {
+		if !gNever && (gAllways || values.Projects[idx].AffCronProd != cronA) {
 			values.Projects[idx].AffCronProd = cronA
 			patch("devstats-prod", "devstats-affiliations-"+values.Projects[idx].Proj, "schedule", `"`+cronA+`"`)
 		}
-		if values.Projects[idx].CronProd != cronS {
+		if !gNever && (gAllways || values.Projects[idx].CronProd != cronS) {
 			values.Projects[idx].CronProd = cronS
 			patch("devstats-prod", "devstats-"+values.Projects[idx].Proj, "schedule", `"`+cronS+`"`)
 		}
@@ -207,6 +214,7 @@ func generateCronValues(inFile, outFile string) {
 			lib.Fatalf("SYNC_HOURS must be 1, 2 or 3")
 		}
 	}
+	syncHours := float64(syncHoursI)
 	offsetHoursI := -4
 	str = os.Getenv("OFFSET_HOURS")
 	if str != "" {
@@ -218,7 +226,8 @@ func generateCronValues(inFile, outFile string) {
 		}
 	}
 	offsetHours := float64(offsetHoursI)
-	syncHours := float64(syncHoursI)
+	gAllways = os.Getenv("ALWAYS_PATCH") != ""
+	gNever = os.Getenv("NEVER_PATCH") != ""
 	minutes := syncHours * (60.0 - ghaOffset)
 	hours := 7.0*24.0 - (kubernetesHours + allHours)
 	kt, kp := 0, 0
@@ -263,7 +272,7 @@ func generateCronValues(inFile, outFile string) {
 		if t {
 			it++
 		} else {
-			if values.Projects[i].SuspendCronTest != true {
+			if !gNever && (gAllways || values.Projects[i].SuspendCronTest != true) {
 				patch("devstats-test", "devstats-"+values.Projects[i].Proj, "suspend", "true")
 				patch("devstats-test", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", "true")
 			}
@@ -272,13 +281,14 @@ func generateCronValues(inFile, outFile string) {
 		if p {
 			ip++
 		} else {
-			if values.Projects[i].SuspendCronProd != true {
+			if !gNever && (gAllways || values.Projects[i].SuspendCronProd != true) {
 				patch("devstats-prod", "devstats-"+values.Projects[i].Proj, "suspend", "true")
 				patch("devstats-prod", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", "true")
 			}
 			values.Projects[i].SuspendCronProd = true
 		}
 	}
+	fmt.Printf("patched %d/%d cronjobs\n", gPatched, gAttempted)
 	yamlBytes, err := yaml.Marshal(values)
 	lib.FatalOnError(err)
 	lib.FatalOnError(ioutil.WriteFile(outFile, yamlBytes, 0644))
