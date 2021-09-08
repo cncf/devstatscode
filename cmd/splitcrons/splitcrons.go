@@ -182,7 +182,7 @@ func generateCronValues(inFile, outFile string) {
 		}
 	}
 	kubernetesHours := float64(kubernetesHoursI)
-	allHoursI := 12
+	allHoursI := 15
 	str = os.Getenv("ALL_HOURS")
 	if str != "" {
 		var err error
