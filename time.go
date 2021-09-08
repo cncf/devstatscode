@@ -142,22 +142,22 @@ func ComputePeriodAtThisDate(ctx *Ctx, period string, idt time.Time, hist bool) 
 		if len(period) == 1 {
 			return true
 		}
-		return h%4 == 1
+		return h == 1 || h == 6 || h == 9 || h == 13 || h == 18 || h == 21
 	} else if hist && periodStart == "a" {
 		periodLen := len(period)
 		periodEnd := period[periodLen-2:]
 		if periodEnd == "_n" {
-			return h%6 == 1
+			return h == 1 || h == 8 || h == 15 || h == 13 || h == 20
 		}
-		return h == 2
+		return h == 2 || h == 3
 	} else if hist && periodStart == "c" {
-		return h == 3
+		return h == 3 || h == 4
 	}
 	if hist {
 		if periodStart == "w" {
-			return h%6 == 0
+			return h%7 == 0
 		} else if periodStart == "m" || periodStart == "q" || periodStart == "y" {
-			return h == 23
+			return h == 23 || h == 18
 		}
 	} else {
 		if periodStart == "w" {

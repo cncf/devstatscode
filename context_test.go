@@ -422,7 +422,7 @@ func TestInit(t *testing.T) {
 		CommitsFilesStatsEnabled: true,
 		CommitsLOCStatsEnabled:   true,
 		EnableMetricsDrop:        false,
-		RecalcReciprocal:         50,
+		RecalcReciprocal:         24,
 	}
 
 	var nilRegexp *regexp.Regexp
@@ -1819,12 +1819,21 @@ func TestInit(t *testing.T) {
 			),
 		},
 		{
+			"Setting recalc reciprocal to 100",
+			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "100"},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{"RecalcReciprocal": 100},
+			),
+		},
+		{
 			"Setting recalc reciprocal to 0",
 			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "0"},
 			dynamicSetFields(
 				t,
 				copyContext(&defaultContext),
-				map[string]interface{}{"RecalcReciprocal": 50},
+				map[string]interface{}{"RecalcReciprocal": 24},
 			),
 		},
 		{
@@ -1833,7 +1842,7 @@ func TestInit(t *testing.T) {
 			dynamicSetFields(
 				t,
 				copyContext(&defaultContext),
-				map[string]interface{}{"RecalcReciprocal": 50},
+				map[string]interface{}{"RecalcReciprocal": 24},
 			),
 		},
 	}

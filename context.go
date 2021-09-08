@@ -148,7 +148,7 @@ type Ctx struct {
 	CanReconnect             bool                         // True, unless connecting to a custom database, in this case there can be multiple threads sharing context and we don't want to write to a random database
 	CommitsFilesStatsEnabled bool                         // True, can be disabled by GHA2DB_SKIP_COMMITS_FILES, get_repos tool
 	CommitsLOCStatsEnabled   bool                         // True, can be disabled by GHA2DB_SKIP_COMMITS_LOC, get_repos tool
-	RecalcReciprocal         int                          // From GHA2DB_RECALC_RECIPROCAL: 1/RecalcReciprocal of recalc metric at given datetime, even if it should be calculated at this datetime, default 50 (means 2%)
+	RecalcReciprocal         int                          // From GHA2DB_RECALC_RECIPROCAL: 1/RecalcReciprocal of recalc metric at given datetime, even if it should be calculated at this datetime, default 24 (means 4.1(6)%, or about once/day)
 }
 
 // Init - get context from environment variables
@@ -799,14 +799,14 @@ func (ctx *Ctx) Init() {
 
 	// RecalcReciprocal
 	if os.Getenv("GHA2DB_RECALC_RECIPROCAL") == "" {
-		ctx.RecalcReciprocal = 50
+		ctx.RecalcReciprocal = 24
 	} else {
 		rr, err := strconv.Atoi(os.Getenv("GHA2DB_RECALC_RECIPROCAL"))
 		FatalNoLog(err)
 		if rr > 0 {
 			ctx.RecalcReciprocal = rr
 		} else {
-			ctx.RecalcReciprocal = 50
+			ctx.RecalcReciprocal = 24
 		}
 	}
 

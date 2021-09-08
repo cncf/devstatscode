@@ -170,6 +170,9 @@ func generateCronValues(inFile, outFile string) {
 		var err error
 		kubernetesHoursI, err = strconv.Atoi(os.Getenv("KUBERNETES_HOURS"))
 		lib.FatalOnError(err)
+		if kubernetesHoursI < 3 || kubernetesHoursI > 30 {
+			lib.Fatalf("KUBERNETES_HOURS must be from [3,30]")
+		}
 	}
 	kubernetesHours := float64(kubernetesHoursI)
 	allHoursI := 12
@@ -178,6 +181,9 @@ func generateCronValues(inFile, outFile string) {
 		var err error
 		allHoursI, err = strconv.Atoi(os.Getenv("ALL_HOURS"))
 		lib.FatalOnError(err)
+		if allHoursI < 3 || allHoursI > 30 {
+			lib.Fatalf("ALL_HOURS must be from [3,30]")
+		}
 	}
 	allHours := float64(allHoursI)
 	ghaOffsetI := 4
@@ -186,6 +192,9 @@ func generateCronValues(inFile, outFile string) {
 		var err error
 		ghaOffsetI, err = strconv.Atoi(os.Getenv("GHA_OFFSET"))
 		lib.FatalOnError(err)
+		if ghaOffsetI < 2 || ghaOffsetI > 10 {
+			lib.Fatalf("GHA_OFFSET must be from [2,10]")
+		}
 	}
 	ghaOffset := float64(ghaOffsetI)
 	syncHoursI := 2
@@ -194,6 +203,9 @@ func generateCronValues(inFile, outFile string) {
 		var err error
 		syncHoursI, err = strconv.Atoi(os.Getenv("SYNC_HOURS"))
 		lib.FatalOnError(err)
+		if syncHoursI < 1 || syncHoursI > 3 {
+			lib.Fatalf("SYNC_HOURS must be 1, 2 or 3")
+		}
 	}
 	offsetHoursI := -4
 	str = os.Getenv("OFFSET_HOURS")
@@ -201,6 +213,9 @@ func generateCronValues(inFile, outFile string) {
 		var err error
 		offsetHoursI, err = strconv.Atoi(os.Getenv("OFFSET_HOURS"))
 		lib.FatalOnError(err)
+		if offsetHoursI < -84 || offsetHoursI > 84 {
+			lib.Fatalf("OFFSET_HOURS must be from [-84,84]")
+		}
 	}
 	offsetHours := float64(offsetHoursI)
 	syncHours := float64(syncHoursI)
