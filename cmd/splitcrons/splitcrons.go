@@ -172,7 +172,7 @@ func generateCronValues(inFile, outFile string) {
 	lib.FatalOnError(yaml.Unmarshal(data, &values))
 	fmt.Printf("read %s\n", inFile)
 
-	kubernetesHoursI := 15
+	kubernetesHoursI := 24
 	str := os.Getenv("KUBERNETES_HOURS")
 	if str != "" {
 		var err error
@@ -183,7 +183,7 @@ func generateCronValues(inFile, outFile string) {
 		}
 	}
 	kubernetesHours := float64(kubernetesHoursI)
-	allHoursI := 15
+	allHoursI := 20
 	str = os.Getenv("ALL_HOURS")
 	if str != "" {
 		var err error
