@@ -54,7 +54,7 @@ type Ctx struct {
 	SkipDatesYaml            string                       // From GHA2DB_SKIP_DATES_YAML gha2db tool, set other skip_dates.yaml file, default is "skip_dates.yaml"
 	GitHubOAuth              string                       // From GHA2DB_GITHUB_OAUTH ghapi2db tool, if not set reads from /etc/github/oauth file, set to "-" to force public access.
 	ClearDBPeriod            string                       // From GHA2DB_MAXLOGAGE gha2db_sync tool, maximum age of devstats.gha_logs entries, default "1 week"
-	ClearAffsLockPeriod      string                       // From GHA2DB_MAX_AFFS_LOCK_AGE devstats tool, maximum age of devstats.gha_metrics "affs_lock" age, default "20 hours"
+	ClearAffsLockPeriod      string                       // From GHA2DB_MAX_AFFS_LOCK_AGE devstats tool, maximum age of devstats.gha_metrics "affs_lock" age, default "30 hours"
 	ClearGiantLockPeriod     string                       // From GHA2DB_MAX_GIANT_LOCK_AGE devstats tool, maximum age of devstats.gha_metrics "giant_lock" age, default "60 hours"
 	Trials                   []int                        // From GHA2DB_TRIALS, all Postgres related tools, retry periods for some retryable errors
 	WebHookRoot              string                       // From GHA2DB_WHROOT, webhook tool, default "/hook", must match .travis.yml notifications webhooks
@@ -437,7 +437,7 @@ func (ctx *Ctx) Init() {
 	// Max locks ages
 	ctx.ClearAffsLockPeriod = os.Getenv("GHA2DB_MAX_AFFS_LOCK_AGE")
 	if ctx.ClearAffsLockPeriod == "" {
-		ctx.ClearAffsLockPeriod = "20 hours"
+		ctx.ClearAffsLockPeriod = "30 hours"
 	}
 	ctx.ClearGiantLockPeriod = os.Getenv("GHA2DB_MAX_GIANT_LOCK_AGE")
 	if ctx.ClearGiantLockPeriod == "" {
