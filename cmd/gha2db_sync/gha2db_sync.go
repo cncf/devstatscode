@@ -695,6 +695,7 @@ func sync(ctx *lib.Ctx, args []string) {
 		thrN := lib.GetThreadsNum(ctx)
 		if ctx.MaxHistograms > 0 && thrN > ctx.MaxHistograms {
 			thrN = ctx.MaxHistograms
+			lib.Printf("Number of parallel histograms limited to %d\n", thrN)
 		}
 		if thrN > 1 {
 			lib.Printf("Now processing %d histograms using MT%d version\n", len(hists), thrN)
