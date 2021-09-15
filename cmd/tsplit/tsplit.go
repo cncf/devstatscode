@@ -10,7 +10,7 @@ import (
 
 // You should use files like 'graduated.secret' - they start from first graduated '    <tr>' line
 // and end on last line before first inclubating line '    <tr>'
-func tsplit(size int, kind, in string) (out string) {
+func tsplit(size int, kind, in string, dbg bool) (out string) {
 	ary := strings.Split(in, "\n")
 	lines := []string{}
 	for _, item := range ary {
@@ -71,7 +71,9 @@ func tsplit(size int, kind, in string) (out string) {
 			to = nItems
 		}
 		n := to - from
-		// fmt.Printf("section %d: %d-%d (%d items)\n", section, from, to, n)
+		if dbg {
+			fmt.Fprintf(os.Stderr, "section %d: %d-%d (%d items)\n", section, from, to, n)
+		}
 		outLines = append(outLines, offset+"<tr>")
 		outLines = append(outLines, offset+fmt.Sprintf(`  <td colspan="%d" class="cncf-sep">%s</td>`, n, kind))
 		outLines = append(outLines, offset+"</tr>")
@@ -111,8 +113,10 @@ func tsplit(size int, kind, in string) (out string) {
 		}
 		outLines = append(outLines, offset+"</tr>")
 	}
-	// fmt.Printf("Links:\n%s\n", strings.Join(linkLines, "\n"))
-	// fmt.Printf("Images:\n%s\n", strings.Join(imageLines, "\n"))
+	if dbg {
+		fmt.Fprintf(os.Stderr, "Links %d:\n%s\n", len(linkLines), strings.Join(linkLines, "\n"))
+		fmt.Fprintf(os.Stderr, "Images %d:\n%s\n", len(imageLines), strings.Join(imageLines, "\n"))
+	}
 	out = strings.Join(outLines, "\n")
 	return
 }
@@ -138,5 +142,5 @@ func main() {
 		fmt.Printf("error: %+v\n", err)
 		return
 	}
-	fmt.Printf("%s\n", tsplit(size, kind, string(data)))
+	fmt.Printf("%s\n", tsplit(size, kind, string(data), os.Getenv("DEBUG") != ""))
 }
