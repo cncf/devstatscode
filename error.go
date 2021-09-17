@@ -29,6 +29,9 @@ func FatalOnError(err error) string {
 			}
 			Printf("PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
 			fmt.Fprintf(os.Stderr, "PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
+			if os.Getenv("DURABLE_PQ") != "" {
+				return Reconnect
+			}
 		default:
 			Printf("ErrorType: %T, error: %+v\n", e, e)
 			fmt.Fprintf(os.Stderr, "ErrorType: %T, error: %+v\n", e, e)

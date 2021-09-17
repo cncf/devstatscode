@@ -354,7 +354,7 @@ func TestInit(t *testing.T) {
 		ClearDBPeriod:            "1 week",
 		ClearAffsLockPeriod:      "30 hours",
 		ClearGiantLockPeriod:     "60 hours",
-		Trials:                   []int{10, 30, 60, 120, 300, 600, 1200},
+		Trials:                   []int{10, 30, 60, 120, 300, 600, 1200, 3600},
 		LogTime:                  true,
 		WebHookRoot:              "/hook",
 		WebHookPort:              ":1982",

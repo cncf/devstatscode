@@ -447,7 +447,7 @@ func (ctx *Ctx) Init() {
 	// Trials
 	trials := os.Getenv("GHA2DB_TRIALS")
 	if trials == "" {
-		ctx.Trials = []int{10, 30, 60, 120, 300, 600, 1200}
+		ctx.Trials = []int{10, 30, 60, 120, 300, 600, 1200, 3600}
 	} else {
 		trialsArr := strings.Split(trials, ",")
 		for _, try := range trialsArr {
