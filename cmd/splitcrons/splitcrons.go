@@ -30,6 +30,9 @@ type devstatsProject struct {
 	I               int    `yaml:"i"`                         // 0
 	CertNum         int    `yaml:"certNum"`                   // 1
 	MaxHist         int    `yaml:"maxHist,omitempty"`         // 8
+	SkipAffsLock    int    `yaml:"skipAffsLock,omitempty"`    // 1
+	AffsLockDB      string `yaml:"affsLockDB,omitempty"`      // gha, allprj
+	NoDurable       int    `yaml:"noDurable,omitempty"`       // 1
 }
 
 type devstatsValues struct {
