@@ -102,16 +102,16 @@ const OK string = "ok"
 // RepoNamesQuery - common constant string
 const RepoNamesQuery string = "select distinct name from gha_repos where name like '%_/_%' and name not like '%/%/%'"
 
-// DevActCnt - common contant string
+// DevActCnt - common constant string
 const DevActCnt string = "DevActCnt"
 
-// DevActCntComp - common contant string
+// DevActCntComp - common constant string
 const DevActCntComp string = "DevActCntComp"
 
-// ComContribRepoGrp - common contant string
+// ComContribRepoGrp - common constant string
 const ComContribRepoGrp string = "ComContribRepoGrp"
 
-// CompaniesTable - common contant string
+// CompaniesTable - common constant string
 const CompaniesTable string = "CompaniesTable"
 
 // ComStatsRepoGrp - common constant string
