@@ -150,6 +150,7 @@ type Ctx struct {
 	CommitsLOCStatsEnabled   bool                         // True, can be disabled by GHA2DB_SKIP_COMMITS_LOC, get_repos tool
 	RecalcReciprocal         int                          // From GHA2DB_RECALC_RECIPROCAL: 1/RecalcReciprocal of recalc metric at given datetime, even if it should be calculated at this datetime, default 24 (means 4.1(6)%, or about once/day)
 	MaxHistograms            int                          // From GHA2DB_MAX_HIST: maximum histogram concurrency, default: 0 - means unlimited
+	MaxRunDuration           map[string][2]int            // From GHA2DB_MAX_RUN_DURATION, how log given programs can run and exist status after timeout, for example "tags:1h:0,calc_metric:12h:1"
 }
 
 // Init - get context from environment variables
@@ -750,6 +751,36 @@ func (ctx *Ctx) Init() {
 				ctx.ComputePeriods[period] = make(map[bool]struct{})
 			}
 			ctx.ComputePeriods[period][hist] = struct{}{}
+		}
+	}
+
+	// Max run durations
+	// MaxRunDuration map[string][2]int // From GHA2DB_MAX_RUN_DURATION "tags:1h:0,calc_metric:12h:1"
+	data := os.Getenv("GHA2DB_MAX_RUN_DURATION")
+	if data != "" {
+		ary := strings.Split(data, ",")
+		for _, data := range ary {
+			ary2 := strings.Split(data, ":")
+			if len(ary2) != 3 {
+				continue
+			}
+			prog := strings.TrimSpace(ary2[0])
+			durS := strings.TrimSpace(ary2[1])
+			d, err := time.ParseDuration(durS)
+			FatalNoLog(err)
+			dur := int(d.Seconds())
+			statusS := strings.TrimSpace(ary2[2])
+			status, err := strconv.Atoi(statusS)
+			FatalNoLog(err)
+			if ctx.MaxRunDuration == nil {
+				ctx.MaxRunDuration = make(map[string][2]int)
+			}
+			_, ok := ctx.MaxRunDuration[prog]
+			if !ok {
+				ctx.MaxRunDuration[prog] = [2]int{dur, status}
+			} else {
+				FatalNoLog(fmt.Errorf("program '%s' already defined (in MaxRunDuration): %+v", prog, ctx.MaxRunDuration))
+			}
 		}
 	}
 

@@ -851,6 +851,7 @@ func main() {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 	if !ctx.SkipGetRepos {
 		dbs, repos := getRepos(&ctx)
 		if ctx.Debug > 0 {

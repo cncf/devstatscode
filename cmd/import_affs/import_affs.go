@@ -369,6 +369,7 @@ func importAffs(jsonFN string) int {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 
 	// Files path
 	dataPrefix := ctx.DataDir

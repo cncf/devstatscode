@@ -235,6 +235,7 @@ func generateWebsiteData() {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 
 	// We need this to capture 'last_tag.sh' output.
 	ctx.ExecOutput = true

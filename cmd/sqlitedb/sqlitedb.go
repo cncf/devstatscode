@@ -383,6 +383,7 @@ func main() {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 
 	if len(os.Args) < 2 {
 		lib.Printf("Required args: grafana.db file name and list(*) of jsons to import.\n")

@@ -12,6 +12,7 @@ func makeAnnotations() {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 
 	// Needs GHA2DB_PROJECT variable set
 	if ctx.Project == "" {

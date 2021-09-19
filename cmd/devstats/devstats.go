@@ -17,6 +17,7 @@ func syncAllProjects() bool {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 
 	// Local or cron mode?
 	dataPrefix := ctx.DataDir

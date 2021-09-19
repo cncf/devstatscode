@@ -121,6 +121,7 @@ func copyContext(in *lib.Ctx) *lib.Ctx {
 		OnlyMetrics:              in.OnlyMetrics,
 		SkipMetrics:              in.SkipMetrics,
 		ComputePeriods:           in.ComputePeriods,
+		MaxRunDuration:           in.MaxRunDuration,
 		ElasticURL:               in.ElasticURL,
 		UseES:                    in.UseES,
 		UseESOnly:                in.UseESOnly,
@@ -270,6 +271,14 @@ func dynamicSetFields(t *testing.T, ctx *lib.Ctx, fields map[string]interface{})
 				return ctx
 			}
 			field.Set(reflect.ValueOf(fieldValue))
+		case map[string][2]int:
+			// Check if types match
+			fieldType := field.Type()
+			if fieldType != reflect.TypeOf(map[string][2]int{}) {
+				t.Errorf("trying to set value %v, type %T for field \"%s\", type %v", interfaceValue, interfaceValue, fieldName, fieldKind)
+				return ctx
+			}
+			field.Set(reflect.ValueOf(fieldValue))
 		default:
 			// Unknown type provided
 			t.Errorf("unknown type %T for field \"%s\"", interfaceValue, fieldName)
@@ -391,6 +400,7 @@ func TestInit(t *testing.T) {
 		CSVFile:                  "",
 		ComputeAll:               false,
 		ComputePeriods:           map[string]map[bool]struct{}{},
+		MaxRunDuration:           map[string][2]int{},
 		ActorsFilter:             false,
 		ActorsAllow:              nil,
 		ActorsForbid:             nil,
@@ -1536,6 +1546,23 @@ func TestInit(t *testing.T) {
 			),
 		},
 		{
+			"Set max run durations and exit statuses after timeout",
+			map[string]string{
+				"GHA2DB_MAX_RUN_DURATION": "tags:1h:0,calc_metric:12h:1,devstats:48h:-1",
+			},
+			dynamicSetFields(
+				t,
+				copyContext(&defaultContext),
+				map[string]interface{}{
+					"MaxRunDuration": map[string][2]int{
+						"calc_metric": {43200, 1},
+						"devstats":    {172800, -1},
+						"tags":        {3600, 0},
+					},
+				},
+			),
+		},
+		{
 			"Set actors filter",
 			map[string]string{
 				"GHA2DB_ACTORS_FILTER": "1",
@@ -1928,6 +1955,8 @@ func TestInit(t *testing.T) {
 		testlib.MakeComparableMap(&test.expectedContext.SkipMetrics)
 		testlib.MakeComparableMap2(&gotContext.ComputePeriods)
 		testlib.MakeComparableMap2(&test.expectedContext.ComputePeriods)
+		testlib.MakeComparableMap2Int(&gotContext.MaxRunDuration)
+		testlib.MakeComparableMap2Int(&test.expectedContext.MaxRunDuration)
 
 		// Check if we got expected context
 		got := fmt.Sprintf("%+v", gotContext)

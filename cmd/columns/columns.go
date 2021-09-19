@@ -25,6 +25,7 @@ func ensureColumns() {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 
 	// If skip TSDB or only ES output - nothing to do
 	if ctx.SkipTSDB || ctx.UseESOnly {

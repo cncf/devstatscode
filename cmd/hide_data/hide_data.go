@@ -292,6 +292,7 @@ func main() {
 	var ctx lib.Ctx
 	dtStart := time.Now()
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 	if len(os.Args) < 2 {
 		processHidden(&ctx)
 	} else {

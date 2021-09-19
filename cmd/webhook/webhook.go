@@ -364,6 +364,7 @@ func main() {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 	if ctx.ProjectRoot == "" {
 		lib.Printf("You need to define reposiory path via GHA2DB_PROJECT_ROOT=/path/to/repo %s\n", os.Args[0])
 		return

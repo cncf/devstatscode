@@ -151,6 +151,7 @@ func pdbVars() {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 
 	// Batch TS points
 	var pts lib.TSPoints

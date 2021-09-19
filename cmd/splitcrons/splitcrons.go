@@ -165,6 +165,7 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 
 func generateCronValues(inFile, outFile string) {
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 	ctx.ExecFatal = false
 	// ctx.ExecOutput = true
 

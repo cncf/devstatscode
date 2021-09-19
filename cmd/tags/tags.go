@@ -12,6 +12,7 @@ func calcTags() {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 
 	// Connect to Postgres DB
 	con := lib.PgConn(&ctx)

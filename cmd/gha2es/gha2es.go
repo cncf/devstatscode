@@ -559,6 +559,7 @@ func gha2es(args []string) {
 	if !ctx.UseESRaw {
 		return
 	}
+	lib.SetupTimeoutSignal(&ctx)
 	// Connect to ElasticSearch
 	es := lib.ESConn(&ctx, "d_raw_")
 	// Create index

@@ -1574,6 +1574,7 @@ func gha2db(args []string) {
 	// Init stuff
 	debug.SetGCPercent(25)
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 	rand.Seed(time.Now().UnixNano())
 
 	startD, startH, endD, endH := args[0], args[1], args[2], args[3]

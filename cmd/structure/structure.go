@@ -11,6 +11,7 @@ func main() {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 
 	// Create database if needed
 	createdDatabase := lib.CreateDatabaseIfNeeded(&ctx)

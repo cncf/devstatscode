@@ -15,6 +15,7 @@ func runq(sqlFile string, params []string) {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 
 	// SQL arguments number
 	if len(params)%2 > 0 {

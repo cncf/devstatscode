@@ -1494,6 +1494,7 @@ func main() {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 
 	dtStart := time.Now()
 	// Create artificial events

@@ -2,6 +2,7 @@ package test
 
 import (
 	"fmt"
+	"os"
 	"sort"
 )
 
@@ -185,5 +186,32 @@ func MakeComparableMap2(m *map[string]map[bool]struct{}) {
 	newMap := make(map[string]map[bool]struct{})
 	newMap[outStr] = make(map[bool]struct{})
 	newMap[outStr][false] = struct{}{}
+	*m = newMap
+}
+
+// MakeComparableMap2Int - transforms input map { k1: [v11, v12], k2: [v21, v22], ..., kn: [vn1, vn2] }
+// into map with single key being its string representation, works on map[string][2]int type
+// Example: { "b": [1, 2], "a": [3, 4], "c": [5, 6] } --> { "a:[3,4],b:[1,2],c:[5,6],":[0,0] }
+// We cannot compare such maps directly because order of keys is not guaranteed
+func MakeComparableMap2Int(m *map[string][2]int) {
+	// Get maps keys
+	keyAry := make([]string, len(*m))
+	index := 0
+	for key := range *m {
+		keyAry[index] = key
+		index++
+	}
+	// Map keys aren't sorted
+	sort.Strings(keyAry)
+
+	// Create string with k:v sorted
+	outStr := ""
+	for _, key := range keyAry {
+		outStr += fmt.Sprintf("%s:%v,", key, (*m)[key])
+	}
+	// Replace original map
+	newMap := make(map[string][2]int)
+	newMap[outStr] = [2]int{0, 0}
+	fmt.Fprintf(os.Stderr, "%+v\n", newMap)
 	*m = newMap
 }

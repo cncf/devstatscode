@@ -2310,6 +2310,7 @@ func readProjects(ctx *lib.Ctx) {
 func serveAPI() {
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 	lib.Printf("Starting API server\n")
 	checkEnv()
 	readProjects(&ctx)

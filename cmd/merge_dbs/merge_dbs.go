@@ -14,6 +14,7 @@ func mergePDBs() {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
+	lib.SetupTimeoutSignal(&ctx)
 
 	if len(ctx.InputDBs) < 1 {
 		lib.Fatalf("required at least 1 input database, got %d: %+v", len(ctx.InputDBs), ctx.InputDBs)
