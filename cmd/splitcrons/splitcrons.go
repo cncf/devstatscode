@@ -33,6 +33,8 @@ type devstatsProject struct {
 	SkipAffsLock    int    `yaml:"skipAffsLock,omitempty"`    // 1
 	AffsLockDB      string `yaml:"affsLockDB,omitempty"`      // gha, allprj
 	NoDurable       int    `yaml:"noDurable,omitempty"`       // 1
+	DurablePQ       int    `yaml:"durablePQ,omitempty"`       // 1
+	MaxRunDuration  string `yaml:"maxRunDuration,omitempty"`  // annotations:1h:102,calc_metric:12h:102,columns:1h:102,get_repos:12h:102,gha2db:8h:102,ghapi2db:12h:102,structure:1h:102,tags:1h:102
 }
 
 type devstatsValues struct {
