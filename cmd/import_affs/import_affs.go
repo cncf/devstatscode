@@ -528,6 +528,7 @@ func importAffs(jsonFN string) int {
 		// Affiliation
 		aff := user.Affiliation
 		if aff != "NotFound" && aff != "(Unknown)" && aff != "?" && aff != "-" && aff != "" {
+			aff = strings.Replace(aff, `"`, "", -1)
 			_, ok := loginAffs[login]
 			if !ok {
 				loginAffs[login] = mapIntSet{}
@@ -978,14 +979,14 @@ func importAffs(jsonFN string) int {
 			// Look for an affiliation that list most companies
 			maxNum := 1
 			for aff := range affs {
-				num := len(strings.Split(aff, ", "))
+				num := len(strings.Split(aff, ","))
 				if num > maxNum {
 					maxNum = num
 				}
 			}
 			// maxNum holds max number of companies listed in any of affiliations
 			for aff := range affs {
-				ary := strings.Split(aff, ", ")
+				ary := strings.Split(aff, ",")
 				// Just pick first affiliation definition that lists most companies
 				if len(ary) == maxNum {
 					affsAry = ary
@@ -998,7 +999,7 @@ func importAffs(jsonFN string) int {
 			unlock()
 		} else {
 			// This is a good definition, only one list of companies affiliation for this GitHub user login
-			affsAry = strings.Split(firstKey(affs), ", ")
+			affsAry = strings.Split(firstKey(affs), ",")
 			lock()
 			unique++
 			unlock()
@@ -1009,12 +1010,13 @@ func importAffs(jsonFN string) int {
 		prevDate := defaultStartDate
 		for _, aff := range affsAry {
 			var dtFrom, dtTo time.Time
-			ary := strings.Split(aff, " < ")
+			aff = strings.TrimSpace(aff)
+			ary := strings.Split(aff, "<")
 			company := strings.TrimSpace(ary[0])
 			if len(ary) > 1 {
 				// "company < date" form
 				dtFrom = prevDate
-				dtTo = lib.TimeParseAny(ary[1])
+				dtTo = lib.TimeParseAny(strings.TrimSpace(ary[1]))
 			} else {
 				// "company" form
 				dtFrom = prevDate
