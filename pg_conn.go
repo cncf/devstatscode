@@ -1073,11 +1073,14 @@ func ClearOrphanedLocks() {
 	if ctx.SkipPDB {
 		return
 	}
+	c0 := PgConn(&ctx)
+	defer func() { _ = c0.Close() }()
+	_, _ = ExecSQL(c0, &ctx, "delete from gha_computed where metric like 'affs_lock%' and dt < now() - '"+ctx.ClearAffsLockPeriod+"'::interval")
 	// Point to logs database
 	ctx.PgDB = Devstats
 	// Connect to DB
 	c := PgConn(&ctx)
 	defer func() { _ = c.Close() }()
-	ExecSQLWithErr(c, &ctx, "delete from gha_computed where metric = 'affs_lock' and dt < now() - '"+ctx.ClearAffsLockPeriod+"'::interval")
-	ExecSQLWithErr(c, &ctx, "delete from gha_computed where metric = 'giant_lock' and dt < now() - '"+ctx.ClearGiantLockPeriod+"'::interval")
+	_, _ = ExecSQL(c, &ctx, "delete from gha_computed where metric like 'affs_lock%' and dt < now() - '"+ctx.ClearAffsLockPeriod+"'::interval")
+	_, _ = ExecSQL(c, &ctx, "delete from gha_computed where metric like 'giant_lock%' and dt < now() - '"+ctx.ClearGiantLockPeriod+"'::interval")
 }
