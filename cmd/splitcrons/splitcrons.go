@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"os"
 	"strconv"
+	"strings"
 
 	lib "github.com/cncf/devstatscode"
 	"gopkg.in/yaml.v2"
@@ -54,7 +55,47 @@ var (
 	gAttempted int
 	gNever     bool
 	gAllways   bool
+	gPatchEnv  map[string]struct{}
+	gName2Env  map[string]string
 )
+
+// kubectl patch cronjob -n devstats-test devstats-affiliations-rook -p '{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[{"name":"devstats-affiliations-rook","env":[{"name":"USE_FLAGS","value":"1"}]}]}}}}}}'
+func patchEnv(namespace, cronjob string, fields, patches []string) {
+	gAttempted++
+	patchSpec := fmt.Sprintf(`{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[{"name":"%s","env":[`, cronjob)
+	n := len(fields)
+	for i := range fields {
+		field := fields[i]
+		patch := patches[i]
+		patchSpec += fmt.Sprintf(`{"name":"%s","value":"%s"}`, field, patch)
+		if i < n-1 {
+			patchSpec += ","
+		}
+	}
+	patchSpec += `]}]}}}}}}`
+	cmdAndArgs := []string{
+		"kubectl",
+		"patch",
+		"cronjob",
+		"-n",
+		namespace,
+		cronjob,
+		"-p",
+		patchSpec,
+	}
+	_, err := lib.ExecCommand(
+		&ctx,
+		cmdAndArgs,
+		nil,
+	)
+	//fmt.Printf("%+v:\n%s\n", cmdAndArgs, res)
+	if err != nil {
+		// fmt.Printf("%+v: error: %+v\n%s\n", cmdAndArgs, err, res)
+		fmt.Printf("%+v: error: %+v\n", cmdAndArgs, err)
+		return
+	}
+	gPatched++
+}
 
 // kubectl patch cronjob -n devstats-test devstats-affiliations-oras -p '{"spec":{"schedule": "40 4 * * 2"}}'
 func patch(namespace, cronjob, field, patch string) {
@@ -82,6 +123,46 @@ func patch(namespace, cronjob, field, patch string) {
 		return
 	}
 	gPatched++
+}
+
+func considerPatchEnv(namespace, cronjob string, project *devstatsProject) {
+	if gPatchEnv == nil {
+		return
+	}
+	var (
+		fields  []string
+		patches []string
+	)
+	envs := []string{"AffSkipTemp", "MaxHist", "SkipAffsLock", "AffsLockDB", "NoDurable", "DurablePQ", "MaxRunDuration"}
+	for _, env := range envs {
+		_, use := gPatchEnv[env]
+		if !use {
+			continue
+		}
+		field, _ := gName2Env[env]
+		fields = append(fields, field)
+		patch := ""
+		switch env {
+		case "AffSkipTemp":
+			patch = project.AffSkipTemp
+		case "MaxHist":
+			patch = strconv.Itoa(project.MaxHist)
+		case "SkipAffsLock":
+			patch = strconv.Itoa(project.SkipAffsLock)
+		case "AffsLockDB":
+			patch = project.AffsLockDB
+		case "NoDurable":
+			patch = strconv.Itoa(project.NoDurable)
+		case "DurablePQ":
+			patch = strconv.Itoa(project.DurablePQ)
+		case "MaxRunDuration":
+			patch = project.MaxRunDuration
+		}
+		patches = append(patches, patch)
+	}
+	if len(fields) > 0 {
+		patchEnv(namespace, cronjob, fields, patches)
+	}
 }
 
 // idxt/idxp == -1 -> kubernetes
@@ -134,6 +215,9 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			values.Projects[idx].CronTest = cronS
 			patch("devstats-test", "devstats-"+values.Projects[idx].Proj, "schedule", `"`+cronS+`"`)
 		}
+		if !gNever {
+			considerPatchEnv("devstats-test", "devstats-affiliations-"+values.Projects[idx].Proj, &values.Projects[idx])
+		}
 	}
 	if prod {
 		minuteA, minuteS := -1, -1
@@ -162,6 +246,30 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			values.Projects[idx].CronProd = cronS
 			patch("devstats-prod", "devstats-"+values.Projects[idx].Proj, "schedule", `"`+cronS+`"`)
 		}
+		if !gNever {
+			considerPatchEnv("devstats-prod", "devstats-affiliations-"+values.Projects[idx].Proj, &values.Projects[idx])
+		}
+	}
+}
+
+func setPatchEnvMap() {
+	data := os.Getenv("PATCH_ENV")
+	if data == "" {
+		return
+	}
+	ary := strings.Split(data, ",")
+	gPatchEnv = make(map[string]struct{})
+	for _, env := range ary {
+		gPatchEnv[strings.TrimSpace(env)] = struct{}{}
+	}
+	gName2Env = map[string]string{
+		"AffSkipTemp":    "SKIPTEMP",
+		"MaxHist":        "GHA2DB_MAX_HIST",
+		"SkipAffsLock":   "SKIP_AFFS_LOCK",
+		"AffsLockDB":     "AFFS_LOCK_DB",
+		"NoDurable":      "NO_DURABLE",
+		"DurablePQ":      "DURABLE_PQ",
+		"MaxRunDuration": "GHA2DB_MAX_RUN_DURATION",
 	}
 }
 
@@ -235,6 +343,7 @@ func generateCronValues(inFile, outFile string) {
 	offsetHours := float64(offsetHoursI)
 	gAllways = os.Getenv("ALWAYS_PATCH") != ""
 	gNever = os.Getenv("NEVER_PATCH") != ""
+	setPatchEnvMap()
 	minutes := syncHours * (60.0 - ghaOffset)
 	hours := 7.0*24.0 - (kubernetesHours + allHours)
 	kt, kp := 0, 0
