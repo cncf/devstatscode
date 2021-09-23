@@ -36,6 +36,8 @@ type devstatsProject struct {
 	NoDurable       int    `yaml:"noDurable,omitempty"`       // 1
 	DurablePQ       int    `yaml:"durablePQ,omitempty"`       // 1
 	MaxRunDuration  string `yaml:"maxRunDuration,omitempty"`  // annotations:1h:102,calc_metric:12h:102,columns:1h:102,get_repos:12h:102,gha2db:8h:102,ghapi2db:12h:102,structure:1h:102,tags:1h:102
+	SkipGHAPI       int    `yaml:"skipGHAPI,omitempty"`       // skipGHAPI:1
+	SkipGetRepos    int    `yaml:"skipGetRepos,omitempty"`    // skipGetRepos:1
 }
 
 type devstatsValues struct {
@@ -54,7 +56,8 @@ var (
 	gPatched   int
 	gAttempted int
 	gNever     bool
-	gAllways   bool
+	gAlways    bool
+	gOnlyEnv   bool
 	gPatchEnv  map[string]struct{}
 	gName2Env  map[string]string
 )
@@ -99,6 +102,9 @@ func patchEnv(namespace, cronjob string, fields, patches []string) {
 
 // kubectl patch cronjob -n devstats-test devstats-affiliations-oras -p '{"spec":{"schedule": "40 4 * * 2"}}'
 func patch(namespace, cronjob, field, patch string) {
+	if gOnlyEnv {
+		return
+	}
 	gAttempted++
 	patchSpec := fmt.Sprintf(`{"spec":{"%s":%s}}`, field, patch)
 	cmdAndArgs := []string{
@@ -133,7 +139,7 @@ func considerPatchEnv(namespace, cronjob string, project *devstatsProject) {
 		fields  []string
 		patches []string
 	)
-	envs := []string{"AffSkipTemp", "MaxHist", "SkipAffsLock", "AffsLockDB", "NoDurable", "DurablePQ", "MaxRunDuration"}
+	envs := []string{"AffSkipTemp", "MaxHist", "SkipAffsLock", "AffsLockDB", "NoDurable", "DurablePQ", "MaxRunDuration", "SkipGHAPI", "SkipGetRepos"}
 	for _, env := range envs {
 		_, use := gPatchEnv[env]
 		if !use {
@@ -147,16 +153,38 @@ func considerPatchEnv(namespace, cronjob string, project *devstatsProject) {
 			patch = project.AffSkipTemp
 		case "MaxHist":
 			patch = strconv.Itoa(project.MaxHist)
+			if patch == "0" {
+				patch = ""
+			}
 		case "SkipAffsLock":
 			patch = strconv.Itoa(project.SkipAffsLock)
+			if patch == "0" {
+				patch = ""
+			}
 		case "AffsLockDB":
 			patch = project.AffsLockDB
 		case "NoDurable":
 			patch = strconv.Itoa(project.NoDurable)
+			if patch == "0" {
+				patch = ""
+			}
 		case "DurablePQ":
 			patch = strconv.Itoa(project.DurablePQ)
+			if patch == "0" {
+				patch = ""
+			}
 		case "MaxRunDuration":
 			patch = project.MaxRunDuration
+		case "SkipGHAPI":
+			patch = strconv.Itoa(project.SkipGHAPI)
+			if patch == "0" {
+				patch = ""
+			}
+		case "SkipGetRepos":
+			patch = strconv.Itoa(project.SkipGetRepos)
+			if patch == "0" {
+				patch = ""
+			}
 		}
 		patches = append(patches, patch)
 	}
@@ -207,11 +235,11 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
 		// fmt.Printf("test: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxt, nt, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
-		if !gNever && (gAllways || values.Projects[idx].AffCronTest != cronA) {
+		if !gNever && (gAlways || values.Projects[idx].AffCronTest != cronA) {
 			values.Projects[idx].AffCronTest = cronA
 			patch("devstats-test", "devstats-affiliations-"+values.Projects[idx].Proj, "schedule", `"`+cronA+`"`)
 		}
-		if !gNever && (gAllways || values.Projects[idx].CronTest != cronS) {
+		if !gNever && (gAlways || values.Projects[idx].CronTest != cronS) {
 			values.Projects[idx].CronTest = cronS
 			patch("devstats-test", "devstats-"+values.Projects[idx].Proj, "schedule", `"`+cronS+`"`)
 		}
@@ -238,11 +266,11 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
 		// fmt.Printf("prod: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxp, np, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
-		if !gNever && (gAllways || values.Projects[idx].AffCronProd != cronA) {
+		if !gNever && (gAlways || values.Projects[idx].AffCronProd != cronA) {
 			values.Projects[idx].AffCronProd = cronA
 			patch("devstats-prod", "devstats-affiliations-"+values.Projects[idx].Proj, "schedule", `"`+cronA+`"`)
 		}
-		if !gNever && (gAllways || values.Projects[idx].CronProd != cronS) {
+		if !gNever && (gAlways || values.Projects[idx].CronProd != cronS) {
 			values.Projects[idx].CronProd = cronS
 			patch("devstats-prod", "devstats-"+values.Projects[idx].Proj, "schedule", `"`+cronS+`"`)
 		}
@@ -270,6 +298,8 @@ func setPatchEnvMap() {
 		"NoDurable":      "NO_DURABLE",
 		"DurablePQ":      "DURABLE_PQ",
 		"MaxRunDuration": "GHA2DB_MAX_RUN_DURATION",
+		"SkipGHAPI":      "GHA2DB_GHAPISKIP",
+		"SkipGetRepos":   "GHA2DB_GETREPOSSKIP",
 	}
 }
 
@@ -341,8 +371,9 @@ func generateCronValues(inFile, outFile string) {
 		}
 	}
 	offsetHours := float64(offsetHoursI)
-	gAllways = os.Getenv("ALWAYS_PATCH") != ""
+	gAlways = os.Getenv("ALWAYS_PATCH") != ""
 	gNever = os.Getenv("NEVER_PATCH") != ""
+	gOnlyEnv = os.Getenv("ONLY_ENV") != ""
 	setPatchEnvMap()
 	minutes := syncHours * (60.0 - ghaOffset)
 	hours := 7.0*24.0 - (kubernetesHours + allHours)
@@ -388,7 +419,7 @@ func generateCronValues(inFile, outFile string) {
 		if t {
 			it++
 		} else {
-			if !gNever && (gAllways || values.Projects[i].SuspendCronTest != true) {
+			if !gNever && (gAlways || values.Projects[i].SuspendCronTest != true) {
 				patch("devstats-test", "devstats-"+values.Projects[i].Proj, "suspend", "true")
 				patch("devstats-test", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", "true")
 			}
@@ -397,7 +428,7 @@ func generateCronValues(inFile, outFile string) {
 		if p {
 			ip++
 		} else {
-			if !gNever && (gAllways || values.Projects[i].SuspendCronProd != true) {
+			if !gNever && (gAlways || values.Projects[i].SuspendCronProd != true) {
 				patch("devstats-prod", "devstats-"+values.Projects[i].Proj, "suspend", "true")
 				patch("devstats-prod", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", "true")
 			}

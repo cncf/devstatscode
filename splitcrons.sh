@@ -6,6 +6,7 @@
 # OFFSET_HOURS=-4 (we assume half of weekend is Sun 3 AM, and assume USA tz -7 (3-7=-4), [-84,84])
 # ALWAYS_PATCH=1 (skip checking for difference and always call kubectl patch)
 # NEVER_PATCH=1 (do not execute kubectl patch - preview/dry mode)
-# PATCH_ENV='AffSkipTemp,MaxHist,SkipAffsLock,AffsLockDB,NoDurable,DurablePQ,MaxRunDuration'
+# ONLY_ENV=1 (only patch CJs env variables)
+# PATCH_ENV='AffSkipTemp,MaxHist,SkipAffsLock,AffsLockDB,NoDurable,DurablePQ,MaxRunDuration,SkipGHAPI,SkipGetRepos'
 # ./splitcrons ../devstats-helm/devstats-helm/values.yaml new-values.yaml
 ./splitcrons values.yaml new-values.yaml
