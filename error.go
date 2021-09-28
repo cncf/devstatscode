@@ -24,7 +24,6 @@ func FatalOnError(err error) string {
 			} else if errName == "cannot_connect_now" {
 				Printf("PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
 				Printf("Warning: DB shutting down: %+v: '%s'\n", tm, err.Error())
-				// FIXME
 				return Reconnect
 			}
 			Printf("PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
@@ -38,8 +37,11 @@ func FatalOnError(err error) string {
 			fmt.Fprintf(os.Stderr, "ErrorType: %T, error: %+v\n", e, e)
 		}
 		if strings.Contains(err.Error(), "driver: bad connection") {
-			// FIXME
 			Printf("Warning: bad driver, retrying\n")
+			return Reconnect
+		}
+		if strings.Contains(err.Error(), "cannot assign requested address") {
+			Printf("Warning: cannot assign requested address, retrying\n")
 			return Reconnect
 		}
 		Printf("Error(time=%+v):\nError: '%s'\nStacktrace:\n%s\n", tm, err.Error(), string(debug.Stack()))
