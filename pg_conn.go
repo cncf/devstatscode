@@ -690,7 +690,7 @@ func QuerySQLWithErr(con *sql.DB, ctx *Ctx, query string, args ...interface{}) *
 		Printf("%d seconds passed, retrying...\n", try)
 		if status == Reconnect {
 			if ctx.CanReconnect {
-				Printf("Reconnect request after %dseconds\n", try)
+				Printf("Reconnect request after %d seconds\n", try)
 				_ = con.Close()
 				con = PgConn(ctx)
 				Printf("Reconnected after %d seconds\n", try)
