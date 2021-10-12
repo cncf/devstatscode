@@ -586,8 +586,8 @@ func importAffs(jsonFN string) int {
 		unlock    func()
 	)
 	if thrN > 1 {
-		if thrN > 16 {
-			thrN = 16
+		if thrN > 10 {
+			thrN = 10
 		}
 		ch = make(chan struct{})
 		mtx = &sync.Mutex{}
