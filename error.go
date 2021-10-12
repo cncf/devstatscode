@@ -68,6 +68,7 @@ func FatalNoLog(err error) string {
 	if err != nil {
 		tm := time.Now()
 		fmt.Fprintf(os.Stderr, "Error(time=%+v):\nError: '%s'\nStacktrace:\n", tm, err.Error())
+		time.Sleep(time.Duration(60) * time.Second)
 		panic("stacktrace")
 	}
 	return OK
