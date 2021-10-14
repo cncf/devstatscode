@@ -52,14 +52,16 @@ const (
 )
 
 var (
-	ctx        lib.Ctx
-	gPatched   int
-	gAttempted int
-	gNever     bool
-	gAlways    bool
-	gOnlyEnv   bool
-	gPatchEnv  map[string]struct{}
-	gName2Env  map[string]string
+	ctx          lib.Ctx
+	gPatched     int
+	gAttempted   int
+	gNever       bool
+	gAlways      bool
+	gOnlyEnv     bool
+	gOnlySuspend bool
+	gSuspendAll  bool
+	gPatchEnv    map[string]struct{}
+	gName2Env    map[string]string
 )
 
 // kubectl patch cronjob -n devstats-test devstats-affiliations-rook -p '{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[{"name":"devstats-affiliations-rook","env":[{"name":"USE_FLAGS","value":"1"}]}]}}}}}}'
@@ -374,6 +376,8 @@ func generateCronValues(inFile, outFile string) {
 	gAlways = os.Getenv("ALWAYS_PATCH") != ""
 	gNever = os.Getenv("NEVER_PATCH") != ""
 	gOnlyEnv = os.Getenv("ONLY_ENV") != ""
+	gOnlySuspend = os.Getenv("ONLY_SUSPEND") != ""
+	gSuspendAll = os.Getenv("SUSPEND_ALL") != ""
 	setPatchEnvMap()
 	minutes := syncHours * (60.0 - ghaOffset)
 	hours := 7.0*24.0 - (kubernetesHours + allHours)
@@ -404,35 +408,44 @@ func generateCronValues(inFile, outFile string) {
 	fmt.Printf("test: Kubernetes(#%d) needs %.0fh, All(#%d) needs %.0fh, %d others all have %.0fh, intervals are %.1fmin, %.1fs\n", kubernetesIdx, kubernetesHours, allIdx, allHours, kt, hours, intervalT*60., intervalST)
 	fmt.Printf("prod: Kubernetes(#%d) needs %.0fh, All(#%d) needs %.0fh, %d others all have %.0fh, intervals are %.1fmin, %.1fs\n", kubernetesIdx, kubernetesHours, allIdx, allHours, kp, hours, intervalP*60., intervalSP)
 	it, ip := 0, 0
+	var suspend string
+	if gSuspendAll {
+		suspend = "true"
+	}
 	for i, project := range values.Projects {
-		if project.DB == "gha" {
-			generateCronEntries(&values, i, true, true, -1, -1, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
-			continue
-		}
-		if project.DB == "allprj" {
-			generateCronEntries(&values, i, true, true, -2, -2, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
-			continue
-		}
 		t := !project.SuspendCronTest && project.Domains[0] != 0
 		p := !project.SuspendCronProd && project.Domains[1] != 0
-		generateCronEntries(&values, i, t, p, it, ip, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
+		if !gOnlySuspend {
+			switch project.DB {
+			case "gha":
+				// generateCronEntries(&values, i, true, true, -1, -1, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
+				generateCronEntries(&values, i, t, p, -1, -1, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
+			case "allprj":
+				// generateCronEntries(&values, i, true, true, -2, -2, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
+				generateCronEntries(&values, i, t, p, -2, -2, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
+			default:
+				generateCronEntries(&values, i, t, p, it, ip, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
+			}
+		}
 		if t {
 			it++
-		} else {
-			if !gNever && (gAlways || values.Projects[i].SuspendCronTest != true) {
-				patch("devstats-test", "devstats-"+values.Projects[i].Proj, "suspend", "true")
-				patch("devstats-test", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", "true")
+		}
+		if !gNever {
+			if !gSuspendAll {
+				suspend = fmt.Sprintf("%v", values.Projects[i].SuspendCronTest)
 			}
-			values.Projects[i].SuspendCronTest = true
+			patch("devstats-test", "devstats-"+values.Projects[i].Proj, "suspend", suspend)
+			patch("devstats-test", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", suspend)
 		}
 		if p {
 			ip++
-		} else {
-			if !gNever && (gAlways || values.Projects[i].SuspendCronProd != true) {
-				patch("devstats-prod", "devstats-"+values.Projects[i].Proj, "suspend", "true")
-				patch("devstats-prod", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", "true")
+		}
+		if !gNever {
+			if !gSuspendAll {
+				suspend = fmt.Sprintf("%v", values.Projects[i].SuspendCronProd)
 			}
-			values.Projects[i].SuspendCronProd = true
+			patch("devstats-prod", "devstats-"+values.Projects[i].Proj, "suspend", suspend)
+			patch("devstats-prod", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", suspend)
 		}
 	}
 	fmt.Printf("patched %d/%d cronjobs\n", gPatched, gAttempted)

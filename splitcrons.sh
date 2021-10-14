@@ -8,5 +8,7 @@
 # NEVER_PATCH=1 (do not execute kubectl patch - preview/dry mode)
 # ONLY_ENV=1 (only patch CJs env variables)
 # PATCH_ENV='AffSkipTemp,MaxHist,SkipAffsLock,AffsLockDB,NoDurable,DurablePQ,MaxRunDuration,SkipGHAPI,SkipGetRepos'
+# ONLY_SUSPEND=1 (only process suspend data)
+# SUSPEND_ALL=1 (suspend all cronjobs)
 # ./splitcrons ../devstats-helm/devstats-helm/values.yaml new-values.yaml
 ./splitcrons values.yaml new-values.yaml
