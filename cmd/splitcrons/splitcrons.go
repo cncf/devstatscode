@@ -208,6 +208,10 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 		minuteS := (minS % almostHour) + int(ghaOffset)
 		hoursS := ""
 		syncHrs := int(syncHours)
+		if hourS >= syncHrs {
+			fmt.Printf("warning: (minA,minS) = (%d,%d) generates hourS >= syncHrs: %d >= %d\n", minA, minS, hourS, syncHrs)
+			hourS = 0
+		}
 		for h := 0; h < 24; h++ {
 			if h%syncHrs == hourS {
 				hoursS += strconv.Itoa(h) + ","
@@ -425,22 +429,22 @@ func generateCronValues(inFile, outFile string) {
 				generateCronEntries(&values, i, t, p, -2, -2, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
 			default:
 				generateCronEntries(&values, i, t, p, it, ip, kt, kp, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours)
+				if t {
+					it++
+				}
+				if p {
+					ip++
+				}
 			}
 		}
-		if t {
-			it++
-		}
-		if !gNever {
+		if !gNever && project.Domains[0] != 0 {
 			if !gSuspendAll {
 				suspend = fmt.Sprintf("%v", values.Projects[i].SuspendCronTest)
 			}
 			patch("devstats-test", "devstats-"+values.Projects[i].Proj, "suspend", suspend)
 			patch("devstats-test", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", suspend)
 		}
-		if p {
-			ip++
-		}
-		if !gNever {
+		if !gNever && project.Domains[1] != 0 {
 			if !gSuspendAll {
 				suspend = fmt.Sprintf("%v", values.Projects[i].SuspendCronProd)
 			}
