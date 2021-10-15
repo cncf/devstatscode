@@ -427,10 +427,11 @@ func generateCronValues(inFile, outFile string) {
 	gSuspendAll = os.Getenv("SUSPEND_ALL") != ""
 	setPatchEnvMap()
 	minutes := syncHours * (60.0 - ghaOffset)
-	hours := 7.0*24.0 - (kubernetesHours + allHours)
+	hours := float64(cWeekHours)
 	if gMonthly {
 		hours *= 4.0
 	}
+	hours -= kubernetesHours + allHours
 	kt, kp := 0, 0
 	kubernetesIdx := -1
 	allIdx := -1
