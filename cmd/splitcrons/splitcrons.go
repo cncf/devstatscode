@@ -60,6 +60,7 @@ var (
 	gOnlyEnv     bool
 	gOnlySuspend bool
 	gSuspendAll  bool
+	gMonthly     bool
 	gPatchEnv    map[string]struct{}
 	gName2Env    map[string]string
 )
@@ -198,28 +199,59 @@ func considerPatchEnv(namespace, cronjob string, project *devstatsProject) {
 // idxt/idxp == -1 -> kubernetes
 // idxt/idxp == -2 -> all cncf
 func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt, idxp, nt, np int, offsetHours, hours, kubernetesHours, allHours, intervalT, intervalP, minutes, ghaOffset, syncHours float64) {
-	minutesToCron := func(minA, minS int) (cronA, cronS string) {
-		minutesA := minA % 60
-		hoursA := (minA / 60) % 24
-		dayA := (minA / (60 * 24)) % 7
-		cronA = fmt.Sprintf("%d %d * * %d", minutesA, hoursA, dayA)
-		almostHour := 60 - int(ghaOffset)
-		hourS := minS / almostHour
-		minuteS := (minS % almostHour) + int(ghaOffset)
-		hoursS := ""
-		syncHrs := int(syncHours)
-		if hourS >= syncHrs {
-			fmt.Printf("warning: (minA,minS) = (%d,%d) generates hourS >= syncHrs: %d >= %d\n", minA, minS, hourS, syncHrs)
-			hourS = 0
-		}
-		for h := 0; h < 24; h++ {
-			if h%syncHrs == hourS {
-				hoursS += strconv.Itoa(h) + ","
+	var minutesToCron func(int, int) (string, string)
+	if gMonthly {
+		minutesToCron = func(minA, minS int) (cronA, cronS string) {
+			minutesA := minA % 60
+			hoursA := (minA / 60) % 24
+			dayA := ((minA / (60 * 24)) % 28) + 1
+			cronA = fmt.Sprintf("%d %d %d * *", minutesA, hoursA, dayA)
+			almostHour := 60 - int(ghaOffset)
+			hourS := minS / almostHour
+			minuteS := (minS % almostHour) + int(ghaOffset)
+			hoursS := ""
+			syncHrs := int(syncHours)
+			if hourS >= syncHrs {
+				fmt.Printf("warning: (minA,minS) = (%d,%d) generates hourS >= syncHrs: %d >= %d\n", minA, minS, hourS, syncHrs)
+				hourS = 0
 			}
+			for h := 0; h < 24; h++ {
+				if h%syncHrs == hourS {
+					hoursS += strconv.Itoa(h) + ","
+				}
+			}
+			hoursS = hoursS[:len(hoursS)-1]
+			cronS = fmt.Sprintf("%d %s * * *", minuteS, hoursS)
+			return
 		}
-		hoursS = hoursS[:len(hoursS)-1]
-		cronS = fmt.Sprintf("%d %s * * *", minuteS, hoursS)
-		return
+	} else {
+		minutesToCron = func(minA, minS int) (cronA, cronS string) {
+			minutesA := minA % 60
+			hoursA := (minA / 60) % 24
+			dayA := (minA / (60 * 24)) % 7
+			cronA = fmt.Sprintf("%d %d * * %d", minutesA, hoursA, dayA)
+			almostHour := 60 - int(ghaOffset)
+			hourS := minS / almostHour
+			minuteS := (minS % almostHour) + int(ghaOffset)
+			hoursS := ""
+			syncHrs := int(syncHours)
+			if hourS >= syncHrs {
+				fmt.Printf("warning: (minA,minS) = (%d,%d) generates hourS >= syncHrs: %d >= %d\n", minA, minS, hourS, syncHrs)
+				hourS = 0
+			}
+			for h := 0; h < 24; h++ {
+				if h%syncHrs == hourS {
+					hoursS += strconv.Itoa(h) + ","
+				}
+			}
+			hoursS = hoursS[:len(hoursS)-1]
+			cronS = fmt.Sprintf("%d %s * * *", minuteS, hoursS)
+			return
+		}
+	}
+	periodHours := int(cWeekHours)
+	if gMonthly {
+		periodHours *= 4
 	}
 	if test {
 		minuteA, minuteS := -1, -1
@@ -227,17 +259,17 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			//minuteA, minuteS = 0, int(ghaOffset)
 			minuteA, minuteS = 0, 0
 		} else if idxt == -2 {
-			minuteA, minuteS = 60*int(cWeekHours-allHours), int(minutes/2.0)
+			minuteA, minuteS = 60*int(float64(periodHours)-allHours), int(minutes/2.0)
 		} else {
 			minuteA, minuteS = int((kubernetesHours+intervalT*float64(idxt))*60.), int((float64(idxt)*minutes)/float64(nt))
 		}
 		minuteA += int(offsetHours * 60.0)
-		minuteA += cWeekHours * 30.0
+		minuteA += periodHours * 30.0
 		if minuteA < 0 {
-			minuteA += cWeekMinutes
+			minuteA += periodHours
 		}
-		if minuteA > cWeekMinutes {
-			minuteA -= cWeekMinutes
+		if minuteA > periodHours {
+			minuteA -= periodHours
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
 		// fmt.Printf("test: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxt, nt, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
@@ -259,16 +291,16 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			//minuteA, minuteS = 0, int(ghaOffset)
 			minuteA, minuteS = 0, 0
 		} else if idxp == -2 {
-			minuteA, minuteS = 60*int(cWeekHours-allHours), int(minutes/2.0)
+			minuteA, minuteS = 60*int(float64(periodHours)-allHours), int(minutes/2.0)
 		} else {
 			minuteA, minuteS = int((kubernetesHours+intervalP*float64(idxp))*60.), int((float64(idxp)*minutes)/float64(np))
 		}
 		minuteA += int(offsetHours * 60.0)
 		if minuteA < 0 {
-			minuteA += cWeekMinutes
+			minuteA += periodHours
 		}
-		if minuteA > cWeekMinutes {
-			minuteA -= cWeekMinutes
+		if minuteA > periodHours {
+			minuteA -= periodHours
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
 		// fmt.Printf("prod: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxp, np, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
@@ -322,25 +354,36 @@ func generateCronValues(inFile, outFile string) {
 	lib.FatalOnError(yaml.Unmarshal(data, &values))
 	fmt.Printf("read %s\n", inFile)
 
+	gMonthly = os.Getenv("MONTHLY") != ""
+	maxHours := 30
+	if gMonthly {
+		maxHours = 48
+	}
 	kubernetesHoursI := 24
+	if gMonthly {
+		kubernetesHoursI = 36
+	}
 	str := os.Getenv("KUBERNETES_HOURS")
 	if str != "" {
 		var err error
 		kubernetesHoursI, err = strconv.Atoi(os.Getenv("KUBERNETES_HOURS"))
 		lib.FatalOnError(err)
-		if kubernetesHoursI < 3 || kubernetesHoursI > 30 {
-			lib.Fatalf("KUBERNETES_HOURS must be from [3,30]")
+		if kubernetesHoursI < 3 || kubernetesHoursI > maxHours {
+			lib.Fatalf("KUBERNETES_HOURS must be from [3,%d]", maxHours)
 		}
 	}
 	kubernetesHours := float64(kubernetesHoursI)
 	allHoursI := 20
+	if gMonthly {
+		allHoursI = 36
+	}
 	str = os.Getenv("ALL_HOURS")
 	if str != "" {
 		var err error
 		allHoursI, err = strconv.Atoi(os.Getenv("ALL_HOURS"))
 		lib.FatalOnError(err)
-		if allHoursI < 3 || allHoursI > 30 {
-			lib.Fatalf("ALL_HOURS must be from [3,30]")
+		if allHoursI < 3 || allHoursI > maxHours {
+			lib.Fatalf("ALL_HOURS must be from [3,%d]", maxHours)
 		}
 	}
 	allHours := float64(allHoursI)
@@ -385,6 +428,9 @@ func generateCronValues(inFile, outFile string) {
 	setPatchEnvMap()
 	minutes := syncHours * (60.0 - ghaOffset)
 	hours := 7.0*24.0 - (kubernetesHours + allHours)
+	if gMonthly {
+		hours *= 4.0
+	}
 	kt, kp := 0, 0
 	kubernetesIdx := -1
 	allIdx := -1
