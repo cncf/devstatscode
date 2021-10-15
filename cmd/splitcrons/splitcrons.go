@@ -252,8 +252,8 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 	periodHours := int(cWeekHours)
 	periodMinutes := int(cWeekMinutes)
 	if gMonthly {
-		periodHours >>= 2
-		periodMinutes >>= 2
+		periodHours <<= 2
+		periodMinutes <<= 2
 	}
 	if test {
 		minuteA, minuteS := -1, -1
