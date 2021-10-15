@@ -250,8 +250,10 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 		}
 	}
 	periodHours := int(cWeekHours)
+	periodMinutes := int(cWeekMinutes)
 	if gMonthly {
-		periodHours *= 4
+		periodHours >>= 2
+		periodMinutes >>= 2
 	}
 	if test {
 		minuteA, minuteS := -1, -1
@@ -266,10 +268,10 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 		minuteA += int(offsetHours * 60.0)
 		minuteA += periodHours * 30.0
 		if minuteA < 0 {
-			minuteA += periodHours
+			minuteA += periodMinutes
 		}
-		if minuteA > periodHours {
-			minuteA -= periodHours
+		if minuteA > periodMinutes {
+			minuteA -= periodMinutes
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
 		// fmt.Printf("test: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxt, nt, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
@@ -297,10 +299,10 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 		}
 		minuteA += int(offsetHours * 60.0)
 		if minuteA < 0 {
-			minuteA += periodHours
+			minuteA += periodMinutes
 		}
-		if minuteA > periodHours {
-			minuteA -= periodHours
+		if minuteA > periodMinutes {
+			minuteA -= periodMinutes
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
 		// fmt.Printf("prod: %d/%d: %s(#%d): %d,%d --> '%s','%s'\n", idxp, np, values.Projects[idx].Proj, idx, minuteA, minuteS, cronA, cronS)
