@@ -60,6 +60,8 @@ var (
 	gOnlyEnv     bool
 	gOnlySuspend bool
 	gSuspendAll  bool
+	gNoSuspendA  bool
+	gNoSuspendH  bool
 	gMonthly     bool
 	gPatchEnv    map[string]struct{}
 	gName2Env    map[string]string
@@ -427,6 +429,8 @@ func generateCronValues(inFile, outFile string) {
 	gOnlyEnv = os.Getenv("ONLY_ENV") != ""
 	gOnlySuspend = os.Getenv("ONLY_SUSPEND") != ""
 	gSuspendAll = os.Getenv("SUSPEND_ALL") != ""
+	gNoSuspendH = os.Getenv("NO_SUSPEND_H") != ""
+	gNoSuspendA = os.Getenv("NO_SUSPEND_A") != ""
 	setPatchEnvMap()
 	minutes := syncHours * (60.0 - ghaOffset)
 	hours := float64(cWeekHours)
@@ -490,15 +494,23 @@ func generateCronValues(inFile, outFile string) {
 			if !gSuspendAll {
 				suspend = fmt.Sprintf("%v", values.Projects[i].SuspendCronTest)
 			}
-			patch("devstats-test", "devstats-"+values.Projects[i].Proj, "suspend", suspend)
-			patch("devstats-test", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", suspend)
+			if !gNoSuspendH {
+				patch("devstats-test", "devstats-"+values.Projects[i].Proj, "suspend", suspend)
+			}
+			if !gNoSuspendA {
+				patch("devstats-test", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", suspend)
+			}
 		}
 		if !gNever && project.Domains[1] != 0 {
 			if !gSuspendAll {
 				suspend = fmt.Sprintf("%v", values.Projects[i].SuspendCronProd)
 			}
-			patch("devstats-prod", "devstats-"+values.Projects[i].Proj, "suspend", suspend)
-			patch("devstats-prod", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", suspend)
+			if !gNoSuspendH {
+				patch("devstats-prod", "devstats-"+values.Projects[i].Proj, "suspend", suspend)
+			}
+			if !gNoSuspendA {
+				patch("devstats-prod", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", suspend)
+			}
 		}
 	}
 	fmt.Printf("patched %d/%d cronjobs\n", gPatched, gAttempted)

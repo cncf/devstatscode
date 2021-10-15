@@ -12,5 +12,7 @@
 # PATCH_ENV='AffSkipTemp,MaxHist,SkipAffsLock,AffsLockDB,NoDurable,DurablePQ,MaxRunDuration,SkipGHAPI,SkipGetRepos'
 # ONLY_SUSPEND=1 (only process suspend data)
 # SUSPEND_ALL=1 (suspend all cronjobs)
+# NO_SUSPEND_H=1 (do not process (un)suspend for hourly sync crons
+# NO_SUSPEND_A=1 (do not process (un)suspend for affiliations crons
 # ./splitcrons ../devstats-helm/devstats-helm/values.yaml new-values.yaml
 ./splitcrons values.yaml new-values.yaml
