@@ -30,7 +30,7 @@ func FatalOnError(err error) string {
 			fmt.Fprintf(os.Stderr, "PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
 			if os.Getenv("DURABLE_PQ") != "" && os.Getenv("DURABLE_PQ") != "0" && os.Getenv("DURABLE_PQ") != "false" {
 				switch errName {
-				case "program_limit_exceeded":
+				case "program_limit_exceeded", "undefined_column":
 					Printf("%s error is not retryable, even with DURABLE_PQ\n", errName)
 				default:
 					Printf("retrying with DURABLE_PQ\n")
