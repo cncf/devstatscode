@@ -453,7 +453,7 @@ func generateCronValues(inFile, outFile string) {
 		if !project.SuspendCronTest && project.Domains[0] != 0 {
 			kt++
 		}
-		if !project.SuspendCronProd && project.Domains[1] != 0 {
+		if !project.SuspendCronProd && (project.Domains[1] != 0 || project.Domains[2] != 0 || project.Domains[3] != 0) {
 			kp++
 		}
 	}
@@ -471,7 +471,7 @@ func generateCronValues(inFile, outFile string) {
 	}
 	for i, project := range values.Projects {
 		t := !project.SuspendCronTest && project.Domains[0] != 0
-		p := !project.SuspendCronProd && project.Domains[1] != 0
+		p := !project.SuspendCronProd && (project.Domains[1] != 0 || project.Domains[2] != 0 || project.Domains[3] != 0)
 		if !gOnlySuspend {
 			switch project.DB {
 			case "gha":
@@ -501,7 +501,7 @@ func generateCronValues(inFile, outFile string) {
 				patch("devstats-test", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", suspend)
 			}
 		}
-		if !gNever && project.Domains[1] != 0 {
+		if !gNever && (project.Domains[1] != 0 || project.Domains[2] != 0 || project.Domains[3] != 0) {
 			if !gSuspendAll {
 				suspend = fmt.Sprintf("%v", values.Projects[i].SuspendCronProd)
 			}
