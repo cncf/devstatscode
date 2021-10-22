@@ -9,7 +9,9 @@
 # ALWAYS_PATCH=1 (skip checking for difference and always call kubectl patch)
 # NEVER_PATCH=1 (do not execute kubectl patch - preview/dry mode)
 # ONLY_ENV=1 (only patch CJs env variables)
-# PATCH_ENV='AffSkipTemp,MaxHist,SkipAffsLock,AffsLockDB,NoDurable,DurablePQ,MaxRunDuration,SkipGHAPI,SkipGetRepos'
+# SKIP_AFFS_ENV=1 (skip patching env for affiliations cron jobs)
+# SKIP_SYNC_ENV=1 (skip patching env for affiliations cron jobs)
+# PATCH_ENV='AffSkipTemp,MaxHist,SkipAffsLock,AffsLockDB,NoDurable,DurablePQ,MaxRunDuration,SkipGHAPI,SkipGetRepos,NCPUs'
 # ONLY_SUSPEND=1 (only process suspend data)
 # SUSPEND_ALL=1 (suspend all cronjobs)
 # NO_SUSPEND_H=1 (do not process (un)suspend for hourly sync crons

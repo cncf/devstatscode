@@ -66,6 +66,8 @@ var (
 	gNoSuspendA  bool
 	gNoSuspendH  bool
 	gMonthly     bool
+	gSkipAffsEnv bool
+	gSkipSyncEnv bool
 	gPatchEnv    map[string]struct{}
 	gName2Env    map[string]string
 )
@@ -145,15 +147,26 @@ func patch(namespace, cronjob, field, patch string) {
 	gPatched++
 }
 
-func considerPatchEnv(namespace, cronjob string, project *devstatsProject, nCPUs int) {
+func considerPatchEnv(namespace, cronjob string, project *devstatsProject, nCPUs int, affs bool) {
 	if gPatchEnv == nil {
 		return
 	}
 	var (
 		fields  []string
 		patches []string
+		envs    []string
 	)
-	envs := []string{"AffSkipTemp", "MaxHist", "SkipAffsLock", "AffsLockDB", "NoDurable", "DurablePQ", "MaxRunDuration", "SkipGHAPI", "SkipGetRepos", "NCPUs"}
+	if affs {
+		if gSkipAffsEnv {
+			return
+		}
+		envs = []string{"AffSkipTemp", "MaxHist", "SkipAffsLock", "AffsLockDB", "NoDurable", "DurablePQ", "MaxRunDuration", "SkipGHAPI", "SkipGetRepos", "NCPUs"}
+	} else {
+		if gSkipSyncEnv {
+			return
+		}
+		envs = []string{"MaxHist", "NoDurable", "DurablePQ", "MaxRunDuration", "NCPUs"}
+	}
 	for _, env := range envs {
 		_, use := gPatchEnv[env]
 		if !use {
@@ -297,7 +310,8 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			patch("devstats-test", "devstats-"+values.Projects[idx].Proj, "schedule", `"`+cronS+`"`)
 		}
 		if !gNever {
-			considerPatchEnv("devstats-test", "devstats-affiliations-"+values.Projects[idx].Proj, &values.Projects[idx], values.AffsCPUs)
+			considerPatchEnv("devstats-test", "devstats-"+values.Projects[idx].Proj, &values.Projects[idx], values.SyncCPUs, false)
+			considerPatchEnv("devstats-test", "devstats-affiliations-"+values.Projects[idx].Proj, &values.Projects[idx], values.AffsCPUs, true)
 		}
 	}
 	if prod {
@@ -328,7 +342,8 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			patch("devstats-prod", "devstats-"+values.Projects[idx].Proj, "schedule", `"`+cronS+`"`)
 		}
 		if !gNever {
-			considerPatchEnv("devstats-prod", "devstats-affiliations-"+values.Projects[idx].Proj, &values.Projects[idx], values.AffsCPUs)
+			considerPatchEnv("devstats-prod", "devstats-"+values.Projects[idx].Proj, &values.Projects[idx], values.SyncCPUs, false)
+			considerPatchEnv("devstats-prod", "devstats-affiliations-"+values.Projects[idx].Proj, &values.Projects[idx], values.AffsCPUs, true)
 		}
 	}
 }
@@ -444,6 +459,8 @@ func generateCronValues(inFile, outFile string) {
 	gSuspendAll = os.Getenv("SUSPEND_ALL") != ""
 	gNoSuspendH = os.Getenv("NO_SUSPEND_H") != ""
 	gNoSuspendA = os.Getenv("NO_SUSPEND_A") != ""
+	gSkipAffsEnv = os.Getenv("SKIP_AFFS_ENV") != ""
+	gSkipSyncEnv = os.Getenv("SKIP_SYNC_ENV") != ""
 	setPatchEnvMap()
 	minutes := syncHours * (60.0 - ghaOffset)
 	hours := float64(cWeekHours)
