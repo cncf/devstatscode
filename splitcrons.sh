@@ -14,5 +14,6 @@
 # SUSPEND_ALL=1 (suspend all cronjobs)
 # NO_SUSPEND_H=1 (do not process (un)suspend for hourly sync crons
 # NO_SUSPEND_A=1 (do not process (un)suspend for affiliations crons
+# DEBUG=1 - more verbose output
 # ./splitcrons ../devstats-helm/devstats-helm/values.yaml new-values.yaml
 ./splitcrons values.yaml new-values.yaml

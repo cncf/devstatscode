@@ -41,6 +41,8 @@ type devstatsProject struct {
 }
 
 type devstatsValues struct {
+	SyncCPUs int               `yaml:"nSyncCPUs"`
+	AffsCPUs int               `yaml:"nAffsCPUs"`
 	Projects []devstatsProject `yaml:"projects"`
 }
 
@@ -53,6 +55,7 @@ const (
 
 var (
 	ctx          lib.Ctx
+	gDebug       bool
 	gPatched     int
 	gAttempted   int
 	gNever       bool
@@ -69,6 +72,9 @@ var (
 
 // kubectl patch cronjob -n devstats-test devstats-affiliations-rook -p '{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[{"name":"devstats-affiliations-rook","env":[{"name":"USE_FLAGS","value":"1"}]}]}}}}}}'
 func patchEnv(namespace, cronjob string, fields, patches []string) {
+	if gDebug {
+		fmt.Printf("patchEnv: -n %s %s: %v=%v\n", namespace, cronjob, fields, patches)
+	}
 	gAttempted++
 	patchSpec := fmt.Sprintf(`{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[{"name":"%s","env":[`, cronjob)
 	n := len(fields)
@@ -110,6 +116,9 @@ func patch(namespace, cronjob, field, patch string) {
 	if gOnlyEnv {
 		return
 	}
+	if gDebug {
+		fmt.Printf("patch: -n %s %s: %s=%s\n", namespace, cronjob, field, patch)
+	}
 	gAttempted++
 	patchSpec := fmt.Sprintf(`{"spec":{"%s":%s}}`, field, patch)
 	cmdAndArgs := []string{
@@ -136,7 +145,7 @@ func patch(namespace, cronjob, field, patch string) {
 	gPatched++
 }
 
-func considerPatchEnv(namespace, cronjob string, project *devstatsProject) {
+func considerPatchEnv(namespace, cronjob string, project *devstatsProject, nCPUs int) {
 	if gPatchEnv == nil {
 		return
 	}
@@ -144,7 +153,7 @@ func considerPatchEnv(namespace, cronjob string, project *devstatsProject) {
 		fields  []string
 		patches []string
 	)
-	envs := []string{"AffSkipTemp", "MaxHist", "SkipAffsLock", "AffsLockDB", "NoDurable", "DurablePQ", "MaxRunDuration", "SkipGHAPI", "SkipGetRepos"}
+	envs := []string{"AffSkipTemp", "MaxHist", "SkipAffsLock", "AffsLockDB", "NoDurable", "DurablePQ", "MaxRunDuration", "SkipGHAPI", "SkipGetRepos", "NCPUs"}
 	for _, env := range envs {
 		_, use := gPatchEnv[env]
 		if !use {
@@ -154,6 +163,8 @@ func considerPatchEnv(namespace, cronjob string, project *devstatsProject) {
 		fields = append(fields, field)
 		patch := ""
 		switch env {
+		case "NCPUs":
+			patch = strconv.Itoa(nCPUs)
 		case "AffSkipTemp":
 			patch = project.AffSkipTemp
 		case "MaxHist":
@@ -286,7 +297,7 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			patch("devstats-test", "devstats-"+values.Projects[idx].Proj, "schedule", `"`+cronS+`"`)
 		}
 		if !gNever {
-			considerPatchEnv("devstats-test", "devstats-affiliations-"+values.Projects[idx].Proj, &values.Projects[idx])
+			considerPatchEnv("devstats-test", "devstats-affiliations-"+values.Projects[idx].Proj, &values.Projects[idx], values.AffsCPUs)
 		}
 	}
 	if prod {
@@ -317,7 +328,7 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			patch("devstats-prod", "devstats-"+values.Projects[idx].Proj, "schedule", `"`+cronS+`"`)
 		}
 		if !gNever {
-			considerPatchEnv("devstats-prod", "devstats-affiliations-"+values.Projects[idx].Proj, &values.Projects[idx])
+			considerPatchEnv("devstats-prod", "devstats-affiliations-"+values.Projects[idx].Proj, &values.Projects[idx], values.AffsCPUs)
 		}
 	}
 }
@@ -342,6 +353,7 @@ func setPatchEnvMap() {
 		"MaxRunDuration": "GHA2DB_MAX_RUN_DURATION",
 		"SkipGHAPI":      "GHA2DB_GHAPISKIP",
 		"SkipGetRepos":   "GHA2DB_GETREPOSSKIP",
+		"NCPUs":          "GHA2DB_NCPUS",
 	}
 }
 
@@ -358,6 +370,7 @@ func generateCronValues(inFile, outFile string) {
 	lib.FatalOnError(yaml.Unmarshal(data, &values))
 	fmt.Printf("read %s\n", inFile)
 
+	gDebug = os.Getenv("DEBUG") != ""
 	gMonthly = os.Getenv("MONTHLY") != ""
 	maxHours := 30
 	if gMonthly {
