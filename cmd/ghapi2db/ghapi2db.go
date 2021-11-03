@@ -690,7 +690,7 @@ func syncEvents(ctx *lib.Ctx) {
 	eventTypes["marked_as_duplicate"] = struct{}{}
 	eventTypes["unmarked_as_duplicate"] = struct{}{}
 	eventTypes["converted_note_to_issue"] = struct{}{}
-	// Non specified in GH API but happenning
+	// TODO: Non specified in GH API but happenning
 	eventTypes["base_ref_changed"] = struct{}{}
 	eventTypes["comment_deleted"] = struct{}{}
 	eventTypes["deployed"] = struct{}{}
@@ -879,6 +879,8 @@ func syncEvents(ctx *lib.Ctx) {
 						continue
 					}
 					eventType := *event.Event
+					// TODO: Non specified in GH API but happenning
+					// select distinct substring(msg for 40) from gha_logs where substring(msg for 28) = 'Warning: skipping event type';
 					_, ok := eventTypes[eventType]
 					if !ok {
 						lib.Printf("Warning: skipping event type %s for issue %s %d\n", eventType, orgRepo, *event.Issue.Number)
