@@ -292,7 +292,14 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 			minuteA, minuteS = int((kubernetesHours+intervalT*float64(idxt))*60.), int((float64(idxt)*minutes)/float64(nt))
 		}
 		minuteA += int(offsetHours * 60.0)
+		// Offset for test
+		// affiliations cronjob offset
 		minuteA += periodHours * 30.0
+		// hourly sync cronjob offset
+		minuteS += int(minutes / 2.0)
+		if minuteS > int(minutes) {
+			minuteS -= int(minutes)
+		}
 		if minuteA < 0 {
 			minuteA += periodMinutes
 		}
