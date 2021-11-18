@@ -297,13 +297,13 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 		minuteA += periodHours * 30.0
 		// hourly sync cronjob offset
 		minuteS += int(minutes / 2.0)
-		if minuteS > int(minutes) {
+		if minuteS >= int(minutes) {
 			minuteS -= int(minutes)
 		}
 		if minuteA < 0 {
 			minuteA += periodMinutes
 		}
-		if minuteA > periodMinutes {
+		if minuteA >= periodMinutes {
 			minuteA -= periodMinutes
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
@@ -335,7 +335,7 @@ func generateCronEntries(values *devstatsValues, idx int, test, prod bool, idxt,
 		if minuteA < 0 {
 			minuteA += periodMinutes
 		}
-		if minuteA > periodMinutes {
+		if minuteA >= periodMinutes {
 			minuteA -= periodMinutes
 		}
 		cronA, cronS := minutesToCron(minuteA, minuteS)
