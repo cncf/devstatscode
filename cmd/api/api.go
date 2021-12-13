@@ -2126,7 +2126,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 	if ok {
 		age := time.Now().Sub(data.dt).Seconds()
 		if age < 43200 {
-			lib.Printf("using cached value %+v (age is %.0f < 43200)\n", data, age)
+			lib.Printf("Using cached value %+v (age is %.0f < 43200)\n", data, age)
 			w.WriteHeader(http.StatusOK)
 			jsoniter.NewEncoder(w).Encode(data.siteStats)
 			return

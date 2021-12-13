@@ -354,9 +354,17 @@ List of APIs:
   {
     "project": "all",
     "db_name": "allprj",
-    "contributors": 121239,
-    "contributions": 5833526,
-    "boc": 2023522655
+    "contributors": 140781,
+    "contributions": 7300732,
+    "boc": 3117663743,
+    "committers": 31839,
+    "commits": 1371051,
+    "events": 13482981,
+    "forkers": 183040,
+    "repositories": 3478,
+    "stargazers": 311235,
+    "countries": 184,
+    "companies": 11308
   }
   ```
   - Example API call: `./devel/api_site_stats.sh all`.
