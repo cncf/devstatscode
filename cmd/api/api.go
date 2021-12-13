@@ -86,6 +86,14 @@ type siteStatsPayload struct {
 	Contributors  int64  `json:"contributors"`
 	Contributions int64  `json:"contributions"`
 	BOC           int64  `json:"boc"`
+	Committers    int64  `json:"committers"`
+	Commits       int64  `json:"commits"`
+	Events        int64  `json:"events"`
+	Forkers       int64  `json:"forkers"`
+	Repositories  int64  `json:"repositories"`
+	Stargazers    int64  `json:"stargazers"`
+	Countries     int64  `json:"countries"`
+	Companies     int64  `json:"companies"`
 }
 
 type companiesTablePayload struct {
@@ -2107,7 +2115,15 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		return
 	}
 	defer func() { _ = c.Close() }()
-	query := `
+	var ch chan error
+	mtx := &sync.Mutex{}
+	sspl := siteStatsPayload{Project: project, DB: db}
+	go func(ch chan error) {
+		var err error
+		defer func() {
+			ch <- err
+		}()
+		query := `
   select
     name,
     value
@@ -2116,37 +2132,61 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
   where
     series = 'pstatall'
     and period = 'y10'
-    and name in ('Contributors', 'Contributions')
+    and name in (
+      'Contributors', 'Contributions', 'Code committers',
+      'Commits', 'Events', 'Forkers',
+      'Repositories', 'Stargazers'
+    )
   `
-	rows, err := lib.QuerySQLLogErr(c, ctx, query)
-	if err != nil {
-		returnError(apiName, w, err)
-		return
-	}
-	defer func() { _ = rows.Close() }()
-	sspl := siteStatsPayload{Project: project, DB: db}
-	var (
-		value float64
-		name  string
-	)
-	for rows.Next() {
-		err = rows.Scan(&name, &value)
+		var rows *sql.Rows
+		rows, err = lib.QuerySQLLogErr(c, ctx, query)
 		if err != nil {
-			returnError(apiName, w, err)
 			return
 		}
-		if name == "Contributors" {
-			sspl.Contributors = int64(value)
-		} else {
-			sspl.Contributions = int64(value)
+		defer func() { _ = rows.Close() }()
+		var (
+			value float64
+			name  string
+		)
+		for rows.Next() {
+			err = rows.Scan(&name, &value)
+			if err != nil {
+				return
+			}
+			mtx.Lock()
+			switch name {
+			case "Contributors":
+				sspl.Contributors = int64(value)
+			case "Contributions":
+				sspl.Contributions = int64(value)
+			case "Code committers":
+				sspl.Committers = int64(value)
+			case "Commits":
+				sspl.Commits = int64(value)
+			case "Events":
+				sspl.Events = int64(value)
+			case "Forkers":
+				sspl.Forkers = int64(value)
+			case "Repositories":
+				sspl.Repositories = int64(value)
+			case "Stargazers":
+				sspl.Stargazers = int64(value)
+			default:
+				lib.Printf("site stats: unknown metric: '%s'\n", name)
+			}
+			mtx.Unlock()
 		}
-	}
-	err = rows.Err()
-	if err != nil {
-		returnError(apiName, w, err)
-		return
-	}
-	query = `
+		err = rows.Err()
+		if err != nil {
+			return
+		}
+	}(ch)
+	go func(ch chan error) {
+		var err error
+		defer func() {
+			ch <- err
+		}()
+		query := `
   select
     sum(rl.lang_loc)
   from
@@ -2166,24 +2206,136 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
       limit 1
     )
   `
-	rows2, err := lib.QuerySQLLogErr(c, ctx, query)
-	if err != nil {
-		returnError(apiName, w, err)
-		return
-	}
-	defer func() { _ = rows2.Close() }()
-	for rows2.Next() {
-		err = rows2.Scan(&value)
+		var rows *sql.Rows
+		rows, err = lib.QuerySQLLogErr(c, ctx, query)
+		if err != nil {
+			return
+		}
+		defer func() { _ = rows.Close() }()
+		var value float64
+		for rows.Next() {
+			err = rows.Scan(&value)
+			if err != nil {
+				return
+			}
+			mtx.Lock()
+			sspl.BOC = int64(value)
+			mtx.Unlock()
+		}
+		err = rows.Err()
+	}(ch)
+	go func(ch chan error) {
+		var err error
+		defer func() {
+			ch <- err
+		}()
+		query := `
+  select
+    count(distinct sub.country_id) as num_countries
+  from (
+    select
+      a.country_id
+    from
+      gha_events e,
+      gha_actors a
+    where
+      e.actor_id = a.id
+      and e.type in (
+        'PushEvent', 'PullRequestEvent', 'IssuesEvent',
+        'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+      )
+    union select
+      a.country_id
+    from
+      gha_actors a,
+      gha_commits c
+    where
+      (
+        c.author_id = a.id
+        or c.committer_id = a.id
+      )
+  ) sub
+  `
+		var rows *sql.Rows
+		rows, err = lib.QuerySQLLogErr(c, ctx, query)
+		if err != nil {
+			return
+		}
+		defer func() { _ = rows.Close() }()
+		var value float64
+		for rows.Next() {
+			err = rows.Scan(&value)
+			if err != nil {
+				return
+			}
+			mtx.Lock()
+			sspl.Countries = int64(value)
+			mtx.Unlock()
+		}
+		err = rows.Err()
+	}(ch)
+	go func(ch chan error) {
+		var err error
+		defer func() {
+			ch <- err
+		}()
+		query := `
+  select
+    count(distinct sub.company_name) as num_companis
+  from (
+    select
+      af.company_name
+    from
+      gha_events e,
+      gha_actors_affiliations af
+    where
+      e.actor_id = af.actor_id
+      and af.dt_from <= e.created_at
+      and af.dt_to > e.created_at
+      and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
+      and e.type in (
+        'PushEvent', 'PullRequestEvent', 'IssuesEvent',
+        'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+      )
+    union select
+      af.company_name
+    from
+      gha_actors_affiliations af,
+      gha_commits c
+    where
+      (
+        c.author_id = af.actor_id
+        or c.committer_id = af.actor_id
+      )
+      and af.dt_from <= c.dup_created_at
+      and af.dt_to > c.dup_created_at
+      and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
+  ) sub
+  `
+		var rows *sql.Rows
+		rows, err = lib.QuerySQLLogErr(c, ctx, query)
+		if err != nil {
+			return
+		}
+		defer func() { _ = rows.Close() }()
+		var value float64
+		for rows.Next() {
+			err = rows.Scan(&value)
+			if err != nil {
+				return
+			}
+			mtx.Lock()
+			sspl.Companies = int64(value)
+			mtx.Unlock()
+		}
+		err = rows.Err()
+	}(ch)
+	for i := 0; i < 4; i++ {
+		err := <-ch
 		if err != nil {
 			returnError(apiName, w, err)
 			return
 		}
-		sspl.BOC = int64(value)
-	}
-	err = rows2.Err()
-	if err != nil {
-		returnError(apiName, w, err)
-		return
 	}
 	w.WriteHeader(http.StatusOK)
 	jsoniter.NewEncoder(w).Encode(sspl)
