@@ -96,6 +96,16 @@ type siteStatsPayload struct {
 	Companies     int64  `json:"companies"`
 }
 
+type siteStatsCacheEntry struct {
+	dt        time.Time
+	siteStats siteStatsPayload
+}
+
+var (
+	siteStatsCache    = map[[2]string]siteStatsCacheEntry{}
+	siteStatsCacheMtx = &sync.Mutex{}
+)
+
 type companiesTablePayload struct {
 	Project string    `json:"project"`
 	DB      string    `json:"db_name"`
@@ -2109,6 +2119,22 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		returnError(apiName, w, err)
 		return
 	}
+	key := [2]string{project, db}
+	siteStatsCacheMtx.Lock()
+	data, ok := siteStatsCache[key]
+	siteStatsCacheMtx.Unlock()
+	if ok {
+		age := time.Now().Sub(data.dt).Seconds()
+		if age < 43200 {
+			lib.Printf("using cached value %+v (age is %.0f < 43200)\n", data, age)
+			w.WriteHeader(http.StatusOK)
+			jsoniter.NewEncoder(w).Encode(data.siteStats)
+			return
+		}
+		siteStatsCacheMtx.Lock()
+		delete(siteStatsCache, key)
+		siteStatsCacheMtx.Unlock()
+	}
 	ctx, c, err := getContextAndDB(w, db)
 	if err != nil {
 		returnError(apiName, w, err)
@@ -2120,10 +2146,10 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 	sspl := siteStatsPayload{Project: project, DB: db}
 	go func(ch chan error) {
 		var err error
-		lib.Printf("pstatall start\n")
+		//lib.Printf("pstatall start\n")
 		defer func() {
 			ch <- err
-			lib.Printf("pstatall end\n")
+			//lib.Printf("pstatall end\n")
 		}()
 		query := `
   select
@@ -2155,7 +2181,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 			if err != nil {
 				return
 			}
-			lib.Printf("pstatall > %v %v\n", name, value)
+			//lib.Printf("pstatall > %v %v\n", name, value)
 			mtx.Lock()
 			switch name {
 			case "Contributors":
@@ -2175,19 +2201,19 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 			case "Stargazers":
 				sspl.Stargazers = int64(value)
 			default:
-				lib.Printf("site stats: unknown metric: '%s'\n", name)
+				//lib.Printf("site stats: unknown metric: '%s'\n", name)
 			}
 			mtx.Unlock()
-			lib.Printf("pstatall < %v %v\n", name, value)
+			//lib.Printf("pstatall < %v %v\n", name, value)
 		}
 		err = rows.Err()
 	}(ch)
 	go func(ch chan error) {
-		lib.Printf("BOC start\n")
+		//lib.Printf("BOC start\n")
 		var err error
 		defer func() {
 			ch <- err
-			lib.Printf("BOC end\n")
+			//lib.Printf("BOC end\n")
 		}()
 		query := `
   select
@@ -2221,20 +2247,20 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 			if err != nil {
 				return
 			}
-			lib.Printf("BOC > %v\n", value)
+			//lib.Printf("BOC > %v\n", value)
 			mtx.Lock()
 			sspl.BOC = int64(value)
 			mtx.Unlock()
-			lib.Printf("BOC < %v\n", value)
+			//lib.Printf("BOC < %v\n", value)
 		}
 		err = rows.Err()
 	}(ch)
 	go func(ch chan error) {
-		lib.Printf("countries start\n")
+		//lib.Printf("countries start\n")
 		var err error
 		defer func() {
 			ch <- err
-			lib.Printf("countries end\n")
+			//lib.Printf("countries end\n")
 		}()
 		query := `
   select
@@ -2275,20 +2301,20 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 			if err != nil {
 				return
 			}
-			lib.Printf("contries > %v\n", value)
+			//lib.Printf("contries > %v\n", value)
 			mtx.Lock()
 			sspl.Countries = int64(value)
 			mtx.Unlock()
-			lib.Printf("contries < %v\n", value)
+			//lib.Printf("contries < %v\n", value)
 		}
 		err = rows.Err()
 	}(ch)
 	go func(ch chan error) {
-		lib.Printf("companies start\n")
+		//lib.Printf("companies start\n")
 		var err error
 		defer func() {
 			ch <- err
-			lib.Printf("companies end\n")
+			//lib.Printf("companies end\n")
 		}()
 		query := `
   select
@@ -2335,26 +2361,29 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 			if err != nil {
 				return
 			}
-			lib.Printf("orgs > %v\n", value)
+			//lib.Printf("orgs > %v\n", value)
 			mtx.Lock()
 			sspl.Companies = int64(value)
 			mtx.Unlock()
-			lib.Printf("orgs < %v\n", value)
+			//lib.Printf("orgs < %v\n", value)
 		}
 		err = rows.Err()
 	}(ch)
 	for i := 0; i < 4; i++ {
-		lib.Printf("before %d\n", i)
+		//lib.Printf("before %d\n", i)
 		err := <-ch
-		lib.Printf("after %d\n", i)
+		//lib.Printf("after %d\n", i)
 		if err != nil {
 			returnError(apiName, w, err)
 			return
 		}
 	}
-	lib.Printf("out\n")
+	//lib.Printf("out\n")
 	w.WriteHeader(http.StatusOK)
 	jsoniter.NewEncoder(w).Encode(sspl)
+	siteStatsCacheMtx.Lock()
+	siteStatsCache[key] = siteStatsCacheEntry{dt: time.Now(), siteStats: sspl}
+	siteStatsCacheMtx.Unlock()
 }
 
 func requestInfo(r *http.Request) string {
