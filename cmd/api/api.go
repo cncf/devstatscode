@@ -2115,7 +2115,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		return
 	}
 	defer func() { _ = c.Close() }()
-	var ch chan error
+	ch := make(chan error)
 	mtx := &sync.Mutex{}
 	sspl := siteStatsPayload{Project: project, DB: db}
 	go func(ch chan error) {
