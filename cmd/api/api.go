@@ -2155,6 +2155,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 			if err != nil {
 				return
 			}
+			lib.Printf("pstatall > %v %v\n", name, value)
 			mtx.Lock()
 			switch name {
 			case "Contributors":
@@ -2177,6 +2178,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 				lib.Printf("site stats: unknown metric: '%s'\n", name)
 			}
 			mtx.Unlock()
+			lib.Printf("pstatall < %v %v\n", name, value)
 		}
 		err = rows.Err()
 	}(ch)
@@ -2219,9 +2221,11 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 			if err != nil {
 				return
 			}
+			lib.Printf("BOC > %v\n", value)
 			mtx.Lock()
 			sspl.BOC = int64(value)
 			mtx.Unlock()
+			lib.Printf("BOC < %v\n", value)
 		}
 		err = rows.Err()
 	}(ch)
@@ -2271,9 +2275,11 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 			if err != nil {
 				return
 			}
+			lib.Printf("contries > %v\n", value)
 			mtx.Lock()
 			sspl.Countries = int64(value)
 			mtx.Unlock()
+			lib.Printf("contries < %v\n", value)
 		}
 		err = rows.Err()
 	}(ch)
@@ -2329,9 +2335,11 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 			if err != nil {
 				return
 			}
+			lib.Printf("orgs > %v\n", value)
 			mtx.Lock()
 			sspl.Companies = int64(value)
 			mtx.Unlock()
+			lib.Printf("orgs < %v\n", value)
 		}
 		err = rows.Err()
 	}(ch)
