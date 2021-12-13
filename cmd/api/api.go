@@ -2122,6 +2122,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		var err error
 		defer func() {
 			ch <- err
+			lib.Printf("pstatall\n")
 		}()
 		query := `
   select
@@ -2185,6 +2186,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		var err error
 		defer func() {
 			ch <- err
+			lib.Printf("BOC\n")
 		}()
 		query := `
   select
@@ -2228,6 +2230,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		var err error
 		defer func() {
 			ch <- err
+			lib.Printf("countries\n")
 		}()
 		query := `
   select
@@ -2278,6 +2281,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		var err error
 		defer func() {
 			ch <- err
+			lib.Printf("companies\n")
 		}()
 		query := `
   select
@@ -2331,12 +2335,15 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		err = rows.Err()
 	}(ch)
 	for i := 0; i < 4; i++ {
+		lib.Printf("before %d\n", i)
 		err := <-ch
+		lib.Printf("after %d\n", i)
 		if err != nil {
 			returnError(apiName, w, err)
 			return
 		}
 	}
+	lib.Printf("out\n")
 	w.WriteHeader(http.StatusOK)
 	jsoniter.NewEncoder(w).Encode(sspl)
 }
