@@ -2120,9 +2120,10 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 	sspl := siteStatsPayload{Project: project, DB: db}
 	go func(ch chan error) {
 		var err error
+		lib.Printf("pstatall start\n")
 		defer func() {
 			ch <- err
-			lib.Printf("pstatall\n")
+			lib.Printf("pstatall end\n")
 		}()
 		query := `
   select
@@ -2178,15 +2179,13 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 			mtx.Unlock()
 		}
 		err = rows.Err()
-		if err != nil {
-			return
-		}
 	}(ch)
 	go func(ch chan error) {
+		lib.Printf("BOC start\n")
 		var err error
 		defer func() {
 			ch <- err
-			lib.Printf("BOC\n")
+			lib.Printf("BOC end\n")
 		}()
 		query := `
   select
@@ -2227,10 +2226,11 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		err = rows.Err()
 	}(ch)
 	go func(ch chan error) {
+		lib.Printf("countries start\n")
 		var err error
 		defer func() {
 			ch <- err
-			lib.Printf("countries\n")
+			lib.Printf("countries end\n")
 		}()
 		query := `
   select
@@ -2278,10 +2278,11 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		err = rows.Err()
 	}(ch)
 	go func(ch chan error) {
+		lib.Printf("companies start\n")
 		var err error
 		defer func() {
 			ch <- err
-			lib.Printf("companies\n")
+			lib.Printf("companies end\n")
 		}()
 		query := `
   select
