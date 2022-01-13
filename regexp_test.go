@@ -179,6 +179,14 @@ func TestAnnotationRegexp(t *testing.T) {
 		{re: `^v?\d+\.\d+(\.0)?$`, str: "v2.0.1", match: false},
 		{re: `^v?\d+\.\d+(\.0)?$`, str: "2.3.5", match: false},
 		{re: `^v?\d+\.\d+(\.0)?$`, str: "v2.0.0.0", match: false},
+		{re: `^v(\d+\.\d+\.\d+$|1)`, str: "v3.0.0", match: true},
+		{re: `^v(\d+\.\d+\.\d+$|1)`, str: "v2.1.0", match: true},
+		{re: `^v(\d+\.\d+\.\d+$|1)`, str: "v2.1.0-xyz", match: false},
+		{re: `^v(\d+\.\d+\.\d+$|1)`, str: "v2.1", match: false},
+		{re: `^v(\d+\.\d+\.\d+$|1)`, str: "v1alpha1", match: true},
+		{re: `^v(\d+\.\d+\.\d+$|1)`, str: "v1.0", match: true},
+		{re: `^v(\d+\.\d+\.\d+$|1)`, str: "v1.0.0", match: true},
+		{re: `^v(\d+\.\d+\.\d+$|1)`, str: "v1.0.0.0", match: true},
 	}
 	// Execute test cases
 	for index, test := range testCases {

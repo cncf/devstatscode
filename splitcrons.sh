@@ -17,5 +17,11 @@
 # NO_SUSPEND_H=1 (do not process (un)suspend for hourly sync crons
 # NO_SUSPEND_A=1 (do not process (un)suspend for affiliations crons
 # DEBUG=1 - more verbose output
+# Examples:
 # ./splitcrons ../devstats-helm/devstats-helm/values.yaml new-values.yaml
-./splitcrons values.yaml new-values.yaml
+# MONTHLY=1 DEBUG=1 ./splitcrons devstats-helm/values.yaml new-values.yaml
+# ALWAYS_PATCH=1 MONTHLY=1 DEBUG=1 ./splitcronsa devstats-helm/values.yaml new-values.yaml
+# PATCH_ENV=NCPUs ALWAYS_PATCH=1 MONTHLY=1 DEBUG=1 ./splitcronsa devstats-helm/values.yaml new-values.yaml
+# PATCH_ENV=NCPUs ALWAYS_PATCH=1 MONTHLY=1 DEBUG=1 ./splitcrons devstats-helm/values.yaml new-values.yaml
+# MONTHLY=1 ONLY_SUSPEND=1 ./splitcrons devstats-helm/values.yaml new-values.yaml
+./splitcrons devstats-helm/values.yaml new-values.yaml && echo "Now update devstats-helm/values.yaml with new-values.yaml"
