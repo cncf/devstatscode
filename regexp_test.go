@@ -187,6 +187,18 @@ func TestAnnotationRegexp(t *testing.T) {
 		{re: `^v(\d+\.\d+\.\d+$|1)`, str: "v1.0", match: true},
 		{re: `^v(\d+\.\d+\.\d+$|1)`, str: "v1.0.0", match: true},
 		{re: `^v(\d+\.\d+\.\d+$|1)`, str: "v1.0.0.0", match: true},
+		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "AppDynamics LLC", match: true},
+		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "Appdynamics   LLC", match: true},
+		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "appDynamics\tLLC", match: true},
+		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "AppDynamics (Cisco)", match: true},
+		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "appdynamics  (cisco)", match: true},
+		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "Epsagon", match: true},
+		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "Epsagon LLC", match: true},
+		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "BanzaiCloud", match: true},
+		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "Banzai Cloud", match: true},
+		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "Banzai Cloud Zrt", match: true},
+		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "banzai  cloud\tzrt", match: true},
+		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "banzaicloudzrt", match: false},
 	}
 	// Execute test cases
 	for index, test := range testCases {
