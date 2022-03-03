@@ -199,6 +199,10 @@ func TestAnnotationRegexp(t *testing.T) {
 		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "Banzai Cloud Zrt", match: true},
 		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "banzai  cloud\tzrt", match: true},
 		{re: `(?i)^(appdynamics(\s+(llc|\(cisco\)))?|epsagon(\s+(llc))?|banzai\s*?cloud(\s+zrt)?)$`, str: "banzaicloudzrt", match: false},
+		{re: `^(knative-)?v\d+\.\d+\.0$`, str: "knative-v1.1.4", match: false},
+		{re: `^(knative-)?v\d+\.\d+\.0$`, str: "v1.1.0", match: true},
+		{re: `^(knative-)?v\d+\.\d+\.0$`, str: "v1.1.4", match: false},
+		{re: `^(knative-)?v\d+\.\d+\.0$`, str: "knative-v1.1.0", match: true},
 	}
 	// Execute test cases
 	for index, test := range testCases {
