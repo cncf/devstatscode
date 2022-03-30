@@ -605,7 +605,7 @@ func PgConnDB(ctx *Ctx, dbName string) *sql.DB {
 func CreateTable(tdef string) string {
 	tdef = strings.Replace(tdef, "{{ts}}", "timestamp", -1)
 	tdef = strings.Replace(tdef, "{{tsnow}}", "timestamp default now()", -1)
-	tdef = strings.Replace(tdef, "{{pkauto}}", "serial", -1)
+	tdef = strings.Replace(tdef, "{{pkauto}}", "bigserial", -1)
 	return "create table " + tdef
 }
 
