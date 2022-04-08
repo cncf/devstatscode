@@ -1043,6 +1043,57 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index teams_dup_created_at_idx on gha_teams(dup_created_at)")
 	}
 
+	// gha_reviews
+	// Table details and analysis in `analysis/analysis.txt` and `analysis/*review*.json`
+	// "{_links:,author_association:,body:,commit_id:,html_url:,id:,node_id:,pull_request_url:,state:,submitted_at:,user:}"
+	// {"_links:Hash"=>15120, "body:String"=>8585, "commit_id:String"=>15120, "state:String"=>15120, "html_url:String"=>15120,
+	// "author_association:String"=>15120, "id:Integer"=>15120, "node_id:String"=>15120, "user:Hash"=>15120,
+	// "submitted_at:String"=>15120, "pull_request_url:String"=>15120, "body:NilClass"=>6535}
+	// {"_links"=>299, "body"=>9970, "commit_id"=>40, "state"=>17, "html_url"=>132, "author_association"=>12, "id"=>9,
+	// "node_id"=>40, "user"=>1221, "submitted_at"=>20, "pull_request_url"=>115}
+	// Keys: user_id, commit_id
+	// variable
+	if ctx.Table {
+		ExecSQLWithErr(c, ctx, "drop table if exists gha_reviews")
+		ExecSQLWithErr(
+			c,
+			ctx,
+			CreateTable(
+				"gha_reviews("+
+					"id bigint not null, "+
+					"user_id bigint not null, "+
+					"commit_id varchar(40) not null, "+
+					"submitted_at {{ts}} not null, "+
+					"author_association text not null, "+
+					"state text not null, "+
+					"body text, "+
+					"event_id bigint not null, "+
+					"dup_actor_id bigint not null, "+
+					"dup_actor_login varchar(120) not null, "+
+					"dup_repo_id bigint not null, "+
+					"dup_repo_name varchar(160) not null, "+
+					"dup_type varchar(40) not null, "+
+					"dup_created_at {{ts}} not null, "+
+					"dup_user_login varchar(120) not null, "+
+					"primary key(id, event_id)"+
+					")",
+			),
+		)
+	}
+	if ctx.Index {
+		ExecSQLWithErr(c, ctx, "create index reviews_event_id_idx on gha_reviews(event_id)")
+		ExecSQLWithErr(c, ctx, "create index reviews_submitted_at_idx on gha_reviews(submitted_at)")
+		ExecSQLWithErr(c, ctx, "create index reviews_user_id_idx on gha_reviews(user_id)")
+		ExecSQLWithErr(c, ctx, "create index reviews_commit_id_idx on gha_reviews(commit_id)")
+		ExecSQLWithErr(c, ctx, "create index reviews_dup_actor_id_idx on gha_reviews(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index reviews_dup_actor_login_idx on gha_reviews(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index reviews_dup_repo_id_idx on gha_reviews(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index reviews_dup_repo_name_idx on gha_reviews(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index reviews_dup_type_idx on gha_reviews(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index reviews_dup_user_login_idx on gha_reviews(dup_user_login)")
+		ExecSQLWithErr(c, ctx, "create index reviews_dup_created_at_idx on gha_reviews(dup_created_at)")
+	}
+
 	// Logs table (recently this table moved to separate database `devstats` to separate logs
 	// But all gha databases still do have this table
 	if ctx.Table {

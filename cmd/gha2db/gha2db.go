@@ -491,6 +491,48 @@ func ghaComment(con *sql.Tx, ctx *lib.Ctx, payloadComment *lib.Comment, eventID 
 	)
 }
 
+// gha_reviews
+// Table details and analysis in `analysis/analysis.txt` and `analysis/*review_*.json`
+func ghaReview(con *sql.Tx, ctx *lib.Ctx, payloadReview *lib.Review, eventID string, actor *lib.Actor, repo *lib.Repo, eType string, eCreatedAt time.Time, maybeHide func(string) string) {
+	if payloadReview == nil {
+		return
+	}
+	review := *payloadReview
+
+	// user
+	ghaActor(con, ctx, &review.User, maybeHide)
+
+	// review
+	rid := review.ID
+	lib.ExecSQLTxWithErr(
+		con,
+		ctx,
+		lib.InsertIgnore(
+			"into gha_reviews("+
+				"id, event_id, state, author_association, submitted_at, user_id, commit_id, body, "+
+				"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
+				"dup_user_login) "+lib.NValues(15),
+		),
+		lib.AnyArray{
+			rid,
+			eventID,
+			review.State,
+			review.AuthorAssociation,
+			review.SubmittedAt,
+			review.User.ID,
+			review.CommitID,
+			lib.TruncStringOrNil(review.Body, 0xffff),
+			actor.ID,
+			maybeHide(actor.Login),
+			repo.ID,
+			repo.Name,
+			eType,
+			eCreatedAt,
+			maybeHide(review.User.Login),
+		}...,
+	)
+}
+
 // gha_releases
 // Table details and analysis in `analysis/analysis.txt` and `analysis/release_*.json`
 func ghaRelease(con *sql.Tx, ctx *lib.Ctx, payloadRelease *lib.Release, eventID string, actor *lib.Actor, repo *lib.Repo, eType string, eCreatedAt time.Time, maybeHide func(string) string) {
@@ -1349,6 +1391,9 @@ func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) 
 
 	// Pull Request
 	ghaPullRequest(con, ctx, pl.PullRequest, eventID, &ev.Actor, &ev.Repo, ev.Type, ev.CreatedAt, []int{}, maybeHide)
+
+	// Review
+	ghaReview(con, ctx, pl.Review, eventID, &ev.Actor, &ev.Repo, ev.Type, ev.CreatedAt, maybeHide)
 
 	// Final commit
 	lib.FatalOnError(con.Commit())

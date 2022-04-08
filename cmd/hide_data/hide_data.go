@@ -79,6 +79,14 @@ func processHidden(ctx *lib.Ctx) {
 			column: "dup_user_login",
 		},
 		{
+			table:  "gha_reviews",
+			column: "dup_actor_login",
+		},
+		{
+			table:  "gha_reviews",
+			column: "dup_user_login",
+		},
+		{
 			table:  "gha_issues",
 			column: "dup_actor_login",
 		},

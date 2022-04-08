@@ -2274,7 +2274,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
     where
       e.actor_id = a.id
       and e.type in (
-        'PushEvent', 'PullRequestEvent', 'IssuesEvent',
+        'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
         'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
       )
     union select
@@ -2331,7 +2331,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
       and af.dt_to > e.created_at
       and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
       and e.type in (
-        'PushEvent', 'PullRequestEvent', 'IssuesEvent',
+        'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
         'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
       )
     union select

@@ -96,6 +96,7 @@ type Payload struct {
 	Member       *Actor       `json:"member"`
 	Issue        *Issue       `json:"issue"`
 	Comment      *Comment     `json:"comment"`
+	Review       *Review      `json:"review"`
 	Commits      *[]Commit    `json:"commits"`
 	Pages        *[]Page      `json:"pages"`
 	PullRequest  *PullRequest `json:"pull_request"`
@@ -329,6 +330,17 @@ type Comment struct {
 	Path                *string   `json:"path"`
 	PullRequestReviewID *int      `json:"pull_request_review_id"`
 	Line                *int      `json:"line"`
+}
+
+// Review - GHA Review structure
+type Review struct {
+	ID                int       `json:"id"`
+	User              Actor     `json:"user"`
+	CommitID          string    `json:"commit_id"`
+	SubmittedAt       time.Time `json:"submitted_at"`
+	AuthorAssociation string    `json:"author_association"`
+	State             string    `json:"state"`
+	Body              *string   `json:"body"`
 }
 
 // Commit - GHA Commit structure
