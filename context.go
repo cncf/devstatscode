@@ -133,7 +133,7 @@ type Ctx struct {
 	CheckProvisionFlag       bool                         // From GHA2DB_CHECK_PROVISION_FLAG, devstats tool - check if there is a 'provision' metric saved in 'gha_computed' table - if not, abort
 	CheckRunningFlag         bool                         // From GHA2DB_CHECK_RUNNING_FLAG, devstats tool - check if there is a 'devstats_running' metric saved in 'gha_computed' table - if yes, abort
 	SetRunningFlag           bool                         // From GHA2DB_SET_RUNNING_FLAG, devstats tool - set 'devstats_running' flag on 'gha_computed' table while devstats cronjob is running
-	MaxRunningFlagAge        time.Duration                // From GHA2DB_MAX_RUNNING_FLAG_AGE, how log "running_flag" can be present for next devstats sync to treat it as orphan, default "6h"
+	MaxRunningFlagAge        time.Duration                // From GHA2DB_MAX_RUNNING_FLAG_AGE, how log "running_flag" can be present for next devstats sync to treat it as orphan, default "9h"
 	CheckImportedSHA         bool                         // From GHA2DB_CHECK_IMPORTED_SHA, import_affs tool - check if given JSON was already imported using 'gha_imported_shas' table
 	OnlyCheckImportedSHA     bool                         // From GHA2DB_ONLY_CHECK_IMPORTED_SHA, import_affs tool - check if given JSON was already imported using 'gha_imported_shas' table, do not attempt to import, only return status: 3=imported, 0=not imported
 	EnableMetricsDrop        bool                         // From GHA2DB_ENABLE_METRICS_DROP, if enabled will process each metric's 'drop:' property if present - use when regenerating affiliations data or reinitializing entire TSDB data
@@ -710,7 +710,7 @@ func (ctx *Ctx) Init() {
 
 	mrfaS := os.Getenv("GHA2DB_MAX_RUNNING_FLAG_AGE")
 	if mrfaS == "" {
-		d, _ := time.ParseDuration("6h")
+		d, _ := time.ParseDuration("9h")
 		ctx.MaxRunningFlagAge = d
 	} else {
 		d, err := time.ParseDuration(mrfaS)

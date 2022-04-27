@@ -295,7 +295,7 @@ func TestInit(t *testing.T) {
 	if pass == "" {
 		pass = lib.Password
 	}
-	defaultDur, _ := time.ParseDuration("6h")
+	defaultDur, _ := time.ParseDuration("9h")
 	testDur, _ := time.ParseDuration("1h45m")
 	defaultContext := lib.Ctx{
 		DataDir:                  "/etc/gha2db/",
