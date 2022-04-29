@@ -43,6 +43,7 @@ type metric struct {
 	Drop              string            `yaml:"drop"`
 	Project           string            `yaml:"project"`
 	AllowFail         bool              `yaml:"allow_fail"`
+	WaitAfterFail     int               `yaml:"wait_after_fail"`
 }
 
 // randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
@@ -457,6 +458,7 @@ func sync(ctx *lib.Ctx, args []string) {
 		var hists [][]string
 		var envMaps []map[string]string
 		var allowFails []bool
+		var waitAfterFails []int
 		onlyMetrics := false
 		if len(ctx.OnlyMetrics) > 0 {
 			onlyMetrics = true
@@ -498,6 +500,7 @@ func sync(ctx *lib.Ctx, args []string) {
 		}
 
 		// Iterate all metrics
+		maxWait := 0
 		for _, metric := range metricsList {
 			if metric.Disabled {
 				continue
@@ -645,6 +648,7 @@ func sync(ctx *lib.Ctx, args []string) {
 						)
 						envMaps = append(envMaps, envMap)
 						allowFails = append(allowFails, metric.AllowFail)
+						waitAfterFails = append(waitAfterFails, metric.WaitAfterFail)
 					} else {
 						lib.Printf("Calculate metric %v, period %v, desc: '%v', aggregate: '%v' ...\n", metric.Name, period, metric.Desc, aggrSuffix)
 						execFatal := ctx.ExecFatal
@@ -672,10 +676,23 @@ func sync(ctx *lib.Ctx, args []string) {
 						} else if err != nil {
 							lib.Printf("WARNING: %+v failed: %+v\n", metric, err)
 							err = nil
+							if metric.WaitAfterFail > 0 {
+								lib.Printf("WARNING: %+v failed: waiting %d seconds\n", metric, metric.WaitAfterFail)
+								time.Sleep(time.Duration(metric.WaitAfterFail) * time.Second)
+								lib.Printf("WARNING: %+v failed: waited %d seconds\n", metric, metric.WaitAfterFail)
+								if metric.WaitAfterFail > maxWait {
+									maxWait = metric.WaitAfterFail
+								}
+							}
 						}
 					}
 				}
 			}
+		}
+		if maxWait > 0 {
+			lib.Printf("There was at least one failure that requested wait (non-hist), waiting: %d seconds\n", maxWait)
+			time.Sleep(time.Duration(maxWait) * time.Second)
+			lib.Printf("There was at least one failure that requested wait (non-hist), waited: %d seconds\n", maxWait)
 		}
 		// randomize histograms
 		if !ctx.SkipRand {
@@ -687,6 +704,7 @@ func sync(ctx *lib.Ctx, args []string) {
 					hists[i], hists[j] = hists[j], hists[i]
 					envMaps[i], envMaps[j] = envMaps[j], envMaps[i]
 					allowFails[i], allowFails[j] = allowFails[j], allowFails[i]
+					waitAfterFails[i], waitAfterFails[j] = waitAfterFails[j], waitAfterFails[i]
 				},
 			)
 		}
@@ -697,15 +715,19 @@ func sync(ctx *lib.Ctx, args []string) {
 			thrN = ctx.MaxHistograms
 			lib.Printf("Number of parallel histograms limited to %d\n", thrN)
 		}
+		maxRes := 0
 		if thrN > 1 {
 			lib.Printf("Now processing %d histograms using MT%d version\n", len(hists), thrN)
-			ch := make(chan bool)
+			ch := make(chan int)
 			nThreads := 0
 			for idx, hist := range hists {
-				go calcHistogram(ch, ctx, hist, envMaps[idx], allowFails[idx])
+				go calcHistogram(ch, ctx, hist, envMaps[idx], allowFails[idx], waitAfterFails[idx])
 				nThreads++
 				if nThreads == thrN {
-					<-ch
+					res := <-ch
+					if res > maxRes {
+						maxRes = res
+					}
 					nThreads--
 				}
 			}
@@ -717,8 +739,16 @@ func sync(ctx *lib.Ctx, args []string) {
 		} else {
 			lib.Printf("Now processing %d histograms using ST version\n", len(hists))
 			for idx, hist := range hists {
-				calcHistogram(nil, ctx, hist, envMaps[idx], allowFails[idx])
+				res := calcHistogram(nil, ctx, hist, envMaps[idx], allowFails[idx], waitAfterFails[idx])
+				if res > maxRes {
+					maxRes = res
+				}
 			}
+		}
+		if maxRes > 0 {
+			lib.Printf("There was at least one failure that requested wait (hist), waiting: %d seconds\n", maxRes)
+			time.Sleep(time.Duration(maxRes) * time.Second)
+			lib.Printf("There was at least one failure that requested wait (hist), waited: %d seconds\n", maxRes)
 		}
 
 		// TSDB ensure that calculated metric have all columns from tags
@@ -751,19 +781,22 @@ func sync(ctx *lib.Ctx, args []string) {
 }
 
 // calcHistogram - calculate single histogram by calling "calc_metric" program with parameters from "hist"
-func calcHistogram(ch chan bool, ctx *lib.Ctx, hist []string, envMap map[string]string, allowFail bool) {
+func calcHistogram(ch chan int, ctx *lib.Ctx, hist []string, envMap map[string]string, allowFail bool, waitAfterFail int) int {
 	if len(hist) != 7 {
 		lib.Fatalf("calcHistogram, expected 7 strings, got: %d: %v", len(hist), hist)
 	}
 	lib.Printf(
-		"Calculate histogram %s,%s,%s,%s,%s,%s ...\n",
+		"Calculate histogram %s,%s,%s,%s,%s,%s,%v,%d ...\n",
 		hist[1],
 		hist[2],
 		hist[3],
 		hist[4],
 		hist[5],
 		hist[6],
+		allowFail,
+		waitAfterFail,
 	)
+	chRes := 0
 	execFatal := ctx.ExecFatal
 	if allowFail {
 		ctx.ExecFatal = false
@@ -790,11 +823,18 @@ func calcHistogram(ch chan bool, ctx *lib.Ctx, hist []string, envMap map[string]
 	} else if err != nil {
 		lib.Printf("WARNING: histogram %+v %+v failed: %+v\n", envMap, hist, err)
 		err = nil
+		if waitAfterFail > 0 {
+			lib.Printf("WARNING: %+v failed: waiting %d seconds\n", hist, waitAfterFail)
+			time.Sleep(time.Duration(waitAfterFail) * time.Second)
+			lib.Printf("WARNING: %+v failed: waited %d seconds\n", hist, waitAfterFail)
+			chRes = waitAfterFail
+		}
 	}
 	// Synchronize go routine
 	if ch != nil {
-		ch <- true
+		ch <- chRes
 	}
+	return chRes
 }
 
 // Return per project args (if no args given) or get args from command line (if given)
