@@ -38,6 +38,8 @@ type devstatsProject struct {
 	MaxRunDuration  string `yaml:"maxRunDuration,omitempty"`  // annotations:1h:102,calc_metric:12h:102,columns:1h:102,get_repos:12h:102,gha2db:8h:102,ghapi2db:12h:102,structure:1h:102,tags:1h:102
 	SkipGHAPI       int    `yaml:"skipGHAPI,omitempty"`       // skipGHAPI:1
 	SkipGetRepos    int    `yaml:"skipGetRepos,omitempty"`    // skipGetRepos:1
+	SkipUpdAffs     int    `yaml:"skipUpdAffs,omitempty"`     // skipUpdAffs:100 (percent)
+	SkipImpAffs     int    `yaml:"skipImpAffs,omitempty"`     // skipImpAffs:100 (percent)
 }
 
 type devstatsValues struct {
@@ -160,7 +162,7 @@ func considerPatchEnv(namespace, cronjob string, project *devstatsProject, nCPUs
 		if gSkipAffsEnv {
 			return
 		}
-		envs = []string{"AffSkipTemp", "MaxHist", "SkipAffsLock", "AffsLockDB", "NoDurable", "DurablePQ", "MaxRunDuration", "SkipGHAPI", "SkipGetRepos", "NCPUs"}
+		envs = []string{"AffSkipTemp", "MaxHist", "SkipAffsLock", "AffsLockDB", "NoDurable", "DurablePQ", "MaxRunDuration", "SkipGHAPI", "SkipGetRepos", "NCPUs", "SkipImpAffs", "SkipUpdAffs"}
 	} else {
 		if gSkipSyncEnv {
 			return
@@ -211,6 +213,16 @@ func considerPatchEnv(namespace, cronjob string, project *devstatsProject, nCPUs
 			}
 		case "SkipGetRepos":
 			patch = strconv.Itoa(project.SkipGetRepos)
+			if patch == "0" {
+				patch = ""
+			}
+		case "SkipUpdAffs":
+			patch = strconv.Itoa(project.SkipUpdAffs)
+			if patch == "0" {
+				patch = ""
+			}
+		case "SkipImpAffs":
+			patch = strconv.Itoa(project.SkipImpAffs)
 			if patch == "0" {
 				patch = ""
 			}
@@ -376,6 +388,8 @@ func setPatchEnvMap() {
 		"SkipGHAPI":      "GHA2DB_GHAPISKIP",
 		"SkipGetRepos":   "GHA2DB_GETREPOSSKIP",
 		"NCPUs":          "GHA2DB_NCPUS",
+		"SkipImpAffs":    "SKIP_IMP_AFFS",
+		"SkipUpdAffs":    "SKIP_UPD_AFFS",
 	}
 }
 
