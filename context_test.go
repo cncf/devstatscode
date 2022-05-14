@@ -12,150 +12,6 @@ import (
 	testlib "github.com/cncf/devstatscode/test"
 )
 
-// Copies Ctx structure
-func copyContext(in *lib.Ctx) *lib.Ctx {
-	out := lib.Ctx{
-		DataDir:                  in.DataDir,
-		Debug:                    in.Debug,
-		CmdDebug:                 in.CmdDebug,
-		GitHubDebug:              in.GitHubDebug,
-		MinGHAPIPoints:           in.MinGHAPIPoints,
-		MaxGHAPIWaitSeconds:      in.MaxGHAPIWaitSeconds,
-		MaxGHAPIRetry:            in.MaxGHAPIRetry,
-		JSONOut:                  in.JSONOut,
-		DBOut:                    in.DBOut,
-		DryRun:                   in.DryRun,
-		ST:                       in.ST,
-		NCPUs:                    in.NCPUs,
-		PgHost:                   in.PgHost,
-		PgPort:                   in.PgPort,
-		PgDB:                     in.PgDB,
-		PgUser:                   in.PgUser,
-		PgPass:                   in.PgPass,
-		PgSSL:                    in.PgSSL,
-		Index:                    in.Index,
-		Table:                    in.Table,
-		Tools:                    in.Tools,
-		Mgetc:                    in.Mgetc,
-		QOut:                     in.QOut,
-		CtxOut:                   in.CtxOut,
-		DefaultStartDate:         in.DefaultStartDate,
-		ForceStartDate:           in.ForceStartDate,
-		LastSeries:               in.LastSeries,
-		SkipTSDB:                 in.SkipTSDB,
-		SkipPDB:                  in.SkipPDB,
-		SkipGHAPI:                in.SkipGHAPI,
-		SkipAPIEvents:            in.SkipAPIEvents,
-		SkipAPICommits:           in.SkipAPICommits,
-		SkipAPILicenses:          in.SkipAPILicenses,
-		ForceAPILicenses:         in.ForceAPILicenses,
-		SkipAPILangs:             in.SkipAPILangs,
-		ForceAPILangs:            in.ForceAPILangs,
-		AutoFetchCommits:         in.AutoFetchCommits,
-		GHAPIErrorIsFatal:        in.GHAPIErrorIsFatal,
-		AllowBrokenJSON:          in.AllowBrokenJSON,
-		WebsiteData:              in.WebsiteData,
-		SkipUpdateEvents:         in.SkipUpdateEvents,
-		SkipGetRepos:             in.SkipGetRepos,
-		SkipTags:                 in.SkipTags,
-		SkipAnnotations:          in.SkipAnnotations,
-		SkipColumns:              in.SkipColumns,
-		RunColumns:               in.RunColumns,
-		SkipVars:                 in.SkipVars,
-		SkipRand:                 in.SkipRand,
-		ResetTSDB:                in.ResetTSDB,
-		ResetRanges:              in.ResetRanges,
-		Explain:                  in.Explain,
-		OldFormat:                in.OldFormat,
-		Exact:                    in.Exact,
-		LogToDB:                  in.LogToDB,
-		Local:                    in.Local,
-		LocalCmd:                 in.LocalCmd,
-		MetricsYaml:              in.MetricsYaml,
-		TagsYaml:                 in.TagsYaml,
-		ColumnsYaml:              in.ColumnsYaml,
-		VarsYaml:                 in.VarsYaml,
-		VarsFnYaml:               in.VarsFnYaml,
-		GitHubOAuth:              in.GitHubOAuth,
-		ClearDBPeriod:            in.ClearDBPeriod,
-		ClearAffsLockPeriod:      in.ClearAffsLockPeriod,
-		ClearGiantLockPeriod:     in.ClearGiantLockPeriod,
-		Trials:                   in.Trials,
-		LogTime:                  in.LogTime,
-		WebHookRoot:              in.WebHookRoot,
-		WebHookPort:              in.WebHookPort,
-		WebHookHost:              in.WebHookHost,
-		CheckPayload:             in.CheckPayload,
-		FullDeploy:               in.FullDeploy,
-		DeployBranches:           in.DeployBranches,
-		DeployStatuses:           in.DeployStatuses,
-		DeployResults:            in.DeployResults,
-		DeployTypes:              in.DeployTypes,
-		ProjectRoot:              in.ProjectRoot,
-		Project:                  in.Project,
-		TestsYaml:                in.TestsYaml,
-		ReposDir:                 in.ReposDir,
-		JSONsDir:                 in.JSONsDir,
-		ExecFatal:                in.ExecFatal,
-		ExecQuiet:                in.ExecQuiet,
-		ExecOutput:               in.ExecOutput,
-		ProcessRepos:             in.ProcessRepos,
-		ProcessCommits:           in.ProcessCommits,
-		ExternalInfo:             in.ExternalInfo,
-		ProjectsCommits:          in.ProjectsCommits,
-		ProjectsYaml:             in.ProjectsYaml,
-		CompanyAcqYaml:           in.CompanyAcqYaml,
-		ProjectsOverride:         in.ProjectsOverride,
-		AffiliationsJSON:         in.AffiliationsJSON,
-		ExcludeRepos:             in.ExcludeRepos,
-		InputDBs:                 in.InputDBs,
-		OutputDB:                 in.OutputDB,
-		TmOffset:                 in.TmOffset,
-		RecentRange:              in.RecentRange,
-		RecentReposRange:         in.RecentReposRange,
-		CSVFile:                  in.CSVFile,
-		ComputeAll:               in.ComputeAll,
-		ActorsFilter:             in.ActorsFilter,
-		ActorsAllow:              in.ActorsAllow,
-		ActorsForbid:             in.ActorsForbid,
-		OnlyMetrics:              in.OnlyMetrics,
-		SkipMetrics:              in.SkipMetrics,
-		ComputePeriods:           in.ComputePeriods,
-		MaxRunDuration:           in.MaxRunDuration,
-		ElasticURL:               in.ElasticURL,
-		UseES:                    in.UseES,
-		UseESOnly:                in.UseESOnly,
-		UseESRaw:                 in.UseESRaw,
-		ResetESRaw:               in.ResetESRaw,
-		ExcludeVars:              in.ExcludeVars,
-		OnlyVars:                 in.OnlyVars,
-		SkipSharedDB:             in.SkipSharedDB,
-		SkipPIDFile:              in.SkipPIDFile,
-		SkipCompanyAcq:           in.SkipCompanyAcq,
-		CheckProvisionFlag:       in.CheckProvisionFlag,
-		CheckRunningFlag:         in.CheckRunningFlag,
-		CheckImportedSHA:         in.CheckImportedSHA,
-		OnlyCheckImportedSHA:     in.OnlyCheckImportedSHA,
-		SetRunningFlag:           in.SetRunningFlag,
-		MaxRunningFlagAge:        in.MaxRunningFlagAge,
-		SkipDatesYaml:            in.SkipDatesYaml,
-		PropagateOnlyVar:         in.PropagateOnlyVar,
-		PidFileRoot:              in.PidFileRoot,
-		TestMode:                 in.TestMode,
-		ESBulkSize:               in.ESBulkSize,
-		HTTPTimeout:              in.HTTPTimeout,
-		HTTPRetry:                in.HTTPRetry,
-		ProjectScale:             in.ProjectScale,
-		CanReconnect:             in.CanReconnect,
-		CommitsFilesStatsEnabled: in.CommitsFilesStatsEnabled,
-		CommitsLOCStatsEnabled:   in.CommitsLOCStatsEnabled,
-		EnableMetricsDrop:        in.EnableMetricsDrop,
-		RecalcReciprocal:         in.RecalcReciprocal,
-		MaxHistograms:            in.MaxHistograms,
-	}
-	return &out
-}
-
 // Dynamically sets Ctx fields (uses map of field names into their new values)
 func dynamicSetFields(t *testing.T, ctx *lib.Ctx, fields map[string]interface{}) *lib.Ctx {
 	// Prepare mapping field name -> index
@@ -455,7 +311,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_DEBUG": "2"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"Debug": 2},
 			),
 		},
@@ -464,7 +320,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_DEBUG": "-1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"Debug": -1},
 			),
 		},
@@ -473,7 +329,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_CMDDEBUG": "3"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"CmdDebug": 3},
 			),
 		},
@@ -482,7 +338,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_GITHUB_DEBUG": "3"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"GitHubDebug": 3},
 			),
 		},
@@ -491,7 +347,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_ES_BULK_SIZE": "999"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"ESBulkSize": 999},
 			),
 		},
@@ -503,7 +359,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"HTTPTimeout": 5,
 					"HTTPRetry":   10,
@@ -517,7 +373,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ProjectScale": 3.14,
 				},
@@ -528,7 +384,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_MIN_GHAPI_POINTS": "0"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"MinGHAPIPoints": 0},
 			),
 		},
@@ -537,7 +393,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_MIN_GHAPI_POINTS": "-1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"MinGHAPIPoints": 1},
 			),
 		},
@@ -546,7 +402,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_MIN_GHAPI_POINTS": "1000"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"MinGHAPIPoints": 1000},
 			),
 		},
@@ -555,7 +411,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_MAX_GHAPI_WAIT": "0"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"MaxGHAPIWaitSeconds": 0},
 			),
 		},
@@ -564,7 +420,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_MAX_GHAPI_WAIT": "-1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"MaxGHAPIWaitSeconds": 10},
 			),
 		},
@@ -573,7 +429,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_MAX_GHAPI_WAIT": "1000"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"MaxGHAPIWaitSeconds": 1000},
 			),
 		},
@@ -582,7 +438,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_MAX_GHAPI_RETRY": "0"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"MaxGHAPIRetry": 6},
 			),
 		},
@@ -591,7 +447,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_MAX_GHAPI_RETRY": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"MaxGHAPIRetry": 1},
 			),
 		},
@@ -600,7 +456,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_MAX_GHAPI_RETRY": "15"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"MaxGHAPIRetry": 15},
 			),
 		},
@@ -609,7 +465,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_DRY_RUN": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"DryRun": true},
 			),
 		},
@@ -618,7 +474,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_JSON": "set", "GHA2DB_NODB": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"JSONOut": true, "DBOut": false},
 			),
 		},
@@ -627,7 +483,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_ST": "1", "GHA2DB_NCPUS": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"ST": true, "NCPUs": 1},
 			),
 		},
@@ -636,7 +492,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_NCPUS": "2"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"ST": false, "NCPUs": 2},
 			),
 		},
@@ -645,7 +501,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_NCPUS": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"ST": true, "NCPUs": 1},
 			),
 		},
@@ -654,7 +510,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_TMOFFSET": "5"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"TmOffset": 5},
 			),
 		},
@@ -665,7 +521,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"PidFileRoot": "kubernetes_devstats",
 				},
@@ -683,7 +539,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"PgHost": "example.com",
 					"PgPort": "1234",
@@ -703,7 +559,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"Index": true,
 					"Table": false,
@@ -718,7 +574,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"DataDir": "/path/to/dir/",
 				},
@@ -731,7 +587,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"LogTime": false,
 				},
@@ -742,7 +598,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_MGETC": "yes"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"Mgetc": "y"},
 			),
 		},
@@ -751,7 +607,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_QOUT": "1", "GHA2DB_CTXOUT": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"QOut": true, "CtxOut": true},
 			),
 		},
@@ -764,7 +620,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"SkipTSDB":    true,
 					"ResetTSDB":   true,
@@ -777,7 +633,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_SKIPPDB": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"SkipPDB": true},
 			),
 		},
@@ -797,7 +653,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"SkipGetRepos":      true,
 					"SkipGHAPI":         true,
@@ -822,7 +678,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"SkipTags":        true,
 					"SkipAnnotations": true,
@@ -838,7 +694,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"SkipRand": true,
 				},
@@ -851,7 +707,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"RunColumns": true,
 				},
@@ -864,7 +720,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"AllowBrokenJSON": true,
 				},
@@ -877,7 +733,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"WebsiteData": true,
 				},
@@ -890,7 +746,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"SkipUpdateEvents": true,
 				},
@@ -901,7 +757,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_EXPLAIN": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"Explain": true},
 			),
 		},
@@ -910,7 +766,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_LASTSERIES": "reviewers_q"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"LastSeries": "reviewers_q"},
 			),
 		},
@@ -919,7 +775,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_STARTDT": "2017"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"DefaultStartDate": time.Date(2017, 1, 1, 0, 0, 0, 0, time.UTC),
 				},
@@ -930,7 +786,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_STARTDT": "1982-07-16 10:15:45"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"DefaultStartDate": time.Date(1982, 7, 16, 10, 15, 45, 0, time.UTC),
 				},
@@ -941,7 +797,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_STARTDT_FORCE": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ForceStartDate": true,
 				},
@@ -952,7 +808,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_OLDFMT": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"OldFormat": true},
 			),
 		},
@@ -961,7 +817,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_EXACT": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"Exact": true},
 			),
 		},
@@ -970,7 +826,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_SKIPLOG": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"LogToDB": false},
 			),
 		},
@@ -979,7 +835,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_LOCAL": "yeah"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"Local": true},
 			),
 		},
@@ -988,7 +844,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_LOCAL_CMD": "yeah"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"LocalCmd": true},
 			),
 		},
@@ -1002,7 +858,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"MetricsYaml": "met.YAML",
 					"TagsYaml":    "/t/g/s.yml",
@@ -1018,7 +874,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"GitHubOAuth": "1234567890123456789012345678901234567890",
 				},
@@ -1031,7 +887,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"GitHubOAuth": "/home/keogh/gh.key",
 				},
@@ -1046,7 +902,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ClearDBPeriod":        "3 days",
 					"ClearAffsLockPeriod":  "2 days",
@@ -1063,7 +919,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"WebHookRoot": "/root",
 					"WebHookPort": ":1666",
@@ -1076,7 +932,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_WHPORT": "1986"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"WebHookPort": ":1986"},
 			),
 		},
@@ -1085,7 +941,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_SKIP_VERIFY_PAYLOAD": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"CheckPayload": false},
 			),
 		},
@@ -1094,7 +950,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_SKIP_FULL_DEPLOY": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"FullDeploy": false},
 			),
 		},
@@ -1103,7 +959,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_TRIALS": "1,2,3,4"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"Trials": []int{1, 2, 3, 4}},
 			),
 		},
@@ -1118,7 +974,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"DeployBranches": []string{"master", "staging", "production"},
 					"DeployStatuses": []string{"ok", "passed", "fixed"},
@@ -1133,7 +989,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_PROJECT": "prometheus"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"Project":     "prometheus",
 					"MetricsYaml": "metrics/prometheus/metrics.yaml",
@@ -1150,7 +1006,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"Project":     "prometheus",
 					"MetricsYaml": "metrics/prometheus/metrics.yaml",
@@ -1168,7 +1024,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"Project":     "cncf",
 					"MetricsYaml": "metrics/cncf/metrics.yaml",
@@ -1186,7 +1042,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"TestsYaml": "foobar.yml",
 				},
@@ -1199,7 +1055,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"SkipDatesYaml": "bzz.yml",
 				},
@@ -1214,7 +1070,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ProjectsYaml":     "baz.yml",
 					"AffiliationsJSON": "other.json",
@@ -1229,7 +1085,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ReposDir": "/abc/",
 				},
@@ -1242,7 +1098,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ReposDir": "~/temp/",
 				},
@@ -1255,7 +1111,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"JSONsDir": "/abc/",
 				},
@@ -1268,7 +1124,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"JSONsDir": "/def/ghi/",
 				},
@@ -1282,7 +1138,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"RecentRange":      "6 hours",
 					"RecentReposRange": "1 week",
@@ -1296,7 +1152,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"CSVFile": "report.csv",
 				},
@@ -1310,7 +1166,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ProcessRepos":   true,
 					"ProcessCommits": true,
@@ -1324,7 +1180,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ExternalInfo": true,
 				},
@@ -1341,7 +1197,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ElasticURL": "http://other.server:9222",
 					"UseES":      true,
@@ -1356,7 +1212,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_ENABLE_METRICS_DROP": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"EnableMetricsDrop": true},
 			),
 		},
@@ -1367,7 +1223,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ComputeAll": true,
 				},
@@ -1381,7 +1237,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"CommitsFilesStatsEnabled": false,
 					"CommitsLOCStatsEnabled":   false,
@@ -1395,7 +1251,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"SkipSharedDB": true,
 				},
@@ -1408,7 +1264,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"SkipPIDFile": true,
 				},
@@ -1421,7 +1277,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"SkipCompanyAcq": true,
 				},
@@ -1435,7 +1291,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"CheckProvisionFlag": true,
 					"CheckRunningFlag":   true,
@@ -1450,7 +1306,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"CheckImportedSHA":     true,
 					"OnlyCheckImportedSHA": true,
@@ -1464,7 +1320,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"SetRunningFlag": true,
 				},
@@ -1477,7 +1333,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"MaxRunningFlagAge": testDur,
 				},
@@ -1490,7 +1346,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ComputePeriods": map[string]map[bool]struct{}{
 						"w": {
@@ -1507,7 +1363,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ComputePeriods": map[string]map[bool]struct{}{
 						"w": {
@@ -1525,7 +1381,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ComputePeriods": map[string]map[bool]struct{}{
 						"m": {
@@ -1552,7 +1408,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"MaxRunDuration": map[string][2]int{
 						"calc_metric": {43200, 1},
@@ -1571,7 +1427,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ActorsFilter": true,
 					"ActorsAllow":  regexp.MustCompile(`lukasz\s+gryglicki`),
@@ -1588,7 +1444,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ActorsFilter": false,
 					"ActorsAllow":  nilRegexp,
@@ -1604,7 +1460,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ActorsFilter": true,
 					"ActorsAllow":  regexp.MustCompile(`lukasz\s+gryglicki`),
@@ -1620,7 +1476,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ActorsFilter": true,
 					"ActorsAllow":  nilRegexp,
@@ -1635,7 +1491,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ProjectsCommits": "a,b,c",
 				},
@@ -1648,7 +1504,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ProjectsOverride": map[string]bool{},
 				},
@@ -1661,7 +1517,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ProjectsOverride": map[string]bool{},
 				},
@@ -1674,7 +1530,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ProjectsOverride": map[string]bool{"pro1": true},
 				},
@@ -1687,7 +1543,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ProjectsOverride": map[string]bool{
 						"pro1":  true,
@@ -1703,7 +1559,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_EXCLUDE_REPOS": "repo1,org1/repo2,,abc"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"ExcludeRepos": map[string]bool{
 					"repo1":      true,
 					"org1/repo2": true,
@@ -1717,7 +1573,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_EXCLUDE_VARS": "hostname,projects_health_partial_html,,"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"ExcludeVars": map[string]bool{
 					"hostname":                     true,
 					"projects_health_partial_html": true,
@@ -1730,7 +1586,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_ONLY_VARS": "hostname,projects_health_partial_html,,"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"OnlyVars": map[string]bool{
 					"hostname":                     true,
 					"projects_health_partial_html": true,
@@ -1743,7 +1599,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_PROPAGATE_ONLY_VAR": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"PropagateOnlyVar": true,
 				},
@@ -1757,7 +1613,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"PropagateOnlyVar": true,
 					"ProjectsCommits":  "a",
@@ -1772,7 +1628,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"PropagateOnlyVar": true,
 					"ProjectsCommits":  "a,b,c",
@@ -1788,7 +1644,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"PropagateOnlyVar": true,
 					"ProjectsCommits":  "d,e,f",
@@ -1800,7 +1656,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_ONLY_METRICS": "metric1,metric2,,metric3"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"OnlyMetrics": map[string]bool{
 					"metric1": true,
 					"metric2": true,
@@ -1814,7 +1670,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_SKIP_METRICS": "metric1,metric2,,metric3"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"SkipMetrics": map[string]bool{
 					"metric1": true,
 					"metric2": true,
@@ -1831,7 +1687,7 @@ func TestInit(t *testing.T) {
 			},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"InputDBs": []string{"db1", "db2", "db3"},
 					"OutputDB": "db4",
@@ -1843,7 +1699,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "1"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"RecalcReciprocal": 1},
 			),
 		},
@@ -1852,7 +1708,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "100"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"RecalcReciprocal": 100},
 			),
 		},
@@ -1861,7 +1717,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "0"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"RecalcReciprocal": 24},
 			),
 		},
@@ -1870,7 +1726,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "-2"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"RecalcReciprocal": 24},
 			),
 		},
@@ -1879,7 +1735,7 @@ func TestInit(t *testing.T) {
 			map[string]string{"GHA2DB_MAX_HIST": "16"},
 			dynamicSetFields(
 				t,
-				copyContext(&defaultContext),
+				defaultContext.CopyContext(),
 				map[string]interface{}{"MaxHistograms": 16},
 			),
 		},
