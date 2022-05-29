@@ -257,7 +257,10 @@ func sync(ctx *lib.Ctx, args []string) {
 			lib.Printf("gha2db_sync.go: error closing the connection: %+v, sleeping for 300s to retry\n", err)
 			time.Sleep(time.Duration(300) * time.Second)
 			err = con.Close()
-			lib.Printf("gha2db_sync.go: error (again) closing the connection: %+v, ignoring\n", err)
+			if err != nil {
+				lib.Printf("gha2db_sync.go: error (again) closing the connection: %+v, ignoring\n", err)
+				err = nil
+			}
 		}
 	}()
 
