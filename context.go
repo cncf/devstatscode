@@ -151,6 +151,7 @@ type Ctx struct {
 	RecalcReciprocal         int                          // From GHA2DB_RECALC_RECIPROCAL: 1/RecalcReciprocal of recalc metric at given datetime, even if it should be calculated at this datetime, default 24 (means 4.1(6)%, or about once/day)
 	MaxHistograms            int                          // From GHA2DB_MAX_HIST: maximum histogram concurrency, default: 0 - means unlimited
 	MaxRunDuration           map[string][2]int            // From GHA2DB_MAX_RUN_DURATION, how log given programs can run and exist status after timeout, for example "tags:1h:0,calc_metric:12h:1"
+	RandComputeAtThisDate    bool                         // Use rand to decide if a given date period must be calculated at this date or not.
 }
 
 // Init - get context from environment variables
@@ -159,6 +160,7 @@ func (ctx *Ctx) Init() {
 	ctx.ExecQuiet = false
 	ctx.ExecOutput = false
 	ctx.CanReconnect = true
+	ctx.RandComputeAtThisDate = true
 
 	/// Commits analysis
 	ctx.CommitsFilesStatsEnabled = os.Getenv("GHA2DB_SKIP_COMMITS_FILES") == ""

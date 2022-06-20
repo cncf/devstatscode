@@ -3,10 +3,15 @@ package devstatscode
 import (
 	"database/sql"
 	"fmt"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+)
+
+var (
+	gSeeded bool
 )
 
 // IntervalHours - return number of hour from for a given interval
@@ -110,6 +115,15 @@ func ProgressInfo(i, n int, start time.Time, last *time.Time, period time.Durati
 	}
 }
 
+// Probab - return true with percent % probablity
+func Probab(percent int) bool {
+	if !gSeeded {
+		rand.Seed(time.Now().UnixNano())
+		gSeeded = true
+	}
+	return rand.Intn(100) < percent
+}
+
 // ComputePeriodAtThisDate - for some longer periods, only recalculate them on specific dates/times
 // see: time_test.go
 func ComputePeriodAtThisDate(ctx *Ctx, period string, idt time.Time, hist bool) bool {
@@ -142,31 +156,64 @@ func ComputePeriodAtThisDate(ctx *Ctx, period string, idt time.Time, hist bool) 
 		if len(period) == 1 {
 			return true
 		}
+		if ctx.RandComputeAtThisDate {
+			return Probab(25)
+		}
 		return h == 1 || h == 6 || h == 9 || h == 13 || h == 18 || h == 21
 	} else if hist && periodStart == "a" {
 		periodLen := len(period)
 		periodEnd := period[periodLen-2:]
 		if periodEnd == "_n" {
+			if ctx.RandComputeAtThisDate {
+				return Probab(20)
+			}
 			return h == 1 || h == 8 || h == 15 || h == 13 || h == 20
+		}
+		if ctx.RandComputeAtThisDate {
+			return Probab(9)
 		}
 		return h == 2 || h == 3
 	} else if hist && periodStart == "c" {
+		if ctx.RandComputeAtThisDate {
+			return Probab(9)
+		}
 		return h == 3 || h == 4
 	}
 	if hist {
 		if periodStart == "w" {
+			if ctx.RandComputeAtThisDate {
+				return Probab(29)
+			}
+			if ctx.RandComputeAtThisDate {
+				return Probab(5)
+			}
 			return h%7 == 0
 		} else if periodStart == "m" || periodStart == "q" || periodStart == "y" {
+			if ctx.RandComputeAtThisDate {
+				return Probab(9)
+			}
 			return h == 23 || h == 18
 		}
 	} else {
 		if periodStart == "w" {
+			if ctx.RandComputeAtThisDate {
+				return Probab(60) && h >= 12 && int(dtc.Weekday()) == 0
+			}
 			return ch == 23 && int(dtc.Weekday()) == 0
 		} else if periodStart == "m" {
+			if ctx.RandComputeAtThisDate {
+				return Probab(80) && h < 12 && dtn.Day() == 1
+			}
 			return ch == 23 && dtn.Day() == 1
 		} else if periodStart == "q" {
+			if ctx.RandComputeAtThisDate {
+				return h > 16 && dtn.Day() == 1 && dtn.Month()%3 == 1
+			}
 			return ch == 23 && dtn.Day() == 1 && dtn.Month()%3 == 1
 		} else if periodStart == "y" {
+			if ctx.RandComputeAtThisDate {
+				return h < 8 && dtn.Day() == 1 && dtn.Month() == 1
+			}
 			return ch == 23 && dtn.Day() == 1 && dtn.Month() == 1
 		}
 	}

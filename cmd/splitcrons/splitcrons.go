@@ -451,14 +451,14 @@ func generateCronValues(inFile, outFile string) {
 		}
 	}
 	ghaOffset := float64(ghaOffsetI)
-	syncHoursI := 2
+	syncHoursI := 6
 	str = os.Getenv("SYNC_HOURS")
 	if str != "" {
 		var err error
 		syncHoursI, err = strconv.Atoi(os.Getenv("SYNC_HOURS"))
 		lib.FatalOnError(err)
-		if syncHoursI < 1 || syncHoursI > 3 {
-			lib.Fatalf("SYNC_HOURS must be 1, 2 or 3")
+		if syncHoursI < 1 || syncHoursI > 6 {
+			lib.Fatalf("SYNC_HOURS must be from 1 to 6")
 		}
 	}
 	syncHours := float64(syncHoursI)
