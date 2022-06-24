@@ -251,7 +251,7 @@ func TestInit(t *testing.T) {
 		InputDBs:                 []string{},
 		OutputDB:                 "",
 		TmOffset:                 0,
-		RecentRange:              "2 hours",
+		RecentRange:              "12 hours",
 		RecentReposRange:         "1 day",
 		CSVFile:                  "",
 		ComputeAll:               false,
