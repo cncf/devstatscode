@@ -49,7 +49,6 @@ type metric struct {
 // randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
 func (m *metrics) randomize(ctx *lib.Ctx) {
 	lib.Printf("Randomizing metrics calculation order\n")
-	rand.Seed(time.Now().UnixNano())
 	rand.Shuffle(len(m.Metrics), func(i, j int) { m.Metrics[i], m.Metrics[j] = m.Metrics[j], m.Metrics[i] })
 	idx := -1
 	lastI := len(m.Metrics) - 1
@@ -401,6 +400,11 @@ func sync(ctx *lib.Ctx, args []string) {
 	}
 
 	// Calc metric
+	dailyRecalcHour := 0
+	ranTags := false
+	if ctx.RandComputeAtThisDate {
+		dailyRecalcHour = rand.Intn(6)
+	}
 	if !ctx.SkipTSDB || ctx.UseESOnly {
 		metricsDir := dataPrefix + "metrics"
 		if ctx.Project != "" {
@@ -416,16 +420,17 @@ func sync(ctx *lib.Ctx, args []string) {
 
 		// TSDB tags (repo groups template variable currently)
 		if !ctx.SkipTags {
-			if ctx.ResetTSDB || nowHour == 0 {
+			if ctx.ResetTSDB || nowHour == dailyRecalcHour {
 				_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "tags"}, nil)
 				lib.FatalOnError(err)
+				ranTags = true
 			} else {
-				lib.Printf("Skipping `tags` recalculation, it is only computed once per day\n")
+				lib.Printf("Skipping `tags` recalculation, it is only computed once per day hour=%d\n", dailyRecalcHour)
 			}
 		}
 		// When resetting all TSDB data, adding new TS points will race for update TSDB structure
 		// While we can just run "columns" once to ensure thay match tags output
-		// Event if there are new columns after that - they will be very few not all of them to add at once
+		// Even if there are new columns after that - they will be very few not all of them to add at once
 		if ctx.ResetTSDB && !ctx.SkipColumns {
 			_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "columns"}, nil)
 			lib.FatalOnError(err)
@@ -433,7 +438,7 @@ func sync(ctx *lib.Ctx, args []string) {
 
 		// Annotations
 		if !ctx.SkipAnnotations {
-			if ctx.Project != "" && (ctx.ResetTSDB || nowHour == 0) {
+			if ctx.Project != "" && (ctx.ResetTSDB || nowHour == dailyRecalcHour) {
 				_, err := lib.ExecCommand(
 					ctx,
 					[]string{
@@ -615,7 +620,6 @@ func sync(ctx *lib.Ctx, args []string) {
 					recalc := lib.ComputePeriodAtThisDate(ctx, period, to, metric.Histogram)
 					// Because sync probab can be less than 100% and that may cause gaps, we should eventually let do recalculation even if that period doesn't need it
 					if !recalc {
-						rand.Seed(time.Now().UnixNano())
 						val := rand.Intn(ctx.RecalcReciprocal)
 						if val == 0 {
 							recalc = true
@@ -706,7 +710,6 @@ func sync(ctx *lib.Ctx, args []string) {
 		// randomize histograms
 		if !ctx.SkipRand {
 			lib.Printf("Randomizing histogram metrics calculation order\n")
-			rand.Seed(time.Now().UnixNano())
 			rand.Shuffle(
 				len(hists),
 				func(i, j int) {
@@ -762,7 +765,7 @@ func sync(ctx *lib.Ctx, args []string) {
 
 		// TSDB ensure that calculated metric have all columns from tags
 		if !ctx.SkipColumns {
-			if ctx.RunColumns || ctx.ResetTSDB || nowHour == 0 {
+			if ctx.RunColumns || ctx.ResetTSDB || ranTags || nowHour == dailyRecalcHour {
 				_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "columns"}, nil)
 				lib.FatalOnError(err)
 			} else {
@@ -905,6 +908,7 @@ func main() {
 	var ctx lib.Ctx
 	ctx.Init()
 	lib.SetupTimeoutSignal(&ctx)
+	rand.Seed(time.Now().UnixNano())
 	sync(&ctx, getSyncArgs(&ctx, os.Args))
 	dtEnd := time.Now()
 	lib.Printf("Time: %v\n", dtEnd.Sub(dtStart))

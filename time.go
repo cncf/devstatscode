@@ -184,9 +184,6 @@ func ComputePeriodAtThisDate(ctx *Ctx, period string, idt time.Time, hist bool) 
 			if ctx.RandComputeAtThisDate {
 				return Probab(29)
 			}
-			if ctx.RandComputeAtThisDate {
-				return Probab(5)
-			}
 			return h%7 == 0
 		} else if periodStart == "m" || periodStart == "q" || periodStart == "y" {
 			if ctx.RandComputeAtThisDate {
