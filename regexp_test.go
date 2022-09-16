@@ -203,6 +203,15 @@ func TestAnnotationRegexp(t *testing.T) {
 		{re: `^(knative-)?v\d+\.\d+\.0$`, str: "v1.1.0", match: true},
 		{re: `^(knative-)?v\d+\.\d+\.0$`, str: "v1.1.4", match: false},
 		{re: `^(knative-)?v\d+\.\d+\.0$`, str: "knative-v1.1.0", match: true},
+		{re: `^v\d+\.\d*[05]\.0$`, str: "v0.0.0", match: true},
+		{re: `^v\d+\.\d*[05]\.0$`, str: "v0.0.1", match: false},
+		{re: `^v\d+\.\d*[05]\.0$`, str: "v0.5.0", match: true},
+		{re: `^v\d+\.\d*[05]\.0$`, str: "v0.10.0", match: true},
+		{re: `^v\d+\.\d*[05]\.0$`, str: "v0.15.0", match: true},
+		{re: `^v\d+\.\d*[05]\.0$`, str: "v0.10.1", match: false},
+		{re: `^v\d+\.\d*[05]\.0$`, str: "v10.225.0", match: true},
+		{re: `^v\d+\.\d*[05]\.0$`, str: "v0.5", match: false},
+		{re: `^v\d+\.\d*[05]\.0$`, str: "0.15.0", match: false},
 	}
 	// Execute test cases
 	for index, test := range testCases {
