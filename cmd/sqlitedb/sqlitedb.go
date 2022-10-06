@@ -291,6 +291,7 @@ func importJsons(ctx *lib.Ctx, dbFile string, jsons []string) {
 	nIns := 0
 	for _, j := range jsons {
 		var dd dashboardData
+		lib.Printf("Processing '%s'\n", j)
 		bytes, err := lib.ReadFile(ctx, j)
 		lib.FatalOnError(err)
 		lib.FatalOnError(jsoniter.Unmarshal(bytes, &dd.dash))
