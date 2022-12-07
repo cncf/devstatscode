@@ -3,7 +3,7 @@
 
 # DevStats code
 
-This is a code reposotory for [DevStats](https://github.com/cncf/devstats) used to display [CNCF projects dashboards](https://devstats.cncf.io), [CDF projects dashboards](https://devstats.cd.foundation), [GraphQL projects dashboards](https://devstats.graphql.org) and [example Kubernetes/helm deployment](https://cncf.devstats-demo.net).
+This is a code repository for [DevStats](https://github.com/cncf/devstats) used to display [CNCF projects dashboards](https://devstats.cncf.io), [CDF projects dashboards](https://devstats.cd.foundation), [GraphQL projects dashboards](https://devstats.graphql.org) and [example Kubernetes/helm deployment](https://cncf.devstats-demo.net).
 
 Authors: Łukasz Gryglicki <lgryglicki@cncf.io>, Justyna Gryglicka <jgryglicka@cncf.io>, Josh Berkus <jberkus@redhat.com>.
 
