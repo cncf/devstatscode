@@ -12,6 +12,14 @@ func TestAnnotationRegexp(t *testing.T) {
 		str   string
 		match bool
 	}{
+		{re: `^v\d+\.\d+\.0(-(alpha|beta|rc)\.\d+)?$`, str: "v1.0.0", match: true},
+		{re: `^v\d+\.\d+\.0(-(alpha|beta|rc)\.\d+)?$`, str: "v1.0.0-rc.1", match: true},
+		{re: `^v\d+\.\d+\.0(-(alpha|beta|rc)\.\d+)?$`, str: "v1.0.0-beta.1.dev.20221204", match: false},
+		{re: `^v\d+\.\d+\.0(-(alpha|beta|rc)\.\d+)?$`, str: "v1.0.0-alpha.4", match: true},
+		{re: `^v\d+\.\d+\.0(-(alpha|beta|rc)\.\d+)?$`, str: "v1.0.0-beta.4", match: true},
+		{re: `^v\d+\.\d+\.0(-(alpha|beta|rc)\.\d+)?$`, str: "v1.0.1-rc.1", match: false},
+		{re: `^v\d+\.\d+\.0(-(alpha|beta|rc)\.\d+)?$`, str: "v1.0.2", match: false},
+		{re: `^v\d+\.\d+\.0(-(alpha|beta|rc)\.\d+)?$`, str: "v1.0.3-rc.1", match: false},
 		{re: `^(v\d+\.\d+\.\d+|release-\d{4}-\d{2}-\d{2})$`, str: "v1.2.3", match: true},
 		{re: `^(v\d+\.\d+\.\d+|release-\d{4}-\d{2}-\d{2})$`, str: "v1.2", match: false},
 		{re: `^(v\d+\.\d+\.\d+|release-\d{4}-\d{2}-\d{2})$`, str: "v1.2.3.4", match: false},
