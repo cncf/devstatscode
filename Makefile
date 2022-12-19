@@ -131,7 +131,8 @@ test:
 dbtest:
 	${GO_TEST} ${GO_DBTEST_FILES}
 
-check: fmt lint imports vet usedexports errcheck
+# check: fmt lint imports vet usedexports errcheck
+check: fmt lint imports vet usedexports
 
 install: ${BINARIES}
 	cp -v ${UTIL_SCRIPTS} ${GOPATH}/bin

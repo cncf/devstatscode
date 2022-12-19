@@ -14,9 +14,13 @@ import (
 
 // WriteTSPoints write batch of points to postgresql
 // use mergeSeries = "name" to put all series in "name" table, and create "series" column that conatins all point names.
-//   without merge, alee names will create separate tables.
+//
+//	without merge, alee names will create separate tables.
+//
 // use non-null mut when you are using this function from multiple threads that write to the same series name at the same time
-//   use non-null mut only then.
+//
+//	use non-null mut only then.
+//
 // No more giant lock approach here, but it is up to user to spcify call context, especially 2 last parameters!
 func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut *sync.Mutex) {
 	npts := len(*pts)

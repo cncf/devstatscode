@@ -162,12 +162,15 @@ func createSeriesFromFormula(def string) (result []string) {
 
 // If env variable ends with ? then only set this value when it's not yet set or is empty
 // If env variable ends with ?? then only set this value when not already defined
-//   so if env variable is defined but empty, it will not set its value
-//   while version with a single ? will
+//
+//	so if env variable is defined but empty, it will not set its value
+//	while version with a single ? will
+//
 // If key contains @ (for example key-name@period-name) that means a key key-name should only be set for period=period-name
 // If key contains ! (for example key-name!period-name) that means a key key-name should only be set for period!=period-name
 // Most complex example GHA2DB_NCPUS?@d7=4 - set GHA2DB_NCPUS=4 only when calculating period d7
-//   and that variable was not already set to non-empty value
+//
+//	and that variable was not already set to non-empty value
 func processEnvMap(in map[string]string, period string) (outMap map[string]string) {
 	inMap := make(map[string]string)
 	for k, v := range in {
