@@ -714,6 +714,7 @@ func syncEvents(ctx *lib.Ctx) {
 	eventTypes["auto_rebase_disabled"] = struct{}{}
 	eventTypes["user_blocked"] = struct{}{}
 	eventTypes["sync"] = struct{}{}
+	eventTypes["converted_to_discussion"] = struct{}{}
 
 	// Get number of CPUs available
 	thrN := lib.GetThreadsNum(ctx)
