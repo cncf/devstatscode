@@ -418,21 +418,36 @@ func calcRange(
 }
 
 // getPathIndependentKey (return path value independent from install path
-// /etc/gha2db/metrics/kubernetes/key.sql --> kubernetes/key.sql
-// ./metrics/kubernetes/key.sql --> kubernetes/key.sql
-func getPathIndependentKey(key string) string {
+// withProj: true:
+//
+//	/etc/gha2db/metrics/kubernetes/key.sql --> kubernetes/key.sql
+//	./metrics/kubernetes/key.sql --> kubernetes/key.sql
+//
+// withProj: false:
+//
+//	/etc/gha2db/metrics/kubernetes/key.sql --> key.sql
+//	./metrics/kubernetes/key.sql --> key.sql
+func getPathIndependentKey(key string, withProj bool) string {
+	if withProj {
+		keyAry := strings.Split(key, "/")
+		length := len(keyAry)
+		if length < 3 {
+			return key
+		}
+		return keyAry[length-2] + "/" + keyAry[length-1]
+	}
 	keyAry := strings.Split(key, "/")
 	length := len(keyAry)
-	if length < 3 {
+	if length < 2 {
 		return key
 	}
-	return keyAry[length-2] + "/" + keyAry[length-1]
+	return keyAry[length-1]
 }
 
 // isAlreadyComputed check if given quick range period was already computed
 // It will skip past period marked as computed unless special flags are passed
 func isAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) bool {
-	key = getPathIndependentKey(key)
+	key = getPathIndependentKey(key, true)
 	dt := lib.TimeParseAny(sdt)
 	rows := lib.QuerySQLWithErr(
 		con,
@@ -458,7 +473,7 @@ func isAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) bool {
 // setAlreadyComputed marks given quick range period as computed
 // Should be called inside: if !ctx.SkipTSDB { ... }
 func setAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) {
-	key = getPathIndependentKey(key)
+	key = getPathIndependentKey(key, true)
 	dt := lib.TimeParseAny(sdt)
 	lib.ExecSQLWithErr(
 		con,
@@ -471,8 +486,8 @@ func setAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) {
 
 // setLastComputed stores last computed date for a given metric
 // Should be called inside: if !ctx.SkipTSDB { ... }
-func setLastComputed(con *sql.DB, ctx *lib.Ctx, key string) {
-	key = getPathIndependentKey(key)
+func setLastComputed(con *sql.DB, ctx *lib.Ctx, metric, intervalAbbr string) {
+	key := strings.Replace(getPathIndependentKey(metric, false), ".sql", "", -1) + " " + intervalAbbr
 	lib.ExecSQLWithErr(
 		con,
 		ctx,
@@ -513,7 +528,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 	sqlc := lib.PgConn(ctx)
 	defer func() {
 		if !ctx.SkipTSDB {
-			setLastComputed(sqlc, ctx, sqlFile)
+			setLastComputed(sqlc, ctx, sqlFile, intervalAbbr)
 		}
 		lib.FatalOnError(sqlc.Close())
 	}()
@@ -959,7 +974,7 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 	sqlc := lib.PgConn(&ctx)
 	defer func() {
 		if !ctx.SkipTSDB {
-			setLastComputed(sqlc, &ctx, sqlFile)
+			setLastComputed(sqlc, &ctx, sqlFile, intervalAbbr)
 		}
 		lib.FatalOnError(sqlc.Close())
 	}()
