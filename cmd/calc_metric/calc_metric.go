@@ -469,6 +469,21 @@ func setAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) {
 	)
 }
 
+// setLastComputed stores last computed date for a given metric
+// Should be called inside: if !ctx.SkipTSDB { ... }
+func setLastComputed(con *sql.DB, ctx *lib.Ctx, key string) {
+	key = getPathIndependentKey(key)
+	lib.ExecSQLWithErr(
+		con,
+		ctx,
+		"insert into gha_last_computed(metric, dt) values($1, now()) "+
+			"on conflict(metric) do update set dt = now() "+
+			"where metric = $2",
+		key,
+		key,
+	)
+}
+
 func handleSeriesDrop(ctx *lib.Ctx, con *sql.DB, cfg *calcMetricData) {
 	if cfg.hist && len(cfg.drop) > 0 {
 		lib.Fatalf("you cannot use drop series property on histogram metrics: %+v", &cfg)
@@ -496,7 +511,12 @@ func handleSeriesDrop(ctx *lib.Ctx, con *sql.DB, cfg *calcMetricData) {
 func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBots, interval, intervalAbbr string, nIntervals int, cfg *calcMetricData) {
 	// Connect to Postgres DB
 	sqlc := lib.PgConn(ctx)
-	defer func() { lib.FatalOnError(sqlc.Close()) }()
+	defer func() {
+		if !ctx.SkipTSDB {
+			setLastComputed(sqlc, ctx, sqlFile)
+		}
+		lib.FatalOnError(sqlc.Close())
+	}()
 
 	// Optional ElasticSearch output
 	var es *lib.ES
@@ -937,7 +957,12 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 
 	// Connect to Postgres DB
 	sqlc := lib.PgConn(&ctx)
-	defer func() { lib.FatalOnError(sqlc.Close()) }()
+	defer func() {
+		if !ctx.SkipTSDB {
+			setLastComputed(sqlc, &ctx, sqlFile)
+		}
+		lib.FatalOnError(sqlc.Close())
+	}()
 	// Handle 'drop:' metric flag
 	handleSeriesDrop(&ctx, sqlc, cfg)
 

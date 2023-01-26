@@ -1386,6 +1386,21 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index computed_metric_idx on gha_computed(metric)")
 		ExecSQLWithErr(c, ctx, "create index computed_dt_idx on gha_computed(dt)")
 	}
+	// This is to determine when given metric was last calculated
+	if ctx.Table {
+		ExecSQLWithErr(c, ctx, "drop table if exists gha_last_computed")
+		ExecSQLWithErr(
+			c,
+			ctx,
+			CreateTable(
+				"gha_last_computed("+
+					"metric text not null, "+
+					"dt {{ts}} not null, "+
+					"primary key(metric)"+
+					")",
+			),
+		)
+	}
 	if ctx.Table {
 		ExecSQLWithErr(c, ctx, "drop table if exists gha_parsed")
 		ExecSQLWithErr(
