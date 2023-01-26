@@ -2,6 +2,8 @@ jsons/*.json
 jsons/*.yaml
 *.swp
 *.db
+/j.json
+/g.db
 /tmp
 /db2influx
 /structure
