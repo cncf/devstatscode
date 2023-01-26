@@ -478,7 +478,7 @@ func setLastComputed(con *sql.DB, ctx *lib.Ctx, key string) {
 		ctx,
 		"insert into gha_last_computed(metric, dt) values($1, now()) "+
 			"on conflict(metric) do update set dt = now() "+
-			"where metric = $2",
+			"where gha_last_computed.metric = $2",
 		key,
 		key,
 	)
