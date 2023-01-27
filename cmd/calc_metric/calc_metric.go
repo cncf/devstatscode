@@ -28,6 +28,12 @@ type calcMetricData struct {
 	projectScale      string
 }
 
+// Global start date & command line to be used to insert data into `gha_last_computed` table.
+var (
+	gStartDt time.Time
+	gCmd     string
+)
+
 // some metrics can define series_name_map to change internal series names generated
 func mapName(cfg *calcMetricData, name string) string {
 	if cfg.seriesNameMap == nil {
@@ -488,13 +494,30 @@ func setAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) {
 // Should be called inside: if !ctx.SkipTSDB { ... }
 func setLastComputed(con *sql.DB, ctx *lib.Ctx, metric, intervalAbbr string) {
 	key := strings.Replace(getPathIndependentKey(metric, false), ".sql", "", -1) + " " + intervalAbbr
+	now := time.Now()
 	lib.ExecSQLWithErr(
 		con,
 		ctx,
-		"insert into gha_last_computed(metric, dt) values($1, now()) "+
-			"on conflict(metric) do update set dt = now() "+
-			"where gha_last_computed.metric = $2",
+		"insert into gha_last_computed(metric, dt, start_dt, took, took_as_str, command) "+
+			"values($1, $2, $3, $4 - $5, ($6 - $7)::text, $8) "+
+			"on conflict(metric) do update set "+
+			"dt = $9, start_dt = $10, took = $11 - $12, took_as_str = ($13 - $14)::text, command = $15 "+
+			"where gha_last_computed.metric = $16",
 		key,
+		now,
+		gStartDt,
+		now,
+		gStartDt,
+		now,
+		gStartDt,
+		gCmd,
+		now,
+		gStartDt,
+		now,
+		gStartDt,
+		now,
+		gStartDt,
+		gCmd,
 		key,
 	)
 }
@@ -1082,6 +1105,7 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 
 func main() {
 	dtStart := time.Now()
+	gStartDt = dtStart
 	rand.Seed(time.Now().UnixNano())
 	if len(os.Args) < 6 {
 		lib.Printf(
@@ -1151,6 +1175,7 @@ func main() {
 			}
 		}
 	}
+	gCmd = strings.Join(os.Args[1:], " ")
 	lib.Printf("%s...\n", os.Args[2])
 	calcMetric(
 		os.Args[1],

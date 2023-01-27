@@ -1396,6 +1396,10 @@ func Structure(ctx *Ctx) {
 				"gha_last_computed("+
 					"metric text not null, "+
 					"dt {{ts}} not null, "+
+					"start_dt {{ts}}, "+
+					"took interval, "+
+					"took_as_string text, "+
+					"command text, "+
 					"primary key(metric)"+
 					")",
 			),
