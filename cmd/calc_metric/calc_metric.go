@@ -495,28 +495,27 @@ func setAlreadyComputed(con *sql.DB, ctx *lib.Ctx, key, sdt string) {
 func setLastComputed(con *sql.DB, ctx *lib.Ctx, metric, intervalAbbr string) {
 	key := strings.Replace(getPathIndependentKey(metric, false), ".sql", "", -1) + " " + intervalAbbr
 	now := time.Now()
+	tookDur := now.Sub(gStartDt)
+	tookMs := tookDur.Milliseconds()
+	tookStr := fmt.Sprintf("%+v", tookDur)
 	lib.ExecSQLWithErr(
 		con,
 		ctx,
 		"insert into gha_last_computed(metric, dt, start_dt, took, took_as_str, command) "+
-			"values($1, $2, $3, $4 - $5, ($6 - $7)::text, $8) "+
+			"values($1, $2, $3, $4, $5, $6) "+
 			"on conflict(metric) do update set "+
-			"dt = $9, start_dt = $10, took = $11 - $12, took_as_str = ($13 - $14)::text, command = $15 "+
-			"where gha_last_computed.metric = $16",
+			"dt = $7, start_dt = $8, took = $9, took_as_str = $10, command = $11 "+
+			"where gha_last_computed.metric = $12",
 		key,
 		now,
 		gStartDt,
-		now,
-		gStartDt,
-		now,
-		gStartDt,
+		tookMs,
+		tookStr,
 		gCmd,
 		now,
 		gStartDt,
-		now,
-		gStartDt,
-		now,
-		gStartDt,
+		tookMs,
+		tookStr,
 		gCmd,
 		key,
 	)

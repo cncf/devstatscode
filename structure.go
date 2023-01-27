@@ -1397,7 +1397,7 @@ func Structure(ctx *Ctx) {
 					"metric text not null, "+
 					"dt {{ts}} not null, "+
 					"start_dt {{ts}}, "+
-					"took interval, "+
+					"took bigint, "+
 					"took_as_string text, "+
 					"command text, "+
 					"primary key(metric)"+
