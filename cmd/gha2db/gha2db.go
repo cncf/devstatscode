@@ -2273,8 +2273,9 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 		lib.Printf("Processed %d/%d commits using %d CPUs (%d so far, offset %d)\n", updated, nCommits, thrN, grandUpdated, offset)
 		offset += limit
 	}
+	nRols := len(rolesMap)
 	lib.Printf("Processed %d commits with at least 1 commit role\n", grandUpdated)
-	lib.Printf("Now updating/inserting %d commit roles\n", len(rolesMap))
+	lib.Printf("Now updating/inserting %d commit roles\n", nRols)
 	updateFunc := func(ch chan struct{}, data lib.AnyArray) {
 		if ch != nil {
 			defer func() { ch <- struct{}{} }()
@@ -2290,10 +2291,15 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 			data...,
 		)
 	}
+	idx := 0
 	if thrN > 1 {
 		ch := make(chan struct{})
 		nThreads := 0
 		for _, data := range rolesMap {
+			idx++
+			if idx%limit == 0 {
+				lib.Printf("Updating/inserting commit roles: %d/%d\n", idx, nRols)
+			}
 			go updateFunc(ch, data)
 			nThreads++
 			if nThreads == thrN {
@@ -2307,6 +2313,10 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 		}
 	} else {
 		for _, data := range rolesMap {
+			idx++
+			if idx%limit == 0 {
+				lib.Printf("Updating/inserting commit roles: %d/%d\n", idx, nRols)
+			}
 			updateFunc(nil, data)
 		}
 	}
