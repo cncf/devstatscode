@@ -2105,10 +2105,13 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 	updated := 0
 	grandUpdated := 0
 	var mtx *sync.Mutex
-	updateFunc := func(ch chan struct{}, sha string, eventID, repoID int, repoName string, evCreatedAt time.Time, msg string) {
+	var rmtx *sync.RWMutex
+	rolesMap := make(map[string]lib.AnyArray)
+	addMappingFunc := func(ch chan struct{}, sha string, eventID, repoID int, repoName string, evCreatedAt time.Time, msg string) {
 		if ch != nil {
 			defer func() { ch <- struct{}{} }()
 		}
+		kyRoot := sha + "-" + strconv.Itoa(eventID) + "-"
 		roleAdded := false
 		msg = strings.Replace(msg, "\r", "\n", -1)
 		lines := strings.Split(msg, "\n")
@@ -2140,27 +2143,35 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 			id, login := lookupActorNameEmail(con, ctx, name, email, maybeHide)
 			// fmt.Printf("got trailer(s) '%s': %+v -> ('%s', '%s', %d, '%s')\n", line, trailers, name, email, id, login)
 			for _, role := range trailers {
-				lib.ExecSQLWithErr(
-					con,
-					ctx,
-					lib.InsertIgnore(
-						"into gha_commits_roles("+
-							"sha, event_id, role, actor_id, actor_login, actor_name, actor_email, "+
-							"dup_repo_id, dup_repo_name, dup_created_at"+
-							") "+lib.NValues(10)),
-					lib.AnyArray{
-						sha,
-						eventID,
-						role,
-						id,
-						maybeHide(lib.TruncToBytes(login, 120)),
-						maybeHide(lib.TruncToBytes(name, 160)),
-						maybeHide(lib.TruncToBytes(email, 160)),
-						repoID,
-						repoName,
-						evCreatedAt,
-					}...,
-				)
+				ky := kyRoot + role
+				if ch != nil {
+					rmtx.RLock()
+				}
+				_, ok := rolesMap[ky]
+				if ch != nil {
+					rmtx.RUnlock()
+				}
+				if ok {
+					continue
+				}
+				if ch != nil {
+					rmtx.Lock()
+				}
+				rolesMap[ky] = lib.AnyArray{
+					sha,
+					eventID,
+					role,
+					id,
+					maybeHide(lib.TruncToBytes(login, 120)),
+					maybeHide(lib.TruncToBytes(name, 160)),
+					maybeHide(lib.TruncToBytes(email, 160)),
+					repoID,
+					repoName,
+					evCreatedAt,
+				}
+				if ch != nil {
+					rmtx.Unlock()
+				}
 				roleAdded = true
 			}
 		}
@@ -2229,6 +2240,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 		if thrN > 1 {
 			ch := make(chan struct{})
 			mtx = &sync.Mutex{}
+			rmtx = &sync.RWMutex{}
 			nThreads := 0
 			for i, sha := range shas {
 				eventID := eventIDs[i]
@@ -2236,7 +2248,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 				repoName := repoNames[i]
 				evCreatedAt := evCreatedAts[i]
 				msg := msgs[i]
-				go updateFunc(ch, sha, eventID, repoID, repoName, evCreatedAt, msg)
+				go addMappingFunc(ch, sha, eventID, repoID, repoName, evCreatedAt, msg)
 				nThreads++
 				if nThreads == thrN {
 					_ = <-ch
@@ -2254,7 +2266,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 				repoName := repoNames[i]
 				evCreatedAt := evCreatedAts[i]
 				msg := msgs[i]
-				updateFunc(nil, sha, eventID, repoID, repoName, evCreatedAt, msg)
+				addMappingFunc(nil, sha, eventID, repoID, repoName, evCreatedAt, msg)
 			}
 		}
 		grandUpdated += updated
@@ -2262,6 +2274,42 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 		offset += limit
 	}
 	lib.Printf("Processed %d commits with at least 1 commit role\n", grandUpdated)
+	lib.Printf("Now updating/inserting %d commit roles\n", len(rolesMap))
+	updateFunc := func(ch chan struct{}, data lib.AnyArray) {
+		if ch != nil {
+			defer func() { ch <- struct{}{} }()
+		}
+		lib.ExecSQLWithErr(
+			con,
+			ctx,
+			lib.InsertIgnore(
+				"into gha_commits_roles("+
+					"sha, event_id, role, actor_id, actor_login, actor_name, actor_email, "+
+					"dup_repo_id, dup_repo_name, dup_created_at"+
+					") "+lib.NValues(10)),
+			data...,
+		)
+	}
+	if thrN > 1 {
+		ch := make(chan struct{})
+		nThreads := 0
+		for _, data := range rolesMap {
+			go updateFunc(ch, data)
+			nThreads++
+			if nThreads == thrN {
+				_ = <-ch
+				nThreads--
+			}
+		}
+		for nThreads > 0 {
+			_ = <-ch
+			nThreads--
+		}
+	} else {
+		for _, data := range rolesMap {
+			updateFunc(nil, data)
+		}
+	}
 }
 
 // updateCommitRoles - try to find missing actor IDs/Logins in gha_commits_roles table
