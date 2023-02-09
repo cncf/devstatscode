@@ -152,6 +152,7 @@ type Ctx struct {
 	MaxHistograms            int                          // From GHA2DB_MAX_HIST: maximum histogram concurrency, default: 0 - means unlimited
 	MaxRunDuration           map[string][2]int            // From GHA2DB_MAX_RUN_DURATION, how log given programs can run and exist status after timeout, for example "tags:1h:0,calc_metric:12h:1"
 	RandComputeAtThisDate    bool                         // Use rand to decide if a given date period must be calculated at this date or not.
+	RefreshCommitRoles       bool                         // From GHA2DB_REFRESH_COMMIT_ROLES - will process all commiths in DB and for every single one of them it will generate gha_commits_roles entries.
 }
 
 // Init - get context from environment variables
@@ -818,6 +819,9 @@ func (ctx *Ctx) Init() {
 
 	// Enable drop metrics support
 	ctx.EnableMetricsDrop = os.Getenv("GHA2DB_ENABLE_METRICS_DROP") != ""
+
+	// Enable drop metrics support
+	ctx.RefreshCommitRoles = os.Getenv("GHA2DB_REFRESH_COMMIT_ROLES") != ""
 
 	// Project Scale
 	if os.Getenv("GHA2DB_PROJECT_SCALE") == "" {

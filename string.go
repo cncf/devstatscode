@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // PrepareQuickRangeQuery Perpares query using either ready `period` string or using `from` and `to` strings
@@ -110,6 +111,36 @@ func MaybeHideFunc(shas map[string]string) (f func(string) string) {
 			cache[arg] = sha
 		}
 		anon, ok := shas[sha]
+		if ok {
+			return anon
+		}
+		return arg
+	}
+	return f
+}
+
+// MaybeHideFuncTS - use closure as a data storage - thread safe
+func MaybeHideFuncTS(shas map[string]string) (f func(string) string) {
+	cache := make(map[string]string)
+	mtx := &sync.RWMutex{}
+	smtx := &sync.Mutex{}
+	f = func(arg string) string {
+		var sha string
+		mtx.RLock()
+		sha, ok := cache[arg]
+		mtx.RUnlock()
+		if !ok {
+			hash := sha1.New()
+			_, err := hash.Write([]byte(arg))
+			FatalOnError(err)
+			sha = hex.EncodeToString(hash.Sum(nil))
+			mtx.Lock()
+			cache[arg] = sha
+			mtx.Unlock()
+		}
+		smtx.Lock()
+		anon, ok := shas[sha]
+		smtx.Unlock()
 		if ok {
 			return anon
 		}

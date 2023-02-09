@@ -2089,11 +2089,164 @@ func markAsProcessed(con *sql.DB, ctx *lib.Ctx, dt time.Time) {
 	)
 }
 
+// refreshCommitRoles - process/create gha_commits_roles for all commits in DB
+func refreshCommitRoles(ctx *lib.Ctx) {
+	// GDPR data hiding
+	shaMap := lib.GetHidden(lib.HideCfgFile)
+	maybeHide := lib.MaybeHideFuncTS(shaMap)
+	// Connect to Postgres DB
+	con := lib.PgConn(ctx)
+	defer func() { lib.FatalOnError(con.Close()) }()
+	now := time.Now()
+	offset := 0
+	limit := 2
+	// Get number of CPUs available
+	thrN := lib.GetThreadsNum(ctx)
+	grandUpdated := 0
+	var mtx *sync.Mutex
+	for {
+		// role, actor_id, actor_login, actor_name, actor_email, "+
+		rows := lib.QuerySQLWithErr(
+			con,
+			ctx,
+			fmt.Sprintf("select sha, event_id, dup_repo_id, dup_repo_name, dup_created_at, message "+
+				"from gha_commits where sha not in (select sha from gha_commits_roles) limit %d offset %d",
+				limit,
+				offset,
+			),
+		)
+		defer func() { lib.FatalOnError(rows.Close()) }()
+		shas, eventIDs, repoIDs, repoNames, evCreatedAts, msgs := []string{}, []int{}, []int{}, []string{}, []time.Time{}, []string{}
+		sha, eventID, repoID, repoName, evCreatedAt, msg := "", 0, 0, "", now, ""
+		for rows.Next() {
+			lib.FatalOnError(rows.Scan(&sha, &eventID, &repoID, &repoName, &evCreatedAt, &msg))
+			shas = append(shas, sha)
+			eventIDs = append(eventIDs, eventID)
+			repoIDs = append(repoIDs, repoID)
+			repoNames = append(repoNames, repoName)
+			evCreatedAts = append(evCreatedAts, evCreatedAt)
+			msgs = append(msgs, msg)
+		}
+		lib.FatalOnError(rows.Err())
+		nCommits := len(shas)
+		if nCommits == 0 {
+			break
+		}
+		lib.Printf("Processing %d commits using %d CPUs\n", nCommits, thrN)
+		updated := 0
+		updateFunc := func(ch chan struct{}, sha string, eventID, repoID int, repoName string, evCreatedAt time.Time, msg string) {
+			if ch != nil {
+				defer func() { ch <- struct{}{} }()
+			}
+			roleAdded := false
+			msg = strings.Replace(msg, "\r", "\n", -1)
+			lines := strings.Split(msg, "\n")
+			for _, line := range lines {
+				line := strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				m := matchGroups(gGitTrailerPattern, line)
+				if len(m) == 0 {
+					continue
+				}
+				oTrailer := m["name"]
+				lTrailer := strings.ToLower(oTrailer)
+				trailers, ok := gGitAllowedTrailers[lTrailer]
+				if !ok {
+					continue
+				}
+				fields := strings.Split(m["value"], "<")
+				name := strings.TrimSpace(fields[0])
+				email := ""
+				if len(fields) > 1 {
+					fields2 := strings.Split(fields[1], ">")
+					email = strings.TrimSpace(fields2[0])
+				}
+				if name == "" || email == "" {
+					continue
+				}
+				id, login := lookupActorNameEmail(con, ctx, name, email, maybeHide)
+				// fmt.Printf("got trailer(s) '%s': %+v -> ('%s', '%s', %d, '%s')\n", line, trailers, name, email, id, login)
+				for _, role := range trailers {
+					lib.ExecSQLWithErr(
+						con,
+						ctx,
+						lib.InsertIgnore(
+							"into gha_commits_roles("+
+								"sha, event_id, role, actor_id, actor_login, actor_name, actor_email, "+
+								"dup_repo_id, dup_repo_name, dup_created_at"+
+								") "+lib.NValues(10)),
+						lib.AnyArray{
+							sha,
+							eventID,
+							role,
+							id,
+							maybeHide(lib.TruncToBytes(login, 120)),
+							maybeHide(lib.TruncToBytes(name, 160)),
+							maybeHide(lib.TruncToBytes(email, 160)),
+							repoID,
+							repoName,
+							evCreatedAt,
+						}...,
+					)
+					roleAdded = true
+				}
+			}
+			if roleAdded {
+				if ch != nil {
+					mtx.Lock()
+				}
+				updated++
+				if ch != nil {
+					mtx.Unlock()
+				}
+			}
+		}
+		// MT or ST
+		if thrN > 1 {
+			ch := make(chan struct{})
+			mtx = &sync.Mutex{}
+			nThreads := 0
+			for i, sha := range shas {
+				eventID := eventIDs[i]
+				repoID := repoIDs[i]
+				repoName := repoNames[i]
+				evCreatedAt := evCreatedAts[i]
+				msg := msgs[i]
+				go updateFunc(ch, sha, eventID, repoID, repoName, evCreatedAt, msg)
+				nThreads++
+				if nThreads == thrN {
+					_ = <-ch
+					nThreads--
+				}
+			}
+			for nThreads > 0 {
+				_ = <-ch
+				nThreads--
+			}
+		} else {
+			for i, sha := range shas {
+				eventID := eventIDs[i]
+				repoID := repoIDs[i]
+				repoName := repoNames[i]
+				evCreatedAt := evCreatedAts[i]
+				msg := msgs[i]
+				updateFunc(nil, sha, eventID, repoID, repoName, evCreatedAt, msg)
+			}
+		}
+		grandUpdated += updated
+		lib.Printf("Processed %d/%d commits using %d CPUs (%d so far, offset %d)\n", updated, nCommits, thrN, grandUpdated, offset)
+		offset += limit
+	}
+	lib.Printf("Processed %d commits with at least 1 commit role\n", grandUpdated)
+}
+
 // updateCommitRoles - try to find missing actor IDs/Logins in gha_commits_roles table
 func updateCommitRoles(ctx *lib.Ctx) {
 	// GDPR data hiding
 	shaMap := lib.GetHidden(lib.HideCfgFile)
-	maybeHide := lib.MaybeHideFunc(shaMap)
+	maybeHide := lib.MaybeHideFuncTS(shaMap)
 	// Connect to Postgres DB
 	con := lib.PgConn(ctx)
 	defer func() { lib.FatalOnError(con.Close()) }()
@@ -2322,7 +2475,11 @@ func gha2db(args []string) {
 	lib.SetupTimeoutSignal(&ctx)
 	rand.Seed(time.Now().UnixNano())
 
-	defer func() { updateCommitRoles(&ctx) }()
+	if ctx.RefreshCommitRoles {
+		defer func() { refreshCommitRoles(&ctx) }()
+	} else {
+		defer func() { updateCommitRoles(&ctx) }()
+	}
 
 	startD, startH, endD, endH := args[0], args[1], args[2], args[3]
 

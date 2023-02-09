@@ -289,6 +289,7 @@ func TestInit(t *testing.T) {
 		CommitsFilesStatsEnabled: true,
 		CommitsLOCStatsEnabled:   true,
 		EnableMetricsDrop:        false,
+		RefreshCommitRoles:       false,
 		RecalcReciprocal:         24,
 		MaxHistograms:            0,
 	}
@@ -1214,6 +1215,15 @@ func TestInit(t *testing.T) {
 				t,
 				defaultContext.CopyContext(),
 				map[string]interface{}{"EnableMetricsDrop": true},
+			),
+		},
+		{
+			"Enable metrics drop",
+			map[string]string{"GHA2DB_REFRESH_COMMIT_ROLES": "1"},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{"RefreshCommitRoles": true},
 			),
 		},
 		{
