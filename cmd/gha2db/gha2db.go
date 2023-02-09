@@ -2238,6 +2238,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 		nCache := len(gEmailName2LoginIDCache)
 		gCacheMtx.RUnlock()
 		lib.Printf("Processing %d commits (all: %d) using %d CPUs, cached: %d\n", nCommits, allCommits, thrN, nCache)
+		runGC()
 		updated = 0
 		// MT or ST
 		if thrN > 1 {
