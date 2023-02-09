@@ -2099,7 +2099,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 	defer func() { lib.FatalOnError(con.Close()) }()
 	now := time.Now()
 	offset := 0
-	limit := 2
+	limit := 1000
 	// Get number of CPUs available
 	thrN := lib.GetThreadsNum(ctx)
 	grandUpdated := 0
