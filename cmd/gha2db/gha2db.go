@@ -27,7 +27,7 @@ var (
 	gUseCache = true
 	// gCacheMtx - cache access mutex
 	gCacheMtx = &sync.RWMutex{}
-	// gEmailName2LoginIDCache - cache found actors (login, ID) pairs for (name, email)mpairs
+	// gEmailName2LoginIDCache - cache found actors (login, ID) pairs for (name, email) pairs
 	gEmailName2LoginIDCache = make(map[[2]string][2]string)
 	// gGitTrailerPattern - message trailer pattern
 	gGitTrailerPattern = regexp.MustCompile(`^(?P<name>[a-zA-z0-9\-]+)\:[ \t]+(?P<value>.+)$`)
