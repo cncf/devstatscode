@@ -2110,7 +2110,8 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 			con,
 			ctx,
 			fmt.Sprintf("select sha, event_id, dup_repo_id, dup_repo_name, dup_created_at, message "+
-				"from gha_commits where sha not in (select sha from gha_commits_roles) limit %d offset %d",
+				"from gha_commits where (sha, event_id) not in (select sha, event_id from gha_commits_roles) "+
+				"limit %d offset %d",
 				limit,
 				offset,
 			),
@@ -2253,7 +2254,7 @@ func updateCommitRoles(ctx *lib.Ctx) {
 	rows := lib.QuerySQLWithErr(
 		con,
 		ctx,
-		"select distinct actor_email, actor_name from gha_commits_roles where actor_id = 0",
+		"select distinct actor_email, actor_name from gha_commits_roles where actor_id = 0 or actor_login = '' or actor_id is null or actor_login is null",
 	)
 	defer func() { lib.FatalOnError(rows.Close()) }()
 	emails, names, email, name := []string{}, []string{}, "", ""
