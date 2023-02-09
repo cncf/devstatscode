@@ -2234,7 +2234,10 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 			lib.FatalOnError(arows.Err())
 			lib.FatalOnError(arows.Close())
 		}
-		lib.Printf("Processing %d commits (all: %d) using %d CPUs\n", nCommits, allCommits, thrN)
+		gCacheMtx.RLock()
+		nCache := len(gEmailName2LoginIDCache)
+		gCacheMtx.RUnlock()
+		lib.Printf("Processing %d commits (all: %d) using %d CPUs, cached: %d\n", nCommits, allCommits, thrN, nCache)
 		updated = 0
 		// MT or ST
 		if thrN > 1 {
