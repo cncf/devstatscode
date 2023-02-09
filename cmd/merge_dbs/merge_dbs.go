@@ -63,6 +63,7 @@ func mergePDBs() {
 		{"gha_reviews", "", "-"},
 		{"gha_commits", "", "-"},
 		{"gha_commits_files", "", "-"},
+		{"gha_commits_roles", "", "-"},
 		//{"gha_companies", "", "-"},
 		//{"gha_computed", "", "-"},
 		{"gha_events", "id > 0", "id <= 0"},
@@ -92,6 +93,7 @@ func mergePDBs() {
 		{"gha_teams_repositories", "", "-"},
 		{"gha_texts", "", "-"},
 		// {"gha_parsed", "", "-"},
+		// {"gha_last_computed", "", "-"},
 	}
 
 	for pass, passInfo := range []string{"1st pass", "2nd pass"} {

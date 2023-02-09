@@ -64,7 +64,39 @@ func processHidden(ctx *lib.Ctx) {
 		},
 		{
 			table:  "gha_commits",
+			column: "dup_author_login",
+		},
+		{
+			table:  "gha_commits",
+			column: "dup_committer_login",
+		},
+		{
+			table:  "gha_commits",
 			column: "author_name",
+		},
+		{
+			table:  "gha_commits",
+			column: "author_email",
+		},
+		{
+			table:  "gha_commits",
+			column: "committer_name",
+		},
+		{
+			table:  "gha_commits",
+			column: "committer_email",
+		},
+		{
+			table:  "gha_commits_roles",
+			column: "actor_login",
+		},
+		{
+			table:  "gha_commits_roles",
+			column: "actor_name",
+		},
+		{
+			table:  "gha_commits_roles",
+			column: "actor_email",
 		},
 		{
 			table:  "gha_pages",

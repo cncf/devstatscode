@@ -2287,6 +2287,14 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
         c.author_id = a.id
         or c.committer_id = a.id
       )
+    union select
+      a.country_id
+    from
+      gha_actors a,
+      gha_commits_roles cr
+    where
+      cr.actor_id = a.id
+      and cr.role = 'co-author'
   ) sub
   `
 		var rows *sql.Rows
@@ -2344,6 +2352,17 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
         c.author_id = af.actor_id
         or c.committer_id = af.actor_id
       )
+      and af.dt_from <= c.dup_created_at
+      and af.dt_to > c.dup_created_at
+      and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
+    union select
+      af.company_name
+    from
+      gha_actors_affiliations af,
+      gha_commits_roles cr
+    where
+      cr.actor_id = af.actor_id
+      and cr.role = 'co-author'
       and af.dt_from <= c.dup_created_at
       and af.dt_to > c.dup_created_at
       and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')

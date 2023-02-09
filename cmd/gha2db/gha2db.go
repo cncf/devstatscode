@@ -405,6 +405,11 @@ func eventExists(db *sql.DB, ctx *lib.Ctx, eventID string) bool {
 	return exists
 }
 
+// Process commit message trailers
+func ghaCommitsRoles(con *sql.Tx, ctx *lib.Ctx, msg, sha, eventID string, repoID int, repoName string, evCreatedAt time.Time) {
+	// fmt.Printf("got here: sha=%s, created=%v\nmsg:\n%s\n", sha, evCreatedAt, msg)
+}
+
 // Process GHA pages
 // gha_pages
 // {"page_name:String"=>370, "title:String"=>370, "summary:NilClass"=>370,
@@ -978,6 +983,8 @@ func writeToDBOldFmt(db *sql.DB, ctx *lib.Ctx, eventID string, ev *lib.EventOld,
 					ev.CreatedAt,
 				}...,
 			)
+			// Commit Roles
+			ghaCommitsRoles(con, ctx, commit[2].(string), sha, eventID, repo.ID, repo.Name, ev.CreatedAt)
 		}
 	}
 
@@ -1251,6 +1258,8 @@ func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) 
 				ev.CreatedAt,
 			}...,
 		)
+		// Commit Roles
+		ghaCommitsRoles(con, ctx, commit.Message, sha, eventID, ev.Repo.ID, ev.Repo.Name, ev.CreatedAt)
 	}
 
 	// Pages
