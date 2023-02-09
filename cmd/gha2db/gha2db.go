@@ -2194,7 +2194,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 			ctx,
 			fmt.Sprintf("select distinct sha, event_id, dup_repo_id, dup_repo_name, dup_created_at, message "+
 				"from gha_commits where (sha, event_id) not in (select sha, event_id from gha_commits_roles) "+
-				"limit %d offset %d",
+				"order by sha, event_id limit %d offset %d",
 				limit,
 				offset,
 			),
