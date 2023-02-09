@@ -2294,7 +2294,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
       gha_commits_roles cr
     where
       cr.actor_id = a.id
-      and cr.role = 'co-author'
+      and cr.role = 'Co-authored-by'
   ) sub
   `
 		var rows *sql.Rows
@@ -2362,7 +2362,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
       gha_commits_roles cr
     where
       cr.actor_id = af.actor_id
-      and cr.role = 'co-author'
+      and cr.role = 'Co-authored-by'
       and af.dt_from <= c.dup_created_at
       and af.dt_to > c.dup_created_at
       and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
