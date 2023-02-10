@@ -2094,6 +2094,13 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 	// GDPR data hiding
 	shaMap := lib.GetHidden(lib.HideCfgFile)
 	maybeHide := lib.MaybeHideFuncTS(shaMap)
+	igc := 0
+	maybeGC := func(val int) {
+		igc++
+		if igc%val == 0 {
+			runGC()
+		}
+	}
 	// Connect to Postgres DB
 	con := lib.PgConn(ctx)
 	defer func() { lib.FatalOnError(con.Close()) }()
@@ -2238,7 +2245,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 		nCache := len(gEmailName2LoginIDCache)
 		gCacheMtx.RUnlock()
 		lib.Printf("Processing %d commits (all: %d) using %d CPUs, cached: %d\n", nCommits, allCommits, thrN, nCache)
-		runGC()
+		maybeGC(10)
 		updated = 0
 		// MT or ST
 		if thrN > 1 {
@@ -2303,6 +2310,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 			idx++
 			if idx%limit == 0 {
 				lib.Printf("Updating/inserting commit roles: %d/%d\n", idx, nRols)
+				maybeGC(20)
 			}
 			go updateFunc(ch, data)
 			nThreads++
@@ -2320,6 +2328,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 			idx++
 			if idx%limit == 0 {
 				lib.Printf("Updating/inserting commit roles: %d/%d\n", idx, nRols)
+				maybeGC(20)
 			}
 			updateFunc(nil, data)
 		}
