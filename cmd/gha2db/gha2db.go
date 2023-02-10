@@ -2303,6 +2303,9 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 		)
 	}
 	idx := 0
+	if thrN > 8 {
+		thrN = 8
+	}
 	if thrN > 1 {
 		ch := make(chan struct{})
 		nThreads := 0
