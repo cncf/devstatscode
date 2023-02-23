@@ -10,7 +10,7 @@ require (
 	github.com/olivere/elastic v6.2.37+incompatible
 	github.com/rs/cors v1.8.0
 	golang.org/x/oauth2 v0.0.0-20210819190943-2bc19b11175f
-	golang.org/x/text v0.3.7
+	golang.org/x/text v0.3.8
 	gopkg.in/yaml.v2 v2.4.0
 )
 
