@@ -187,9 +187,12 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 
 	// Iterate annotations
 	for _, annotation := range annotations.Annotations {
+		annotationName := SafeUTF8String(annotation.Name)
+		annotationDescription := SafeUTF8String(annotation.Description)
+
 		fields := map[string]interface{}{
-			"title":       annotation.Name,
-			"description": annotation.Description,
+			"title":       annotationName,
+			"description": annotationDescription,
 		}
 		// Add batch point
 		if ctx.Debug > 0 {
@@ -353,8 +356,9 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 	for index, annotation := range annotations.Annotations {
 		if index == lastIndex {
 			sfx := fmt.Sprintf("a_%d_n", index)
+			annotationName := SafeUTF8String(annotation.Name)
 			tags[tagName+"_suffix"] = sfx
-			tags[tagName+"_name"] = fmt.Sprintf("%s - now", annotation.Name)
+			tags[tagName+"_name"] = fmt.Sprintf("%s - now", annotationName)
 			tags[tagName+"_data"] = fmt.Sprintf("%s;;%s;%s", sfx, ToYMDHMSDate(annotation.Date), ToYMDHMSDate(NextDayStart(time.Now())))
 			if ctx.Debug > 0 {
 				Printf(
@@ -371,8 +375,10 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 		}
 		nextAnnotation := annotations.Annotations[index+1]
 		sfx := fmt.Sprintf("a_%d_%d", index, index+1)
+		annotationName := SafeUTF8String(annotation.Name)
+		nextAnnotationName := SafeUTF8String(nextAnnotation.Name)
 		tags[tagName+"_suffix"] = sfx
-		tags[tagName+"_name"] = fmt.Sprintf("%s - %s", annotation.Name, nextAnnotation.Name)
+		tags[tagName+"_name"] = fmt.Sprintf("%s - %s", annotationName, nextAnnotationName)
 		tags[tagName+"_data"] = fmt.Sprintf("%s;;%s;%s", sfx, ToYMDHMSDate(annotation.Date), ToYMDHMSDate(nextAnnotation.Date))
 		if ctx.Debug > 0 {
 			Printf(

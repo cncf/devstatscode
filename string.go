@@ -1,6 +1,7 @@
 package devstatscode
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"encoding/csv"
 	"encoding/hex"
@@ -64,6 +65,11 @@ func PrepareQuickRangeQuery(sql, period, from, to string) (string, string) {
 		res = strings.Replace(res, "{{to}}", "'"+to+"'", -1)
 	}
 	return res, sHours
+}
+
+// SafeUTF8String - make sure string is UTF-8 valid
+func SafeUTF8String(input string) string {
+	return string(bytes.ToValidUTF8([]byte(strings.Replace(input, "\x00", "", -1)), []byte("")))
 }
 
 // Slugify replace all whitespace with "-", remove all non-word letters downcase

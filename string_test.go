@@ -6,6 +6,37 @@ import (
 	lib "github.com/cncf/devstatscode"
 )
 
+func TestSafeUTF8String(t *testing.T) {
+	// Test cases
+	var testCases = []struct {
+		before string
+		after  string
+	}{
+		{
+			before: "A b\x00C",
+			after:  "A bC",
+		},
+		{
+			before: string([]byte{0x41, 0x42, 0xff, 0xfe, 0x43}),
+			after:  string([]byte{0x41, 0x42, 0x43}),
+		},
+		{
+			before: string([]byte{0x00, 0x41, 0x42, 0xff, 0xff, 0x43, 0x00}),
+			after:  string([]byte{0x41, 0x42, 0x43}),
+		},
+	}
+	// Execute test cases
+	for index, test := range testCases {
+		after := lib.SafeUTF8String(test.before)
+		if after != test.after {
+			t.Errorf(
+				"test number %d, expected '%v', got '%v'",
+				index+1, test.after, after,
+			)
+		}
+	}
+}
+
 func TestSlugify(t *testing.T) {
 	// Test cases
 	var testCases = []struct {
