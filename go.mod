@@ -10,6 +10,7 @@ require (
 	github.com/olivere/elastic v6.2.37+incompatible
 	github.com/rs/cors v1.8.0
 	golang.org/x/oauth2 v0.0.0-20210819190943-2bc19b11175f
+	golang.org/x/text v0.4.0
 	golang.org/x/text v0.7.0
 	gopkg.in/yaml.v2 v2.4.0
 )
@@ -23,6 +24,7 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421 // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+
 	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9 // indirect
 	golang.org/x/net v0.7.0 // indirect
 	google.golang.org/appengine v1.6.6 // indirect
