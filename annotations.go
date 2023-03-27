@@ -313,6 +313,7 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 		{"d10", "Last 10 days", "10 days"},
 		{"m", "Last month", "1 month"},
 		{"q", "Last quarter", "3 months"},
+		{"m6", "Last 6 months", "6 months"},
 		{"y", "Last year", "1 year"},
 		{"y2", "Last 2 years", "2 years"},
 		{"y3", "Last 3 years", "3 years"},
