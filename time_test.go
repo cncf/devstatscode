@@ -142,6 +142,7 @@ func TestComputePeriodAtThisDate(t *testing.T) {
 		{hist: true, period: "y3", dt: ft(2017, 12, 19, 23), expected: true},
 		{hist: true, period: "y5", dt: ft(2017, 12, 19, 23), expected: true},
 		{hist: true, period: "m2", dt: ft(2017, 12, 19, 23), expected: true},
+		{hist: true, period: "m6", dt: ft(2017, 12, 19, 23), expected: true},
 		{hist: true, period: "q3", dt: ft(2017, 12, 19, 23), expected: true},
 		{hist: true, period: "y10", dt: ft(2017, 12, 19, 23), expected: true},
 		{hist: true, period: "m", dt: ft(2017, 12, 19, 1), expected: false},
@@ -151,6 +152,7 @@ func TestComputePeriodAtThisDate(t *testing.T) {
 		{hist: true, period: "y3", dt: ft(2017, 12, 19, 3), expected: false},
 		{hist: true, period: "y4", dt: ft(2017, 12, 19, 3), expected: false},
 		{hist: true, period: "m2", dt: ft(2017, 12, 19, 4), expected: false},
+		{hist: true, period: "m6", dt: ft(2017, 12, 19, 4), expected: false},
 		{hist: true, period: "q3", dt: ft(2017, 12, 19, 5), expected: false},
 		{hist: true, period: "y10", dt: ft(2017, 12, 19, 5), expected: false},
 		{tmOffset: 5, hist: true, period: "h", dt: ft(2017, 12, 19, 19), expected: true},
@@ -186,6 +188,7 @@ func TestComputePeriodAtThisDate(t *testing.T) {
 		{tmOffset: 5, hist: true, period: "y", dt: ft(2017, 12, 19, 18), expected: true},
 		{tmOffset: 5, hist: true, period: "y5", dt: ft(2017, 12, 19, 18), expected: true},
 		{tmOffset: 5, hist: true, period: "m2", dt: ft(2017, 12, 19, 18), expected: true},
+		{tmOffset: 5, hist: true, period: "m6", dt: ft(2017, 12, 19, 18), expected: true},
 		{tmOffset: 5, hist: true, period: "q3", dt: ft(2017, 12, 19, 18), expected: true},
 		{tmOffset: 5, hist: true, period: "y10", dt: ft(2017, 12, 19, 18), expected: true},
 		{tmOffset: 5, hist: true, period: "m", dt: ft(2017, 12, 19, 20), expected: false},
@@ -193,6 +196,7 @@ func TestComputePeriodAtThisDate(t *testing.T) {
 		{tmOffset: 5, hist: true, period: "y", dt: ft(2017, 12, 19, 22), expected: false},
 		{tmOffset: 5, hist: true, period: "y3", dt: ft(2017, 12, 19, 22), expected: false},
 		{tmOffset: 5, hist: true, period: "m2", dt: ft(2017, 12, 19, 23), expected: false},
+		{tmOffset: 5, hist: true, period: "m6", dt: ft(2017, 12, 19, 23), expected: false},
 		{tmOffset: 5, hist: true, period: "q3", dt: ft(2017, 12, 19), expected: false},
 		{tmOffset: 5, hist: true, period: "y10", dt: ft(2017, 12, 19), expected: false},
 		{tmOffset: -10, hist: true, period: "h", dt: ft(2017, 12, 19, 10), expected: true},
@@ -230,12 +234,14 @@ func TestComputePeriodAtThisDate(t *testing.T) {
 		{tmOffset: -10, hist: true, period: "y", dt: ft(2017, 12, 19, 9), expected: true},
 		{tmOffset: -10, hist: true, period: "y2", dt: ft(2017, 12, 19, 9), expected: true},
 		{tmOffset: -10, hist: true, period: "m2", dt: ft(2017, 12, 19, 9), expected: true},
+		{tmOffset: -10, hist: true, period: "m6", dt: ft(2017, 12, 19, 9), expected: true},
 		{tmOffset: -10, hist: true, period: "q3", dt: ft(2017, 12, 19, 9), expected: true},
 		{tmOffset: -10, hist: true, period: "y10", dt: ft(2017, 12, 19, 9), expected: true},
 		{tmOffset: -10, hist: true, period: "m", dt: ft(2017, 12, 19, 11), expected: false},
 		{tmOffset: -10, hist: true, period: "q", dt: ft(2017, 12, 19, 12), expected: false},
 		{tmOffset: -10, hist: true, period: "y", dt: ft(2017, 12, 19, 13), expected: false},
 		{tmOffset: -10, hist: true, period: "m2", dt: ft(2017, 12, 19, 14), expected: false},
+		{tmOffset: -10, hist: true, period: "m6", dt: ft(2017, 12, 19, 14), expected: false},
 		{tmOffset: -10, hist: true, period: "q3", dt: ft(2017, 12, 19, 15), expected: false},
 		{tmOffset: -10, hist: true, period: "y10", dt: ft(2017, 12, 19, 15), expected: false},
 		{hist: true, period: "y10", dt: ft(2017, 12, 19, 11, 12, 13), computeAll: true, expected: true},
@@ -297,6 +303,8 @@ func TestComputePeriodAtThisDate(t *testing.T) {
 	var ctx lib.Ctx
 	ctx.Init()
 	ctx.TestMode = true
+	// This is to test behavior with previous 1-2 hourly sync not current 6 hours one
+	ctx.RandComputeAtThisDate = false
 
 	// Execute test cases
 	for index, test := range testCases {
