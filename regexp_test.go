@@ -244,6 +244,15 @@ func TestAnnotationRegexp(t *testing.T) {
 		{re: `^ms-general-\d+\.\d+\.\d*0$`, str: "ms-general-2.4.1", match: false},
 		{re: `^ms-general-\d+\.\d+\.\d*0$`, str: "ms-general-0.0.200", match: true},
 		{re: `^ms-general-\d+\.\d+\.\d*0$`, str: " ms-general-1.1.10 ", match: false},
+		{re: `^\d+\.0\.0(\.Final)?$`, str: "8.1.1", match: false},
+		{re: `^\d+\.0\.0(\.Final)?$`, str: "8.1.0", match: false},
+		{re: `^\d+\.0\.0(\.Final)?$`, str: "8.0.1", match: false},
+		{re: `^\d+\.0\.0(\.Final)?$`, str: "8.0.0", match: true},
+		{re: `^\d+\.0\.0(\.Final)?$`, str: "7.0.0.final", match: false},
+		{re: `^\d+\.0\.0(\.Final)?$`, str: "7.0.0.Final", match: true},
+		{re: `^\d+\.0\.0(\.Final)?$`, str: "7.0.0.Finally", match: false},
+		{re: `^\d+\.0\.0(\.Final)?$`, str: "7.0.1.Final", match: false},
+		{re: `^\d+\.0\.0(\.Final)?$`, str: "7.1.0.Final", match: false},
 	}
 	// Execute test cases
 	for index, test := range testCases {
