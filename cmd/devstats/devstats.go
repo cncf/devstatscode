@@ -224,7 +224,7 @@ func syncAllProjects() bool {
 	}
 
 	// Only run clone/pull part here
-	// Remaining commit analysis in"gha2db_sync"
+	// Remaining commit analysis in "gha2db_sync"
 	// after new commits are fetched from GHA
 	// So here we get repo files to the newest state
 	// And the gha2db_sync takes Postgres DB commits to the newest state
