@@ -251,7 +251,7 @@ func TestInit(t *testing.T) {
 		InputDBs:                 []string{},
 		OutputDB:                 "",
 		TmOffset:                 0,
-		RecentRange:              "12 hours",
+		RecentRange:              "2 hours",
 		RecentReposRange:         "1 day",
 		CSVFile:                  "",
 		ComputeAll:               false,
@@ -290,6 +290,7 @@ func TestInit(t *testing.T) {
 		CommitsLOCStatsEnabled:   true,
 		EnableMetricsDrop:        false,
 		RefreshCommitRoles:       false,
+		RandComputeAtThisDate:    true,
 		RecalcReciprocal:         24,
 		MaxHistograms:            0,
 	}
@@ -1758,6 +1759,7 @@ func TestInit(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		var gotContext lib.Ctx
+		test.expectedContext.RandComputeAtThisDate = true
 
 		// Because GitHubOAuth is depending on /etc/github/oauth* files
 		// We can't test this, because user test environment can have those files or not
