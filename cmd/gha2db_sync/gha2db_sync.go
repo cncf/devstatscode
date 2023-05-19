@@ -731,6 +731,7 @@ func sync(ctx *lib.Ctx, args []string) {
 			lib.Printf("Number of parallel histograms limited to %d\n", thrN)
 		}
 		maxRes := 0
+		prc := 0
 		if thrN > 1 {
 			lib.Printf("Now processing %d histograms using MT%d version\n", len(hists), thrN)
 			ch := make(chan int)
@@ -744,9 +745,13 @@ func sync(ctx *lib.Ctx, args []string) {
 						maxRes = res
 					}
 					nThreads--
+					prc++
+					if prc%3 == 0 {
+						thrN = lib.GetThreadsNum(ctx)
+					}
 				}
 			}
-			lib.Printf("Final threads join\n")
+			lib.Printf("Final threads join (processed %d)\n", prc)
 			for nThreads > 0 {
 				<-ch
 				nThreads--

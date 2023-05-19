@@ -2248,6 +2248,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 		maybeGC(10)
 		updated = 0
 		// MT or ST
+		prc := 0
 		if thrN > 1 {
 			ch := make(chan struct{})
 			mtx = &sync.Mutex{}
@@ -2264,6 +2265,10 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 				if nThreads == thrN {
 					_ = <-ch
 					nThreads--
+					prc++
+					if prc%20 == 0 {
+						thrN = lib.GetThreadsNum(ctx)
+					}
 				}
 			}
 			for nThreads > 0 {
@@ -2306,6 +2311,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 	if thrN > 8 {
 		thrN = 8
 	}
+	prc := 0
 	if thrN > 1 {
 		ch := make(chan struct{})
 		nThreads := 0
@@ -2320,6 +2326,10 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 			if nThreads == thrN {
 				_ = <-ch
 				nThreads--
+				prc++
+				if prc%20 == 0 {
+					thrN = lib.GetThreadsNum(ctx)
+				}
 			}
 		}
 		for nThreads > 0 {
@@ -2400,6 +2410,7 @@ func updateCommitRoles(ctx *lib.Ctx) {
 		}
 	}
 	// MT or ST
+	prc := 0
 	if thrN > 1 {
 		ch := make(chan struct{})
 		mtx = &sync.Mutex{}
@@ -2411,6 +2422,10 @@ func updateCommitRoles(ctx *lib.Ctx) {
 			if nThreads == thrN {
 				_ = <-ch
 				nThreads--
+				prc++
+				if prc%20 == 0 {
+					thrN = lib.GetThreadsNum(ctx)
+				}
 			}
 		}
 		for nThreads > 0 {
@@ -2696,6 +2711,7 @@ func gha2db(args []string) {
 	}
 
 	dt := dFrom
+	prc := 0
 	if thrN > 1 {
 		ch := make(chan time.Time)
 		mp := make(map[time.Time]struct{})
@@ -2712,9 +2728,13 @@ func gha2db(args []string) {
 				nThreads--
 				dateToFunc()
 				maybeGC()
+				prc++
+				if prc%10 == 0 {
+					thrN = lib.GetThreadsNum(&ctx)
+				}
 			}
 		}
-		lib.Printf("Final threads join\n")
+		lib.Printf("Final threads join (processed %d)\n", prc)
 		for nThreads > 0 {
 			if ctx.Debug >= 0 {
 				dta := []string{}
