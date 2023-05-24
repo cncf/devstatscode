@@ -50,11 +50,8 @@ func ensureColumns() {
 	}
 	var allColumns columns
 	lib.FatalOnError(yaml.Unmarshal(data, &allColumns))
-
-	// Per project directory for SQL files
-	dir := lib.Metrics
-	if ctx.Project != "" {
-		dir += ctx.Project + "/"
+	if ctx.Debug > 0 {
+		lib.Printf("Read %d columns configs from '%s'\n", len(allColumns.Columns), dataPrefix+ctx.ColumnsYaml)
 	}
 
 	thrN := lib.GetThreadsNum(&ctx)

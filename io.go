@@ -11,8 +11,18 @@ import (
 func ReadFile(ctx *Ctx, path string) ([]byte, error) {
 	data, err := ioutil.ReadFile(path)
 	if err == nil || ctx.Project == "" {
+		if ctx.Debug > 0 {
+			Printf("lib.ReadFile('%s'): ok\n", path)
+		}
 		return data, err
 	}
 	path = strings.Replace(path, "/"+ctx.Project+"/", "/shared/", -1)
-	return ioutil.ReadFile(path)
+	data, err = ioutil.ReadFile(path)
+	if err == nil && ctx.Debug > 0 {
+		Printf("lib.ReadFile('%s'): ok", path)
+	}
+	if err != nil {
+		Printf("lib.ReadFile('%s'): error: %+v", path, err)
+	}
+	return data, err
 }
