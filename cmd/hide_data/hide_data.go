@@ -196,7 +196,7 @@ func processHidden(ctx *lib.Ctx) {
 		},
 	}
 	configFile := lib.HideCfgFile
-	shaMap := lib.GetHidden(configFile)
+	shaMap := lib.GetHidden(ctx, configFile)
 
 	dataPrefix := ctx.DataDir
 	if ctx.Local {
@@ -295,8 +295,8 @@ func processHidden(ctx *lib.Ctx) {
 	}
 }
 
-func hideData(args []string) {
-	shaMap := lib.GetHidden(lib.HideCfgFile)
+func hideData(ctx *lib.Ctx, args []string) {
+	shaMap := lib.GetHidden(ctx, lib.HideCfgFile)
 	added := false
 	for _, argo := range args {
 		arg := strings.TrimSpace(argo)
@@ -336,7 +336,7 @@ func main() {
 	if len(os.Args) < 2 {
 		processHidden(&ctx)
 	} else {
-		hideData(os.Args[1:])
+		hideData(&ctx, os.Args[1:])
 	}
 	dtEnd := time.Now()
 	lib.Printf("Time: %v\n", dtEnd.Sub(dtStart))

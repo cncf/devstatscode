@@ -2092,7 +2092,7 @@ func markAsProcessed(con *sql.DB, ctx *lib.Ctx, dt time.Time) {
 // refreshCommitRoles - process/create gha_commits_roles for all commits in DB
 func refreshCommitRoles(ctx *lib.Ctx) {
 	// GDPR data hiding
-	shaMap := lib.GetHidden(lib.HideCfgFile)
+	shaMap := lib.GetHidden(ctx, lib.HideCfgFile)
 	maybeHide := lib.MaybeHideFuncTS(shaMap)
 	igc := 0
 	maybeGC := func(val int) {
@@ -2351,7 +2351,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 // updateCommitRoles - try to find missing actor IDs/Logins in gha_commits_roles table
 func updateCommitRoles(ctx *lib.Ctx) {
 	// GDPR data hiding
-	shaMap := lib.GetHidden(lib.HideCfgFile)
+	shaMap := lib.GetHidden(ctx, lib.HideCfgFile)
 	maybeHide := lib.MaybeHideFuncTS(shaMap)
 	// Connect to Postgres DB
 	con := lib.PgConn(ctx)
@@ -2679,7 +2679,7 @@ func gha2db(args []string) {
 	)
 
 	// GDPR data hiding
-	shaMap := lib.GetHidden(lib.HideCfgFile)
+	shaMap := lib.GetHidden(&ctx, lib.HideCfgFile)
 
 	// Skipping JSON dates
 	dataPrefix := ctx.DataDir

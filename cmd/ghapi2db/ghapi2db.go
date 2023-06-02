@@ -458,7 +458,7 @@ func syncCommits(ctx *lib.Ctx) {
 			thDtStart := time.Now()
 			thLastTime := dtStart
 			// To handle GDPR
-			maybeHide := lib.MaybeHideFunc(lib.GetHidden(lib.HideCfgFile))
+			maybeHide := lib.MaybeHideFunc(lib.GetHidden(ctx, lib.HideCfgFile))
 			// Need deep copy - threads
 			copt := opt
 			// No DTFROM/DTTO set and no GHA2DB_NO_AUTOFETCHCOMMITS

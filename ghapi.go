@@ -474,7 +474,7 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 		return nil
 	}
 	// To handle GDPR
-	maybeHide := MaybeHideFunc(GetHidden(HideCfgFile))
+	maybeHide := MaybeHideFunc(GetHidden(ctx, HideCfgFile))
 
 	eventID := 281474976710656 + cfg.EventID
 	eType := cfg.EventType
@@ -797,7 +797,7 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 	now := cfg.CreatedAt
 
 	// To handle GDPR
-	maybeHide := MaybeHideFunc(GetHidden(HideCfgFile))
+	maybeHide := MaybeHideFunc(GetHidden(ctx, HideCfgFile))
 
 	// Start transaction
 	tc, err := c.Begin()

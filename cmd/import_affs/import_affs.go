@@ -598,7 +598,7 @@ func importAffs(jsonFN string) int {
 		unlock = func() {
 			mtx.Unlock()
 		}
-		maybeHideInternal := lib.MaybeHideFunc(lib.GetHidden(lib.HideCfgFile))
+		maybeHideInternal := lib.MaybeHideFunc(lib.GetHidden(&ctx, lib.HideCfgFile))
 		maybeHide = func(arg string) string {
 			hmtx.Lock()
 			result := maybeHideInternal(arg)
@@ -606,7 +606,7 @@ func importAffs(jsonFN string) int {
 			return result
 		}
 	} else {
-		maybeHide = lib.MaybeHideFunc(lib.GetHidden(lib.HideCfgFile))
+		maybeHide = lib.MaybeHideFunc(lib.GetHidden(&ctx, lib.HideCfgFile))
 		lock = func() {}
 		unlock = func() {}
 	}

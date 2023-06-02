@@ -80,9 +80,12 @@ func Slugify(arg string) string {
 }
 
 // GetHidden - return list of shas to replace
-func GetHidden(configFile string) (shaMap map[string]string) {
+func GetHidden(ctx *Ctx, configFile string) (shaMap map[string]string) {
 	shaMap = make(map[string]string)
 	f, err := os.Open(configFile)
+	if err != nil {
+		f, err = os.Open(ctx.DataDir + "/" + configFile)
+	}
 	if err == nil {
 		defer func() { _ = f.Close() }()
 		reader := csv.NewReader(f)
