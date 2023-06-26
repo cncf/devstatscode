@@ -37,7 +37,6 @@ func CompareStringSlices(s1 []string, s2 []string) bool {
 
 // CompareSlices - compares two any type slices
 func CompareSlices(s1 []interface{}, s2 []interface{}) bool {
-	fmt.Printf("function called!\n")
 	if len(s1) != len(s2) {
 		fmt.Printf("CompareSlices: len: %d != %d\n", len(s1), len(s2))
 		return false
@@ -52,6 +51,8 @@ func CompareSlices(s1 []interface{}, s2 []interface{}) bool {
 			if v1 != v2 {
 				fmt.Printf("CompareSlices: value:\n'%+v' not equal to:\n'%+v'\nwithout dots: '%+v' != '%+v'\n", value, s2[index], v1, v2)
 				return false
+			} else {
+				fmt.Printf("CompareSlices: OK-after-conv: value:\n'%+v' not equal to:\n'%+v'\nwithout dots: '%+v' != '%+v'\n", value, s2[index], v1, v2)
 			}
 		}
 	}
