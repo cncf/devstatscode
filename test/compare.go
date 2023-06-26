@@ -42,7 +42,7 @@ func CompareSlices(s1 []interface{}, s2 []interface{}) bool {
 		return false
 	}
 	for index, value := range s1 {
-		fmt.Printf("types: (%+v,%T) <=> (%+v,%T)\n", value, value, s2[index], s2[index])
+		// fmt.Printf("types: (%+v,%T) <=> (%+v,%T)\n", value, value, s2[index], s2[index])
 		if value != s2[index] {
 			v1s := fmt.Sprintf("%+v", value)
 			v2s := fmt.Sprintf("%+v", s2[index])
