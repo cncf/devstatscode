@@ -42,6 +42,7 @@ func CompareSlices(s1 []interface{}, s2 []interface{}) bool {
 		return false
 	}
 	for index, value := range s1 {
+    fmt.Printf("types: (%+v,%T) <=> (%+v,%T)\n", value, value, s2[index], s2[index])
 		if value != s2[index] {
 			v1s, ok1 := value.(string)
 			v2s, ok2 := s2[index].(string)
@@ -54,7 +55,6 @@ func CompareSlices(s1 []interface{}, s2 []interface{}) bool {
 				}
 				continue
 			}
-      fmt.Printf("incorrect types: (%+v,%T) <=> (%+v,%T)\n", value, value, s2[index], s2[index])
 			fmt.Printf("CompareSlices: value:\n'%+v' not equal to:\n'%+v'\n", value, s2[index])
 			return false
 		}
