@@ -52,7 +52,7 @@ func CompareSlices(s1 []interface{}, s2 []interface{}) bool {
 				fmt.Printf("CompareSlices: value:\n'%+v' not equal to:\n'%+v'\nwithout dots: '%+v' != '%+v'\n", value, s2[index], v1, v2)
 				return false
 			}
-			fmt.Printf("CompareSlices: OK-after-conv: value:\n'%+v' not equal to:\n'%+v'\nwithout dots: '%+v' != '%+v'\n", value, s2[index], v1, v2)
+			fmt.Printf("CompareSlices: OK after conv: value:\n'%+v' not equal to:\n'%+v'\nwithout dots: '%+v' != '%+v'\n", value, s2[index], v1, v2)
 		}
 	}
 	return true
