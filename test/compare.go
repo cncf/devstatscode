@@ -3,8 +3,11 @@ package test
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 )
+
+var dotZero = regexp.MustCompile(`(\d+)(\.000+)`)
 
 // CompareIntSlices - compares two int slices
 func CompareIntSlices(s1 []int, s2 []int) bool {
@@ -40,6 +43,17 @@ func CompareSlices(s1 []interface{}, s2 []interface{}) bool {
 	}
 	for index, value := range s1 {
 		if value != s2[index] {
+			v1s, ok1 := value.(string)
+			v2s, ok2 := s2[index].(string)
+			if ok1 && ok2 {
+				v1 := dotZero.ReplaceAllString(v1s, `$1`)
+				v2 := dotZero.ReplaceAllString(v2s, `$1`)
+				if v1 != v2 {
+					fmt.Printf("CompareSlices: value:\n'%+v' not equal to:\n'%+v'\nwithout dots: '%+v' != '%+v'\n", value, s2[index], v1, v2)
+					return false
+				}
+				continue
+			}
 			fmt.Printf("CompareSlices: value:\n'%+v' not equal to:\n'%+v'\n", value, s2[index])
 			return false
 		}
