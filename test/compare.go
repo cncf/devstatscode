@@ -37,26 +37,22 @@ func CompareStringSlices(s1 []string, s2 []string) bool {
 
 // CompareSlices - compares two any type slices
 func CompareSlices(s1 []interface{}, s2 []interface{}) bool {
+	fmt.Printf("function called!\n")
 	if len(s1) != len(s2) {
 		fmt.Printf("CompareSlices: len: %d != %d\n", len(s1), len(s2))
 		return false
 	}
 	for index, value := range s1 {
-    fmt.Printf("types: (%+v,%T) <=> (%+v,%T)\n", value, value, s2[index], s2[index])
+		fmt.Printf("types: (%+v,%T) <=> (%+v,%T)\n", value, value, s2[index], s2[index])
 		if value != s2[index] {
-			v1s, ok1 := value.(string)
-			v2s, ok2 := s2[index].(string)
-			if ok1 && ok2 {
-				v1 := dotZero.ReplaceAllString(v1s, `$1`)
-				v2 := dotZero.ReplaceAllString(v2s, `$1`)
-				if v1 != v2 {
-					fmt.Printf("CompareSlices: value:\n'%+v' not equal to:\n'%+v'\nwithout dots: '%+v' != '%+v'\n", value, s2[index], v1, v2)
-					return false
-				}
-				continue
+			v1s := fmt.Sprintf("%+v", value)
+			v2s := fmt.Sprintf("%+v", s2[index])
+			v1 := dotZero.ReplaceAllString(v1s, `$1`)
+			v2 := dotZero.ReplaceAllString(v2s, `$1`)
+			if v1 != v2 {
+				fmt.Printf("CompareSlices: value:\n'%+v' not equal to:\n'%+v'\nwithout dots: '%+v' != '%+v'\n", value, s2[index], v1, v2)
+				return false
 			}
-			fmt.Printf("CompareSlices: value:\n'%+v' not equal to:\n'%+v'\n", value, s2[index])
-			return false
 		}
 	}
 	return true
