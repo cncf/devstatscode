@@ -2,6 +2,7 @@ jsons/*.json
 jsons/*.yaml
 *.swp
 *.db
+/go.sum
 /skip_dates.yaml
 /j.json
 /g.db
