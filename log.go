@@ -40,6 +40,7 @@ func newLogContext() *logContext {
 	con := PgConn(&ctx)
 	progSplit := strings.Split(os.Args[0], "/")
 	prog := progSplit[len(progSplit)-1]
+	now := time.Now()
 	info := fmt.Sprintf("Compiled %s, commit: %s on %s using %s", BuildStamp, GitHash, HostName, GoVersion)
 	fmt.Printf("%s\n", info)
 	_, _ = ExecSQL(
@@ -48,7 +49,7 @@ func newLogContext() *logContext {
 		"insert into gha_logs(prog, proj, run_dt, msg) "+NValues(4),
 		prog,
 		ctx.Project,
-		time.Now(),
+		now,
 		info,
 	)
 	return &logContext{
@@ -56,7 +57,7 @@ func newLogContext() *logContext {
 		con:   con,
 		prog:  prog,
 		proj:  ctx.Project,
-		runDt: time.Now(),
+		runDt: now,
 	}
 }
 
