@@ -1183,6 +1183,7 @@ func main() {
 	}
 	gCmd = strings.Join(os.Args[1:], " ")
 	lib.Printf("%s...\n", os.Args[2])
+	lib.Printf("Start(%s)\n", strings.Join(os.Args[1:], ";"))
 	calcMetric(
 		os.Args[1],
 		os.Args[2],
