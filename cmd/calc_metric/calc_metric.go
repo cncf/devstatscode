@@ -32,6 +32,7 @@ type calcMetricData struct {
 var (
 	gStartDt time.Time
 	gCmd     string
+	gDropped bool
 )
 
 // some metrics can define series_name_map to change internal series names generated
@@ -412,7 +413,10 @@ func calcRange(
 		if mut != nil {
 			mut.Lock()
 		}
-		handleSeriesDrop(ctx, sqlc, cfg)
+		if !gDropped {
+			handleSeriesDrop(ctx, sqlc, cfg)
+			gDropped = true
+		}
 		if mut != nil {
 			mut.Unlock()
 		}
