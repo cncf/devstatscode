@@ -547,7 +547,6 @@ func handleSeriesDrop(ctx *lib.Ctx, con *sql.DB, cfg *calcMetricData) {
 				}
 				// lib.ExecSQLWithErr(con, ctx, "truncate "+table)
 				// lib.ExecSQLWithErr(con, ctx, "drop table if exists "+table)
-				lib.Printf("dropping table '%s'\n", table)
 				_, err := lib.ExecSQL(con, ctx, "drop table "+table)
 				if err != nil {
 					lib.Printf("warning: failed dropping table '%s': %+v\n", table, err)
