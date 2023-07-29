@@ -409,6 +409,13 @@ func calcRange(
 	}
 	// Write the batch
 	if !ctx.SkipTSDB && !ctx.UseESOnly {
+		if mut != nil {
+			mut.Lock()
+		}
+		handleSeriesDrop(ctx, sqlc, cfg)
+		if mut != nil {
+			mut.Unlock()
+		}
 		lib.WriteTSPoints(ctx, sqlc, &pts, cfg.mergeSeries, mut)
 	} else if ctx.Debug > 0 {
 		lib.Printf("Skipping series write\n")
@@ -1001,7 +1008,7 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 		lib.FatalOnError(sqlc.Close())
 	}()
 	// Handle 'drop:' metric flag
-	handleSeriesDrop(&ctx, sqlc, cfg)
+	// handleSeriesDrop(&ctx, sqlc, cfg)
 
 	// Parse input dates
 	dFrom := lib.TimeParseAny(from)
