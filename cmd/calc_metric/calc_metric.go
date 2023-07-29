@@ -1185,5 +1185,5 @@ func main() {
 		&cfg,
 	)
 	dtEnd := time.Now()
-	lib.Printf("Time(%s): %v\n", os.Args[2], dtEnd.Sub(dtStart))
+	lib.Printf("Time(%s): %v\n", strings.Join(os.Args[1:], ";"), dtEnd.Sub(dtStart))
 }
