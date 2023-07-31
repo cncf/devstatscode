@@ -47,6 +47,7 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index events_created_at_idx on gha_events(created_at)")
 		ExecSQLWithErr(c, ctx, "create index events_dup_actor_login_idx on gha_events(dup_actor_login)")
 		ExecSQLWithErr(c, ctx, "create index events_dup_repo_name_idx on gha_events(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index events_f_lower_dup_actor_login_idx ON gha_events(lower(dup_actor_login))")
 	}
 
 	// gha_actors
@@ -396,6 +397,9 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index commits_committer_id_idx on gha_commits(committer_id)")
 		ExecSQLWithErr(c, ctx, "create index commits_dup_author_login_idx on gha_commits(dup_author_login)")
 		ExecSQLWithErr(c, ctx, "create index commits_dup_committer_login_idx on gha_commits(dup_committer_login)")
+		ExecSQLWithErr(c, ctx, "create index commits_lower_dup_actor_login_idx on gha_commits(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index commits_lower_dup_author_login_idx on gha_commits(lower(dup_author_login))")
+		ExecSQLWithErr(c, ctx, "create index commits_lower_dup_committer_login_idx on gha_commits(lower(dup_committer_login))")
 	}
 
 	// gha_commits_roles - artificial table, created from commit trailers
@@ -528,6 +532,8 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index comments_dup_type_idx on gha_comments(dup_type)")
 		ExecSQLWithErr(c, ctx, "create index comments_dup_created_at_idx on gha_comments(dup_created_at)")
 		ExecSQLWithErr(c, ctx, "create index comments_dup_user_login_idx on gha_comments(dup_user_login)")
+		ExecSQLWithErr(c, ctx, "create index comments_lower_dup_actor_login_idx on gha_comments(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index comments_lower_dup_user_login_idx on gha_comments(lower(dup_user_login))")
 	}
 
 	// gha_issues
@@ -602,6 +608,8 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index issues_dup_created_at_idx on gha_issues(dup_created_at)")
 		ExecSQLWithErr(c, ctx, "create index issues_dup_user_login_idx on gha_issues(dup_user_login)")
 		ExecSQLWithErr(c, ctx, "create index issues_dupn_assignee_login_idx on gha_issues(dupn_assignee_login)")
+		ExecSQLWithErr(c, ctx, "create index issues_lower_dup_actor_login_idx on gha_issues(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index issues_lower_dup_user_login_idx on gha_issues(lower(dup_user_login))")
 	}
 
 	// gha_milestones
@@ -707,6 +715,7 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index issues_labels_dup_created_at_idx on gha_issues_labels(dup_created_at)")
 		ExecSQLWithErr(c, ctx, "create index issues_labels_dup_issue_number_idx on gha_issues_labels(dup_issue_number)")
 		ExecSQLWithErr(c, ctx, "create index issues_labels_dup_label_name_idx on gha_issues_labels(dup_label_name)")
+		ExecSQLWithErr(c, ctx, "create index issues_labels_lower_dup_actor_login_idx on gha_issues_labels(lower(dup_actor_login))")
 	}
 
 	// gha_forkees
@@ -990,6 +999,9 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index pull_requests_dup_user_login_idx on gha_pull_requests(dup_user_login)")
 		ExecSQLWithErr(c, ctx, "create index pull_requests_dupn_assignee_login_idx on gha_pull_requests(dupn_assignee_login)")
 		ExecSQLWithErr(c, ctx, "create index pull_requests_dupn_merged_by_login_idx on gha_pull_requests(dupn_merged_by_login)")
+		ExecSQLWithErr(c, ctx, "create index pull_requests_lower_dup_actor_login_idx on gha_pull_requests(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index pull_requests_lower_dup_user_login_idx on gha_pull_requests(lower(dup_user_login))")
+		ExecSQLWithErr(c, ctx, "create index pull_requests_lower_dupn_merged_by_login_idx on gha_pull_requests(lower(dupn_merged_by_login))")
 	}
 
 	// gha_branches
@@ -1128,6 +1140,8 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index reviews_dup_type_idx on gha_reviews(dup_type)")
 		ExecSQLWithErr(c, ctx, "create index reviews_dup_user_login_idx on gha_reviews(dup_user_login)")
 		ExecSQLWithErr(c, ctx, "create index reviews_dup_created_at_idx on gha_reviews(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index reviews_lower_dup_actor_login_idx on gha_reviews(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index reviews_lower_dup_user_login_idx on gha_reviews(lower(dup_user_login))")
 	}
 
 	// Logs table (recently this table moved to separate database `devstats` to separate logs
@@ -1295,6 +1309,7 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index texts_repo_id_idx on gha_texts(repo_id)")
 		ExecSQLWithErr(c, ctx, "create index texts_repo_name_idx on gha_texts(repo_name)")
 		ExecSQLWithErr(c, ctx, "create index texts_type_idx on gha_texts(type)")
+		ExecSQLWithErr(c, ctx, "create index texts_lower_actor_login_idx on gha_texts(lower(actor_login))")
 	}
 
 	// This table is a kind of `materialized view` of issue event labels
@@ -1353,6 +1368,7 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index issues_events_labels_repo_name_idx on gha_issues_events_labels(repo_name)")
 		ExecSQLWithErr(c, ctx, "create index issues_events_labels_type_idx on gha_issues_events_labels(type)")
 		ExecSQLWithErr(c, ctx, "create index issues_events_labels_issue_number_idx on gha_issues_events_labels(issue_number)")
+		ExecSQLWithErr(c, ctx, "create index issues_events_labels_lower_actor_login_idx on gha_issues_events_labels(lower(actor_login))")
 	}
 
 	// This table is a kind of `materialized view` of issues - PRs connections
