@@ -47,7 +47,7 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index events_created_at_idx on gha_events(created_at)")
 		ExecSQLWithErr(c, ctx, "create index events_dup_actor_login_idx on gha_events(dup_actor_login)")
 		ExecSQLWithErr(c, ctx, "create index events_dup_repo_name_idx on gha_events(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index events_f_lower_dup_actor_login_idx ON gha_events(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index events_lower_dup_actor_login_idx ON gha_events(lower(dup_actor_login))")
 	}
 
 	// gha_actors
