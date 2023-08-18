@@ -103,7 +103,7 @@ func GetAnnotations(ctx *Ctx, orgRepo, annoRegexp string) (annotations Annotatio
 	nTags := 0
 
 	minDate := TimeParseAny("2012-07-01")
-	prevHourDate := minDate
+	var anns Annotations
 	for _, tagData := range tags {
 		data := strings.TrimSpace(tagData)
 		if data == "" {
@@ -136,14 +136,6 @@ func GetAnnotations(ctx *Ctx, orgRepo, annoRegexp string) (annotations Annotatio
 			}
 			continue
 		}
-		currHourDate := HourStart(creatorDate)
-		if currHourDate == prevHourDate {
-			if ctx.Debug > 0 {
-				Printf("Skipping annotation %v because its hour date is the same as the previous one\n", tagData)
-			}
-			continue
-		}
-		prevHourDate = currHourDate
 		message := tagDataAry[2]
 		if len(message) > 40 {
 			message = message[0:40]
@@ -151,8 +143,8 @@ func GetAnnotations(ctx *Ctx, orgRepo, annoRegexp string) (annotations Annotatio
 		replacer := strings.NewReplacer("\n", " ", "\r", " ", "\t", " ")
 		message = replacer.Replace(message)
 
-		annotations.Annotations = append(
-			annotations.Annotations,
+		anns.Annotations = append(
+			anns.Annotations,
 			Annotation{
 				Name:        tagName,
 				Description: message,
@@ -164,6 +156,21 @@ func GetAnnotations(ctx *Ctx, orgRepo, annoRegexp string) (annotations Annotatio
 
 	if ctx.Debug > 0 {
 		Printf("Got %d tags for %s, took %v\n", nTags, orgRepo, dtEnd.Sub(dtStart))
+	}
+
+	// Remove duplicates (annotations falling into the same hour)
+	prevHourDate := minDate
+	sort.Sort(AnnotationsByDate(anns.Annotations))
+	for _, ann := range anns.Annotations {
+		currHourDate := HourStart(ann.Date)
+		if currHourDate == prevHourDate {
+			if ctx.Debug > 0 {
+				Printf("Skipping annotation %v because its hour date is the same as the previous one\n", ann)
+			}
+			continue
+		}
+		prevHourDate = currHourDate
+		annotations.Annotations = append(annotations.Annotations, ann)
 	}
 
 	return
