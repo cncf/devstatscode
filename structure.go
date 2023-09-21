@@ -218,6 +218,34 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index repos_updated_at_idx on gha_repos(updated_at)")
 	}
 
+	// gha_repo_groups
+	// const
+	if ctx.Table {
+		ExecSQLWithErr(c, ctx, "drop table if exists gha_repo_groups")
+		ExecSQLWithErr(
+			c,
+			ctx,
+			CreateTable(
+				"gha_repo_groups("+
+					"id bigint not null, "+
+					"name varchar(160) not null, "+
+					"repo_group varchar(80), "+
+					"org_id bigint, "+
+					"org_login varchar(100), "+
+					"alias varchar(160), "+
+					"primary key(id, name, repo_group))",
+			),
+		)
+	}
+	if ctx.Index {
+		ExecSQLWithErr(c, ctx, "create index repo_groups_id_idx on gha_repo_groups(id)")
+		ExecSQLWithErr(c, ctx, "create index repo_groups_name_idx on gha_repo_groups(name)")
+		ExecSQLWithErr(c, ctx, "create index repo_groups_repo_group_idx on gha_repo_groups(repo_group)")
+		ExecSQLWithErr(c, ctx, "create index repo_groups_org_id_idx on gha_repo_groups(org_id)")
+		ExecSQLWithErr(c, ctx, "create index repo_groups_org_login_idx on gha_repo_groups(org_login)")
+		ExecSQLWithErr(c, ctx, "create index repo_groups_alias_idx on gha_repo_groups(alias)")
+	}
+
 	// gha_repos_langs
 	// const
 	if ctx.Table {

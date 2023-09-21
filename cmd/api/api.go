@@ -1814,6 +1814,7 @@ func apiRepos(info string, w http.ResponseWriter, payload map[string]interface{}
 	}
 	repositoryGroupParam := params["repository_group"]
 	var rows *sql.Rows
+	// TODO: consider swiitching to gha_repo_groups
 	query := `
     select
       distinct coalesce(case repo_group when '' then 'Not specified' else repo_group end, 'Not specified') as "Repository group",
