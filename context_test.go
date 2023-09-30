@@ -291,6 +291,7 @@ func TestInit(t *testing.T) {
 		EnableMetricsDrop:        false,
 		RefreshCommitRoles:       false,
 		RandComputeAtThisDate:    true,
+		AllowRandTagsColsCompute: false,
 		RecalcReciprocal:         24,
 		MaxHistograms:            0,
 	}
@@ -1760,6 +1761,7 @@ func TestInit(t *testing.T) {
 	for index, test := range testCases {
 		var gotContext lib.Ctx
 		test.expectedContext.RandComputeAtThisDate = true
+		// test.expectedContext.AllowRandTagsColsCompute = false
 
 		// Because GitHubOAuth is depending on /etc/github/oauth* files
 		// We can't test this, because user test environment can have those files or not

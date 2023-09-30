@@ -403,10 +403,14 @@ func sync(ctx *lib.Ctx, args []string) {
 	}
 
 	// Calc metric
-	dailyRecalcHour := 0
+	dailyRecalcHour := 0 // This is only correct when we are able to run all syncs every hour, otherwise set ctx.RandComputeAtThisDate to true
 	ranTags := false
 	if ctx.RandComputeAtThisDate {
 		dailyRecalcHour = rand.Intn(6)
+	}
+	// AllowRandTagsColsCompute - If set, then tags and columns will only be computed at random 0-5 hour, otherwise always when hour<6.
+	if !ctx.AllowRandTagsColsCompute && nowHour < 6 {
+		dailyRecalcHour = nowHour
 	}
 	if !ctx.SkipTSDB || ctx.UseESOnly {
 		metricsDir := dataPrefix + "metrics"
@@ -451,7 +455,7 @@ func sync(ctx *lib.Ctx, args []string) {
 				)
 				lib.FatalOnError(err)
 			} else {
-				lib.Printf("Skipping `annotations` recalculation, it is only computed once per day\n")
+				lib.Printf("Skipping `annotations` recalculation, it is only computed once per day hour=%d\n", dailyRecalcHour)
 			}
 		}
 
@@ -777,7 +781,7 @@ func sync(ctx *lib.Ctx, args []string) {
 				_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "columns"}, nil)
 				lib.FatalOnError(err)
 			} else {
-				lib.Printf("Skipping `columns` recalculation, it is only computed once per day\n")
+				lib.Printf("Skipping `columns` recalculation, it is only computed once per day, hour=%d\n", dailyRecalcHour)
 			}
 		}
 	}

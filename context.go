@@ -153,6 +153,7 @@ type Ctx struct {
 	MaxRunDuration           map[string][2]int            // From GHA2DB_MAX_RUN_DURATION, how log given programs can run and exist status after timeout, for example "tags:1h:0,calc_metric:12h:1"
 	RandComputeAtThisDate    bool                         // Use rand to decide if a given date period must be calculated at this date or not.
 	RefreshCommitRoles       bool                         // From GHA2DB_REFRESH_COMMIT_ROLES - will process all commiths in DB and for every single one of them it will generate gha_commits_roles entries.
+	AllowRandTagsColsCompute bool                         // If set, then tags and columns will only be computed at random 0-5 hour, otherwise always when hour<6.
 }
 
 // Init - get context from environment variables
@@ -162,6 +163,7 @@ func (ctx *Ctx) Init() {
 	ctx.ExecOutput = false
 	ctx.CanReconnect = true
 	ctx.RandComputeAtThisDate = true
+	ctx.AllowRandTagsColsCompute = false
 
 	/// Commits analysis
 	ctx.CommitsFilesStatsEnabled = os.Getenv("GHA2DB_SKIP_COMMITS_FILES") == ""
