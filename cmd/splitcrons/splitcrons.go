@@ -70,6 +70,8 @@ var (
 	gMonthly     bool
 	gSkipAffsEnv bool
 	gSkipSyncEnv bool
+	gOnlyProd    bool
+	gOnlyTest    bool
 	gPatchEnv    map[string]struct{}
 	gName2Env    map[string]string
 )
@@ -482,6 +484,8 @@ func generateCronValues(inFile, outFile string) {
 	gNoSuspendA = os.Getenv("NO_SUSPEND_A") != ""
 	gSkipAffsEnv = os.Getenv("SKIP_AFFS_ENV") != ""
 	gSkipSyncEnv = os.Getenv("SKIP_SYNC_ENV") != ""
+	gOnlyProd = os.Getenv("ONLY_PROD") != ""
+	gOnlyTest = os.Getenv("ONLY_TEST") != ""
 	setPatchEnvMap()
 	minutes := syncHours * (60.0 - ghaOffset)
 	hours := float64(cWeekHours)
@@ -523,6 +527,12 @@ func generateCronValues(inFile, outFile string) {
 	for i, project := range values.Projects {
 		t := !project.SuspendCronTest && project.Domains[0] != 0
 		p := !project.SuspendCronProd && (project.Domains[1] != 0 || project.Domains[2] != 0 || project.Domains[3] != 0)
+		if gOnlyProd {
+			t = false
+		}
+		if gOnlyTest {
+			p = false
+		}
 		if !gOnlySuspend {
 			switch project.DB {
 			case "gha":
