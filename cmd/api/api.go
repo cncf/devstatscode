@@ -2364,8 +2364,8 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
     where
       cr.actor_id = af.actor_id
       and cr.role = 'Co-authored-by'
-      and af.dt_from <= c.dup_created_at
-      and af.dt_to > c.dup_created_at
+      and af.dt_from <= cr.dup_created_at
+      and af.dt_to > cr.dup_created_at
       and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
   ) sub
   `
