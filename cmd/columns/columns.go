@@ -101,7 +101,8 @@ func ensureColumns() {
 				&ctx,
 				fmt.Sprintf(
 					"select tablename from pg_catalog.pg_tables where "+
-						"schemaname = 'public' and substring(tablename from %s) is not null",
+						// "schemaname = 'public' and substring(tablename from %s) is not null",
+						"schemaname = 'public' and tablename ~ %s",
 					lib.NValue(1),
 				),
 				col.TableRegexp,
