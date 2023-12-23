@@ -2262,7 +2262,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 				msg := msgs[i]
 				go addMappingFunc(ch, sha, eventID, repoID, repoName, evCreatedAt, msg)
 				nThreads++
-				if nThreads == thrN {
+				for nThreads >= thrN {
 					_ = <-ch
 					nThreads--
 					prc++
@@ -2323,7 +2323,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 			}
 			go updateFunc(ch, data)
 			nThreads++
-			if nThreads == thrN {
+			for nThreads >= thrN {
 				_ = <-ch
 				nThreads--
 				prc++
@@ -2419,7 +2419,7 @@ func updateCommitRoles(ctx *lib.Ctx) {
 			email := emails[i]
 			go updateFunc(ch, name, email)
 			nThreads++
-			if nThreads == thrN {
+			for nThreads >= thrN {
 				_ = <-ch
 				nThreads--
 				prc++
@@ -2722,7 +2722,7 @@ func gha2db(args []string) {
 			mp[dt] = struct{}{}
 			dt = dt.Add(time.Hour)
 			nThreads++
-			if nThreads == thrN {
+			for nThreads >= thrN {
 				prcdt := <-ch
 				delete(mp, prcdt)
 				nThreads--
