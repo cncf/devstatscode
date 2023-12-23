@@ -1,10 +1,38 @@
 package devstatscode
 
 import (
+	"bufio"
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
+
+// EnvSyncer - support auto updating env variables via "env.env" file
+func EnvSyncer() {
+	for {
+		time.Sleep(30 * time.Second)
+		ef, err := os.Open("env.env")
+		if err != nil {
+			continue
+		}
+		defer ef.Close()
+		sc := bufio.NewScanner(ef)
+		for sc.Scan() {
+			line := sc.Text()
+			ary := strings.Split(line, "=")
+			if len(ary) != 2 {
+				continue
+			}
+			k := strings.TrimSpace(ary[0])
+			if k == "" {
+				continue
+			}
+			v := strings.TrimSpace(ary[1])
+			os.Setenv(k, v)
+		}
+	}
+}
 
 // EnvReplace - replace all environment variables starting with "prefix"
 // with contents of variables with "suffix" added - if defined

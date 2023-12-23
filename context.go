@@ -6,7 +6,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+)
+
+var (
+	syncerOnce sync.Once
 )
 
 // Ctx - environment context packed in structure
@@ -158,6 +163,10 @@ type Ctx struct {
 
 // Init - get context from environment variables
 func (ctx *Ctx) Init() {
+	// Initialize env syncer once
+	syncerOnce.Do(func() {
+		go EnvSyncer()
+	})
 	ctx.ExecFatal = true
 	ctx.ExecQuiet = false
 	ctx.ExecOutput = false
