@@ -21,14 +21,15 @@ func EnvSyncer() {
 		for sc.Scan() {
 			line := sc.Text()
 			ary := strings.Split(line, "=")
-			if len(ary) != 2 {
+			if len(ary) < 2 {
 				continue
 			}
 			k := strings.TrimSpace(ary[0])
 			if k == "" {
 				continue
 			}
-			v := strings.TrimSpace(ary[1])
+			// v := strings.TrimSpace(ary[1])
+			v := strings.TrimSpace(strings.Join(ary[1:], "="))
 			os.Setenv(k, v)
 		}
 	}
