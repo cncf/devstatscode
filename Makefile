@@ -44,6 +44,7 @@ runq: cmd/runq/runq.go ${GO_LIB_FILES}
 api: cmd/api/api.go ${GO_LIB_FILES}
 	 ${GO_ENV} ${GO_BUILD} -o api cmd/api/api.go
 
+# go build -o gha2db.g cmd/gha2db/gha2db.go
 gha2db: cmd/gha2db/gha2db.go ${GO_LIB_FILES}
 	 ${GO_ENV} ${GO_BUILD} -o gha2db cmd/gha2db/gha2db.go
 
