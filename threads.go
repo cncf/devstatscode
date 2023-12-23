@@ -9,6 +9,8 @@ import (
 // It can be used to debug single threaded verion
 // It runs on 95% CPU power by default
 func GetThreadsNum(ctx *Ctx) int {
+	// Get CPUs setting from env
+	ctx.SetCPUs()
 	// Use environment variable to have singlethreaded version
 	if ctx.NCPUs > 0 {
 		n := runtime.NumCPU()

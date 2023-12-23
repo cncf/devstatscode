@@ -161,10 +161,30 @@ type Ctx struct {
 	AllowRandTagsColsCompute bool                         // If set, then tags and columns will only be computed at random 0-5 hour, otherwise always when hour<6.
 }
 
+// SetCPUs - set CPUs
+func (ctx *Ctx) SetCPUs() {
+	// Threading
+	ctx.ST = os.Getenv("GHA2DB_ST") != ""
+	// NCPUs
+	if os.Getenv("GHA2DB_NCPUS") == "" {
+		ctx.NCPUs = 0
+	} else {
+		nCPUs, err := strconv.Atoi(os.Getenv("GHA2DB_NCPUS"))
+		FatalNoLog(err)
+		if nCPUs > 0 {
+			ctx.NCPUs = nCPUs
+			if ctx.NCPUs == 1 {
+				ctx.ST = true
+			}
+		}
+	}
+}
+
 // Init - get context from environment variables
 func (ctx *Ctx) Init() {
 	// Initialize env syncer once
 	syncerOnce.Do(func() {
+		UpdateEnv()
 		go EnvSyncer()
 	})
 	ctx.ExecFatal = true
@@ -250,20 +270,7 @@ func (ctx *Ctx) Init() {
 	ctx.CtxOut = os.Getenv("GHA2DB_CTXOUT") != ""
 
 	// Threading
-	ctx.ST = os.Getenv("GHA2DB_ST") != ""
-	// NCPUs
-	if os.Getenv("GHA2DB_NCPUS") == "" {
-		ctx.NCPUs = 0
-	} else {
-		nCPUs, err := strconv.Atoi(os.Getenv("GHA2DB_NCPUS"))
-		FatalNoLog(err)
-		if nCPUs > 0 {
-			ctx.NCPUs = nCPUs
-			if ctx.NCPUs == 1 {
-				ctx.ST = true
-			}
-		}
-	}
+	ctx.SetCPUs()
 
 	// Postgres DB
 	ctx.PgHost = os.Getenv("PG_HOST")

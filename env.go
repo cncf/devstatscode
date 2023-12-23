@@ -2,36 +2,49 @@ package devstatscode
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
 	"time"
 )
 
+var gEnvMap map[string]string = make(map[string]string)
+
 // EnvSyncer - support auto updating env variables via "env.env" file
 func EnvSyncer() {
 	for {
 		time.Sleep(30 * time.Second)
-		ef, err := os.Open("env.env")
-		if err != nil {
+		UpdateEnv()
+	}
+}
+
+// UpdateEnv - update (eventually) env using env.env file
+func UpdateEnv() {
+	ef, err := os.Open("env.env")
+	if err != nil {
+		return
+	}
+	defer ef.Close()
+	sc := bufio.NewScanner(ef)
+	for sc.Scan() {
+		line := sc.Text()
+		ary := strings.Split(line, "=")
+		if len(ary) < 2 {
 			continue
 		}
-		defer ef.Close()
-		sc := bufio.NewScanner(ef)
-		for sc.Scan() {
-			line := sc.Text()
-			ary := strings.Split(line, "=")
-			if len(ary) < 2 {
-				continue
-			}
-			k := strings.TrimSpace(ary[0])
-			if k == "" {
-				continue
-			}
-			// v := strings.TrimSpace(ary[1])
-			v := strings.TrimSpace(strings.Join(ary[1:], "="))
-			os.Setenv(k, v)
+		k := strings.TrimSpace(ary[0])
+		if k == "" {
+			continue
 		}
+		// v := strings.TrimSpace(ary[1])
+		v := strings.TrimSpace(strings.Join(ary[1:], "="))
+		os.Setenv(k, v)
+		cv, ok := gEnvMap[k]
+		if !ok || cv != v {
+			fmt.Printf("new environment overwrite: '%s' --> '%s'\n", k, v)
+		}
+		gEnvMap[k] = v
 	}
 }
 

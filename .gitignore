@@ -74,3 +74,4 @@ sqlite/*.sql
 # IDE Config
 .idea
 *.g
+env.env
