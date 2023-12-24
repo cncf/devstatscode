@@ -15,12 +15,12 @@ var gEnvMap map[string]string = make(map[string]string)
 func EnvSyncer() {
 	for {
 		time.Sleep(30 * time.Second)
-		UpdateEnv()
+		UpdateEnv(true)
 	}
 }
 
 // UpdateEnv - update (eventually) env using env.env file
-func UpdateEnv() {
+func UpdateEnv(useLog bool) {
 	ef, err := os.Open("env.env")
 	if err != nil {
 		return
@@ -42,7 +42,13 @@ func UpdateEnv() {
 		os.Setenv(k, v)
 		cv, ok := gEnvMap[k]
 		if !ok || cv != v {
-			fmt.Printf("new environment overwrite: '%s' --> '%s'\n", k, v)
+			if useLog {
+				if IsLogInitialized() {
+					Printf("new environment overwrite: '%s' --> '%s'\n", k, v)
+				}
+			} else {
+				fmt.Printf("new environment overwrite: '%s' --> '%s'\n", k, v)
+			}
 		}
 		gEnvMap[k] = v
 	}

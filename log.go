@@ -23,13 +23,15 @@ type logContext struct {
 // This variable is initialized *only* once, and must be guared by the mutex
 // to avoid initializing it from multiple go routines
 var (
-	logCtx      *logContext
-	logCtxMutex sync.RWMutex
-	logOnce     sync.Once
-	BuildStamp  = "None"
-	GitHash     = "None"
-	HostName    = "None"
-	GoVersion   = "None"
+	logCtx         *logContext
+	logCtxMutex    sync.RWMutex
+	logOnce        sync.Once
+	logInitialized = false
+	logInitMtx     sync.Mutex
+	BuildStamp     = "None"
+	GitHash        = "None"
+	HostName       = "None"
+	GoVersion      = "None"
 )
 
 // Returns new context when not yet created
@@ -52,6 +54,11 @@ func newLogContext() *logContext {
 		now,
 		info,
 	)
+	defer func() {
+		logInitMtx.Lock()
+		logInitialized = true
+		logInitMtx.Unlock()
+	}()
 	return &logContext{
 		ctx:   ctx,
 		con:   con,
@@ -106,6 +113,13 @@ func Printf(format string, args ...interface{}) (n int, err error) {
 	}
 	err = logToDB(format, args...)
 	return
+}
+
+// IsLogInitialized - check if log is initialized
+func IsLogInitialized() bool {
+	logInitMtx.Lock()
+	defer logInitMtx.Unlock()
+	return logInitialized
 }
 
 // ClearDBLogs clears logs older by defined period (in context.go)

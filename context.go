@@ -184,7 +184,7 @@ func (ctx *Ctx) SetCPUs() {
 func (ctx *Ctx) Init() {
 	// Initialize env syncer once
 	syncerOnce.Do(func() {
-		UpdateEnv()
+		UpdateEnv(false)
 		go EnvSyncer()
 	})
 	ctx.ExecFatal = true
