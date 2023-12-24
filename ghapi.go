@@ -1053,6 +1053,7 @@ func SyncIssuesState(gctx context.Context, gc []*github.Client, ctx *Ctx, c *sql
 
 	// Get number of CPUs available
 	thrN := GetThreadsNum(ctx)
+	prc := 0
 
 	var issuesMutex = &sync.RWMutex{}
 	// Now iterate all issues/PR in MT mode
@@ -1490,9 +1491,13 @@ func SyncIssuesState(gctx context.Context, gc []*github.Client, ctx *Ctx, c *sql
 
 			// go routine called with 'ch' channel to sync and tag index
 			nThreads++
-			if nThreads == thrN {
+			for nThreads >= thrN {
 				<-ch
 				nThreads--
+				prc++
+				if prc%20 == 0 {
+					thrN = GetThreadsNum(ctx)
+				}
 				checked++
 				ProgressInfo(checked, nIssues, dtStart, &lastTime, time.Duration(10)*time.Second, "")
 			}
@@ -2068,9 +2073,13 @@ func SyncIssuesState(gctx context.Context, gc []*github.Client, ctx *Ctx, c *sql
 
 		// go routine called with 'ch' channel to sync and tag index
 		nThreads++
-		if nThreads == thrN {
+		for nThreads >= thrN {
 			<-ch
 			nThreads--
+			prc++
+			if prc%20 == 0 {
+				thrN = GetThreadsNum(ctx)
+			}
 			checked++
 			ProgressInfo(checked, nIssues, dtStart, &lastTime, time.Duration(10)*time.Second, "")
 		}

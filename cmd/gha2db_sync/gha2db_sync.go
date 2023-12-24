@@ -743,7 +743,7 @@ func sync(ctx *lib.Ctx, args []string) {
 			for idx, hist := range hists {
 				go calcHistogram(ch, ctx, hist, envMaps[idx], allowFails[idx], waitAfterFails[idx])
 				nThreads++
-				if nThreads == thrN {
+				for nThreads >= thrN {
 					res := <-ch
 					if res > maxRes {
 						maxRes = res

@@ -1278,15 +1278,20 @@ func syncLicenses(ctx *lib.Ctx) {
 		found++
 		mtx.Unlock()
 	}
+	prc := 0
 	if thrN > 1 {
 		ch := make(chan struct{})
 		nThreads := 0
 		for _, repo := range repos {
 			go getLicense(ch, repo)
 			nThreads++
-			if nThreads == thrN {
+			for nThreads >= thrN {
 				<-ch
 				nThreads--
+				prc++
+				if prc%20 == 0 {
+					thrN = lib.GetThreadsNum(ctx)
+				}
 				if !iter(false) {
 					return
 				}
@@ -1462,15 +1467,20 @@ func syncLangs(ctx *lib.Ctx) {
 		found++
 		mtx.Unlock()
 	}
+	prc := 0
 	if thrN > 1 {
 		ch := make(chan struct{})
 		nThreads := 0
 		for _, repo := range repos {
 			go getLangs(ch, repo)
 			nThreads++
-			if nThreads == thrN {
+			for nThreads >= thrN {
 				<-ch
 				nThreads--
+				prc++
+				if prc%20 == 0 {
+					thrN = lib.GetThreadsNum(ctx)
+				}
 				if !iter(false) {
 					return
 				}
