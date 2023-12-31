@@ -18,12 +18,14 @@ func FatalOnError(err error) string {
 		case *pq.Error:
 			errName := e.Code.Name()
 			if errName == "too_many_connections" {
-				Printf("PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
-				Printf("Warning: too many postgres connections: %+v: '%s'\n", tm, err.Error())
+				fmt.Fprintf(os.Stderr, "PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
+				fmt.Fprintf(os.Stderr, "Warning: too many postgres connections: %+v: '%s'\n", tm, err.Error())
 				return Retry
 			} else if errName == "cannot_connect_now" {
-				Printf("PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
-				Printf("Warning: DB shutting down: %+v: '%s'\n", tm, err.Error())
+				fmt.Fprintf(os.Stderr, "PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
+				fmt.Fprintf(os.Stderr, "Warning: DB shutting down: %+v: '%s', sleeping 5 minutes to settle\n", tm, err.Error())
+				time.Sleep(time.Duration(300) * time.Second)
+				fmt.Fprintf(os.Stderr, "Warning: DB shutting down: %+v: '%s', waited 5 minutes, retrying\n", tm, err.Error())
 				return Reconnect
 			}
 			Printf("PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
@@ -33,20 +35,22 @@ func FatalOnError(err error) string {
 				case "program_limit_exceeded", "undefined_column", "invalid_catalog_name", "character_not_in_repertoire":
 					Printf("%s error is not retryable, even with DURABLE_PQ\n", errName)
 				default:
-					Printf("retrying with DURABLE_PQ\n")
+					fmt.Fprintf(os.Stderr, "retrying with DURABLE_PQ\n")
 					return Reconnect
 				}
 			}
 		default:
-			Printf("ErrorType: %T, error: %+v\n", e, e)
+			fmt.Fprintf(os.Stderr, "ErrorType: %T, error: %+v\n", e, e)
 			fmt.Fprintf(os.Stderr, "ErrorType: %T, error: %+v\n", e, e)
 		}
 		if strings.Contains(err.Error(), "driver: bad connection") {
-			Printf("Warning: bad driver, retrying\n")
+			fmt.Fprintf(os.Stderr, "Warning: bad driver, retrying\n")
 			return Reconnect
 		}
 		if strings.Contains(err.Error(), "cannot assign requested address") {
-			Printf("Warning: cannot assign requested address, retrying\n")
+			fmt.Fprintf(os.Stderr, "Warning: cannot assign requested address, retrying in 5 minutes\n")
+			time.Sleep(time.Duration(300) * time.Second)
+			fmt.Fprintf(os.Stderr, "Warning: cannot assign requested address - waited 5 minutes, retrying\n")
 			return Reconnect
 		}
 		/*
@@ -55,8 +59,7 @@ func FatalOnError(err error) string {
 				return Reconnect
 			}
 		*/
-		Printf("Error(time=%+v):\nError: '%s'\nStacktrace:\n%s\n", tm, err.Error(), string(debug.Stack()))
-		fmt.Fprintf(os.Stderr, "Error(time=%+v):\nError: '%s'\nStacktrace:\n", tm, err.Error())
+		fmt.Fprintf(os.Stderr, "Error(time=%+v):\nError: '%s'\nStacktrace:\n%s\n", tm, err.Error(), string(debug.Stack()))
 		if os.Getenv("NO_FATAL_DELAY") == "" {
 			time.Sleep(time.Duration(60) * time.Second)
 		}
