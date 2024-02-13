@@ -23,9 +23,9 @@ func FatalOnError(err error) string {
 				return Retry
 			} else if errName == "cannot_connect_now" {
 				fmt.Fprintf(os.Stderr, "PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
-				fmt.Fprintf(os.Stderr, "Warning: DB shutting down: %+v: '%s', sleeping 5 minutes to settle\n", tm, err.Error())
-				time.Sleep(time.Duration(300) * time.Second)
-				fmt.Fprintf(os.Stderr, "Warning: DB shutting down: %+v: '%s', waited 5 minutes, retrying\n", tm, err.Error())
+				fmt.Fprintf(os.Stderr, "Warning: DB shutting down: %+v: '%s', sleeping 15 minutes to settle\n", tm, err.Error())
+				time.Sleep(time.Duration(900) * time.Second)
+				fmt.Fprintf(os.Stderr, "Warning: DB shutting down: %+v: '%s', waited 15 minutes, retrying\n", tm, err.Error())
 				return Reconnect
 			}
 			Printf("PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
@@ -48,9 +48,9 @@ func FatalOnError(err error) string {
 			return Reconnect
 		}
 		if strings.Contains(err.Error(), "cannot assign requested address") {
-			fmt.Fprintf(os.Stderr, "Warning: cannot assign requested address, retrying in 5 minutes\n")
-			time.Sleep(time.Duration(300) * time.Second)
-			fmt.Fprintf(os.Stderr, "Warning: cannot assign requested address - waited 5 minutes, retrying\n")
+			fmt.Fprintf(os.Stderr, "Warning: cannot assign requested address, retrying in 15 minutes\n")
+			time.Sleep(time.Duration(900) * time.Second)
+			fmt.Fprintf(os.Stderr, "Warning: cannot assign requested address - waited 15 minutes, retrying\n")
 			return Reconnect
 		}
 		/*
