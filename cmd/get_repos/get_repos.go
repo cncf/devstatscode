@@ -535,6 +535,7 @@ func getCommitFiles(ch chan int, ctx *lib.Ctx, con *sql.DB, filesSkipPattern *re
 			}
 			if err != nil {
 				lib.Printf("Invalid time returned for repo: %s, sha: %s: '%s'\n", repo, sha, data)
+				break
 			}
 			lib.FatalOnError(err)
 			commitDate = time.Unix(unixTimeStamp, 0)

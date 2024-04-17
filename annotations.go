@@ -127,6 +127,7 @@ func GetAnnotations(ctx *Ctx, orgRepo, annoRegexp string) (annotations Annotatio
 		unixTimeStamp, err := strconv.ParseInt(tagDataAry[1], 10, 64)
 		if err != nil {
 			Printf("Invalid time returned for repo: %s, tag: %s: '%s'\n", orgRepo, tagName, data)
+			continue
 		}
 		FatalOnError(err)
 		creatorDate := time.Unix(unixTimeStamp, 0)
