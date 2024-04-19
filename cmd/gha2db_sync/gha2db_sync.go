@@ -626,7 +626,7 @@ func sync(ctx *lib.Ctx, args []string) {
 					}
 					recalc := lib.ComputePeriodAtThisDate(ctx, period, to, metric.Histogram)
 					// Because sync probab can be less than 100% and that may cause gaps, we should eventually let do recalculation even if that period doesn't need it
-					if !recalc {
+					if !recalc && ctx.ComputePeriods == nil {
 						val := rand.Intn(ctx.RecalcReciprocal)
 						if val == 0 {
 							recalc = true
