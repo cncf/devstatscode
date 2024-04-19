@@ -461,7 +461,7 @@ func sync(ctx *lib.Ctx, args []string) {
 
 		// Get Quick Ranges from TSDB (it is filled by annotations command)
 		quickRanges := lib.GetTagValues(con, ctx, "quick_ranges", "quick_ranges_suffix")
-		lib.Printf("Quick ranges: %+v\n", quickRanges)
+		lib.Printf("Quick ranges: %+v, compute periods: %+v\n", quickRanges, ctx.ComputePeriods)
 
 		// Read metrics configuration
 		data, err := lib.ReadFile(ctx, dataPrefix+ctx.MetricsYaml)
