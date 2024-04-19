@@ -731,8 +731,8 @@ func sync(ctx *lib.Ctx, args []string) {
 		// Get number of CPUs available
 		thrN := lib.GetThreadsNum(ctx)
 		if ctx.MaxHistograms > 0 && thrN > ctx.MaxHistograms {
+			lib.Printf("Number of parallel histograms limited to %d -> %d\n", thrN, ctx.MaxHistograms)
 			thrN = ctx.MaxHistograms
-			lib.Printf("Number of parallel histograms limited to %d\n", thrN)
 		}
 		maxRes := 0
 		prc := 0
@@ -752,6 +752,9 @@ func sync(ctx *lib.Ctx, args []string) {
 					prc++
 					if prc%3 == 0 {
 						thrN = lib.GetThreadsNum(ctx)
+						if ctx.MaxHistograms > 0 && thrN > ctx.MaxHistograms {
+							thrN = ctx.MaxHistograms
+						}
 					}
 				}
 			}
