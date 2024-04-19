@@ -672,6 +672,7 @@ func sync(ctx *lib.Ctx, args []string) {
 						allowFails = append(allowFails, metric.AllowFail)
 						waitAfterFails = append(waitAfterFails, metric.WaitAfterFail)
 					} else {
+						dtStart := time.Now()
 						lib.Printf("Calculate metric %v, period %v, desc: '%v', aggregate: '%v' ...\n", metric.Name, period, metric.Desc, aggrSuffix)
 						execCtx := ctx
 						if metric.AllowFail {
@@ -705,6 +706,8 @@ func sync(ctx *lib.Ctx, args []string) {
 								}
 							}
 						}
+						dtEnd := time.Now()
+						lib.Printf("Calculated metric %v, period %v, desc: '%v', aggregate: '%v' ... %v\n", metric.Name, period, metric.Desc, aggrSuffix, dtEnd.Sub(dtStart))
 					}
 				}
 			}
@@ -812,6 +815,22 @@ func calcHistogram(ch chan int, ctx *lib.Ctx, hist []string, envMap map[string]s
 	if len(hist) != 7 {
 		lib.Fatalf("calcHistogram, expected 7 strings, got: %d: %v", len(hist), hist)
 	}
+	dtStart := time.Now()
+	defer func() {
+		dtEnd := time.Now()
+		lib.Printf(
+			"Calculated histogram %s,%s,%s,%s,%s,%s,%v,%d ... %v\n",
+			hist[1],
+			hist[2],
+			hist[3],
+			hist[4],
+			hist[5],
+			hist[6],
+			allowFail,
+			waitAfterFail,
+			dtEnd.Sub(dtStart),
+		)
+	}()
 	lib.Printf(
 		"Calculate histogram %s,%s,%s,%s,%s,%s,%v,%d ...\n",
 		hist[1],
