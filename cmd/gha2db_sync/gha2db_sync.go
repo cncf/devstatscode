@@ -636,7 +636,7 @@ func sync(ctx *lib.Ctx, args []string) {
 						lib.Printf("Recalculate period \"%s%s\", hist %v for date to %v: %v\n", period, aggrSuffix, metric.Histogram, to, recalc)
 					}
 					if (!ctx.ResetTSDB || ctx.ComputePeriods != nil) && !recalc {
-						lib.Printf("Skipping recalculating period \"%s%s\", hist %v for date to %v\n", period, aggrSuffix, metric.Histogram, to)
+						lib.Printf("Skipping recalculating period \"%s%s\", hist %v for date to %v, computePeriods: %+v\n", period, aggrSuffix, metric.Histogram, to, ctx.ComputePeriods)
 						continue
 					}
 					seriesNameOrFunc := metric.SeriesNameOrFunc
