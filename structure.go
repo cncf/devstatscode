@@ -543,6 +543,7 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
+		ExecSQLWithErr(c, ctx, "create index comments_id_idx on gha_comments(id)")
 		ExecSQLWithErr(c, ctx, "create index comments_event_id_idx on gha_comments(event_id)")
 		ExecSQLWithErr(c, ctx, "create index comments_created_at_idx on gha_comments(created_at)")
 		ExecSQLWithErr(c, ctx, "create index comments_updated_at_idx on gha_comments(updated_at)")
@@ -619,6 +620,7 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
+		ExecSQLWithErr(c, ctx, "create index issues_id_idx on gha_issues(id)")
 		ExecSQLWithErr(c, ctx, "create index issues_event_id_idx on gha_issues(event_id)")
 		ExecSQLWithErr(c, ctx, "create index issues_assignee_id_idx on gha_issues(assignee_id)")
 		ExecSQLWithErr(c, ctx, "create index issues_created_at_idx on gha_issues(created_at)")
@@ -626,6 +628,7 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index issues_closed_at_idx on gha_issues(closed_at)")
 		ExecSQLWithErr(c, ctx, "create index issues_milestone_id_idx on gha_issues(milestone_id)")
 		ExecSQLWithErr(c, ctx, "create index issues_state_idx on gha_issues(state)")
+		ExecSQLWithErr(c, ctx, "create index issues_number_idx on gha_issues(number)")
 		ExecSQLWithErr(c, ctx, "create index issues_user_id_idx on gha_issues(user_id)")
 		ExecSQLWithErr(c, ctx, "create index issues_is_pull_request_idx on gha_issues(is_pull_request)")
 		ExecSQLWithErr(c, ctx, "create index issues_dup_actor_id_idx on gha_issues(dup_actor_id)")
@@ -677,6 +680,7 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
+		ExecSQLWithErr(c, ctx, "create index milestones_id_idx on gha_milestones(id)")
 		ExecSQLWithErr(c, ctx, "create index milestones_event_id_idx on gha_milestones(event_id)")
 		ExecSQLWithErr(c, ctx, "create index milestones_created_at_idx on gha_milestones(created_at)")
 		ExecSQLWithErr(c, ctx, "create index milestones_updated_at_idx on gha_milestones(updated_at)")
@@ -1007,6 +1011,7 @@ func Structure(ctx *Ctx) {
 	}
 	if ctx.Index {
 		ExecSQLWithErr(c, ctx, "create index pull_requests_event_id_idx on gha_pull_requests(event_id)")
+		ExecSQLWithErr(c, ctx, "create index pull_requests_id_idx on gha_pull_requests(id)")
 		ExecSQLWithErr(c, ctx, "create index pull_requests_user_id_idx on gha_pull_requests(user_id)")
 		ExecSQLWithErr(c, ctx, "create index pull_requests_base_sha_idx on gha_pull_requests(base_sha)")
 		ExecSQLWithErr(c, ctx, "create index pull_requests_head_sha_idx on gha_pull_requests(head_sha)")
@@ -1014,6 +1019,7 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index pull_requests_assignee_id_idx on gha_pull_requests(assignee_id)")
 		ExecSQLWithErr(c, ctx, "create index pull_requests_milestone_id_idx on gha_pull_requests(milestone_id)")
 		ExecSQLWithErr(c, ctx, "create index pull_requests_state_idx on gha_pull_requests(state)")
+		ExecSQLWithErr(c, ctx, "create index pull_requests_number_idx on gha_pull_requests(number)")
 		ExecSQLWithErr(c, ctx, "create index pull_requests_created_at_idx on gha_pull_requests(created_at)")
 		ExecSQLWithErr(c, ctx, "create index pull_requests_updated_at_idx on gha_pull_requests(updated_at)")
 		ExecSQLWithErr(c, ctx, "create index pull_requests_closed_at_idx on gha_pull_requests(closed_at)")
