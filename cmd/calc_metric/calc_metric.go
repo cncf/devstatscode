@@ -1060,6 +1060,13 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 		dt = nDt
 		i++
 	}
+	if nIntervals > 1 {
+		rand.Shuffle(len(dta), func(i, j int) {
+			dta[i], dta[j] = dta[j], dta[i]
+			ndta[i], ndta[j] = ndta[j], ndta[i]
+			pdta[i], pdta[j] = pdta[j], pdta[i]
+		})
+	}
 	ldt := len(dta)
 	if thrN > 1 {
 		mut := &sync.Mutex{}
