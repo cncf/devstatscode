@@ -50,6 +50,7 @@ type Ctx struct {
 	Exact                    bool                         // From GHA2DB_EXACT gha2db tool, if set then orgs list provided from commandline is used as a list of exact repository full names, like "a/b,c/d,e", if not only full names "a/b,x/y" can be treated like this, names without "/" are either orgs or repos.
 	LogToDB                  bool                         // From GHA2DB_SKIPLOG all tools, if set, DB logging into Postgres table `gha_logs` in `devstats` database will be disabled
 	Local                    bool                         // From GHA2DB_LOCAL many tools, if set it will use data files prefixed with "./" to use local ones. Otherwise it will search for data files in /etc/gha2db.
+	Absolute                 bool                         // From GHA2DB_ABSOLUTE runq tool, if set it will use data files without any prefix (allowing absolute paths as well). Otherwise it will search for data files in /etc/gha2db.
 	LocalCmd                 bool                         // From GHA2DB_LOCAL_CMD many tools, if set it will call other tools prefixed with "./" to use locally compiled ones. Otherwise it will call binaries without prefix (so it will use those in $PATH).
 	MetricsYaml              string                       // From GHA2DB_METRICS_YAML gha2db_sync tool, set other metrics.yaml file, default is "metrics/{{project}}metrics.yaml"
 	TagsYaml                 string                       // From GHA2DB_TAGS_YAML tags tool, set other tags.yaml file, default is "metrics/{{project}}/tags.yaml"
@@ -398,6 +399,9 @@ func (ctx *Ctx) Init() {
 
 	// Local binary/shell files mode
 	ctx.LocalCmd = os.Getenv("GHA2DB_LOCAL_CMD") != ""
+
+	// Absolute data files mode
+	ctx.Absolute = os.Getenv("GHA2DB_ABSOLUTE") != ""
 
 	// Project
 	ctx.Project = os.Getenv("GHA2DB_PROJECT")
@@ -944,6 +948,7 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		Exact:                    ctx.Exact,
 		LogToDB:                  ctx.LogToDB,
 		Local:                    ctx.Local,
+		Absolute:                 ctx.Absolute,
 		LocalCmd:                 ctx.LocalCmd,
 		MetricsYaml:              ctx.MetricsYaml,
 		TagsYaml:                 ctx.TagsYaml,

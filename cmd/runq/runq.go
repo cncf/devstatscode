@@ -51,6 +51,10 @@ func runq(sqlFile string, params []string) {
 	if ctx.Local {
 		dataPrefix = "./"
 	}
+	// Absolute mode only allowed in 'runq' tool.
+	if ctx.Absolute {
+		dataPrefix = ""
+	}
 
 	// Read and eventually transform SQL file.
 	bytes, err := lib.ReadFile(&ctx, dataPrefix+sqlFile)
