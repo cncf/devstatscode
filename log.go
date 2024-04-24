@@ -43,17 +43,19 @@ func newLogContext() *logContext {
 	progSplit := strings.Split(os.Args[0], "/")
 	prog := progSplit[len(progSplit)-1]
 	now := time.Now()
-	info := fmt.Sprintf("Compiled %s, commit: %s on %s using %s", BuildStamp, GitHash, HostName, GoVersion)
-	fmt.Printf("%s\n", info)
-	_, _ = ExecSQL(
-		con,
-		&ctx,
-		"insert into gha_logs(prog, proj, run_dt, msg) "+NValues(4),
-		prog,
-		ctx.Project,
-		now,
-		info,
-	)
+	if ctx.Debug >= 0 {
+		info := fmt.Sprintf("Compiled %s, commit: %s on %s using %s", BuildStamp, GitHash, HostName, GoVersion)
+		fmt.Printf("%s\n", info)
+		_, _ = ExecSQL(
+			con,
+			&ctx,
+			"insert into gha_logs(prog, proj, run_dt, msg) "+NValues(4),
+			prog,
+			ctx.Project,
+			now,
+			info,
+		)
+	}
 	defer func() {
 		logInitMtx.Lock()
 		logInitialized = true
