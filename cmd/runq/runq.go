@@ -84,7 +84,11 @@ func runq(sqlFile string, params []string) {
 		sqlQuery = strings.Replace(sqlQuery, "select\n", "explain select\n", -1)
 	}
 	if ctx.DryRun {
-		lib.Printf("%s\n", sqlQuery)
+		if ctx.Debug >= 0 {
+			lib.Printf("%s\n", sqlQuery)
+		} else {
+			fmt.Printf("%s\n", sqlQuery)
+		}
 		return
 	}
 
