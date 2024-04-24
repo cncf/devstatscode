@@ -11,9 +11,8 @@ import (
 	lib "github.com/cncf/devstatscode"
 )
 
-func runq(sqlFile string, params []string) {
+func runq(sqlFile string, params []string) (ctx lib.Ctx) {
 	// Environment context parse
-	var ctx lib.Ctx
 	ctx.Init()
 	lib.SetupTimeoutSignal(&ctx)
 
@@ -234,6 +233,7 @@ func runq(sqlFile string, params []string) {
 	if writer != nil {
 		lib.Printf("%s written\n", ctx.CSVFile)
 	}
+	return
 }
 
 func main() {
@@ -243,7 +243,9 @@ func main() {
 		lib.Printf("Special replace 'qr' 'period,from,to' is used for {{period.alias.name}} replacements\n")
 		os.Exit(1)
 	}
-	runq(os.Args[1], os.Args[2:])
+	ctx := runq(os.Args[1], os.Args[2:])
 	dtEnd := time.Now()
-	lib.Printf("Time: %v\n", dtEnd.Sub(dtStart))
+	if ctx.Debug >= 0 {
+		lib.Printf("Time: %v\n", dtEnd.Sub(dtStart))
+	}
 }
