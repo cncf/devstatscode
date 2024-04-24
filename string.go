@@ -162,5 +162,5 @@ func MaybeHideFuncTS(shas map[string]string) (f func(string) string) {
 
 // RandString - return random string
 func RandString() string {
-	return fmt.Sprintf("%d%d", rand.Uint64(), rand.Uint64())
+	return fmt.Sprintf("%x", rand.Uint64())
 }
