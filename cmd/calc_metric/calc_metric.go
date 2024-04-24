@@ -179,10 +179,6 @@ func mergeESSeriesName(mergeSeries, sqlFile string) string {
 	return series
 }
 
-func randString() string {
-	return fmt.Sprintf("%d", rand.Uint64())
-}
-
 func calcRange(
 	ch chan bool,
 	ctx *lib.Ctx,
@@ -220,7 +216,7 @@ func calcRange(
 		sqlQuery = strings.Replace(sqlQuery, "{{to}}", sTo, -1)
 		sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
 		sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
-		sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", randString(), -1)
+		sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", lib.RandString(), -1)
 
 		// Execute SQL query
 		rows := lib.QuerySQLWithErr(sqlc, ctx, sqlQuery)
@@ -611,7 +607,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 				sqlQuery = strings.Replace(sqlQuery, "{{exclude_bots}}", excludeBots, -1)
 				sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
 				sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
-				sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", randString(), -1)
+				sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", lib.RandString(), -1)
 				if period == "" {
 					dtTo := lib.TimeParseAny(to)
 					prevHour := lib.PrevHourStart(time.Now())
@@ -639,7 +635,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 			sqlQuery = strings.Replace(sqlQuery, "{{exclude_bots}}", excludeBots, -1)
 			sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
 			sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
-			sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", randString(), -1)
+			sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", lib.RandString(), -1)
 		} else {
 			// Prepare SQL query
 			dbInterval := fmt.Sprintf("%d %s", nIntervals, interval)
@@ -649,7 +645,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 			sHours := lib.IntervalHours(dbInterval)
 			sqlQuery = strings.Replace(sqlQuery, "{{period}}", dbInterval, -1)
 			sqlQuery = strings.Replace(sqlQuery, "{{n}}", strconv.Itoa(nIntervals)+".0", -1)
-			sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", randString(), -1)
+			sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", lib.RandString(), -1)
 			sqlQuery = strings.Replace(sqlQuery, "{{exclude_bots}}", excludeBots, -1)
 			sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
 			sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)

@@ -5,7 +5,9 @@ import (
 	"crypto/sha1"
 	"encoding/csv"
 	"encoding/hex"
+	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"regexp"
 	"strings"
@@ -156,4 +158,9 @@ func MaybeHideFuncTS(shas map[string]string) (f func(string) string) {
 		return arg
 	}
 	return f
+}
+
+// RandString - return random string
+func RandString() string {
+	return fmt.Sprintf("%d%d", rand.Uint64(), rand.Uint64())
 }

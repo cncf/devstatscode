@@ -75,8 +75,13 @@ func runq(sqlFile string, params []string) {
 		sqlQuery, sHours = lib.PrepareQuickRangeQuery(sqlQuery, qrPeriod, qrFrom, qrTo)
 		sqlQuery = strings.Replace(sqlQuery, "{{range}}", sHours, -1)
 	}
+	sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", lib.RandString(), -1)
 	if ctx.Explain {
 		sqlQuery = strings.Replace(sqlQuery, "select\n", "explain select\n", -1)
+	}
+	if ctx.DryRun {
+		lib.Printf("%s\n", sqlQuery)
+		return
 	}
 
 	// Connect to Postgres DB
