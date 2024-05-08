@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -47,21 +48,32 @@ func syncAllProjects() bool {
 			db := proj.PDB
 			con := lib.PgConnDB(&ctx, db)
 			provisionFlag := "provisioned"
-			rows, err := lib.QuerySQL(con, &ctx, "select 1 from gha_computed where metric = "+lib.NValue(1)+" limit 1", provisionFlag)
-			if err != nil {
-				switch e := err.(type) {
-				case *pq.Error:
-					errName := e.Code.Name()
-					if errName == lib.InvalidCatalogName {
-						lib.Printf("No '%s' database, missing provisioning flag\n", db)
-						missing++
-						lib.FatalOnError(con.Close())
-						continue
-					} else {
+			var (
+				err  error
+				rows *sql.Rows
+			)
+			trials := 0
+			for true {
+				rows, err = lib.QuerySQL(con, &ctx, "select 1 from gha_computed where metric = "+lib.NValue(1)+" limit 1", provisionFlag)
+				trials++
+				if err != nil {
+					switch e := err.(type) {
+					case *pq.Error:
+						errName := e.Code.Name()
+						if errName == lib.InvalidCatalogName {
+							lib.Printf("No '%s' database, missing provisioning flag\n", db)
+							missing++
+							lib.FatalOnError(con.Close())
+							continue
+						} else {
+							lib.FatalOnError(err)
+						}
+					default:
 						lib.FatalOnError(err)
 					}
-				default:
-					lib.FatalOnError(err)
+				}
+				if err == nil || trials >= 3 {
+					break
 				}
 			}
 			provisioned := 0

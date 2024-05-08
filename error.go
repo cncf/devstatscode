@@ -25,6 +25,7 @@ func FatalOnError(err error) string {
 				fmt.Fprintf(os.Stderr, "PqError: code=%s, name=%s, detail=%s\n", e.Code, errName, e.Detail)
 				fmt.Fprintf(os.Stderr, "Warning: DB shutting down: %+v: '%s', sleeping 15 minutes to settle\n", tm, err.Error())
 				time.Sleep(time.Duration(900) * time.Second)
+				tm = time.Now()
 				fmt.Fprintf(os.Stderr, "Warning: DB shutting down: %+v: '%s', waited 15 minutes, retrying\n", tm, err.Error())
 				return Reconnect
 			}
