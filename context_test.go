@@ -262,11 +262,6 @@ func TestInit(t *testing.T) {
 		ActorsForbid:             nil,
 		OnlyMetrics:              map[string]bool{},
 		SkipMetrics:              map[string]bool{},
-		ElasticURL:               "http://127.0.0.1:9200",
-		UseES:                    false,
-		UseESOnly:                false,
-		UseESRaw:                 false,
-		ResetESRaw:               false,
 		ExcludeVars:              map[string]bool{},
 		OnlyVars:                 map[string]bool{},
 		SkipSharedDB:             false,
@@ -281,7 +276,6 @@ func TestInit(t *testing.T) {
 		PropagateOnlyVar:         false,
 		PidFileRoot:              "devstats",
 		TestMode:                 true,
-		ESBulkSize:               10000,
 		HTTPTimeout:              3,
 		HTTPRetry:                5,
 		ProjectScale:             1.0,
@@ -343,15 +337,6 @@ func TestInit(t *testing.T) {
 				t,
 				defaultContext.CopyContext(),
 				map[string]interface{}{"GitHubDebug": 3},
-			),
-		},
-		{
-			"Setting ElasticSearch bulk size",
-			map[string]string{"GHA2DB_ES_BULK_SIZE": "999"},
-			dynamicSetFields(
-				t,
-				defaultContext.CopyContext(),
-				map[string]interface{}{"ESBulkSize": 999},
 			),
 		},
 		{
@@ -1186,27 +1171,6 @@ func TestInit(t *testing.T) {
 				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"ExternalInfo": true,
-				},
-			),
-		},
-		{
-			"Set ES params",
-			map[string]string{
-				"GHA2DB_ES_URL":       "http://other.server:9222",
-				"GHA2DB_USE_ES":       "1",
-				"GHA2DB_USE_ES_ONLY":  "y",
-				"GHA2DB_USE_ES_RAW":   "t",
-				"GHA2DB_RESET_ES_RAW": "1",
-			},
-			dynamicSetFields(
-				t,
-				defaultContext.CopyContext(),
-				map[string]interface{}{
-					"ElasticURL": "http://other.server:9222",
-					"UseES":      true,
-					"UseESOnly":  true,
-					"UseESRaw":   true,
-					"ResetESRaw": true,
 				},
 			),
 		},

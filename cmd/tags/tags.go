@@ -18,12 +18,6 @@ func calcTags() {
 	con := lib.PgConn(&ctx)
 	defer func() { lib.FatalOnError(con.Close()) }()
 
-	// Optional ElasticSearch output
-	var es *lib.ES
-	if ctx.UseES {
-		es = lib.ESConn(&ctx, "d_")
-	}
-
 	// Local or cron mode?
 	dataPrefix := ctx.DataDir
 	if ctx.Local {
@@ -55,14 +49,14 @@ func calcTags() {
 			// Refer to current tag using index passed to anonymous function
 			tg := &allTags.Tags[idx]
 			if ctx.Debug > 0 {
-				lib.Printf("Start rag '%s' --> '%s'\n", tg.Name, tg.SeriesName)
+				lib.Printf("Start Tag '%s' --> '%s'\n", tg.Name, tg.SeriesName)
 			}
 
 			// Process tag
-			lib.ProcessTag(con, es, &ctx, tg, [][]string{})
+			lib.ProcessTag(con, &ctx, tg, [][]string{})
 
 			if ctx.Debug > 0 {
-				lib.Printf("End tag '%s' --> '%s'\n", tg.Name, tg.SeriesName)
+				lib.Printf("End Tag '%s' --> '%s'\n", tg.Name, tg.SeriesName)
 			}
 			// Synchronize go routine
 			if ch != nil {

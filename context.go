@@ -128,11 +128,6 @@ type Ctx struct {
 	SkipRand                 bool                         // From GHA2DB_SKIP_RAND, gha2db_sync tool, skip randomizing metrics calculation, default false
 	ExcludeVars              map[string]bool              // From GHA2DB_EXCLUDE_VARS, vars tool, default "" - comma separated list of variable names to exclude, example: "hostname,projects_health_partial_html"
 	OnlyVars                 map[string]bool              // From GHA2DB_ONLY_VARS, vars tool, default "" - comma separated list of variable names to write (and skip all others): "hostname,projects_health_partial_html", not used if empty
-	ElasticURL               string                       // From GHA2DB_ES_URL, calc_metric, tags, annotations tools - ElasticSearch URL (if used), default http://127.0.0.1:9200
-	UseES                    bool                         // From GHA2DB_USE_ES, calc_metric, tags, annotations tools - enable ElasticSearch, default false
-	UseESOnly                bool                         // From GHA2DB_USE_ES_ONLY, calc_metric, annotations tools - enable ElasticSearch and do not write PSQL TSDB, default false
-	UseESRaw                 bool                         // From GHA2DB_USE_ES_RAW, gha2es, gha2db_sync tools - enable generating RAW ElasticSearch data (directly from gha_tables instead of aggregated data from TSDB)
-	ResetESRaw               bool                         // From GHA2DB_RESET_ES_RAW, gha2db_sync tools - generate RAW ES index from project start date
 	SkipSharedDB             bool                         // From GHA2DB_SKIP_SHAREDDB, annotations tool, default false, will skip writing to shared_db (from projects.yaml) if set
 	SkipPIDFile              bool                         // From GHA2DB_SKIP_PIDFILE, devstats tool, skip creating, checking and removing PID file
 	SkipCompanyAcq           bool                         // From GHA2DB_SKIP_COMPANY_ACQ, import_affs tool, skip processing company acquisitions from companies.yaml file
@@ -143,7 +138,6 @@ type Ctx struct {
 	CheckImportedSHA         bool                         // From GHA2DB_CHECK_IMPORTED_SHA, import_affs tool - check if given JSON was already imported using 'gha_imported_shas' table
 	OnlyCheckImportedSHA     bool                         // From GHA2DB_ONLY_CHECK_IMPORTED_SHA, import_affs tool - check if given JSON was already imported using 'gha_imported_shas' table, do not attempt to import, only return status: 3=imported, 0=not imported
 	EnableMetricsDrop        bool                         // From GHA2DB_ENABLE_METRICS_DROP, if enabled will process each metric's 'drop:' property if present - use when regenerating affiliations data or reinitializing entire TSDB data
-	ESBulkSize               int                          // From GHA2DB_ES_BULK_SIZE, calc_metric and gha2es tools, default 10000
 	HTTPTimeout              int                          // From GHA2DB_HTTP_TIMEOUT, gha2db - data.gharchive.org timeout value in minutes, default 2
 	HTTPRetry                int                          // From GHA2DB_HTTP_RETRY, gha2db - data.gharchive.org data fetch retries, default 4 (each retry takes 1*timeout*N), so in default config it will try timeouts: 1min, 2min, 3min, but if timeout is 3 and retry is 2, it will try 3min, 6min
 	ProjectScale             float64                      // From GHA2DB_PROJECT_SCALE, calc_metric tool, project scale (default 1), some metrics can use this to adapt their SQLs to bigger/smaller projects
@@ -681,23 +675,6 @@ func (ctx *Ctx) Init() {
 		ctx.JSONsDir += "/"
 	}
 
-	// ElasticSearch
-	ctx.UseES = os.Getenv("GHA2DB_USE_ES") != ""
-	ctx.UseESOnly = os.Getenv("GHA2DB_USE_ES_ONLY") != ""
-	ctx.UseESRaw = os.Getenv("GHA2DB_USE_ES_RAW") != ""
-	ctx.ResetESRaw = os.Getenv("GHA2DB_RESET_ES_RAW") != ""
-	ctx.ElasticURL = os.Getenv("GHA2DB_ES_URL")
-	if ctx.ElasticURL == "" {
-		ctx.ElasticURL = "http://127.0.0.1:9200"
-	}
-	if os.Getenv("GHA2DB_ES_BULK_SIZE") == "" {
-		ctx.ESBulkSize = 10000
-	} else {
-		size, err := strconv.Atoi(os.Getenv("GHA2DB_ES_BULK_SIZE"))
-		FatalNoLog(err)
-		ctx.ESBulkSize = size
-	}
-
 	// HTTP Timeout
 	if os.Getenv("GHA2DB_HTTP_TIMEOUT") == "" {
 		ctx.HTTPTimeout = 3
@@ -1001,11 +978,6 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		SkipMetrics:              ctx.SkipMetrics,
 		ComputePeriods:           ctx.ComputePeriods,
 		MaxRunDuration:           ctx.MaxRunDuration,
-		ElasticURL:               ctx.ElasticURL,
-		UseES:                    ctx.UseES,
-		UseESOnly:                ctx.UseESOnly,
-		UseESRaw:                 ctx.UseESRaw,
-		ResetESRaw:               ctx.ResetESRaw,
 		ExcludeVars:              ctx.ExcludeVars,
 		OnlyVars:                 ctx.OnlyVars,
 		SkipSharedDB:             ctx.SkipSharedDB,
@@ -1021,7 +993,6 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		PropagateOnlyVar:         ctx.PropagateOnlyVar,
 		PidFileRoot:              ctx.PidFileRoot,
 		TestMode:                 ctx.TestMode,
-		ESBulkSize:               ctx.ESBulkSize,
 		HTTPTimeout:              ctx.HTTPTimeout,
 		HTTPRetry:                ctx.HTTPRetry,
 		ProjectScale:             ctx.ProjectScale,

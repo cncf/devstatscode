@@ -376,32 +376,6 @@ func sync(ctx *lib.Ctx, args []string) {
 		lib.FatalOnError(err)
 	}
 
-	// If ElasticSearch output is enabled
-	if ctx.UseESRaw {
-		// Regenerate points from this date
-		esFromDate := fromDate
-		esFromHour := fromHour
-		if ctx.ResetESRaw {
-			esFromDate = lib.ToYMDDate(ctx.DefaultStartDate)
-			esFromHour = strconv.Itoa(ctx.DefaultStartDate.Hour())
-		}
-		lib.Printf("Update ElasticSearch raw index\n")
-		lib.Printf("ES range: %s %s - %s %s\n", esFromDate, esFromHour, toDate, toHour)
-		// Recompute views and DB summaries
-		_, err := lib.ExecCommand(
-			ctx,
-			[]string{
-				cmdPrefix + "gha2es",
-				esFromDate,
-				esFromHour,
-				toDate,
-				toHour,
-			},
-			nil,
-		)
-		lib.FatalOnError(err)
-	}
-
 	// Calc metric
 	dailyRecalcHour := 0 // This is only correct when we are able to run all syncs every hour, otherwise set ctx.RandComputeAtThisDate to true
 	ranTags := false
@@ -412,7 +386,7 @@ func sync(ctx *lib.Ctx, args []string) {
 	if !ctx.AllowRandTagsColsCompute && nowHour < 6 {
 		dailyRecalcHour = nowHour
 	}
-	if !ctx.SkipTSDB || ctx.UseESOnly {
+	if !ctx.SkipTSDB {
 		metricsDir := dataPrefix + "metrics"
 		if ctx.Project != "" {
 			metricsDir += "/" + ctx.Project
@@ -793,7 +767,7 @@ func sync(ctx *lib.Ctx, args []string) {
 	}
 
 	// Vars (some tables/dashboards require vars calculation)
-	if (!ctx.SkipPDB || ctx.UseESOnly) && !ctx.SkipVars {
+	if !ctx.SkipPDB && !ctx.SkipVars {
 		varsFN := os.Getenv("GHA2DB_VARS_FN_YAML")
 		if varsFN == "" {
 			varsFN = "sync_vars.yaml"

@@ -7,7 +7,6 @@ before_install:
   - go get -u golang.org/x/tools/cmd/goimports
   - go get -u github.com/jgautheron/usedexports
   - go get -u github.com/kisielk/errcheck
-  - go get -u github.com/olivere/elastic
   - go get -u github.com/rs/cors
   - go get -u github.com/json-iterator/go
   - go get -u github.com/google/go-github/github

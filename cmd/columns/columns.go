@@ -28,7 +28,7 @@ func ensureColumns() {
 	lib.SetupTimeoutSignal(&ctx)
 
 	// If skip TSDB or only ES output - nothing to do
-	if ctx.SkipTSDB || ctx.UseESOnly {
+	if ctx.SkipTSDB {
 		return
 	}
 

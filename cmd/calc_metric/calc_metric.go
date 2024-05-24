@@ -192,14 +192,6 @@ func calcRange(
 	sqlc := lib.PgConn(ctx)
 	defer func() { lib.FatalOnError(sqlc.Close()) }()
 
-	// Optional ElasticSearch output
-	var es *lib.ES
-	mergeSeriesES := ""
-	if ctx.UseES {
-		es = lib.ESConn(ctx, "d_")
-		mergeSeriesES = mergeESSeriesName(cfg.mergeSeries, sqlFile)
-	}
-
 	// Get BatchPoints
 	var pts lib.TSPoints
 	sqlQueryOrig = strings.Replace(sqlQueryOrig, "{{n}}", strconv.Itoa(nIntervals)+".0", -1)
@@ -405,7 +397,7 @@ func calcRange(
 		}
 	}
 	// Write the batch
-	if !ctx.SkipTSDB && !ctx.UseESOnly {
+	if !ctx.SkipTSDB {
 		if mut != nil {
 			mut.Lock()
 		}
@@ -419,9 +411,6 @@ func calcRange(
 		lib.WriteTSPoints(ctx, sqlc, &pts, cfg.mergeSeries, mut)
 	} else if ctx.Debug > 0 {
 		lib.Printf("Skipping series write\n")
-	}
-	if ctx.UseES {
-		es.WriteESPoints(ctx, &pts, mergeSeriesES, [3]bool{false, false, true})
 	}
 
 	// Synchronize go routine
@@ -562,14 +551,6 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 		lib.FatalOnError(sqlc.Close())
 	}()
 
-	// Optional ElasticSearch output
-	var es *lib.ES
-	mergeSeriesES := ""
-	if ctx.UseES {
-		es = lib.ESConn(ctx, "d_")
-		mergeSeriesES = mergeESSeriesName(cfg.mergeSeries, sqlFile)
-	}
-
 	// Get BatchPoints
 	var pts lib.TSPoints
 
@@ -692,14 +673,6 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 					if ctx.Debug > 0 {
 						lib.Printf("Dropped data from %s table with %s series and %s period\n", table, seriesNameOrFunc, intervalAbbr)
 					}
-				}
-			}
-		}
-		if ctx.UseES {
-			if es.IndexExists(ctx) {
-				es.DeleteByQuery(ctx, []string{"type", "series", "period"}, []interface{}{mergeSeriesES, seriesNameOrFunc, intervalAbbr})
-				if ctx.Debug > 0 {
-					lib.Printf("Dropped data from index with %s type and %s series and %s period\n", mergeSeriesES, seriesNameOrFunc, intervalAbbr)
 				}
 			}
 		}
@@ -925,20 +898,10 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 					}
 				}
 			}
-			if ctx.UseES {
-				if es.IndexExists(ctx) {
-					for series := range seriesToClear {
-						es.DeleteByQuery(ctx, []string{"type", "series", "period"}, []interface{}{mergeSeriesES, series, intervalAbbr})
-						if ctx.Debug > 0 {
-							lib.Printf("Dropped data from index with %s type and %s series and %s period\n", mergeSeriesES, seriesNameOrFunc, intervalAbbr)
-						}
-					}
-				}
-			}
 		}
 	}
 	// Write the batch
-	if !ctx.SkipTSDB && !ctx.UseESOnly {
+	if !ctx.SkipTSDB {
 		// Mark this metric & period as already computed if this is a QR period
 		lib.WriteTSPoints(ctx, sqlc, &pts, cfg.mergeSeries, nil)
 		if qrDt != nil {
@@ -946,9 +909,6 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 		}
 	} else if ctx.Debug > 0 {
 		lib.Printf("Skipping series write\n")
-	}
-	if ctx.UseES {
-		es.WriteESPoints(ctx, &pts, mergeSeriesES, [3]bool{false, false, true})
 	}
 }
 

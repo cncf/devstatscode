@@ -183,12 +183,6 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 	ic := PgConn(ctx)
 	defer func() { FatalOnError(ic.Close()) }()
 
-	// Optional ElasticSearch output
-	var es *ES
-	if ctx.UseES {
-		es = ESConn(ctx, "d_")
-	}
-
 	// CNCF milestone dates
 	startDate := dates[0]
 	joinDate := dates[1]
@@ -549,16 +543,8 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 		}
 	}
 
-	// Output to ElasticSearch
-	if ctx.UseES {
-		if es.IndexExists(ctx) {
-			es.DeleteByWildcardQuery(ctx, "quick_ranges_suffix", "*_n")
-		}
-		es.WriteESPoints(ctx, &pts, "", [3]bool{true, false, false})
-	}
-
 	// Write the batch
-	if !ctx.SkipTSDB && !ctx.UseESOnly {
+	if !ctx.SkipTSDB {
 		table := "tquick_ranges"
 		column := "quick_ranges_suffix"
 		if TableExists(ic, ctx, table) && TableColumnExists(ic, ctx, table, column) {
