@@ -55,29 +55,44 @@ func calcTags() {
 			// Refer to current tag using index passed to anonymous function
 			tg := &allTags.Tags[idx]
 			if ctx.Debug > 0 {
-				lib.Printf("Tag '%s' --> '%s'\n", tg.Name, tg.SeriesName)
+				lib.Printf("Start rag '%s' --> '%s'\n", tg.Name, tg.SeriesName)
 			}
 
 			// Process tag
 			lib.ProcessTag(con, es, &ctx, tg, [][]string{})
 
+			if ctx.Debug > 0 {
+				lib.Printf("End tag '%s' --> '%s'\n", tg.Name, tg.SeriesName)
+			}
 			// Synchronize go routine
 			if ch != nil {
 				ch <- true
+				if ctx.Debug > 0 {
+					lib.Printf("Synced tag '%s' --> '%s'\n", tg.Name, tg.SeriesName)
+				}
 			}
 		}(ch, i)
 		// go routine called with 'ch' channel to sync and tag index
 		nThreads++
-		if nThreads == thrN {
+		if nThreads >= thrN {
+			if ctx.Debug > 0 {
+				lib.Printf("threading: %d >= %d, waiting on the channel\n", nThreads, thrN)
+			}
 			<-ch
 			nThreads--
+			if ctx.Debug > 0 {
+				lib.Printf("threading: thread joined, num threads: %d\n", nThreads)
+			}
 		}
 	}
 	// Usually all work happens on '<-ch'
-	lib.Printf("Final threads join\n")
+	lib.Printf("Final %d threads join\n", nThreads)
 	for nThreads > 0 {
 		<-ch
 		nThreads--
+		if ctx.Debug > 0 {
+			lib.Printf("threading: fianl thread joined, num threads: %d\n", nThreads)
+		}
 	}
 }
 
