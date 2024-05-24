@@ -319,7 +319,7 @@ func generateWebsiteData() {
 				ch <- struct{}{}
 			}(ch, name, stats)
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				<-ch
 				nThreads--
 			}

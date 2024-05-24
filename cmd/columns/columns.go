@@ -139,7 +139,7 @@ func ensureColumns() {
 		}(ch, i)
 		// go routine called with 'ch' channel to sync and column config index
 		nThreads++
-		if nThreads == thrN {
+		if nThreads >= thrN {
 			data := <-ch
 			tables := data[0]
 			cols := data[1]
@@ -207,7 +207,7 @@ func ensureColumns() {
 			}
 		}(sch, table, columns)
 		nThreads++
-		if nThreads == thrN {
+		if nThreads >= thrN {
 			<-sch
 			nThreads--
 		}

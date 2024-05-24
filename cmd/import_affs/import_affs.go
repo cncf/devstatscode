@@ -713,7 +713,7 @@ func importAffs(jsonFN string) int {
 		for login, csD := range loginCSData {
 			go processLoginCSData(ch, login, csD)
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				<-ch
 				nThreads--
 			}
@@ -767,7 +767,7 @@ func importAffs(jsonFN string) int {
 		for login := range loginAffs {
 			go findActorData(ch, login)
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				<-ch
 				nThreads--
 			}
@@ -869,7 +869,7 @@ func importAffs(jsonFN string) int {
 		for login, emails := range loginEmails {
 			go processEmails(ch, login, emails)
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				<-ch
 				nThreads--
 			}
@@ -926,7 +926,7 @@ func importAffs(jsonFN string) int {
 		for login, names := range loginNames {
 			go processNames(ch, login, names)
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				<-ch
 				nThreads--
 			}
@@ -1038,7 +1038,7 @@ func importAffs(jsonFN string) int {
 		for login, prios := range loginAffs {
 			go processAffs(ch, login, prios)
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				<-ch
 				nThreads--
 			}
@@ -1087,7 +1087,7 @@ func importAffs(jsonFN string) int {
 			}
 			go processCompany(ch, company)
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				<-ch
 				nThreads--
 			}
@@ -1170,7 +1170,7 @@ func importAffs(jsonFN string) int {
 		for _, aff := range affList {
 			go processRoll(ch, aff)
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				<-ch
 				nThreads--
 			}

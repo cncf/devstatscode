@@ -284,7 +284,7 @@ func processHidden(ctx *lib.Ctx) {
 			ch <- true
 		}(ch, task)
 		nThreads++
-		if nThreads == thrN {
+		if nThreads >= thrN {
 			<-ch
 			nThreads--
 		}

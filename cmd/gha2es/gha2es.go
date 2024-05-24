@@ -654,7 +654,7 @@ func gha2es(args []string) {
 			go generateRawES(ch, &ctx, con, es, dt, dtN, sqls)
 			dt = dtN
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				<-ch
 				nThreads--
 			}

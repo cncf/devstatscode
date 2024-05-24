@@ -246,7 +246,7 @@ func processRepos(ctx *lib.Ctx, allRepos map[string]map[string]struct{}) {
 			rwd := owd + "/" + repo
 			go processRepo(ch, ctx, orgRepo, rwd)
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				res := <-ch
 				nThreads--
 				if res != "" {
@@ -637,7 +637,7 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 		for db, filesSkipPattern := range dbs {
 			go processCommitsDB(chC, ctx, db, filesSkipPattern, sqlQuery)
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				commits := <-chC
 				nThreads--
 				allCommits = append(allCommits, commits)
@@ -690,7 +690,7 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 				repo := commits.repos[i]
 				go getCommitFiles(ch, ctx, con, re, repo, sha)
 				nThreads++
-				if nThreads == thrN {
+				if nThreads >= thrN {
 					statuses[<-ch]++
 					nThreads--
 					checked++
@@ -737,7 +737,7 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 			con := commits.con
 			go postprocessCommitsDB(ch, ctx, con, sqlQuery)
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				<-ch
 				nThreads--
 			}
@@ -771,7 +771,7 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 	for db := range dbs {
 		go processCommitsLOC(chC, ctx, db, sqlQuery)
 		nThreads++
-		if nThreads == thrN {
+		if nThreads >= thrN {
 			commits := <-chC
 			nThreads--
 			allCommits = append(allCommits, commits)
@@ -811,7 +811,7 @@ func processCommits(ctx *lib.Ctx, dbs map[string]string) {
 			repo := commits.repos[i]
 			go getCommitLOC(ch, ctx, con, repo, sha)
 			nThreads++
-			if nThreads == thrN {
+			if nThreads >= thrN {
 				statuses[<-ch]++
 				nThreads--
 				checked++
