@@ -30,6 +30,7 @@ func TestIntervalHours(t *testing.T) {
 		{period: "1 quarter", expected: "2191.500000"},
 		{period: "1 year", expected: "8766.000000"},
 		{period: "10 years", expected: "87660.000000"},
+		{period: "100 years", expected: "876600.000000"},
 		{period: "15 minutes", expected: "0.250000"},
 		{period: "20 mins", expected: "0.333333"},
 		{period: "180 sec", expected: "0.050000"},

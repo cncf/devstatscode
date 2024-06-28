@@ -2160,7 +2160,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
     spstat
   where
     series = 'pstatall'
-    and period = 'y10'
+    and period = 'y100'
     and name in (
       'Contributors', 'Contributions', 'Code committers',
       'Commits', 'Events', 'Forkers',

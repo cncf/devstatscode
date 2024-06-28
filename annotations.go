@@ -330,6 +330,7 @@ func ProcessAnnotations(ctx *Ctx, annotations *Annotations, dates []*time.Time) 
 		{"y3", "Last 3 years", "3 years"},
 		{"y5", "Last 5 years", "5 years"},
 		{"y10", "Last decade", "10 years"},
+		{"y100", "Last century", "100 years"},
 	}
 
 	// tags:
