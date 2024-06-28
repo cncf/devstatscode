@@ -1586,5 +1586,15 @@ func Structure(ctx *Ctx) {
 			dtEnd := time.Now()
 			Printf("Executed bot logins table insert script: %s: took %v\n", script, dtEnd.Sub(dtStart))
 		}
+		dtStart = time.Now()
+		script = "util_sql/update_affiliations.sql"
+		bytes, err = ReadFile(ctx, dataPrefix+script)
+		FatalOnError(err)
+		sql = string(bytes)
+		ExecSQLWithErr(c, ctx, sql)
+		if ctx.Debug > 0 {
+			dtEnd := time.Now()
+			Printf("Updated missing affiliations for multiple ID actors script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+		}
 	}
 }
