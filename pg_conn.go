@@ -25,8 +25,8 @@ import (
 // No more giant lock approach here, but it is up to user to spcify call context, especially 2 last parameters!
 func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, hllEmpty []uint8, mut *sync.Mutex) {
 	npts := len(*pts)
+	Printf("WriteTSPoints: writing %d points\n", len(*pts))
 	if ctx.Debug > 0 {
-		Printf("WriteTSPoints: writing %d points\n", len(*pts))
 		Printf("Points:\n%+v\n", pts.Str())
 	}
 	if npts == 0 {
