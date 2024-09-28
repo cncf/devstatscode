@@ -15,18 +15,19 @@ import (
 
 // calcMetricData structure to hold metric calculation data
 type calcMetricData struct {
-	hist              bool
-	multivalue        bool
-	escapeValueName   bool
-	annotationsRanges bool
-	skipPast          bool
-	desc              string
-	mergeSeries       string
-	customData        bool
-	seriesNameMap     map[string]string
-	drop              []string
-	projectScale      string
-	hll               bool
+	hist                 bool
+	multivalue           bool
+	escapeValueName      bool
+	skipEscapeSeriesName bool
+	annotationsRanges    bool
+	skipPast             bool
+	desc                 string
+	mergeSeries          string
+	customData           bool
+	seriesNameMap        map[string]string
+	drop                 []string
+	projectScale         string
+	hll                  bool
 }
 
 // Global start date & command line to be used to insert data into `gha_last_computed` table.
@@ -92,7 +93,7 @@ func valueDescription(descFunc string, value float64) (result string) {
 // if multivalue is true then rowName is not used for generating series name
 // Series name is independent from rowName, and metric returns "series_name;rowName"
 // Multivalue series can even have partialy multivalue row: "this_comes_to_multivalues`this_comes_to_series_name", separator is `
-func multiRowMultiColumn(cfg *calcMetricData, expr string, multivalue, escapeValueName bool) (result []string) {
+func multiRowMultiColumn(cfg *calcMetricData, expr string, multivalue, escapeValueName, skipEscapeSeriesName bool) (result []string) {
 	ary := strings.Split(expr, ";")
 	pref := ary[0]
 	if pref == "" {
@@ -108,7 +109,12 @@ func multiRowMultiColumn(cfg *calcMetricData, expr string, multivalue, escapeVal
 		}
 		rowName = mapName(cfg, rowName)
 		if len(rowNameAry) > 1 {
-			rowNameNonMulti := lib.NormalizeName(rowNameAry[1])
+			var rowNameNonMulti string
+			if skipEscapeSeriesName {
+				rowNameNonMulti = rowNameAry[1]
+			} else {
+				rowNameNonMulti = lib.NormalizeName(rowNameAry[1])
+			}
 			for _, series := range splitColumns {
 				result = append(result, fmt.Sprintf("%s%s%s;%s", pref, rowNameNonMulti, series, rowName))
 			}
@@ -119,7 +125,12 @@ func multiRowMultiColumn(cfg *calcMetricData, expr string, multivalue, escapeVal
 		}
 		return
 	}
-	rowName := lib.NormalizeName(ary[1])
+	var rowName string
+	if skipEscapeSeriesName {
+		rowName = ary[1]
+	} else {
+		rowName = lib.NormalizeName(ary[1])
+	}
 	if rowName == "" {
 		lib.Printf("multiRowMultiColumn: Info: rowName '%v' (%+v) maps to empty string, skipping\n", ary[1], ary)
 		return
@@ -137,7 +148,7 @@ func multiRowMultiColumn(cfg *calcMetricData, expr string, multivalue, escapeVal
 // if multivalue is true then rowName is not used for generating series name
 // Series name is independent from rowName, and metric returns "series_name;rowName"
 // Multivalue series can even have partialy multivalue row: "this_comes_to_multivalues`this_comes_to_series_name", separator is `
-func multiRowSingleColumn(cfg *calcMetricData, col string, multivalue, escapeValueName bool) (result []string) {
+func multiRowSingleColumn(cfg *calcMetricData, col string, multivalue, escapeValueName, skipEscapeSeriesName bool) (result []string) {
 	ary := strings.Split(col, ",")
 	pref := ary[0]
 	if pref == "" {
@@ -152,12 +163,22 @@ func multiRowSingleColumn(cfg *calcMetricData, col string, multivalue, escapeVal
 		}
 		rowName = mapName(cfg, rowName)
 		if len(rowNameAry) > 1 {
-			rowNameNonMulti := lib.NormalizeName(rowNameAry[1])
+			var rowNameNonMulti string
+			if skipEscapeSeriesName {
+				rowNameNonMulti = rowNameAry[1]
+			} else {
+				rowNameNonMulti = lib.NormalizeName(rowNameAry[1])
+			}
 			return []string{fmt.Sprintf("%s%s;%s", pref, rowNameNonMulti, rowName)}
 		}
 		return []string{fmt.Sprintf("%s;%s", pref, rowName)}
 	}
-	rowName := lib.NormalizeName(ary[1])
+	var rowName string
+	if skipEscapeSeriesName {
+		rowName = ary[1]
+	} else {
+		rowName = lib.NormalizeName(ary[1])
+	}
 	if rowName == "" {
 		lib.Printf("multiRowSingleColumn: Info: rowName '%v' (%+v) maps to empty string, skipping\n", ary[1], ary)
 		return
@@ -167,14 +188,14 @@ func multiRowSingleColumn(cfg *calcMetricData, col string, multivalue, escapeVal
 }
 
 // Generate name for given series row and period
-func nameForMetricsRow(cfg *calcMetricData, metric, name string, multivalue, escapeValueName bool) []string {
+func nameForMetricsRow(cfg *calcMetricData, metric, name string, multivalue, escapeValueName, skipEscapeSeriesName bool) []string {
 	switch metric {
 	case "single_row_multi_column":
 		return strings.Split(name, ",")
 	case "multi_row_single_column":
-		return multiRowSingleColumn(cfg, name, multivalue, escapeValueName)
+		return multiRowSingleColumn(cfg, name, multivalue, escapeValueName, skipEscapeSeriesName)
 	case "multi_row_multi_column":
-		return multiRowMultiColumn(cfg, name, multivalue, escapeValueName)
+		return multiRowMultiColumn(cfg, name, multivalue, escapeValueName, skipEscapeSeriesName)
 	default:
 		lib.Printf("Error\nUnknown metric '%v'\n", metric)
 		fmt.Fprintf(os.Stdout, "Error\nUnknown metric '%v'\n", metric)
@@ -293,7 +314,7 @@ func calcSingleHLLRange(
 			// Get first column name, and using it all series names
 			// First column should contain nColumns - 1 names separated by ","
 			name := string(*pValues[0].(*[]uint8))
-			names := nameForMetricsRow(cfg, seriesNameOrFunc, name, cfg.multivalue, cfg.escapeValueName)
+			names := nameForMetricsRow(cfg, seriesNameOrFunc, name, cfg.multivalue, cfg.escapeValueName, cfg.skipEscapeSeriesName)
 			if ctx.Debug > 0 {
 				lib.Printf("nameForMetricsRow: %s -> %v\n", name, names)
 			}
@@ -481,7 +502,7 @@ func calcSingleNumericRange(
 			// Get first column name, and using it all series names
 			// First column should contain nColumns - 1 names separated by ","
 			name := string(*pValues[0].(*sql.RawBytes))
-			names := nameForMetricsRow(cfg, seriesNameOrFunc, name, cfg.multivalue, cfg.escapeValueName)
+			names := nameForMetricsRow(cfg, seriesNameOrFunc, name, cfg.multivalue, cfg.escapeValueName, cfg.skipEscapeSeriesName)
 			if ctx.Debug > 0 {
 				lib.Printf("nameForMetricsRow: %s -> %v\n", name, names)
 			}
@@ -953,7 +974,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 			// Get row values
 			lib.FatalOnError(rows.Scan(pValues...))
 			name := string(*pValues[0].(*sql.RawBytes))
-			names := nameForMetricsRow(cfg, seriesNameOrFunc, name, cfg.multivalue, false)
+			names := nameForMetricsRow(cfg, seriesNameOrFunc, name, cfg.multivalue, false, false)
 			if ctx.Debug > 0 {
 				lib.Printf("nameForMetricsRow: %s -> %v\n", name, names)
 			}
@@ -1227,8 +1248,8 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 
 	// Run
 	lib.Printf(
-		"calc_metric.go: %s: Running (on %d CPUs): %v - %v with interval %d %s, descriptions '%s', multivalue: %v, escape_value_name: %v, custom_data: %v\n",
-		sqlFile, thrN, dFrom, dTo, nIntervals, interval, cfg.desc, cfg.multivalue, cfg.escapeValueName, cfg.customData,
+		"calc_metric.go: %s: Running (on %d CPUs): %v - %v with interval %d %s, descriptions '%s', multivalue: %v, escape_value_name: %v, skip_escape_series_name: %v, custom_data: %v\n",
+		sqlFile, thrN, dFrom, dTo, nIntervals, interval, cfg.desc, cfg.multivalue, cfg.escapeValueName, cfg.skipEscapeSeriesName, cfg.customData,
 	)
 
 	dt := dFrom
@@ -1365,6 +1386,9 @@ func main() {
 		}
 		if _, ok := optMap["escape_value_name"]; ok {
 			cfg.escapeValueName = true
+		}
+		if _, ok := optMap["skip_escape_series_name"]; ok {
+			cfg.skipEscapeSeriesName = true
 		}
 		if _, ok := optMap["annotations_ranges"]; ok {
 			cfg.annotationsRanges = true

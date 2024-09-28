@@ -20,31 +20,32 @@ type metrics struct {
 // metric contain each metric data
 // some metrics can be allowed to fail
 type metric struct {
-	Name              string            `yaml:"name"`
-	Periods           string            `yaml:"periods"`
-	SeriesNameOrFunc  string            `yaml:"series_name_or_func"`
-	MetricSQL         string            `yaml:"sql"`
-	MetricSQLs        *[]string         `yaml:"sqls"`
-	AddPeriodToName   bool              `yaml:"add_period_to_name"`
-	Histogram         bool              `yaml:"histogram"`
-	Aggregate         string            `yaml:"aggregate"`
-	Skip              string            `yaml:"skip"`
-	Desc              string            `yaml:"desc"`
-	MultiValue        bool              `yaml:"multi_value"`
-	EscapeValueName   bool              `yaml:"escape_value_name"`
-	AnnotationsRanges bool              `yaml:"annotations_ranges"`
-	MergeSeries       string            `yaml:"merge_series"`
-	CustomData        bool              `yaml:"custom_data"`
-	StartFrom         *time.Time        `yaml:"start_from"`
-	LastHours         int               `yaml:"last_hours"`
-	SeriesNameMap     map[string]string `yaml:"series_name_map"`
-	EnvMap            map[string]string `yaml:"env"`
-	Disabled          bool              `yaml:"disabled"`
-	Drop              string            `yaml:"drop"`
-	Project           string            `yaml:"project"`
-	AllowFail         bool              `yaml:"allow_fail"`
-	WaitAfterFail     int               `yaml:"wait_after_fail"`
-	HLL               bool              `yaml:"hll"`
+	Name                 string            `yaml:"name"`
+	Periods              string            `yaml:"periods"`
+	SeriesNameOrFunc     string            `yaml:"series_name_or_func"`
+	MetricSQL            string            `yaml:"sql"`
+	MetricSQLs           *[]string         `yaml:"sqls"`
+	AddPeriodToName      bool              `yaml:"add_period_to_name"`
+	Histogram            bool              `yaml:"histogram"`
+	Aggregate            string            `yaml:"aggregate"`
+	Skip                 string            `yaml:"skip"`
+	Desc                 string            `yaml:"desc"`
+	MultiValue           bool              `yaml:"multi_value"`
+	EscapeValueName      bool              `yaml:"escape_value_name"`
+	SkipEscapeSeriesName bool              `yaml:"skip_escape_series_name"`
+	AnnotationsRanges    bool              `yaml:"annotations_ranges"`
+	MergeSeries          string            `yaml:"merge_series"`
+	CustomData           bool              `yaml:"custom_data"`
+	StartFrom            *time.Time        `yaml:"start_from"`
+	LastHours            int               `yaml:"last_hours"`
+	SeriesNameMap        map[string]string `yaml:"series_name_map"`
+	EnvMap               map[string]string `yaml:"env"`
+	Disabled             bool              `yaml:"disabled"`
+	Drop                 string            `yaml:"drop"`
+	Project              string            `yaml:"project"`
+	AllowFail            bool              `yaml:"allow_fail"`
+	WaitAfterFail        int               `yaml:"wait_after_fail"`
+	HLL                  bool              `yaml:"hll"`
 }
 
 // randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
@@ -551,6 +552,9 @@ func sync(ctx *lib.Ctx, args []string) {
 			}
 			if metric.EscapeValueName {
 				extraParams = append(extraParams, "escape_value_name")
+			}
+			if metric.SkipEscapeSeriesName {
+				extraParams = append(extraParams, "skip_escape_series_name")
 			}
 			if metric.Desc != "" {
 				extraParams = append(extraParams, "desc:"+metric.Desc)
