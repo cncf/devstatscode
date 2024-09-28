@@ -26,6 +26,7 @@ type calcMetricData struct {
 	seriesNameMap     map[string]string
 	drop              []string
 	projectScale      string
+	hll               bool
 }
 
 // Global start date & command line to be used to insert data into `gha_last_computed` table.
@@ -34,6 +35,29 @@ var (
 	gCmd     string
 	gDropped bool
 )
+
+// Allows testing if HLL works
+func testHLL(ctx *lib.Ctx, con *sql.DB) {
+	// hll_empty is '\x118b7f' when used in psql
+	// in golang: []uint8(8):5c78313138623766:[92 120 49 49 56 98 55 102]
+	lib.ExecSQLWithErr(con, ctx, "drop table if exists h")
+	lib.ExecSQLWithErr(con, ctx, "create table h as select hll_add_agg(hll_hash_bigint(actor_id)) as h from gha_events")
+	lib.ExecSQLWithErr(con, ctx, "alter table h alter column h set not null")
+	lib.ExecSQLWithErr(con, ctx, "alter table h alter column h set default hll_empty()")
+	lib.ExecSQLWithErr(con, ctx, "insert into h(h) select hll_empty()")
+	rows := lib.QuerySQLWithErr(con, ctx, "select h from h")
+	defer func() { lib.FatalOnError(rows.Close()) }()
+	var h []uint8
+	for rows.Next() {
+		lib.FatalOnError(rows.Scan(&h))
+		fmt.Printf("h = %s\n", lib.FormatRawBytes(h))
+	}
+	lib.FatalOnError(rows.Err())
+	lib.ExecSQLWithErr(con, ctx, "insert into h(h) values($1)", h)
+	lib.ExecSQLWithErr(con, ctx, "insert into h(h) select hll_add_agg(hll_hash_bigint(id)) from gha_events")
+	lib.ExecSQLWithErr(con, ctx, "delete from h where h = $1", h)
+	os.Exit(1)
+}
 
 // some metrics can define series_name_map to change internal series names generated
 func mapName(cfg *calcMetricData, name string) string {
@@ -179,6 +203,396 @@ func mergeESSeriesName(mergeSeries, sqlFile string) string {
 	return series
 }
 
+func getHLLDefaultDB(ctx *lib.Ctx, con *sql.DB) []uint8 {
+	// []uint8(8):5c78313138623766:[92 120 49 49 56 98 55 102]
+	rows := lib.QuerySQLWithErr(con, ctx, "select hll_empty()")
+	defer func() { lib.FatalOnError(rows.Close()) }()
+	var h []uint8
+	for rows.Next() {
+		lib.FatalOnError(rows.Scan(&h))
+	}
+	lib.FatalOnError(rows.Err())
+	return h
+}
+
+func getHLLDefault() []uint8 {
+	// []uint8(8):5c78313138623766:[92 120 49 49 56 98 55 102]
+	return []uint8{92, 120, 49, 49, 56, 98, 55, 102}
+}
+
+func calcSingleHLLRange(
+	ctx *lib.Ctx,
+	sqlc *sql.DB,
+	cfg *calcMetricData,
+	pts *lib.TSPoints,
+	sqlQuery, seriesNameOrFunc, period string,
+	from, to, dt time.Time,
+	hllEmpty []uint8,
+) {
+	// Execute SQL query
+	rows := lib.QuerySQLWithErr(sqlc, ctx, sqlQuery)
+	defer func() {
+		lib.FatalOnError(rows.Err())
+		lib.FatalOnError(rows.Close())
+	}()
+
+	// Get Number of columns
+	// We support either query returnign single row with single HLL value
+	// Or multiple rows, each containing string (series name) and its HLL value(s)
+	columns, err := rows.Columns()
+	lib.FatalOnError(err)
+	nColumns := len(columns)
+
+	// Metric Results, assume they're floats
+	var (
+		value   []uint8
+		name    string
+		cHLL    []uint8
+		cTime   time.Time
+		cString string
+	)
+	// Single row & single column result
+	if nColumns == 1 {
+		rowCount := 0
+		for rows.Next() {
+			lib.FatalOnError(rows.Scan(&value))
+			rowCount++
+		}
+		if rowCount != 1 {
+			lib.Printf(
+				"Error:\nQuery should return either single value or "+
+					"multiple rows, each containing string and numbers\n"+
+					"Got %d rows, each containing single number\nQuery:%s\n",
+				rowCount, sqlQuery,
+			)
+		}
+		// In this simplest case 1 row, 1 column - series name is taken directly from YAML (metrics.yaml)
+		// It usually uses `add_period_to_name: true` to have _period suffix, period{=h,d,w,m,q,y}
+		name = seriesNameOrFunc
+		if ctx.Debug > 0 {
+			lib.Printf("%v - %v -> %v, %s\n", from, to, name, lib.FormatRawBytes(value))
+		}
+		// Add batch point
+		fields := map[string]interface{}{"value": value}
+		lib.AddTSPoint(
+			ctx,
+			pts,
+			lib.NewTSPoint(ctx, name, period, nil, fields, dt, false),
+		)
+	} else if nColumns >= 2 {
+		// Multiple rows, each with (series name, value(s))
+		// Alocate nColumns numeric values (first is series name)
+		pValues := make([]interface{}, nColumns)
+		for i := range columns {
+			pValues[i] = new([]uint8)
+		}
+		allFields := make(map[string]map[string]interface{})
+		for rows.Next() {
+			// Get row values
+			lib.FatalOnError(rows.Scan(pValues...))
+			// Get first column name, and using it all series names
+			// First column should contain nColumns - 1 names separated by ","
+			name := string(*pValues[0].(*[]uint8))
+			names := nameForMetricsRow(cfg, seriesNameOrFunc, name, cfg.multivalue, cfg.escapeValueName)
+			if ctx.Debug > 0 {
+				lib.Printf("nameForMetricsRow: %s -> %v\n", name, names)
+			}
+			if len(names) > 0 {
+				// Iterate values
+				if cfg.customData {
+					pCustVals := pValues[1:]
+					// values tripples (time, HLL, string)
+					for idx, pVal := range pCustVals {
+						valType := idx % 3
+						cidx := idx / 3
+						if valType == 0 {
+							if pVal != nil {
+								sTime := string(*pVal.(*[]uint8))
+								cTime = lib.TimeParseAny(sTime)
+							} else {
+								cTime = time.Now()
+							}
+						} else if valType == 1 {
+							if pVal != nil {
+								cHLL = *pVal.(*[]uint8)
+							} else {
+								cHLL = hllEmpty
+							}
+						} else {
+							if pVal != nil {
+								cString = string(*pVal.(*[]uint8))
+							} else {
+								cString = ""
+							}
+							if cfg.multivalue {
+								nameArr := strings.Split(names[cidx], ";")
+								seriesName := nameArr[0]
+								seriesValueName := nameArr[1]
+								if ctx.Debug > 0 {
+									lib.Printf("%v - %v -> (%v, %v): %v[%v], (%v, %s, %v)\n", from, to, idx, cidx, seriesName, seriesValueName, cTime, lib.FormatRawBytes(cHLL), cString)
+								}
+								if _, ok := allFields[seriesName]; !ok {
+									allFields[seriesName] = make(map[string]interface{})
+								}
+								allFields[seriesName][seriesValueName+"_t"] = cTime
+								allFields[seriesName][seriesValueName+"_h"] = cHLL // was "_v"
+								allFields[seriesName][seriesValueName+"_s"] = cString
+							} else {
+								name = names[cidx]
+								if ctx.Debug > 0 {
+									lib.Printf("%v - %v -> (%v, %v): %v, (%v, %s, %v)\n", from, to, idx, cidx, name, cTime, lib.FormatRawBytes(cHLL), cString)
+								}
+								// Add batch point
+								fields := map[string]interface{}{"value": cHLL, "str": cString, "dt": cTime}
+								lib.AddTSPoint(
+									ctx,
+									pts,
+									lib.NewTSPoint(ctx, name, period, nil, fields, cTime, true),
+								)
+							}
+						}
+					}
+				} else {
+					pHLLs := pValues[1:]
+					for idx, pVal := range pHLLs {
+						if pVal != nil {
+							value = *pVal.(*[]uint8)
+						} else {
+							value = hllEmpty
+						}
+						if cfg.multivalue {
+							nameArr := strings.Split(names[idx], ";")
+							seriesName := nameArr[0]
+							seriesValueName := nameArr[1]
+							if ctx.Debug > 0 {
+								lib.Printf("%v - %v -> %v: %v[%v], %s\n", from, to, idx, seriesName, seriesValueName, lib.FormatRawBytes(value))
+							}
+							if _, ok := allFields[seriesName]; !ok {
+								allFields[seriesName] = make(map[string]interface{})
+							}
+							allFields[seriesName][seriesValueName] = value
+						} else {
+							name = names[idx]
+							if ctx.Debug > 0 {
+								lib.Printf("%v - %v -> %v: %v, %s\n", from, to, idx, name, lib.FormatRawBytes(value))
+							}
+							// Add batch point
+							fields := map[string]interface{}{"value": value}
+							lib.AddTSPoint(
+								ctx,
+								pts,
+								lib.NewTSPoint(ctx, name, period, nil, fields, dt, false),
+							)
+						}
+					}
+				}
+			}
+		}
+		// Multivalue series if any
+		for seriesName, seriesValues := range allFields {
+			lib.AddTSPoint(
+				ctx,
+				pts,
+				lib.NewTSPoint(ctx, seriesName, period, nil, seriesValues, dt, cfg.customData),
+			)
+		}
+	}
+}
+
+func calcSingleNumericRange(
+	ctx *lib.Ctx,
+	sqlc *sql.DB,
+	cfg *calcMetricData,
+	pts *lib.TSPoints,
+	sqlQuery, seriesNameOrFunc, period string,
+	from, to, dt time.Time,
+) {
+	// Execute SQL query
+	rows := lib.QuerySQLWithErr(sqlc, ctx, sqlQuery)
+	defer func() {
+		lib.FatalOnError(rows.Err())
+		lib.FatalOnError(rows.Close())
+	}()
+
+	// Get Number of columns
+	// We support either query returnign single row with single numeric value
+	// Or multiple rows, each containing string (series name) and its numeric value(s)
+	columns, err := rows.Columns()
+	lib.FatalOnError(err)
+	nColumns := len(columns)
+
+	// Metric Results, assume they're floats
+	var (
+		pValue  *float64
+		value   float64
+		name    string
+		cFloat  float64
+		cTime   time.Time
+		cString string
+	)
+	// Use value descriptions?
+	useDesc := cfg.desc != ""
+	// Single row & single column result
+	if nColumns == 1 {
+		rowCount := 0
+		for rows.Next() {
+			lib.FatalOnError(rows.Scan(&pValue))
+			rowCount++
+		}
+		if rowCount != 1 {
+			lib.Printf(
+				"Error:\nQuery should return either single value or "+
+					"multiple rows, each containing string and numbers\n"+
+					"Got %d rows, each containing single number\nQuery:%s\n",
+				rowCount, sqlQuery,
+			)
+		}
+		// Handle nulls
+		if pValue != nil {
+			value = *pValue
+		}
+		// In this simplest case 1 row, 1 column - series name is taken directly from YAML (metrics.yaml)
+		// It usually uses `add_period_to_name: true` to have _period suffix, period{=h,d,w,m,q,y}
+		name = seriesNameOrFunc
+		if ctx.Debug > 0 {
+			lib.Printf("%v - %v -> %v, %v\n", from, to, name, value)
+		}
+		// Add batch point
+		fields := map[string]interface{}{"value": value}
+		if useDesc {
+			fields["descr"] = valueDescription(cfg.desc, value)
+		}
+		lib.AddTSPoint(
+			ctx,
+			pts,
+			lib.NewTSPoint(ctx, name, period, nil, fields, dt, false),
+		)
+	} else if nColumns >= 2 {
+		// Multiple rows, each with (series name, value(s))
+		// Alocate nColumns numeric values (first is series name)
+		pValues := make([]interface{}, nColumns)
+		for i := range columns {
+			pValues[i] = new(sql.RawBytes)
+		}
+		allFields := make(map[string]map[string]interface{})
+		for rows.Next() {
+			// Get row values
+			lib.FatalOnError(rows.Scan(pValues...))
+			// Get first column name, and using it all series names
+			// First column should contain nColumns - 1 names separated by ","
+			name := string(*pValues[0].(*sql.RawBytes))
+			names := nameForMetricsRow(cfg, seriesNameOrFunc, name, cfg.multivalue, cfg.escapeValueName)
+			if ctx.Debug > 0 {
+				lib.Printf("nameForMetricsRow: %s -> %v\n", name, names)
+			}
+			if len(names) > 0 {
+				// Iterate values
+				if cfg.customData {
+					pCustVals := pValues[1:]
+					// values tripples (time, float, string)
+					for idx, pVal := range pCustVals {
+						valType := idx % 3
+						cidx := idx / 3
+						if valType == 0 {
+							if pVal != nil {
+								sTime := string(*pVal.(*sql.RawBytes))
+								cTime = lib.TimeParseAny(sTime)
+							} else {
+								cTime = time.Now()
+							}
+						} else if valType == 1 {
+							if pVal != nil {
+								cFloat, _ = strconv.ParseFloat(string(*pVal.(*sql.RawBytes)), 64)
+							} else {
+								cFloat = 0.0
+							}
+						} else {
+							if pVal != nil {
+								cString = string(*pVal.(*sql.RawBytes))
+							} else {
+								cString = ""
+							}
+							if cfg.multivalue {
+								nameArr := strings.Split(names[cidx], ";")
+								seriesName := nameArr[0]
+								seriesValueName := nameArr[1]
+								if ctx.Debug > 0 {
+									lib.Printf("%v - %v -> (%v, %v): %v[%v], (%v, %v, %v)\n", from, to, idx, cidx, seriesName, seriesValueName, cTime, cFloat, cString)
+								}
+								if _, ok := allFields[seriesName]; !ok {
+									allFields[seriesName] = make(map[string]interface{})
+								}
+								allFields[seriesName][seriesValueName+"_t"] = cTime
+								allFields[seriesName][seriesValueName+"_v"] = cFloat
+								allFields[seriesName][seriesValueName+"_s"] = cString
+							} else {
+								name = names[cidx]
+								if ctx.Debug > 0 {
+									lib.Printf("%v - %v -> (%v, %v): %v, (%v, %v, %v)\n", from, to, idx, cidx, name, cTime, cFloat, cString)
+								}
+								// Add batch point
+								fields := map[string]interface{}{"value": cFloat, "str": cString, "dt": cTime}
+								if useDesc {
+									fields["descr"] = valueDescription(cfg.desc, cFloat)
+								}
+								lib.AddTSPoint(
+									ctx,
+									pts,
+									lib.NewTSPoint(ctx, name, period, nil, fields, cTime, true),
+								)
+							}
+						}
+					}
+				} else {
+					pFloats := pValues[1:]
+					for idx, pVal := range pFloats {
+						if pVal != nil {
+							value, _ = strconv.ParseFloat(string(*pVal.(*sql.RawBytes)), 64)
+						} else {
+							value = 0.0
+						}
+						if cfg.multivalue {
+							nameArr := strings.Split(names[idx], ";")
+							seriesName := nameArr[0]
+							seriesValueName := nameArr[1]
+							if ctx.Debug > 0 {
+								lib.Printf("%v - %v -> %v: %v[%v], %v\n", from, to, idx, seriesName, seriesValueName, value)
+							}
+							if _, ok := allFields[seriesName]; !ok {
+								allFields[seriesName] = make(map[string]interface{})
+							}
+							allFields[seriesName][seriesValueName] = value
+						} else {
+							name = names[idx]
+							if ctx.Debug > 0 {
+								lib.Printf("%v - %v -> %v: %v, %v\n", from, to, idx, name, value)
+							}
+							// Add batch point
+							fields := map[string]interface{}{"value": value}
+							if useDesc {
+								fields["descr"] = valueDescription(cfg.desc, value)
+							}
+							lib.AddTSPoint(
+								ctx,
+								pts,
+								lib.NewTSPoint(ctx, name, period, nil, fields, dt, false),
+							)
+						}
+					}
+				}
+			}
+		}
+		// Multivalue series if any
+		for seriesName, seriesValues := range allFields {
+			lib.AddTSPoint(
+				ctx,
+				pts,
+				lib.NewTSPoint(ctx, seriesName, period, nil, seriesValues, dt, cfg.customData),
+			)
+		}
+	}
+}
+
 func calcRange(
 	ch chan bool,
 	ctx *lib.Ctx,
@@ -186,6 +600,7 @@ func calcRange(
 	cfg *calcMetricData,
 	nIntervals int,
 	dtAry, fromAry, toAry []time.Time,
+	hllEmpty []uint8,
 	mut *sync.Mutex,
 ) {
 	// Connect to Postgres DB
@@ -210,190 +625,10 @@ func calcRange(
 		sqlQuery = strings.Replace(sqlQuery, "{{project_scale}}", cfg.projectScale, -1)
 		sqlQuery = strings.Replace(sqlQuery, "{{rnd}}", lib.RandString(), -1)
 
-		// Execute SQL query
-		rows := lib.QuerySQLWithErr(sqlc, ctx, sqlQuery)
-
-		// Get Number of columns
-		// We support either query returnign single row with single numeric value
-		// Or multiple rows, each containing string (series name) and its numeric value(s)
-		columns, err := rows.Columns()
-		lib.FatalOnError(err)
-		nColumns := len(columns)
-
-		// Use value descriptions?
-		useDesc := cfg.desc != ""
-
-		// Metric Results, assume they're floats
-		var (
-			pValue  *float64
-			value   float64
-			name    string
-			cFloat  float64
-			cTime   time.Time
-			cString string
-		)
-		// Single row & single column result
-		if nColumns == 1 {
-			rowCount := 0
-			for rows.Next() {
-				lib.FatalOnError(rows.Scan(&pValue))
-				rowCount++
-			}
-			lib.FatalOnError(rows.Err())
-			lib.FatalOnError(rows.Close())
-			if rowCount != 1 {
-				lib.Printf(
-					"Error:\nQuery should return either single value or "+
-						"multiple rows, each containing string and numbers\n"+
-						"Got %d rows, each containing single number\nQuery:%s\n",
-					rowCount, sqlQuery,
-				)
-			}
-			// Handle nulls
-			if pValue != nil {
-				value = *pValue
-			}
-			// In this simplest case 1 row, 1 column - series name is taken directly from YAML (metrics.yaml)
-			// It usually uses `add_period_to_name: true` to have _period suffix, period{=h,d,w,m,q,y}
-			name = seriesNameOrFunc
-			if ctx.Debug > 0 {
-				lib.Printf("%v - %v -> %v, %v\n", from, to, name, value)
-			}
-			// Add batch point
-			fields := map[string]interface{}{"value": value}
-			if useDesc {
-				fields["descr"] = valueDescription(cfg.desc, value)
-			}
-			lib.AddTSPoint(
-				ctx,
-				&pts,
-				lib.NewTSPoint(ctx, name, period, nil, fields, dt, false),
-			)
-		} else if nColumns >= 2 {
-			// Multiple rows, each with (series name, value(s))
-			// Alocate nColumns numeric values (first is series name)
-			pValues := make([]interface{}, nColumns)
-			for i := range columns {
-				pValues[i] = new(sql.RawBytes)
-			}
-			allFields := make(map[string]map[string]interface{})
-			for rows.Next() {
-				// Get row values
-				lib.FatalOnError(rows.Scan(pValues...))
-				// Get first column name, and using it all series names
-				// First column should contain nColumns - 1 names separated by ","
-				name := string(*pValues[0].(*sql.RawBytes))
-				names := nameForMetricsRow(cfg, seriesNameOrFunc, name, cfg.multivalue, cfg.escapeValueName)
-				if ctx.Debug > 0 {
-					lib.Printf("nameForMetricsRow: %s -> %v\n", name, names)
-				}
-				if len(names) > 0 {
-					// Iterate values
-					if cfg.customData {
-						pCustVals := pValues[1:]
-						// values tripples (time, float, string)
-						for idx, pVal := range pCustVals {
-							valType := idx % 3
-							cidx := idx / 3
-							if valType == 0 {
-								if pVal != nil {
-									sTime := string(*pVal.(*sql.RawBytes))
-									cTime = lib.TimeParseAny(sTime)
-								} else {
-									cTime = time.Now()
-								}
-							} else if valType == 1 {
-								if pVal != nil {
-									cFloat, _ = strconv.ParseFloat(string(*pVal.(*sql.RawBytes)), 64)
-								} else {
-									cFloat = 0.0
-								}
-							} else {
-								if pVal != nil {
-									cString = string(*pVal.(*sql.RawBytes))
-								} else {
-									cString = ""
-								}
-								if cfg.multivalue {
-									nameArr := strings.Split(names[cidx], ";")
-									seriesName := nameArr[0]
-									seriesValueName := nameArr[1]
-									if ctx.Debug > 0 {
-										lib.Printf("%v - %v -> (%v, %v): %v[%v], (%v, %v, %v)\n", from, to, idx, cidx, seriesName, seriesValueName, cTime, cFloat, cString)
-									}
-									if _, ok := allFields[seriesName]; !ok {
-										allFields[seriesName] = make(map[string]interface{})
-									}
-									allFields[seriesName][seriesValueName+"_t"] = cTime
-									allFields[seriesName][seriesValueName+"_v"] = cFloat
-									allFields[seriesName][seriesValueName+"_s"] = cString
-								} else {
-									name = names[cidx]
-									if ctx.Debug > 0 {
-										lib.Printf("%v - %v -> (%v, %v): %v, (%v, %v, %v)\n", from, to, idx, cidx, name, cTime, cFloat, cString)
-									}
-									// Add batch point
-									fields := map[string]interface{}{"value": cFloat, "str": cString, "dt": cTime}
-									if useDesc {
-										fields["descr"] = valueDescription(cfg.desc, cFloat)
-									}
-									lib.AddTSPoint(
-										ctx,
-										&pts,
-										lib.NewTSPoint(ctx, name, period, nil, fields, cTime, true),
-									)
-								}
-							}
-						}
-					} else {
-						pFloats := pValues[1:]
-						for idx, pVal := range pFloats {
-							if pVal != nil {
-								value, _ = strconv.ParseFloat(string(*pVal.(*sql.RawBytes)), 64)
-							} else {
-								value = 0.0
-							}
-							if cfg.multivalue {
-								nameArr := strings.Split(names[idx], ";")
-								seriesName := nameArr[0]
-								seriesValueName := nameArr[1]
-								if ctx.Debug > 0 {
-									lib.Printf("%v - %v -> %v: %v[%v], %v\n", from, to, idx, seriesName, seriesValueName, value)
-								}
-								if _, ok := allFields[seriesName]; !ok {
-									allFields[seriesName] = make(map[string]interface{})
-								}
-								allFields[seriesName][seriesValueName] = value
-							} else {
-								name = names[idx]
-								if ctx.Debug > 0 {
-									lib.Printf("%v - %v -> %v: %v, %v\n", from, to, idx, name, value)
-								}
-								// Add batch point
-								fields := map[string]interface{}{"value": value}
-								if useDesc {
-									fields["descr"] = valueDescription(cfg.desc, value)
-								}
-								lib.AddTSPoint(
-									ctx,
-									&pts,
-									lib.NewTSPoint(ctx, name, period, nil, fields, dt, false),
-								)
-							}
-						}
-					}
-				}
-			}
-			// Multivalue series if any
-			for seriesName, seriesValues := range allFields {
-				lib.AddTSPoint(
-					ctx,
-					&pts,
-					lib.NewTSPoint(ctx, seriesName, period, nil, seriesValues, dt, cfg.customData),
-				)
-			}
-			lib.FatalOnError(rows.Err())
-			lib.FatalOnError(rows.Close())
+		if cfg.hll {
+			calcSingleHLLRange(ctx, sqlc, cfg, &pts, sqlQuery, seriesNameOrFunc, period, from, to, dt, hllEmpty)
+		} else {
+			calcSingleNumericRange(ctx, sqlc, cfg, &pts, sqlQuery, seriesNameOrFunc, period, from, to, dt)
 		}
 	}
 	// Write the batch
@@ -408,7 +643,7 @@ func calcRange(
 		if mut != nil {
 			mut.Unlock()
 		}
-		lib.WriteTSPoints(ctx, sqlc, &pts, cfg.mergeSeries, mut)
+		lib.WriteTSPoints(ctx, sqlc, &pts, cfg.mergeSeries, hllEmpty, mut)
 	} else if ctx.Debug > 0 {
 		lib.Printf("Skipping series write\n")
 	}
@@ -903,7 +1138,7 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 	// Write the batch
 	if !ctx.SkipTSDB {
 		// Mark this metric & period as already computed if this is a QR period
-		lib.WriteTSPoints(ctx, sqlc, &pts, cfg.mergeSeries, nil)
+		lib.WriteTSPoints(ctx, sqlc, &pts, cfg.mergeSeries, []uint8{}, nil)
 		if qrDt != nil {
 			setAlreadyComputed(sqlc, ctx, sqlFile, *qrDt)
 		}
@@ -969,6 +1204,15 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 	}()
 	// Handle 'drop:' metric flag
 	// handleSeriesDrop(&ctx, sqlc, cfg)
+
+	// Get HLL special 'empty' value
+	var hllEmpty []uint8
+	if cfg.hll {
+		// hllEmpty := getHLLDefaultDB(&ctx, sqlc)
+		hllEmpty = getHLLDefault()
+		// fmt.Printf("hllEmpty = %s\n", lib.FormatRawBytes(hllEmpty))
+		// testHLL(&ctx, sqlc)
+	}
 
 	// Parse input dates
 	dFrom := lib.TimeParseAny(from)
@@ -1044,6 +1288,7 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 				dta[i],
 				pdta[i],
 				ndta[i],
+				hllEmpty,
 				mut,
 			)
 		}
@@ -1068,6 +1313,7 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 				dta[0],
 				pdta[0],
 				ndta[0],
+				hllEmpty,
 				nil,
 			)
 		}
@@ -1146,6 +1392,9 @@ func main() {
 			if err == nil && ps >= 0.0 {
 				cfg.projectScale = fmt.Sprintf("%f", ps)
 			}
+		}
+		if _, ok := optMap["hll"]; ok {
+			cfg.hll = true
 		}
 	}
 	gCmd = strings.Join(os.Args[1:], " ")

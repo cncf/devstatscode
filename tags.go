@@ -148,7 +148,7 @@ func ProcessTag(con *sql.DB, ctx *Ctx, tg *Tag, replaces [][]string) {
 
 	// Write the batch
 	if !ctx.SkipTSDB {
-		WriteTSPoints(ctx, con, &pts, "", nil)
+		WriteTSPoints(ctx, con, &pts, "", []uint8{}, nil)
 	} else if ctx.Debug > 0 {
 		Printf("Skipping tags series write\n")
 	}

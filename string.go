@@ -9,7 +9,9 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -163,4 +165,32 @@ func MaybeHideFuncTS(shas map[string]string) (f func(string) string) {
 // RandString - return random string
 func RandString() string {
 	return fmt.Sprintf("%x", rand.Uint64())
+}
+
+// FormatRawBytes - format []uint8 string
+func FormatRawBytes(rawB []uint8) string {
+	raw := fmt.Sprintf("%v", reflect.ValueOf(rawB))
+	op := strings.Index(raw, "[") + 1
+	cl := strings.Index(raw, "]")
+	ary := strings.Split(raw[op:cl], " ")
+	formatted := ""
+	for _, s := range ary {
+		b, _ := strconv.ParseInt(s, 10, 32)
+		formatted += fmt.Sprintf("%02x", b)
+	}
+	return fmt.Sprintf("%T(%d)", rawB, len(rawB)) + ":" + formatted + ":" + fmt.Sprintf("%+v", rawB)
+}
+
+// FormatRawInterface - format raw string that is probably value or pointer to either []uint8 or sql.RawBytes
+func FormatRawInterface(rawI interface{}) string {
+	raw := fmt.Sprintf("%v", reflect.ValueOf(rawI))
+	op := strings.Index(raw, "[") + 1
+	cl := strings.Index(raw, "]")
+	ary := strings.Split(raw[op:cl], " ")
+	formatted := ""
+	for _, s := range ary {
+		b, _ := strconv.ParseInt(s, 10, 32)
+		formatted += fmt.Sprintf("%02x", b)
+	}
+	return fmt.Sprintf("%T", rawI) + ":" + formatted + ":" + fmt.Sprintf("%+v", rawI)
 }

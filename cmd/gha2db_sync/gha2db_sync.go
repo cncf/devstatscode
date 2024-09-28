@@ -44,6 +44,7 @@ type metric struct {
 	Project           string            `yaml:"project"`
 	AllowFail         bool              `yaml:"allow_fail"`
 	WaitAfterFail     int               `yaml:"wait_after_fail"`
+	HLL               bool              `yaml:"hll"`
 }
 
 // randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
@@ -562,6 +563,9 @@ func sync(ctx *lib.Ctx, args []string) {
 			}
 			if metric.SeriesNameMap != nil {
 				extraParams = append(extraParams, "series_name_map:"+fmt.Sprintf("%v", metric.SeriesNameMap))
+			}
+			if metric.HLL {
+				extraParams = append(extraParams, "hll")
 			}
 			periods := strings.Split(metric.Periods, ",")
 			aggregate := metric.Aggregate

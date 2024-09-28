@@ -23,7 +23,7 @@ import (
 //	use non-null mut only then.
 //
 // No more giant lock approach here, but it is up to user to spcify call context, especially 2 last parameters!
-func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut *sync.Mutex) {
+func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, hllEmpty []uint8, mut *sync.Mutex) {
 	npts := len(*pts)
 	if ctx.Debug > 0 {
 		Printf("WriteTSPoints: writing %d points\n", len(*pts))
@@ -92,6 +92,8 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 					ty = 1
 				case string:
 					ty = 2
+				case []uint8: // HLL
+					ty = 3
 				default:
 					Fatalf("usupported metric value type: %+v,%T (field %s)", fieldValue, fieldValue, fieldName)
 				}
@@ -177,6 +179,8 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 							//indices = append(indices, "create index if not exists \""+makePsqlName("i"+mergeS[1:]+col, false)+"\" on \""+mergeS+"\"(\""+col+"\")")
 						} else if ty == 1 {
 							sq += "\"" + col + "\" timestamp not null default '1900-01-01 00:00:00', "
+						} else if ty == 3 {
+							sq += "\"" + col + "\" hll not null default hll_empty(), "
 						} else {
 							sq += "\"" + col + "\" text not null default '', "
 						}
@@ -203,6 +207,8 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 							//sqls = append(sqls, "create index if not exists \""+makePsqlName("i"+mergeS[1:]+col, false)+"\" on \""+mergeS+"\"(\""+col+"\")")
 						} else if ty == 1 {
 							sqls = append(sqls, "alter table \""+mergeS+"\" add column if not exists \""+col+"\" timestamp not null default '1900-01-01 00:00:00'")
+						} else if ty == 3 {
+							sqls = append(sqls, "alter table \""+mergeS+"\" add column if not exists \""+col+"\" hll not null default hll_empty()")
 						} else {
 							sqls = append(sqls, "alter table \""+mergeS+"\" add column if not exists \""+col+"\" text not null default ''")
 						}
@@ -231,6 +237,8 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 						//indices = append(indices, "create index if not exists \""+makePsqlName("i"+name[1:]+col, false)+"\" on \""+name+"\"(\""+col+"\")")
 					} else if ty == 1 {
 						sq += "\"" + col + "\" timestamp not null default '1900-01-01 00:00:00', "
+					} else if ty == 3 {
+						sq += "\"" + col + "\" hll not null default hll_empty(), "
 					} else {
 						sq += "\"" + col + "\" text not null default '', "
 					}
@@ -251,6 +259,8 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 							//sqls = append(sqls, "create index if not exists \""+makePsqlName("i"+name[1:]+col, false)+"\" on \""+name+"\"(\""+col+"\")")
 						} else if ty == 1 {
 							sqls = append(sqls, "alter table \""+name+"\" add column if not exists \""+col+"\" timestamp not null default '1900-01-01 00:00:00'")
+						} else if ty == 3 {
+							sqls = append(sqls, "alter table \""+name+"\" add column if not exists \""+col+"\" hll not null default hll_empty()")
 						} else {
 							sqls = append(sqls, "alter table \""+name+"\" add column if not exists \""+col+"\" text not null default ''")
 						}
@@ -360,7 +370,16 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				fieldName = escapeName(fieldName)
 				namesI = append(namesI, "\""+fieldName+"\"")
 				argsI = append(argsI, "$"+strconv.Itoa(i))
-				vals = append(vals, fieldValue)
+				switch val := fieldValue.(type) {
+				case []uint8:
+					if len(val) == 0 {
+						vals = append(vals, hllEmpty)
+					} else {
+						vals = append(vals, val)
+					}
+				default:
+					vals = append(vals, fieldValue)
+				}
 				i++
 			}
 			if i == 3 {
@@ -380,7 +399,16 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				fieldName = escapeName(fieldName)
 				namesU = append(namesU, "\""+fieldName+"\"")
 				argsU = append(argsU, "$"+strconv.Itoa(i))
-				vals = append(vals, fieldValue)
+				switch val := fieldValue.(type) {
+				case []uint8:
+					if len(val) == 0 {
+						vals = append(vals, hllEmpty)
+					} else {
+						vals = append(vals, val)
+					}
+				default:
+					vals = append(vals, fieldValue)
+				}
 				i++
 			}
 			namesUA := strings.Join(namesU, ", ")
@@ -423,7 +451,16 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				fieldName = escapeName(fieldName)
 				namesI = append(namesI, "\""+fieldName+"\"")
 				argsI = append(argsI, "$"+strconv.Itoa(i))
-				vals = append(vals, fieldValue)
+				switch val := fieldValue.(type) {
+				case []uint8:
+					if len(val) == 0 {
+						vals = append(vals, hllEmpty)
+					} else {
+						vals = append(vals, val)
+					}
+				default:
+					vals = append(vals, fieldValue)
+				}
 				i++
 			}
 			if i == 4 {
@@ -443,7 +480,16 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, mut
 				fieldName = escapeName(fieldName)
 				namesU = append(namesU, "\""+fieldName+"\"")
 				argsU = append(argsU, "$"+strconv.Itoa(i))
-				vals = append(vals, fieldValue)
+				switch val := fieldValue.(type) {
+				case []uint8:
+					if len(val) == 0 {
+						vals = append(vals, hllEmpty)
+					} else {
+						vals = append(vals, val)
+					}
+				default:
+					vals = append(vals, fieldValue)
+				}
 				i++
 			}
 			namesUA := strings.Join(namesU, ", ")
@@ -626,10 +672,12 @@ func queryOut(query string, args ...interface{}) {
 			switch v := vv.(type) {
 			case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, complex64, complex128, string, bool, time.Time:
 				s += fmt.Sprintf("%d:%+v ", vi+1, v)
+			case []uint8:
+				s += fmt.Sprintf("%d:%v ", vi+1, FormatRawBytes(v))
 			case nil:
 				s += fmt.Sprintf("%d:(null) ", vi+1)
 			default:
-				s += fmt.Sprintf("%d:%+v ", vi+1, reflect.ValueOf(vv))
+				s += fmt.Sprintf("%d:%T:%+v ", vi+1, vv, reflect.ValueOf(vv))
 			}
 		}
 		fmt.Printf("[%s]\n", s)
@@ -793,6 +841,7 @@ func ExecSQLWithErr(con *sql.DB, ctx *Ctx, query string, args ...interface{}) sq
 	for _, try := range ctx.Trials {
 		res, err = ExecSQL(con, ctx, query, args...)
 		if err != nil {
+			fmt.Printf("Failed sql: ")
 			queryOut(query, args...)
 		}
 		status = FatalOnError(err)
