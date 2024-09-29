@@ -41,6 +41,13 @@ var (
 func testHLL(ctx *lib.Ctx, con *sql.DB) {
 	// hll_empty is '\x118b7f' when used in psql
 	// in golang: []uint8(8):5c78313138623766:[92 120 49 49 56 98 55 102]
+	// hll(log2m=12, regwidth=6, expthresh=-1, sparseon=1):
+	// create table h2(h hll(17, 7, 0, 0));
+	// create table h2(h hll(12, 6, -1, 1));
+	// insert into h2(h) select hll_add_agg(hll_hash_bigint(actor_id),12,6,-1,1) as h from gha_events;
+	// select hll_cardinality(hll_union_agg(h)) from h2;
+	// select hll_print(hll_union_agg(h)) from h2;
+	// https://github.com/citusdata/postgresql-hll
 	lib.ExecSQLWithErr(con, ctx, "drop table if exists h")
 	lib.ExecSQLWithErr(con, ctx, "create table h as select hll_add_agg(hll_hash_bigint(actor_id)) as h from gha_events")
 	lib.ExecSQLWithErr(con, ctx, "alter table h alter column h set not null")
