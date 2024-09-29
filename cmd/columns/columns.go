@@ -18,6 +18,7 @@ type column struct {
 	TableRegexp string `yaml:"table_regexp"`
 	Tag         string `yaml:"tag"`
 	Column      string `yaml:"column"`
+	HLL         bool   `yaml:"hll"`
 }
 
 // Ensure that specific TSDB series have all needed columns
@@ -55,15 +56,17 @@ func ensureColumns() {
 	}
 
 	thrN := lib.GetThreadsNum(&ctx)
-	ch := make(chan [2][]string)
+	ch := make(chan [3][]string)
 	nThreads := 0
 	allTables := []string{}
 	allCols := []string{}
+	allHLLs := []string{}
 	// Use integer index to pass to go rountine
 	for i := range allColumns.Columns {
-		go func(ch chan [2][]string, idx int) {
+		go func(ch chan [3][]string, idx int) {
 			tables := []string{}
 			cols := []string{}
+			hlls := []string{}
 			// Refer to current column config using index passed to anonymous function
 			col := &allColumns.Columns[idx]
 			if ctx.Debug > 0 {
@@ -78,6 +81,12 @@ func ensureColumns() {
 					col.Tag,
 				),
 			)
+			var colType string
+			if col.HLL {
+				colType = "hll"
+			} else {
+				colType = "double precision"
+			}
 			defer func() { lib.FatalOnError(crows.Close()) }()
 			colName := ""
 			colNames := []string{}
@@ -89,7 +98,7 @@ func ensureColumns() {
 			if len(colNames) == 0 {
 				lib.Printf("Warning: no tag values for (%s, %s)\n", col.Column, col.Tag)
 				if ch != nil {
-					ch <- [2][]string{tables, cols}
+					ch <- [3][]string{tables, cols, hlls}
 				}
 				return
 			}
@@ -116,12 +125,17 @@ func ensureColumns() {
 					_, err := lib.ExecSQL(
 						con,
 						&ctx,
-						"alter table \""+table+"\" add column \""+colName+"\" double precision",
+						"alter table \""+table+"\" add column \""+colName+"\" "+colType,
 					)
 					if err == nil {
 						lib.Printf("Added column \"%s\" to \"%s\" table\n", colName, table)
 						tables = append(tables, table)
 						cols = append(cols, colName)
+						if col.HLL {
+							hlls = append(hlls, "y")
+						} else {
+							hlls = append(hlls, "n")
+						}
 						//} else {
 						//	lib.Printf("%+v\n", err)
 					}
@@ -134,7 +148,7 @@ func ensureColumns() {
 			}
 			// Synchronize go routine
 			if ch != nil {
-				ch <- [2][]string{tables, cols}
+				ch <- [3][]string{tables, cols, hlls}
 			}
 		}(ch, i)
 		// go routine called with 'ch' channel to sync and column config index
@@ -143,10 +157,13 @@ func ensureColumns() {
 			data := <-ch
 			tables := data[0]
 			cols := data[1]
+			hlls := data[2]
 			for i, table := range tables {
 				col := cols[i]
+				hll := hlls[i]
 				allTables = append(allTables, table)
 				allCols = append(allCols, col)
+				allHLLs = append(allHLLs, hll)
 			}
 			nThreads--
 		}
@@ -156,23 +173,30 @@ func ensureColumns() {
 		data := <-ch
 		tables := data[0]
 		cols := data[1]
+		hlls := data[2]
 		for i, table := range tables {
 			col := cols[i]
+			hll := hlls[i]
 			allTables = append(allTables, table)
 			allCols = append(allCols, col)
+			allHLLs = append(allHLLs, hll)
 		}
 		nThreads--
 	}
-	//lib.Printf("Tables: %+v\n", allTables)
-	//lib.Printf("Columns: %+v\n", allCols)
-	cfg := make(map[string]map[string]struct{})
+	if ctx.Debug > 1 {
+		lib.Printf("Tables: %+v\n", allTables)
+		lib.Printf("Columns: %+v\n", allCols)
+		lib.Printf("HLLs: %+v\n", allHLLs)
+	}
+	cfg := make(map[string]map[string]string)
 	for i, table := range allTables {
 		col := allCols[i]
+		hll := allHLLs[i]
 		_, ok := cfg[table]
 		if !ok {
-			cfg[table] = make(map[string]struct{})
+			cfg[table] = make(map[string]string)
 		}
-		cfg[table][col] = struct{}{}
+		cfg[table][col] = hll
 	}
 	if ctx.Debug > 0 {
 		lib.Printf("Cfg: %+v\n", cfg)
@@ -180,12 +204,14 @@ func ensureColumns() {
 
 	// process separate tables in parallel
 	sch := make(chan [2]string)
+	def := map[string]string{"n": "0.0", "y": "hll_empty()"}
 	nThreads = 0
 	for table, columns := range cfg {
-		go func(sch chan [2]string, tab string, cols map[string]struct{}) {
+		go func(sch chan [2]string, tab string, cols map[string]string) {
 			s := "update \"" + tab + "\" set "
-			for col := range cols {
-				s += "\"" + col + "\" = 0.0, "
+			for col, hll := range cols {
+				dVal := def[hll]
+				s += "\"" + col + "\" = " + dVal + ", "
 			}
 			s = s[:len(s)-2]
 			dtStart := time.Now()
@@ -194,8 +220,9 @@ func ensureColumns() {
 			nCols := len(cols)
 			lib.Printf("Mass updated \"%s\", columns: %d, took: %v\n", tab, nCols, dtEnd.Sub(dtStart))
 			s = "alter table \"" + tab + "\" "
-			for col := range cols {
-				s += "alter column \"" + col + "\" set not null, alter column \"" + col + "\" set default 0.0, "
+			for col, hll := range cols {
+				dVal := def[hll]
+				s += "alter column \"" + col + "\" set not null, alter column \"" + col + "\" set default " + dVal + ", "
 			}
 			s = s[:len(s)-2]
 			dtStart = time.Now()
