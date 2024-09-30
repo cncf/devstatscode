@@ -388,21 +388,28 @@ func MakeUniqueSort(ary []string) (outAry []string) {
 // ExcludedForProject - checks if metric defines project, if so then:
 // if metric's project is XYZ and current project is XYZ then calculate this metric
 // if metric's project is !XYZ and current project is *not* XYZ then calculate this metric
-func ExcludedForProject(currentProject, metricProject string) bool {
-	if metricProject == "" || currentProject == "" {
+func ExcludedForProject(currentProject, metricProjects string) bool {
+	if metricProjects == "" || currentProject == "" {
 		return false
 	}
-	if metricProject[:1] == "!" {
-		metricProject = metricProject[1:]
-		if currentProject == metricProject {
-			return true
+	excludeMode := false
+	if metricProjects[:1] == "!" {
+		excludeMode = true
+		metricProjects = metricProjects[1:]
+	}
+	metricProjectsAry := strings.Split(metricProjects, ",")
+	for _, metricProject := range metricProjectsAry {
+		if excludeMode {
+			if currentProject == metricProject {
+				return true
+			}
+			continue
 		}
-		return false
+		if currentProject == metricProject {
+			return false
+		}
 	}
-	if currentProject != metricProject {
-		return true
-	}
-	return false
+	return !excludeMode
 }
 
 // GetProjectsList return list of projects to process
