@@ -27,7 +27,7 @@ type devstatsProject struct {
 	AffSkipTemp     string `yaml:"affSkipTemp"`               // '1'
 	Disk            string `yaml:"disk"`                      // 50Gi
 	Domains         [4]int `yaml:"domains,flow"`              // [1, 1, 0, 0]
-	GA              string `yaml:"ga"`                        // 'UA-108085315-1'
+	GA              string `yaml:"ga"`                        // 'UA-108085315-1' - warning - this is no longer supported by Google as it is < v4
 	I               int    `yaml:"i"`                         // 0
 	CertNum         int    `yaml:"certNum"`                   // 1
 	MaxHist         int    `yaml:"maxHist,omitempty"`         // 8
