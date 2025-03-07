@@ -268,6 +268,10 @@ func TestAnnotationRegexp(t *testing.T) {
 		{re: `^v\d+\.\d+\.0\+k0s\.\d+$`, str: "v1.2.0+k0s.0", match: true},
 		{re: `^v\d+\.\d+\.0\+k0s\.\d+$`, str: "v1.2.0-beta.+k0s.0", match: false},
 		{re: `^v\d+\.\d+\.0\+k0s\.\d+$`, str: "v1.2.0+k0s.1", match: true},
+		{re: `(?i)^interTwin-eu\/(.*interlink.*|vk-test-set)$`, str: "interTwin-eu/interLink", match: true},
+		{re: `(?i)^interTwin-eu\/(.*interlink.*|vk-test-set)$`, str: "intertwin-eu/interlink", match: true},
+		{re: `(?i)^intertwin-eu\/(.*interlink.*|vk-test-set)$`, str: "interTwin-eu/interLink", match: true},
+		{re: `(?i)^interTwin-eu\/(.*interlink.*|vk-test-set)$`, str: "interTwin-eu/vk-test-set", match: true},
 	}
 	// Execute test cases
 	for index, test := range testCases {
