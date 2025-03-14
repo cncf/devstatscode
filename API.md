@@ -81,6 +81,35 @@ List of APIs:
   - Result contains hourly events counts for the specified period in the specified date range.
   - Example API call: `./devel/api_events.sh kubernetes 2020-01-01 2021-01-01`.
 
+- `CumulativeCounts`: `{"api": "CumulativeCounts", "payload": {"project": "projectName", metric: "contributors"}}`.
+  - Arguments:
+    - `projectName`: see `Health` API.
+    - `metric`: can be either `contributors` or `organizations`.
+  - Returns:
+  ```
+  {
+    "project": "All CNCF",
+    "db_name": "allprj",
+    "metric": "organizations",
+    "timestamps": [
+      "2014-01-01T00:00:00Z",
+      "2014-02-01T01:00:00Z",
+      ...
+      "2025-02-01T01:00:00Z",
+      "2025-03-01T01:00:00Z"
+    ],
+    "values": [
+      3,
+      17,
+      ...
+      15000,
+      15534
+    ]
+  }
+  ```
+  - Result contains mounthly metrics cumulative counts.
+  - Example API call: `./devel/api_cumulative_counts.sh all contributors`.
+
 - `Repos`: `{"api": "Repos", "payload": {"project": "projectName", "repository_group": ["Other", "Not specified", "SIG Apps"]}}`.
   - Arguments:
     - `projectName`: see `Health` API.

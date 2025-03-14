@@ -126,6 +126,9 @@ const Events string = "Events"
 // ListAPIs - common constant string
 const ListAPIs string = "ListAPIs"
 
+// CumulativeCounts - common constant string
+const CumulativeCounts string = "CumulativeCounts"
+
 // ListProjects - common constant string
 const ListProjects string = "ListProjects"
 

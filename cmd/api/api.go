@@ -30,6 +30,7 @@ var allAPIs = []string{
 	lib.Companies,
 	lib.Events,
 	lib.Repos,
+	lib.CumulativeCounts,
 	lib.CompaniesTable,
 	lib.ComContribRepoGrp,
 	lib.DevActCnt,
@@ -77,6 +78,14 @@ type eventsPayload struct {
 	TimeStamps []time.Time `json:"timestamps"`
 	From       string      `json:"from"`
 	To         string      `json:"to"`
+	Values     []int64     `json:"values"`
+}
+
+type cumulativeCountsPayload struct {
+	Project    string      `json:"project"`
+	Metric     string      `json:"metric"`
+	DB         string      `json:"db_name"`
+	TimeStamps []time.Time `json:"timestamps"`
 	Values     []int64     `json:"values"`
 }
 
@@ -2030,6 +2039,80 @@ func apiComStatsRepoGrp(info string, w http.ResponseWriter, payload map[string]i
 	jsoniter.NewEncoder(w).Encode(pl)
 }
 
+func apiCumulativeCounts(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.CumulativeCounts
+	var err error
+	project, db, err := handleSharedPayload(w, payload)
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	params := map[string]string{"metric": ""}
+	for paramName := range params {
+		paramValue, err := getPayloadStringParam(paramName, w, payload, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	metric := strings.ToLower(params["metric"])
+	if metric != "contributors" && metric != "organizations" {
+		err = fmt.Errorf("metric value can only be 'contributors' or 'organizations'")
+		returnError(apiName, w, err)
+		return
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	query := `
+  select
+    time,
+    value
+  from
+    scntrs_and_orgs
+  where
+    series = $1
+  order by
+    time
+  `
+	rows, err := lib.QuerySQLLogErr(c, ctx, query, metric)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	times := []time.Time{}
+	values := []int64{}
+	var (
+		t time.Time
+		v int64
+	)
+	for rows.Next() {
+		err = rows.Scan(&t, &v)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		times = append(times, t)
+		values = append(values, v)
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	epl := cumulativeCountsPayload{Project: project, DB: db, TimeStamps: times, Values: values, Metric: params["metric"]}
+	w.WriteHeader(http.StatusOK)
+	jsoniter.NewEncoder(w).Encode(epl)
+}
+
 func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
 	apiName := lib.Events
 	var err error
@@ -2471,6 +2554,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiCompanies(info, w, pl.Payload)
 	case lib.Events:
 		apiEvents(info, w, pl.Payload)
+	case lib.CumulativeCounts:
+		apiCumulativeCounts(info, w, pl.Payload)
 	case lib.Repos:
 		apiRepos(info, w, pl.Payload)
 	case lib.CompaniesTable:
