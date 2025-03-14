@@ -105,14 +105,21 @@ type siteStatsPayload struct {
 	Companies     int64  `json:"companies"`
 }
 
+type cumulativeCountsCacheEntry struct {
+	dt               time.Time
+	cumulativeCounts cumulativeCountsPayload
+}
+
 type siteStatsCacheEntry struct {
 	dt        time.Time
 	siteStats siteStatsPayload
 }
 
 var (
-	siteStatsCache    = map[[2]string]siteStatsCacheEntry{}
-	siteStatsCacheMtx = &sync.Mutex{}
+	siteStatsCache           = map[[2]string]siteStatsCacheEntry{}
+	siteStatsCacheMtx        = &sync.Mutex{}
+	cumulativeCountsCache    = map[[3]string]cumulativeCountsCacheEntry{}
+	cumulativeCountsCacheMtx = &sync.Mutex{}
 )
 
 type companiesTablePayload struct {
@@ -2065,6 +2072,22 @@ func apiCumulativeCounts(info string, w http.ResponseWriter, payload map[string]
 		returnError(apiName, w, err)
 		return
 	}
+	key := [3]string{project, db, metric}
+	cumulativeCountsCacheMtx.Lock()
+	data, ok := cumulativeCountsCache[key]
+	cumulativeCountsCacheMtx.Unlock()
+	if ok {
+		age := time.Now().Sub(data.dt).Seconds()
+		if age < 43200 {
+			lib.Printf("Using cached value %+v (age is %.0f < 43200)\n", data, age)
+			w.WriteHeader(http.StatusOK)
+			jsoniter.NewEncoder(w).Encode(data.cumulativeCounts)
+			return
+		}
+		cumulativeCountsCacheMtx.Lock()
+		delete(cumulativeCountsCache, key)
+		cumulativeCountsCacheMtx.Unlock()
+	}
 	ctx, c, err := getContextAndDB(w, db)
 	if err != nil {
 		returnError(apiName, w, err)
@@ -2111,6 +2134,9 @@ func apiCumulativeCounts(info string, w http.ResponseWriter, payload map[string]
 	epl := cumulativeCountsPayload{Project: project, DB: db, TimeStamps: times, Values: values, Metric: params["metric"]}
 	w.WriteHeader(http.StatusOK)
 	jsoniter.NewEncoder(w).Encode(epl)
+	cumulativeCountsCacheMtx.Lock()
+	cumulativeCountsCache[key] = cumulativeCountsCacheEntry{dt: time.Now(), cumulativeCounts: epl}
+	cumulativeCountsCacheMtx.Unlock()
 }
 
 func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
