@@ -2079,7 +2079,7 @@ func apiCumulativeCounts(info string, w http.ResponseWriter, payload map[string]
 	if ok {
 		age := time.Now().Sub(data.dt).Seconds()
 		if age < 43200 {
-			lib.Printf("Using cached value %+v (age is %.0f < 43200)\n", data, age)
+			lib.Printf("Using cached values (age is %.0f < 43200)\n", age)
 			w.WriteHeader(http.StatusOK)
 			jsoniter.NewEncoder(w).Encode(data.cumulativeCounts)
 			return
