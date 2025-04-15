@@ -283,7 +283,7 @@ func TestPostgres(t *testing.T) {
 	// Start transaction
 	tx, err := c.Begin()
 	if err != nil {
-		t.Errorf(err.Error())
+		t.Error(err.Error())
 	}
 
 	// Insert another row
@@ -307,7 +307,7 @@ func TestPostgres(t *testing.T) {
 	// Start transaction
 	tx, err = c.Begin()
 	if err != nil {
-		t.Errorf(err.Error())
+		t.Error(err.Error())
 	}
 
 	// Insert another row

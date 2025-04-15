@@ -2562,9 +2562,9 @@ func getMemUsage() string {
 }
 
 func runGC() {
-	lib.Printf(getMemUsage() + "\n")
+	lib.Printf("%s", getMemUsage()+"\n")
 	runtime.GC()
-	lib.Printf(getMemUsage() + "\n")
+	lib.Printf("%s", getMemUsage()+"\n")
 }
 
 // gha2db - main work horse

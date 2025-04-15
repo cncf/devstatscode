@@ -250,7 +250,7 @@ func returnError(apiName string, w http.ResponseWriter, err error) {
 	if !strings.HasPrefix(errStr, "API '") {
 		errStr = "API '" + apiName + "': " + errStr
 	}
-	lib.Printf(errStr + "\n")
+	lib.Printf("%s", errStr+"\n")
 	epl := errorPayload{Error: errStr}
 	w.WriteHeader(http.StatusBadRequest)
 	jsoniter.NewEncoder(w).Encode(epl)

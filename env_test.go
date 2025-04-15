@@ -125,7 +125,7 @@ func TestEnv(t *testing.T) {
 		for key, value := range test.environment {
 			err := os.Setenv(key, value)
 			if err != nil {
-				t.Errorf(err.Error())
+				t.Error(err.Error())
 			}
 		}
 
@@ -155,7 +155,7 @@ func TestEnv(t *testing.T) {
 			//err := os.Setenv(key, currEnv[key])
 			err := os.Unsetenv(key)
 			if err != nil {
-				t.Errorf(err.Error())
+				t.Error(err.Error())
 			}
 		}
 

@@ -1745,7 +1745,7 @@ func TestInit(t *testing.T) {
 		for key, value := range test.environment {
 			err := os.Setenv(key, value)
 			if err != nil {
-				t.Errorf(err.Error())
+				t.Error(err.Error())
 			}
 		}
 
@@ -1754,7 +1754,7 @@ func TestInit(t *testing.T) {
 		if test.environment["GHA2DB_CTXOUT"] != "" {
 			fd, err := os.Open(os.DevNull)
 			if err != nil {
-				t.Errorf(err.Error())
+				t.Error(err.Error())
 			}
 			os.Stdout = fd
 		}
@@ -1770,7 +1770,7 @@ func TestInit(t *testing.T) {
 		for key := range test.environment {
 			err := os.Setenv(key, currEnv[key])
 			if err != nil {
-				t.Errorf(err.Error())
+				t.Error(err.Error())
 			}
 		}
 

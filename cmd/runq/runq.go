@@ -171,7 +171,7 @@ func runq(sqlFile string, params []string) (ctx lib.Ctx) {
 		output += fmt.Sprintf(strFormat, value) + "+"
 	}
 	output = output[:len(output)-1] + "\\\n"
-	lib.Printf(output)
+	lib.Printf("%s", output)
 
 	// Header row
 	output = "|"
@@ -186,7 +186,7 @@ func runq(sqlFile string, params []string) (ctx lib.Ctx) {
 		hdr = append(hdr, column[:len(column)-indexLen])
 	}
 	output += "\n"
-	lib.Printf(output)
+	lib.Printf("%s", output)
 	if writer != nil {
 		err = writer.Write(hdr)
 	}
@@ -199,7 +199,7 @@ func runq(sqlFile string, params []string) (ctx lib.Ctx) {
 		output += fmt.Sprintf(strFormat, value) + "+"
 	}
 	output = output[:len(output)-1] + "+\n"
-	lib.Printf(output)
+	lib.Printf("%s", output)
 
 	// Data rows loop
 	for _, row := range results {
@@ -216,7 +216,7 @@ func runq(sqlFile string, params []string) (ctx lib.Ctx) {
 			err = writer.Write(vals)
 		}
 		output = strings.Replace(output[:len(output)-1]+"|\n", "%", "%%", -1)
-		lib.Printf(output)
+		lib.Printf("%s", output)
 	}
 
 	// Frame below data rows
@@ -227,7 +227,7 @@ func runq(sqlFile string, params []string) (ctx lib.Ctx) {
 		output += fmt.Sprintf(strFormat, value) + "+"
 	}
 	output = output[:len(output)-1] + "/\n"
-	lib.Printf(output)
+	lib.Printf("%s", output)
 
 	lib.Printf("Rows: %v\n", rowCount)
 	if writer != nil {
