@@ -177,7 +177,9 @@ func handleRowIsTooBig(con *sql.DB, ctx *lib.Ctx, table, info string, addedCols 
 			}
 		}
 	}
-	lib.Printf("Error %s: %+v", info, err)
+	if !strings.Contains(err.Error(), "already exists") {
+		lib.Printf("Error %s: %+v", info, err)
+	}
 	return false
 }
 
