@@ -2084,6 +2084,7 @@ func apiCumulativeCounts(info string, w http.ResponseWriter, payload map[string]
 			jsoniter.NewEncoder(w).Encode(data.cumulativeCounts)
 			return
 		}
+		lib.Printf("Deleting cached values for %+v (age is %.0f >= 43200)\n", key, age)
 		cumulativeCountsCacheMtx.Lock()
 		delete(cumulativeCountsCache, key)
 		cumulativeCountsCacheMtx.Unlock()
@@ -2137,6 +2138,7 @@ func apiCumulativeCounts(info string, w http.ResponseWriter, payload map[string]
 	cumulativeCountsCacheMtx.Lock()
 	cumulativeCountsCache[key] = cumulativeCountsCacheEntry{dt: time.Now(), cumulativeCounts: epl}
 	cumulativeCountsCacheMtx.Unlock()
+	lib.Printf("Stored %+v %d values in cache\n", key, len(epl.Values))
 }
 
 func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
