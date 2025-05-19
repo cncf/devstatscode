@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -146,10 +147,12 @@ func ensureColumns() {
 				currCols, er := lib.GetCurrentTableColumns(con, &ctx, table)
 				lib.FatalOnError(er)
 				if ctx.Debug > 0 {
+					sort.Strings(currCols)
 					lib.Printf("Current columns: %+v --> %+v\n", table, currCols)
 				}
 				colsToDel := identifyColumnsToDelete(currCols, colNames)
 				if len(colsToDel) > 0 {
+					sort.Strings(colsToDel)
 					lib.Printf("Need to delete columns %+v from '%s' table\n", colsToDel, table)
 				}
 				for _, colName := range colsToDel {
