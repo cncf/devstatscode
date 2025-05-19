@@ -5,13 +5,229 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	_ "github.com/lib/pq" // As suggested by lib/pq driver
+	"github.com/lib/pq" // As suggested by lib/pq driver
 )
+
+// HandleRowIsTooBig - handle possible error like: Error: 'pq: row is too big: size 8744, maximum size 8160'
+// rtry := lib.HandleRowIsTooBig(con, &ctx, table, info, addedCols, &mtx, err)
+// con - connection
+// ctx - context
+// table - table on which "row too big" error may happen
+// info - for debugging purposes, can be any string
+// addedCols - columns that were already added (used if called from 'columns' app that might already add new columns and then those new will be least used), in other context this should be an empty map
+// this is map of [table_name][column_name] -> empty struct (just to signal presence)
+// mtx - mutext protecting that map, we don't need it in non-column mode
+// err  -error from some DB operation (like add a column, modify constraint, insert/update) - all processing only happens when that err is present and is pq.Error with name "program_limit_exceeded"
+// return value: false if nothing was dropped, true if columns were dropped so retry of last operation is needed (hence rtry name)
+func HandleRowIsTooBig(con *sql.DB, ctx *Ctx, table, info string, addedCols map[string]map[string]struct{}, mtx *sync.Mutex, err error) bool {
+	if err == nil {
+		return false
+	}
+	switch e := err.(type) {
+	case *pq.Error:
+		errName := e.Code.Name()
+		if errName == "program_limit_exceeded" {
+			if strings.Contains(err.Error(), "pq: row is too big") {
+				colsMap := map[string]struct{}{
+					"time":   {},
+					"series": {},
+					"period": {},
+				}
+				if mtx != nil {
+					mtx.Lock()
+				}
+				cols, ok := addedCols[table]
+				if ok {
+					for col := range cols {
+						colsMap[col] = struct{}{}
+					}
+				}
+				if mtx != nil {
+					mtx.Unlock()
+				}
+				return DropLeastUsedCol(con, ctx, table, info, colsMap)
+			}
+		}
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		Printf("Error handle row is too big %s: %+v", info, err)
+	}
+	return false
+}
+
+// GetCurrentTableColumns - return arry of string - current columns for given table
+func GetCurrentTableColumns(con *sql.DB, ctx *Ctx, table string) ([]string, error) {
+	rows, err := QuerySQL(
+		con,
+		ctx,
+		"select column_name from information_schema.columns where table_schema = 'public' and table_name = "+NValue(1),
+		table,
+	)
+	if err != nil {
+		Printf("Error select column_name %s: %+v\n", table, err)
+		return []string{}, err
+	}
+	defer func() {
+		err := rows.Close()
+		if err != nil {
+			Printf("Error rows close %s: %+v\n", table, err)
+		}
+	}()
+	colNames := []string{}
+	for rows.Next() {
+		var colName string
+		er := rows.Scan(&colName)
+		if er != nil {
+			Printf("Error scan column name %s: %+v\n", table, er)
+			return []string{}, err
+		}
+		colNames = append(colNames, colName)
+	}
+	err = rows.Err()
+	if err != nil {
+		Printf("Error rows error %s: %+v\n", table, err)
+		return []string{}, err
+	}
+	return colNames, nil
+}
+
+// DropLeastUsedCol - drops two least used columns from table
+// con - connection
+// ctx - context
+// table - table on which "row too big" error may happen
+// info - for debugging purposes, can be any string
+// protectedCols - map with column names that cannot be dropped - they are time, series, period 9always)  + eventually columns that were added before via 'columns' program
+func DropLeastUsedCol(con *sql.DB, ctx *Ctx, table, info string, protectedCols map[string]struct{}) bool {
+	rows, err := QuerySQL(
+		con,
+		ctx,
+		"select column_name from information_schema.columns where table_schema = 'public' and table_name = "+NValue(1),
+		table,
+	)
+	if err != nil {
+		Printf("Error select column_name (ignored) %s: %+v\n", info, err)
+		return false
+	}
+	defer func() {
+		err := rows.Close()
+		if err != nil {
+			Printf("Error rows close (ignored) %s: %+v\n", info, err)
+		}
+	}()
+	colNames := []string{}
+	for rows.Next() {
+		var colName string
+		er := rows.Scan(&colName)
+		if er != nil {
+			Printf("Error scan column name (ignored) %s: %+v\n", info, er)
+			return false
+		}
+		_, protected := protectedCols[colName]
+		if !protected {
+			colNames = append(colNames, colName)
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		Printf("Error rows error (ignored) %s: %+v\n", info, err)
+		return false
+	}
+	sort.Strings(colNames)
+	if ctx.Debug > 0 {
+		Printf("Table '%s' has %d columns: %+v\n", table, len(colNames), colNames)
+	} else {
+		Printf("Table '%s' has %d column\n", table, len(colNames))
+	}
+	if len(colNames) < 80 {
+		// No cleanup needed if less than 80 columns
+		return false
+	}
+	query := "select "
+	for _, col := range colNames {
+		query += `coalesce(avg("` + col + `"), 0.0), `
+	}
+	query = query[:len(query)-2] + ` from "` + table + `"`
+	rows, err = QuerySQL(con, ctx, query)
+	if err != nil {
+		Printf("Error avg (ignored) %s: %+v\n", info, err)
+		return false
+	}
+	defer func() {
+		err := rows.Close()
+		if err != nil {
+			Printf("Error avg rows close (ignored) %s: %+v\n", info, err)
+		}
+	}()
+	colAvgs := make([]float64, len(colNames))
+	scanArgs := make([]interface{}, len(colNames))
+	for i := range colAvgs {
+		scanArgs[i] = &colAvgs[i]
+	}
+	for rows.Next() {
+		er := rows.Scan(scanArgs...)
+		if er != nil {
+			Printf("Error avg scan (ignored) %s: %+v\n", info, er)
+			return false
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		Printf("Error avg rows (ignored) %s: %+v\n", info, err)
+		return false
+	}
+	if ctx.Debug > 0 {
+		Printf("Table '%s' columns averages: %+v\n", table, colAvgs)
+	}
+	if len(colAvgs) < 80 {
+		// No cleanup needed if less than 80 columns
+		return false
+	}
+	var min1, min2 int
+	if colAvgs[1] < colAvgs[0] {
+		min1, min2 = 1, 0
+	} else {
+		min1, min2 = 0, 1
+	}
+
+	for i := 2; i < len(colAvgs); i++ {
+		if colAvgs[i] < colAvgs[min1] {
+			min2 = min1
+			min1 = i
+		} else if colAvgs[i] < colAvgs[min2] {
+			min2 = i
+		}
+	}
+	Printf(
+		"Two least used columns are: '%s' and '%s' with averages: %f, %f, indices: %d, %d\n",
+		colNames[min1], colNames[min2], colAvgs[min1], colAvgs[min2], min1, min2,
+	)
+	_, err = ExecSQL(
+		con,
+		ctx,
+		"alter table \""+table+"\" drop column \""+colNames[min1]+"\"",
+	)
+	if err != nil {
+		Printf("Error drop columns 1 (ignored) %s: %+v\n", info, err)
+		return false
+	}
+	_, err = ExecSQL(
+		con,
+		ctx,
+		"alter table \""+table+"\" drop column \""+colNames[min2]+"\"",
+	)
+	if err != nil {
+		Printf("Error drop column 2 (ignored) %s: %+v\n", info, err)
+		return false
+	}
+	Printf("Dropped '%s' and '%s' from '%s' table\n", colNames[min1], colNames[min2], table)
+	return true
+}
 
 // WriteTSPoints write batch of points to postgresql
 // use mergeSeries = "name" to put all series in "name" table, and create "series" column that conatins all point names.
