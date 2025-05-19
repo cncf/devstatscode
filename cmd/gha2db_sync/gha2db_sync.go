@@ -46,6 +46,7 @@ type metric struct {
 	AllowFail            bool              `yaml:"allow_fail"`
 	WaitAfterFail        int               `yaml:"wait_after_fail"`
 	HLL                  bool              `yaml:"hll"`
+	AlwaysRecalc         bool              `yaml:"always_recalc"`
 }
 
 // randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
@@ -606,11 +607,17 @@ func sync(ctx *lib.Ctx, args []string) {
 						}
 						continue
 					}
-					recalc := lib.ComputePeriodAtThisDate(ctx, period, to, metric.Histogram)
+					var recalc bool
+					if metric.AlwaysRecalc {
+						recalc = true
+					} else {
+						recalc = lib.ComputePeriodAtThisDate(ctx, period, to, metric.Histogram)
+					}
 					// Because sync probab can be less than 100% and that may cause gaps, we should eventually let do recalculation even if that period doesn't need it
 					if !recalc && ctx.ComputePeriods == nil {
 						val := rand.Intn(ctx.RecalcReciprocal)
 						if val == 0 {
+							lib.Printf("Recalculating period due to reciprocal \"%s%s\", hist %v for date to %v, computePeriods: %+v, metric: %s\n", period, aggrSuffix, metric.Histogram, to, ctx.ComputePeriods, metric.Name)
 							recalc = true
 						}
 					}
@@ -618,7 +625,7 @@ func sync(ctx *lib.Ctx, args []string) {
 						lib.Printf("Recalculate period \"%s%s\", hist %v for date to %v: %v\n", period, aggrSuffix, metric.Histogram, to, recalc)
 					}
 					if (!ctx.ResetTSDB || ctx.ComputePeriods != nil) && !recalc {
-						lib.Printf("Skipping recalculating period \"%s%s\", hist %v for date to %v, computePeriods: %+v\n", period, aggrSuffix, metric.Histogram, to, ctx.ComputePeriods)
+						lib.Printf("Skipping recalculating period \"%s%s\", hist %v for date to %v, computePeriods: %+v, metric: %s\n", period, aggrSuffix, metric.Histogram, to, ctx.ComputePeriods, metric.Name)
 						continue
 					}
 					seriesNameOrFunc := metric.SeriesNameOrFunc

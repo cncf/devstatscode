@@ -151,8 +151,10 @@ func ComputePeriodAtThisDate(ctx *Ctx, period string, idt time.Time, hist bool) 
 	ch := dtc.Hour()
 	periodStart := period[0:1]
 	if periodStart == "h" {
+		// hour(s)
 		return true
 	} else if periodStart == "d" {
+		// day(s)
 		if len(period) == 1 {
 			return true
 		}
@@ -161,55 +163,75 @@ func ComputePeriodAtThisDate(ctx *Ctx, period string, idt time.Time, hist bool) 
 		}
 		return h == 1 || h == 6 || h == 9 || h == 13 || h == 18 || h == 21
 	} else if hist && periodStart == "a" {
+		// histograms between annotations or the final one "a_num_n"
 		periodLen := len(period)
 		periodEnd := period[periodLen-2:]
 		if periodEnd == "_n" {
 			if ctx.RandComputeAtThisDate {
-				return Probab(20)
+				return Probab(25)
 			}
 			return h == 1 || h == 8 || h == 15 || h == 13 || h == 20
 		}
 		if ctx.RandComputeAtThisDate {
-			return Probab(9)
+			return Probab(15)
 		}
 		return h == 2 || h == 3
 	} else if hist && periodStart == "c" {
+		// histograms between maturity level or the final sandbox/incubation/graduation - now "c_n", "c_g_n", "c_i_n"
 		if ctx.RandComputeAtThisDate {
-			return Probab(9)
+			periodLen := len(period)
+			periodEnd := period[periodLen-2:]
+			if periodEnd == "_n" {
+				return Probab(25)
+			}
+			return Probab(15)
 		}
 		return h == 3 || h == 4
 	}
+	// others
 	if hist {
+		// other histograms
 		if periodStart == "w" {
+			// weekly histograms
 			if ctx.RandComputeAtThisDate {
-				return Probab(29)
+				return Probab(30)
 			}
 			return h%7 == 0
 		} else if periodStart == "m" || periodStart == "q" || periodStart == "y" {
+			// monthly histograms
 			if ctx.RandComputeAtThisDate {
-				return Probab(9)
+				return Probab(15)
 			}
 			return h == 23 || h == 18
 		}
 	} else {
+		// other charts
 		if periodStart == "w" {
+			// weekly charts
 			if ctx.RandComputeAtThisDate {
-				return Probab(60) && h >= 12 && int(dtc.Weekday()) == 0
+				wday := int(dtc.Weekday())
+				return Probab(60) && h >= 12 && wday >= 0 && wday <= 2
 			}
 			return ch == 23 && int(dtc.Weekday()) == 0
 		} else if periodStart == "m" {
+			// monthly charts
 			if ctx.RandComputeAtThisDate {
-				return Probab(80) && h < 12 && dtn.Day() == 1
+				dom := dtn.Day()
+				return Probab(80) && h < 12 && dom >= 1 && dom <= 4
 			}
 			return ch == 23 && dtn.Day() == 1
 		} else if periodStart == "q" {
+			// quarterly charts
 			if ctx.RandComputeAtThisDate {
-				return h > 16 && dtn.Day() == 1 && dtn.Month()%3 == 1
+				dom := dtn.Day()
+				return h > 12 && dom >= 1 && dom <= 4 && dtn.Month()%3 == 1
 			}
 			return ch == 23 && dtn.Day() == 1 && dtn.Month()%3 == 1
 		} else if periodStart == "y" {
+			// yearly charts
 			if ctx.RandComputeAtThisDate {
-				return h < 8 && dtn.Day() == 1 && dtn.Month() == 1
+				dom := dtn.Day()
+				return h < 12 && dom >= 1 && dom <= 4 && dtn.Month() == 1
 			}
 			return ch == 23 && dtn.Day() == 1 && dtn.Month() == 1
 		}
