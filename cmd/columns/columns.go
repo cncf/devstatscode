@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,7 +31,8 @@ func identifyColumnsToDelete(currCols, neededCols []string) []string {
 		needed[col] = struct{}{}
 	}
 	for _, col := range currCols {
-		if col == "time" || col == "series" || col == "period" || col == "All" || col == "None" {
+		lCol := strings.ToLower(col)
+		if col == "time" || col == "series" || col == "period" || lCol == "all" || lCol == "none" {
 			continue
 		}
 		_, need := needed[col]
