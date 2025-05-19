@@ -29,7 +29,7 @@ func identifyColumnsToDelete(currCols, neededCols []string) []string {
 		needed[col] = struct{}{}
 	}
 	for _, col := range currCols {
-		if col == "time" || col == "series" || col == "period" {
+		if col == "time" || col == "series" || col == "period" || col == "All" || col == "None" {
 			continue
 		}
 		_, need := needed[col]
