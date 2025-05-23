@@ -2138,7 +2138,7 @@ func apiCumulativeCounts(info string, w http.ResponseWriter, payload map[string]
 	cumulativeCountsCacheMtx.Lock()
 	cumulativeCountsCache[key] = cumulativeCountsCacheEntry{dt: time.Now(), cumulativeCounts: epl}
 	cumulativeCountsCacheMtx.Unlock()
-	lib.Printf("Stored %+v %d values in cache\n", key, len(epl.Values))
+	lib.Printf("Stored %+v %d cached values\n", key, len(epl.Values))
 }
 
 func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
