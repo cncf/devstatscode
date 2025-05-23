@@ -40,6 +40,7 @@ type devstatsProject struct {
 	SkipGetRepos    int    `yaml:"skipGetRepos,omitempty"`    // skipGetRepos:1
 	SkipUpdAffs     int    `yaml:"skipUpdAffs,omitempty"`     // skipUpdAffs:100 (percent)
 	SkipImpAffs     int    `yaml:"skipImpAffs,omitempty"`     // skipImpAffs:100 (percent)
+	Archived        bool   `yaml:"archived,omitempty"`        // false/true
 }
 
 type devstatsValues struct {
