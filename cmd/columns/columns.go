@@ -108,7 +108,7 @@ func ensureColumns() {
 				return
 			}
 			if ctx.Debug > 0 {
-				lib.Printf("Ensure columns: %+v --> %+v\n", col, colNames)
+				lib.Printf("Ensure columns(%d): %+v --> %+v\n", len(colNames), col, colNames)
 			}
 			rows := lib.QuerySQLWithErr(
 				con,
@@ -130,12 +130,12 @@ func ensureColumns() {
 				lib.FatalOnError(er)
 				if ctx.Debug > 0 {
 					sort.Strings(currCols)
-					lib.Printf("Current columns: %+v --> %+v\n", table, currCols)
+					lib.Printf("Current columns(%d): %+v --> %+v\n", len(currCols), table, currCols)
 				}
 				colsToDel := lib.IdentifyColumnsToDelete(currCols, colNames)
 				if len(colsToDel) > 0 {
 					sort.Strings(colsToDel)
-					lib.Printf("Need to delete columns %+v from '%s' table\n", colsToDel, table)
+					lib.Printf("Need to delete columns(%d) %+v from '%s' table\n", len(colsToDel), colsToDel, table)
 				}
 				for _, colName := range colsToDel {
 					_, er := lib.ExecSQL(
