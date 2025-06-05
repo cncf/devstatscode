@@ -18,7 +18,9 @@ a) Create debugging pod:
 
 b) Eventually copy manually compiled binary into pod: `k cp -n devstats-test ~/columns debug:/columns`.
 
-b) Shell into it: `../devstats-k8s-lf/util/pod_shell.sh debug` or `k exec -itn devstats-test debug -- bash`.
+c) Shell into it: `../devstats-k8s-lf/util/pod_shell.sh debug` or `k exec -itn devstats-test debug -- bash`.
 
-c) Exacute:
+d) Exacute:
 - `GHA2DB_DEBUG=2 GHA2DB_QOUT=2 GHA2DB_LOCAL=1 GHA2DB_PROJECT=jenkins PG_DB=jenkins /columns`.
+
+e) Delete the debugging pod: `helm delete devstats-test-debug`.
