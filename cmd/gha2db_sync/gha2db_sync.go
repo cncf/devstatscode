@@ -415,7 +415,9 @@ func sync(ctx *lib.Ctx, args []string) {
 		// When resetting all TSDB data, adding new TS points will race for update TSDB structure
 		// While we can just run "columns" once to ensure thay match tags output
 		// Even if there are new columns after that - they will be very few not all of them to add at once
-		if ctx.ResetTSDB && !ctx.SkipColumns {
+		// if ctx.ResetTSDB && !ctx.SkipColumns {
+		// LG - now just run 'columns' anytime tags were run.
+		if (ctx.ResetTSDB || ranTags) && !ctx.SkipColumns {
 			_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "columns"}, nil)
 			lib.FatalOnError(err)
 		}

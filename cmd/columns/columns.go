@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -22,25 +21,6 @@ type column struct {
 	Tag         string `yaml:"tag"`
 	Column      string `yaml:"column"`
 	HLL         bool   `yaml:"hll"`
-}
-
-func identifyColumnsToDelete(currCols, neededCols []string) []string {
-	toDrop := []string{}
-	needed := make(map[string]struct{})
-	for _, col := range neededCols {
-		needed[col] = struct{}{}
-	}
-	for _, col := range currCols {
-		lCol := strings.ToLower(col)
-		if col == "time" || col == "series" || col == "period" || lCol == "all" || lCol == "none" {
-			continue
-		}
-		_, need := needed[col]
-		if !need {
-			toDrop = append(toDrop, col)
-		}
-	}
-	return toDrop
 }
 
 // Ensure that specific TSDB series have all needed columns
@@ -152,7 +132,7 @@ func ensureColumns() {
 					sort.Strings(currCols)
 					lib.Printf("Current columns: %+v --> %+v\n", table, currCols)
 				}
-				colsToDel := identifyColumnsToDelete(currCols, colNames)
+				colsToDel := lib.IdentifyColumnsToDelete(currCols, colNames)
 				if len(colsToDel) > 0 {
 					sort.Strings(colsToDel)
 					lib.Printf("Need to delete columns %+v from '%s' table\n", colsToDel, table)

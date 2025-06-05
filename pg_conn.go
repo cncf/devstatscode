@@ -97,6 +97,26 @@ func GetCurrentTableColumns(con *sql.DB, ctx *Ctx, table string) ([]string, erro
 	return colNames, nil
 }
 
+// IdentifyColumnsToDelete - delete cols that are in 'currCols' and not in 'neededCols' excluding a few special ones
+func IdentifyColumnsToDelete(currCols, neededCols []string) []string {
+	toDrop := []string{}
+	needed := make(map[string]struct{})
+	for _, col := range neededCols {
+		needed[col] = struct{}{}
+	}
+	for _, col := range currCols {
+		lCol := strings.ToLower(col)
+		if col == "time" || col == "series" || col == "period" || lCol == "all" || lCol == "none" {
+			continue
+		}
+		_, need := needed[col]
+		if !need {
+			toDrop = append(toDrop, col)
+		}
+	}
+	return toDrop
+}
+
 // DropLeastUsedCol - drops two least used columns from table
 // con - connection
 // ctx - context
@@ -497,6 +517,8 @@ func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, hll
 		// So this is done for purpose!
 		_, err := ExecSQL(con, ctx, q)
 		if err != nil {
+			// FIXME: can fail due to 'Ignored alter table "sact" add column if not exists "col-name" double precision not null default 0.0: pq: tables can have at most 1600 columns'
+			// I *think* the correct handling is to ensure that columns program is always called, even in "daily sync"
 			Printf("Ignored %s: %+v\n", q, err)
 		}
 	}
