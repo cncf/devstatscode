@@ -552,7 +552,7 @@ func generateCronValues(inFile, outFile string) {
 				}
 			}
 		}
-		if !gNever && project.Domains[0] != 0 {
+		if t && !gNever && project.Domains[0] != 0 {
 			if !gSuspendAll {
 				suspend = fmt.Sprintf("%v", values.Projects[i].SuspendCronTest)
 			}
@@ -563,7 +563,7 @@ func generateCronValues(inFile, outFile string) {
 				patch("devstats-test", "devstats-affiliations-"+values.Projects[i].Proj, "suspend", suspend)
 			}
 		}
-		if !gNever && (project.Domains[1] != 0 || project.Domains[2] != 0 || project.Domains[3] != 0) {
+		if p && !gNever && (project.Domains[1] != 0 || project.Domains[2] != 0 || project.Domains[3] != 0) {
 			if !gSuspendAll {
 				suspend = fmt.Sprintf("%v", values.Projects[i].SuspendCronProd)
 			}
