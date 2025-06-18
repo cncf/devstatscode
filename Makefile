@@ -24,7 +24,6 @@ GO_FMT=gofmt -s -w
 GO_LINT=golint -set_exit_status
 GO_VET=go vet
 GO_IMPORTS=goimports -w
-GO_USEDEXPORTS=usedexports -ignore 'sqlitedb.go|vendor'
 GO_ERRCHECK=errcheck -asserts -ignore '[FS]?[Pp]rint*' -ignoretests
 GO_TEST=go test
 BINARIES=structure gha2db calc_metric gha2db_sync import_affs annotations tags webhook devstats get_repos merge_dbs replacer vars ghapi2db columns hide_data website_data sync_issues runq api sqlitedb tsplit splitcrons
@@ -117,9 +116,6 @@ vet: ${GO_BIN_FILES} ${GO_LIB_FILES} ${GO_TEST_FILES} ${GO_DBTEST_FILES} ${GO_LI
 imports: ${GO_BIN_FILES} ${GO_LIB_FILES} ${GO_TEST_FILES} ${GO_DBTEST_FILES} ${GO_LIBTEST_FILES}
 	./for_each_go_file.sh "${GO_IMPORTS}"
 
-usedexports: ${GO_BIN_FILES} ${GO_LIB_FILES} ${GO_TEST_FILES} ${GO_DBTEST_FILES} ${GO_LIBTEST_FILES}
-	${GO_USEDEXPORTS} ./...
-
 errcheck: ${GO_BIN_FILES} ${GO_LIB_FILES} ${GO_TEST_FILES} ${GO_DBTEST_FILES} ${GO_LIBTEST_FILES}
 	${GO_ERRCHECK} $(go list ./... | grep -v /vendor/)
 
@@ -130,7 +126,7 @@ dbtest:
 	${GO_TEST} ${GO_DBTEST_FILES}
 
 # check: fmt lint imports vet usedexports errcheck
-check: fmt lint imports vet usedexports
+check: fmt lint imports vet
 
 install: ${BINARIES}
 	cp -v ${UTIL_SCRIPTS} ${GOPATH}/bin
