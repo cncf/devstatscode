@@ -74,7 +74,7 @@ func ensureColumns() {
 			hlls := []string{}
 			// Refer to current column config using index passed to anonymous function
 			col := &allColumns.Columns[idx]
-			if ctx.Debug > 0 {
+			if ctx.Debug >= 0 {
 				lib.Printf("Ensure column config: %+v\n", col)
 			}
 			crows := lib.QuerySQLWithErr(
@@ -109,6 +109,8 @@ func ensureColumns() {
 			}
 			if ctx.Debug > 0 {
 				lib.Printf("Ensure columns(%d): %+v --> %+v\n", len(colNames), col, colNames)
+			} else {
+				lib.Printf("Ensure %d columns in '%+v'\n", len(colNames), col)
 			}
 			rows := lib.QuerySQLWithErr(
 				con,
@@ -131,11 +133,13 @@ func ensureColumns() {
 				if ctx.Debug > 0 {
 					sort.Strings(currCols)
 					lib.Printf("Current columns(%d): %+v --> %+v\n", len(currCols), table, currCols)
+				} else {
+					lib.Printf("Currently %d columns in '%+v'\n", len(currCols), table)
 				}
 				colsToDel := lib.IdentifyColumnsToDelete(currCols, colNames)
 				if len(colsToDel) > 0 {
 					sort.Strings(colsToDel)
-					lib.Printf("Need to delete columns(%d) %+v from '%s' table\n", len(colsToDel), colsToDel, table)
+					lib.Printf("Need to delete %d columns: %+v from '%s' table\n", len(colsToDel), colsToDel, table)
 				}
 				for _, colName := range colsToDel {
 					_, er := lib.ExecSQL(
@@ -161,7 +165,7 @@ func ensureColumns() {
 						}
 						addedCols[table][colName] = struct{}{}
 						mtx.Unlock()
-						lib.Printf("Added column \"%s\" to \"%s\" table\n", colName, table)
+						lib.Printf("Added column \"%s\" to '%s' table\n", colName, table)
 						tables = append(tables, table)
 						cols = append(cols, colName)
 						if col.HLL {
