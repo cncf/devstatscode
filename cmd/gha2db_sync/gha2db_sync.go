@@ -405,7 +405,7 @@ func sync(ctx *lib.Ctx, args []string) {
 		// TSDB tags (repo groups template variable currently)
 		if !ctx.SkipTags {
 			if ctx.ResetTSDB || nowHour == dailyRecalcHour {
-				lib.Printf("Run tags")
+				lib.Printf("Run tags\n")
 				_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "tags"}, nil)
 				lib.FatalOnError(err)
 				ranTags = true
@@ -419,7 +419,7 @@ func sync(ctx *lib.Ctx, args []string) {
 		// if ctx.ResetTSDB && !ctx.SkipColumns {
 		// LG - now just run 'columns' anytime tags were run.
 		if (ctx.ResetTSDB || ranTags) && !ctx.SkipColumns {
-			lib.Printf("Run columns")
+			lib.Printf("Run columns\n")
 			_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "columns"}, nil)
 			lib.FatalOnError(err)
 		}
@@ -427,7 +427,7 @@ func sync(ctx *lib.Ctx, args []string) {
 		// Annotations
 		if !ctx.SkipAnnotations {
 			if ctx.Project != "" && (ctx.ResetTSDB || nowHour == dailyRecalcHour) {
-				lib.Printf("Run annotations")
+				lib.Printf("Run annotations\n")
 				_, err := lib.ExecCommand(
 					ctx,
 					[]string{
@@ -778,7 +778,7 @@ func sync(ctx *lib.Ctx, args []string) {
 		// TSDB ensure that calculated metric have all columns from tags
 		if !ctx.SkipColumns {
 			if ctx.RunColumns || ctx.ResetTSDB || ranTags || nowHour == dailyRecalcHour {
-				lib.Printf("Run columns")
+				lib.Printf("Run columns\n")
 				_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "columns"}, nil)
 				lib.FatalOnError(err)
 			} else {
@@ -793,7 +793,7 @@ func sync(ctx *lib.Ctx, args []string) {
 		if varsFN == "" {
 			varsFN = "sync_vars.yaml"
 		}
-		lib.Printf("Run vars")
+		lib.Printf("Run vars\n")
 		_, err := lib.ExecCommand(
 			ctx,
 			[]string{cmdPrefix + "vars"},
