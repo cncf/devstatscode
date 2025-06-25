@@ -148,6 +148,7 @@ func ensureColumns() {
 						"alter table \""+table+"\" drop column \""+colName+"\"",
 					)
 					lib.FatalOnError(er)
+					lib.Printf("Deleted column \"%s\" from '%s' table\n", colName, table)
 				}
 				for _, colName := range colNames {
 					trials := 0
