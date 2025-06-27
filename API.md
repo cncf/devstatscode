@@ -407,3 +407,4 @@ List of APIs:
 - Call Developer Activity Counts Repository Groups API: `./devel/api_dev_act_cnt.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'SIG Apps' 'United States' ''`.
 - Manual `curl`: `curl -H "Content-Type: application/json" http://127.0.0.1:8080/api/v1 -d"{\"api\":\"Health\",\"payload\":{\"project\":\"kubernetes\"}}"`.
 - Call all other API scripts examples using `./devel/api_*.sh` scripts.
+- API call for [cncf.io/project-metrics](https://www.cncf.io/project-metrics/) using `curl`: `` curl -s -H 'Content-Type: application/json' https://devstats.cncf.io/api/v1 -d'{"api":"CumulativeCounts","payload":{"project":"all","metric":"contributors"}}' | jq -r '.' ``.
