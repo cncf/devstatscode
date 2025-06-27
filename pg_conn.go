@@ -230,7 +230,7 @@ func DropLeastUsedCol(con *sql.DB, ctx *Ctx, table, info string, protectedCols m
 	_, err = ExecSQL(
 		con,
 		ctx,
-		"alter table \""+table+"\" drop column \""+colNames[min1]+"\"",
+		"alter table \""+table+"\" drop column if exists \""+colNames[min1]+"\"",
 	)
 	if err != nil {
 		Printf("Error drop columns 1 (ignored) %s: %+v\n", info, err)
@@ -239,7 +239,7 @@ func DropLeastUsedCol(con *sql.DB, ctx *Ctx, table, info string, protectedCols m
 	_, err = ExecSQL(
 		con,
 		ctx,
-		"alter table \""+table+"\" drop column \""+colNames[min2]+"\"",
+		"alter table \""+table+"\" drop column if exists \""+colNames[min2]+"\"",
 	)
 	if err != nil {
 		Printf("Error drop column 2 (ignored) %s: %+v\n", info, err)

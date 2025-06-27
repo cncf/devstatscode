@@ -145,7 +145,7 @@ func ensureColumns() {
 					_, er := lib.ExecSQL(
 						con,
 						&ctx,
-						"alter table \""+table+"\" drop column \""+colName+"\"",
+						"alter table \""+table+"\" drop column if exists \""+colName+"\"",
 					)
 					lib.FatalOnError(er)
 					lib.Printf("Deleted column \"%s\" from '%s' table\n", colName, table)
@@ -156,7 +156,7 @@ func ensureColumns() {
 					_, err := lib.ExecSQL(
 						con,
 						&ctx,
-						"alter table \""+table+"\" add column \""+colName+"\" "+colType,
+						"alter table \""+table+"\" add column if not exists \""+colName+"\" "+colType,
 					)
 					if err == nil {
 						mtx.Lock()
