@@ -60,7 +60,7 @@ func ProcessTag(con *sql.DB, ctx *Ctx, tg *Tag, replaces [][]string) {
 	// Transform SQL
 	limit := tg.Limit
 	if limit <= 0 {
-		limit = 255
+		limit = 127
 	}
 	sqlQuery = strings.Replace(sqlQuery, "{{lim}}", strconv.Itoa(limit), -1)
 	sqlQuery = strings.Replace(sqlQuery, "{{exclude_bots}}", excludeBots, -1)
