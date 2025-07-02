@@ -409,6 +409,7 @@ func sync(ctx *lib.Ctx, args []string) {
 				_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "tags"}, nil)
 				lib.FatalOnError(err)
 				ranTags = true
+				lib.Printf("Run tags finished, will also run columns later\n")
 			} else {
 				lib.Printf("Skipping `tags` recalculation, it is only computed once per day hour=%d\n", dailyRecalcHour)
 			}
@@ -422,11 +423,12 @@ func sync(ctx *lib.Ctx, args []string) {
 			lib.Printf("Run columns\n")
 			_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "columns"}, nil)
 			lib.FatalOnError(err)
+			lib.Printf("Run columns finished\n")
 		}
 
 		// Annotations
 		if !ctx.SkipAnnotations {
-			if ctx.Project != "" && (ctx.ResetTSDB || nowHour == dailyRecalcHour) {
+			if ctx.Project != "" && (ctx.ResetTSDB || nowHour == dailyRecalcHour || ranTags) {
 				lib.Printf("Run annotations\n")
 				_, err := lib.ExecCommand(
 					ctx,
@@ -437,7 +439,7 @@ func sync(ctx *lib.Ctx, args []string) {
 				)
 				lib.FatalOnError(err)
 			} else {
-				lib.Printf("Skipping `annotations` recalculation, it is only computed once per day hour=%d\n", dailyRecalcHour)
+				lib.Printf("Skipping `annotations` recalculation, it is only computed once per day hour=%d or if tags were ran during this sync\n", dailyRecalcHour)
 			}
 		}
 
@@ -782,7 +784,7 @@ func sync(ctx *lib.Ctx, args []string) {
 				_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "columns"}, nil)
 				lib.FatalOnError(err)
 			} else {
-				lib.Printf("Skipping `columns` recalculation, it is only computed once per day, hour=%d\n", dailyRecalcHour)
+				lib.Printf("Skipping `columns` recalculation, it is only computed once per day, hour=%d or if tags were ran during this sync\n", dailyRecalcHour)
 			}
 		}
 	}

@@ -715,6 +715,22 @@ func syncEvents(ctx *lib.Ctx) {
 	eventTypes["user_blocked"] = struct{}{}
 	eventTypes["sync"] = struct{}{}
 	eventTypes["converted_to_discussion"] = struct{}{}
+	eventTypes["added_to_merge_queue"] = struct{}{}
+	eventTypes["added_to_project_v2"] = struct{}{}
+	eventTypes["converted_from_draft"] = struct{}{}
+	eventTypes["copilot_work_finished_failure"] = struct{}{}
+	eventTypes["copilot_work_finished"] = struct{}{}
+	eventTypes["copilot_work_started"] = struct{}{}
+	eventTypes["issue_type_added"] = struct{}{}
+	eventTypes["issue_type_changed"] = struct{}{}
+	eventTypes["parent_issue_added"] = struct{}{}
+	eventTypes["parent_issue_removed"] = struct{}{}
+	eventTypes["project_v2_item_status_changed"] = struct{}{}
+	eventTypes["removed_from_merge_queue"] = struct{}{}
+	eventTypes["removed_from_project_v2"] = struct{}{}
+	eventTypes["sub_issue_added"] = struct{}{}
+	eventTypes["sub_issue_removed"] = struct{}{}
+	// eventTypes[""] = struct{}{}
 
 	// Get number of CPUs available
 	thrN := lib.GetThreadsNum(ctx)
@@ -882,7 +898,7 @@ func syncEvents(ctx *lib.Ctx) {
 					}
 					eventType := *event.Event
 					// TODO: Non specified in GH API but happenning
-					// select distinct substring(msg for 40) from gha_logs where substring(msg for 28) = 'Warning: skipping event type';
+					// select distinct substring(msg for 56) from gha_logs where substring(msg for 28) = 'Warning: skipping event type' order by 1;
 					_, ok := eventTypes[eventType]
 					if !ok {
 						lib.Printf("Warning: skipping event type %s for issue %s %d\n", eventType, orgRepo, *event.Issue.Number)
