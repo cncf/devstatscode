@@ -9,4 +9,8 @@ then
   API_URL="http://127.0.0.1:8080/api/v1"
 fi
 github_id="${1}"
-curl -H "Content-Type: application/json" "${API_URL}" -d"{\"api\":\"GithubIDContributions\",\"payload\":{\"github_id\":\"${github_id}\",\"bg\":\"${BG}\"}}" 2>/dev/null | jq -rS .
+if [ ! -z "$DEBUG" ]
+then
+  echo "curl -H 'Content-Type: application/json' '${API_URL}' -d'{\"api\":\"GithubIDContributions\",\"payload\":{\"github_id\":\"${github_id}\"}}'"
+fi
+curl -H "Content-Type: application/json" "${API_URL}" -d"{\"api\":\"GithubIDContributions\",\"payload\":{\"github_id\":\"${github_id}\"}}" 2>/dev/null | jq -rS .

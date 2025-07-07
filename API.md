@@ -399,7 +399,7 @@ List of APIs:
   - Example API call: `./devel/api_site_stats.sh all`.
 
 
-- `GithubIDContributions`: `{"api": "GithubIDContributions", "payload": {"github_id": "id", "bg": "1"}}`.
+- `GithubIDContributions`: `{"api": "GithubIDContributions", "payload": {"github_id": "id"}}`.
   - Arguments:
     - `github_id`: GitHub username for who you want to get numbe rof all CNCF related contributions.
   - Returns:
@@ -408,9 +408,7 @@ List of APIs:
     "contributions": 16558
   }
   ```
-  - Specifying `BG=1` allows to run the calculation in the background (BG) - API call will immediatelly return (and there will be no data if this is a new range never calculated so far), but the next call (say after 3 minutes) will return data that was calculated. That way you can calculate longer periods.
   - Example API call with arbitrary date range: `[BG=1] ./devel/api_github_id_contributions.sh lukaszgryglicki`.
-
 
 
 # Local API deployment and testing
@@ -421,3 +419,14 @@ List of APIs:
 - Manual `curl`: `curl -H "Content-Type: application/json" http://127.0.0.1:8080/api/v1 -d"{\"api\":\"Health\",\"payload\":{\"project\":\"kubernetes\"}}"`.
 - Call all other API scripts examples using `./devel/api_*.sh` scripts.
 - API call for [cncf.io/project-metrics](https://www.cncf.io/project-metrics/) using `curl`: `` curl -s -H 'Content-Type: application/json' https://devstats.cncf.io/api/v1 -d'{"api":"CumulativeCounts","payload":{"project":"all","metric":"contributors"}}' | jq -r '.' ``.
+
+
+# Kubernetes node test
+- Compile API: `` make ``.
+- SFTP it into the node: `` sftp root@node-0 ``, `` mput api ``.
+- Start `debug` pod on the node: `` helm install devstats-prod-debug ./devstats-helm --set namespace='devstats-prod',skipSecrets=1,skipPVs=1,skipBackupsPV=1,skipVacuum=1,skipBackups=1,skipProvisions=1,skipCrons=1,skipAffiliations=1,skipGrafanas=1,skipServices=1,skipPostgres=1,skipIngress=1,skipStatic=1,skipAPI=1,skipNamespaces=1,bootstrapPodName=debug,bootstrapCommand=sleep,bootstrapCommandArgs={360000s},useBootstrapResourcesLimits='' ``.
+- Copy API to the debug pod: `` k cp ~/api debug:/api ``.
+- Shell into debug pod: `` k exec -it debug -- bash ``.
+- Run API inside the pod: `` GHA2DB_QOUT=1 GHA2DB_DEBUG=1 PG_USER_RO=ro_user PG_HOST_RO=$PG_HOST GHA2DB_LOCAL=1 /api ``.
+- Shell into pod from another terminal: `` k exec -it debug -- bash ``.
+- Execute example API call: `` curl -H 'Content-Type: application/json' 'http://127.0.0.1:8080/api/v1' -d'{"api":"GithubIDContributions","payload":{"github_id":"lukaszgryglicki"}}' ``.

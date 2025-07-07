@@ -102,6 +102,9 @@ const OK string = "ok"
 // RepoNamesQuery - common constant string
 const RepoNamesQuery string = "select distinct name from gha_repos where name like '%_/_%' and name not like '%/%/%'"
 
+// GithubIDContributions - common constant string
+const GithubIDContributions string = "GithubIDContributions"
+
 // DevActCnt - common constant string
 const DevActCnt string = "DevActCnt"
 

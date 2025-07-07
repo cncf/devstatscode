@@ -37,6 +37,7 @@ var allAPIs = []string{
 	lib.DevActCntComp,
 	lib.ComStatsRepoGrp,
 	lib.SiteStats,
+	lib.GithubIDContributions,
 }
 
 var (
@@ -141,6 +142,14 @@ type comContribRepoGrpPayload struct {
 	Developers           []float64   `json:"developers"`
 	CompaniesTimestamps  []time.Time `json:"companies_timestamps"`
 	DevelopersTimestamps []time.Time `json:"developers_timestamps"`
+}
+
+type githubIDContributionsPayload struct {
+	GitHubID string `json:"github_id"`
+}
+
+type githubIDContributionsResponse struct {
+	Contributions int `json:"contributions"`
 }
 
 type devActCntPayload struct {
@@ -1089,6 +1098,99 @@ func apiDevActCntRepos(apiName, project, db, info string, w http.ResponseWriter,
 		Rank:       ranks,
 		Login:      logins,
 		Number:     numbers,
+	}
+	w.WriteHeader(http.StatusOK)
+	jsoniter.NewEncoder(w).Encode(pl)
+}
+
+func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[string]interface{}) {
+	apiName := lib.GithubIDContributions
+	var err error
+	project, db := "all", "allprj"
+	defer func() {
+		lib.Printf("%s(exit): project:%s db:%s payload: %+v err:%v\n", apiName, project, db, payload, err)
+	}()
+	params := map[string]string{"github_id": ""}
+	for paramName := range params {
+		paramValue, err := getPayloadStringParam(paramName, w, payload, false)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+		params[paramName] = paramValue
+	}
+	ghID, ok := params["github_id"]
+	if !ok || ghID == "" {
+		returnError(apiName, w, fmt.Errorf("github_id parameter must be set"))
+		return
+	}
+	ctx, c, err := getContextAndDB(w, db)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = c.Close() }()
+	query := `
+  select
+    count(distinct s.event_id) as contributions
+  from (
+    select
+      event_id
+    from
+      gha_commits
+    where
+      dup_actor_login = $1
+    union select
+      event_id
+    from
+      gha_commits
+    where
+      dup_author_login = $1
+    union select
+      event_id
+    from
+      gha_commits
+    where
+      dup_committer_login = $1
+    union select
+      event_id
+    from
+      gha_commits_roles
+    where
+      actor_login = $1
+    union select
+      id as event_id
+    from
+      gha_events
+    where
+      dup_actor_login = $1
+      and type in (
+        'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
+        'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+      )
+    ) s
+	`
+	rows, err := lib.QuerySQLLogErr(c, ctx, query, ghID)
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	var contributions int
+	for rows.Next() {
+		err = rows.Scan(&contributions)
+		if err != nil {
+			returnError(apiName, w, err)
+			return
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		returnError(apiName, w, err)
+		return
+	}
+	pl := githubIDContributionsResponse{
+		Contributions: contributions,
 	}
 	w.WriteHeader(http.StatusOK)
 	jsoniter.NewEncoder(w).Encode(pl)
@@ -2598,6 +2700,8 @@ func handleAPI(w http.ResponseWriter, req *http.Request) {
 		apiDevActCntComp(info, w, pl.Payload)
 	case lib.SiteStats:
 		apiSiteStats(info, w, pl.Payload)
+	case lib.GithubIDContributions:
+		apiGithubIDContributions(info, w, pl.Payload)
 	default:
 		err = fmt.Errorf("unknown API '%s'", pl.API)
 		returnError("unknown:"+pl.API, w, err)
