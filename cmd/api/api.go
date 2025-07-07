@@ -19,6 +19,15 @@ import (
 	yaml "gopkg.in/yaml.v2"
 )
 
+const (
+	// GithubIDContributionsCacheTTL - Github login contributions cache expiration 24 hours
+	GithubIDContributionsCacheTTL = 86400
+	// CumulativeCountsCacheTTL - Cumulative counts cache expiration 12 hours
+	CumulativeCountsCacheTTL = 43200
+	// SiteStatsCacheTTL - Site stats cache expiration 12 hours
+	SiteStatsCacheTTL = 43200
+)
+
 // allAPIs - List all currently defined APIs
 var allAPIs = []string{
 	lib.Health,
@@ -116,11 +125,18 @@ type siteStatsCacheEntry struct {
 	siteStats siteStatsPayload
 }
 
+type githubIDContributionsCacheEntry struct {
+	dt            time.Time
+	contributions int
+}
+
 var (
-	siteStatsCache           = map[[2]string]siteStatsCacheEntry{}
-	siteStatsCacheMtx        = &sync.Mutex{}
-	cumulativeCountsCache    = map[[3]string]cumulativeCountsCacheEntry{}
-	cumulativeCountsCacheMtx = &sync.Mutex{}
+	siteStatsCache                = map[[2]string]siteStatsCacheEntry{}
+	siteStatsCacheMtx             = &sync.Mutex{}
+	cumulativeCountsCache         = map[[3]string]cumulativeCountsCacheEntry{}
+	cumulativeCountsCacheMtx      = &sync.Mutex{}
+	githubIDContributionsCache    = map[string]githubIDContributionsCacheEntry{}
+	githubIDContributionsCacheMtx = &sync.Mutex{}
 )
 
 type companiesTablePayload struct {
@@ -1124,6 +1140,26 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
 		returnError(apiName, w, fmt.Errorf("github_id parameter must be set"))
 		return
 	}
+	// Caching: start
+	key := ghID
+	githubIDContributionsCacheMtx.Lock()
+	data, ok := githubIDContributionsCache[key]
+	githubIDContributionsCacheMtx.Unlock()
+	if ok {
+		age := time.Now().Sub(data.dt).Seconds()
+		if age < GithubIDContributionsCacheTTL {
+			lib.Printf("Using cached value for %+v: %+v (age is %.0f < %d)\n", key, data, age, GithubIDContributionsCacheTTL)
+			w.WriteHeader(http.StatusOK)
+			pl := githubIDContributionsResponse{Contributions: data.contributions}
+			jsoniter.NewEncoder(w).Encode(pl)
+			return
+		}
+		lib.Printf("Deleting cached values for %+v (age is %.0f >= %d)\n", key, age, CumulativeCountsCacheTTL)
+		githubIDContributionsCacheMtx.Lock()
+		delete(githubIDContributionsCache, key)
+		githubIDContributionsCacheMtx.Unlock()
+	}
+	// Caching end
 	ctx, c, err := getContextAndDB(w, db)
 	if err != nil {
 		returnError(apiName, w, err)
@@ -1194,6 +1230,12 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
 	}
 	w.WriteHeader(http.StatusOK)
 	jsoniter.NewEncoder(w).Encode(pl)
+	// Write to cache: starts
+	githubIDContributionsCacheMtx.Lock()
+	githubIDContributionsCache[key] = githubIDContributionsCacheEntry{dt: time.Now(), contributions: contributions}
+	githubIDContributionsCacheMtx.Unlock()
+	lib.Printf("Written value to cache for %+v: %d\n", key, contributions)
+	// Write to cache: ends
 }
 
 func apiDevActCnt(info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -2180,13 +2222,13 @@ func apiCumulativeCounts(info string, w http.ResponseWriter, payload map[string]
 	cumulativeCountsCacheMtx.Unlock()
 	if ok {
 		age := time.Now().Sub(data.dt).Seconds()
-		if age < 43200 {
-			lib.Printf("Using cached values for %+v (age is %.0f < 43200)\n", key, age)
+		if age < CumulativeCountsCacheTTL {
+			lib.Printf("Using cached values for %+v (age is %.0f < %d)\n", key, age, CumulativeCountsCacheTTL)
 			w.WriteHeader(http.StatusOK)
 			jsoniter.NewEncoder(w).Encode(data.cumulativeCounts)
 			return
 		}
-		lib.Printf("Deleting cached values for %+v (age is %.0f >= 43200)\n", key, age)
+		lib.Printf("Deleting cached values for %+v (age is %.0f >= %d)\n", key, age, CumulativeCountsCacheTTL)
 		cumulativeCountsCacheMtx.Lock()
 		delete(cumulativeCountsCache, key)
 		cumulativeCountsCacheMtx.Unlock()
@@ -2339,12 +2381,13 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 	siteStatsCacheMtx.Unlock()
 	if ok {
 		age := time.Now().Sub(data.dt).Seconds()
-		if age < 43200 {
-			lib.Printf("Using cached value for %+v: %+v (age is %.0f < 43200)\n", key, data, age)
+		if age < SiteStatsCacheTTL {
+			lib.Printf("Using cached value for %+v: %+v (age is %.0f < %d)\n", key, data, age, SiteStatsCacheTTL)
 			w.WriteHeader(http.StatusOK)
 			jsoniter.NewEncoder(w).Encode(data.siteStats)
 			return
 		}
+		lib.Printf("Deleting cached values for %+v (age is %.0f >= %d)\n", key, age, CumulativeCountsCacheTTL)
 		siteStatsCacheMtx.Lock()
 		delete(siteStatsCache, key)
 		siteStatsCacheMtx.Unlock()
