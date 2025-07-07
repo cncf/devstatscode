@@ -241,7 +241,7 @@ List of APIs:
   - Example API call: `./devel/api_dev_act_cnt_repos.sh kubernetes 'v1.17.0 - v1.18.0' 'GitHub Events' 'kubernetes/test-infra' 'United States' idvoretskyi`.
   - You can also use arbitrary date ranges in this API, just use 'range:YYYY-MM-DD,YYYY-MM-DD' as a parameter (note that those ranges aren't precalculated, because DevStats cannot guess all of them, so calculating a new date range for the first time can be very time consuming, but the next calls will reuse the calculated data.
   - Specifying `BG=1` allows to run the calculation in the background (BG) - API call will immediatelly return (and there will be no data if this is a new range never calculated so far), but the next call (say after 3 minutes) will return data that was calculated. That way you can calculate longer periods.
-  - Date rnage cannot contain from/to dayes after one day before the current date, this is to avoid calculating ranges that include future, because once calculated they will be reused.
+  - Date range cannot contain from/to dayes after one day before the current date, this is to avoid calculating ranges that include future, because once calculated they will be reused.
   - Example API call with arbitrary date range: `[BG=1] ./devel/api_dev_act_cnt.sh kubernetes 'range:2021-08-20,2021-09' 'Approves' 'SIG Apps' 'United States'`.
 
 
@@ -316,7 +316,7 @@ List of APIs:
   - Example API call: `./devel/api_dev_act_cnt_comp_repos.sh kubernetes 'Last decade' 'PRs' 'kubernetes/test-infra' 'United States' '["Google", "Amazon"]'`.
   - You can also use arbitrary date ranges in this API, just use 'range:YYYY-MM-DD,YYYY-MM-DD' as a parameter (note that those ranges aren't precalculated, because DevStats cannot guess all of them, so calculating a new date range for the first time can be very time consuming, but the next calls will reuse the calculated data.
   - Specifying `BG=1` allows to run the calculation in the background (BG) - API call will immediatelly return (and there will be no data if this is a new range never calculated so far), but the next call (say after 3 minutes) will return data that was calculated. That way you can calculate longer periods.
-  - Date rnage cannot contain from/to dayes after one day before the current date, this is to avoid calculating ranges that include future, because once calculated they will be reused.
+  - Date range cannot contain from/to dayes after one day before the current date, this is to avoid calculating ranges that include future, because once calculated they will be reused.
   - Example API call with arbitrary date range: `[BG=1]./devel/api_dev_act_cnt_comp.sh kubernetes 'range:2021-08-20,2021-09' 'Reviews' 'SIG Apps' 'United States' '["Google", "Amazon"]'`.
 
 - `ComStatsRepoGrp`: `{"api":"ComStatsRepoGrp","payload":{"project":"projectName","from":"2019-01-01","to":"2020-01-01","period":"Day","metric":"Contributors","repository_group":"SIG Apps","companies":["Google", "Red Hat", ...]}}`.
@@ -397,6 +397,19 @@ List of APIs:
   }
   ```
   - Example API call: `./devel/api_site_stats.sh all`.
+
+
+- `GithubIDContributions`: `{"api": "GithubIDContributions", "payload": {"github_id": "id", "bg": "1"}}`.
+  - Arguments:
+    - `github_id`: GitHub username for who you want to get numbe rof all CNCF related contributions.
+  - Returns:
+  ```
+  {
+    "contributions": 16558
+  }
+  ```
+  - Specifying `BG=1` allows to run the calculation in the background (BG) - API call will immediatelly return (and there will be no data if this is a new range never calculated so far), but the next call (say after 3 minutes) will return data that was calculated. That way you can calculate longer periods.
+  - Example API call with arbitrary date range: `[BG=1] ./devel/api_github_id_contributions.sh lukaszgryglicki`.
 
 
 
