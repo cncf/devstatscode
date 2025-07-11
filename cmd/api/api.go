@@ -126,8 +126,8 @@ type siteStatsCacheEntry struct {
 }
 
 type githubIDContributionsCacheEntry struct {
-	dt            time.Time
-	contributions int
+	dt    time.Time
+	stats [3]int
 }
 
 var (
@@ -166,6 +166,8 @@ type githubIDContributionsPayload struct {
 
 type githubIDContributionsResponse struct {
 	Contributions int `json:"contributions"`
+	Issues        int `json:"issues"`
+	PRs           int `json:"prs"`
 }
 
 type devActCntPayload struct {
@@ -1151,11 +1153,15 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
 		if age < GithubIDContributionsCacheTTL {
 			lib.Printf("Using cached value for %+v: %+v (age is %.0f < %d)\n", key, data, age, GithubIDContributionsCacheTTL)
 			w.WriteHeader(http.StatusOK)
-			pl := githubIDContributionsResponse{Contributions: data.contributions}
+			pl := githubIDContributionsResponse{
+				Contributions: data.stats[0],
+				Issues:        data.stats[1],
+				PRs:           data.stats[2],
+			}
 			jsoniter.NewEncoder(w).Encode(pl)
 			return
 		}
-		lib.Printf("Deleting cached values for %+v (age is %.0f >= %d)\n", key, age, CumulativeCountsCacheTTL)
+		lib.Printf("Deleting cached values for %+v: %+v (age is %.0f >= %d)\n", key, data, age, CumulativeCountsCacheTTL)
 		githubIDContributionsCacheMtx.Lock()
 		delete(githubIDContributionsCache, key)
 		githubIDContributionsCacheMtx.Unlock()
@@ -1167,7 +1173,43 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
 		return
 	}
 	defer func() { _ = c.Close() }()
-	query := `
+
+	// Get contributions, issues and PRs in parallel
+	var (
+		wg                         sync.WaitGroup
+		errOnce                    sync.Once
+		firstError                 error
+		contributions, issues, prs int
+	)
+
+	runQuery := func(query string, arg string, dest *int) {
+		defer wg.Done()
+		rows, err := lib.QuerySQLLogErr(c, ctx, query, arg)
+		if err != nil {
+			errOnce.Do(func() {
+				firstError = err
+			})
+			return
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			if err = rows.Scan(dest); err != nil {
+				errOnce.Do(func() {
+					firstError = err
+				})
+				return
+			}
+		}
+		if err = rows.Err(); err != nil {
+			errOnce.Do(func() {
+				firstError = err
+			})
+		}
+	}
+
+	wg.Add(3)
+
+	go runQuery(`
   select
     count(distinct s.event_id) as contributions
   from (
@@ -1206,36 +1248,49 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
         'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
       )
     ) s
-	`
-	rows, err := lib.QuerySQLLogErr(c, ctx, query, ghID)
-	if err != nil {
-		returnError(apiName, w, err)
+  `, ghID, &contributions)
+
+	go runQuery(`
+  select
+    count(distinct id) as issues
+  from
+    gha_issues
+  where
+    is_pull_request = false
+    and lower(dup_actor_login) = $1
+  `, ghID, &issues)
+
+	go runQuery(`
+  select
+    count(distinct id) as prs
+  from
+    gha_issues
+  where
+    is_pull_request = true
+    and lower(dup_actor_login) = $1
+  `, ghID, &prs)
+
+	wg.Wait()
+
+	if firstError != nil {
+		returnError(apiName, w, firstError)
 		return
 	}
-	defer func() { _ = rows.Close() }()
-	var contributions int
-	for rows.Next() {
-		err = rows.Scan(&contributions)
-		if err != nil {
-			returnError(apiName, w, err)
-			return
-		}
-	}
-	err = rows.Err()
-	if err != nil {
-		returnError(apiName, w, err)
-		return
-	}
+
+	// final results
 	pl := githubIDContributionsResponse{
 		Contributions: contributions,
+		Issues:        issues,
+		PRs:           prs,
 	}
 	w.WriteHeader(http.StatusOK)
 	jsoniter.NewEncoder(w).Encode(pl)
 	// Write to cache: starts
 	githubIDContributionsCacheMtx.Lock()
-	githubIDContributionsCache[key] = githubIDContributionsCacheEntry{dt: time.Now(), contributions: contributions}
+	stats := [3]int{contributions, issues, prs}
+	githubIDContributionsCache[key] = githubIDContributionsCacheEntry{dt: time.Now(), stats: stats}
 	githubIDContributionsCacheMtx.Unlock()
-	lib.Printf("Written value to cache for %+v: %d\n", key, contributions)
+	lib.Printf("Written value to cache for %+v: %d\n", key, stats)
 	// Write to cache: ends
 }
 

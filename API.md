@@ -430,3 +430,4 @@ List of APIs:
 - Run API inside the pod: `` GHA2DB_QOUT=1 GHA2DB_DEBUG=1 PG_USER_RO=ro_user PG_HOST_RO=$PG_HOST GHA2DB_LOCAL=1 /api ``.
 - Shell into pod from another terminal: `` k exec -it debug -- bash ``.
 - Execute example API call: `` curl -H 'Content-Type: application/json' 'http://127.0.0.1:8080/api/v1' -d'{"api":"GithubIDContributions","payload":{"github_id":"lukaszgryglicki"}}' ``.
+- Delete no more needed debugging pod: `` helm delete devstats-prod-debug ``.
