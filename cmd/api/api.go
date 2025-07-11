@@ -1140,6 +1140,7 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
 		returnError(apiName, w, fmt.Errorf("github_id parameter must be set"))
 		return
 	}
+	ghID = strings.ToLower(ghID)
 	// Caching: start
 	key := ghID
 	githubIDContributionsCacheMtx.Lock()
@@ -1175,31 +1176,31 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
     from
       gha_commits
     where
-      dup_actor_login = $1
+      lower(dup_actor_login) = $1
     union select
       event_id
     from
       gha_commits
     where
-      dup_author_login = $1
+      lower(dup_author_login) = $1
     union select
       event_id
     from
       gha_commits
     where
-      dup_committer_login = $1
+      lower(dup_committer_login) = $1
     union select
       event_id
     from
       gha_commits_roles
     where
-      actor_login = $1
+      lower(actor_login) = $1
     union select
       id as event_id
     from
       gha_events
     where
-      dup_actor_login = $1
+      lower(dup_actor_login) = $1
       and type in (
         'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
         'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
