@@ -62,7 +62,7 @@ func HandleRowIsTooBig(con *sql.DB, ctx *Ctx, table, info string, addedCols map[
 }
 
 // GetCurrentTableColumns - return arry of string - current columns for given table
-func GetCurrentTableColumns(con *sql.DB, ctx *Ctx, table string) ([]string, error) {
+func GetCurrentTableColumns(con *sql.DB, ctx *Ctx, table string) ([]string, map[string]struct{}, error) {
 	rows, err := QuerySQL(
 		con,
 		ctx,
@@ -71,7 +71,7 @@ func GetCurrentTableColumns(con *sql.DB, ctx *Ctx, table string) ([]string, erro
 	)
 	if err != nil {
 		Printf("Error select column_name %s: %+v\n", table, err)
-		return []string{}, err
+		return []string{}, map[string]struct{}{}, err
 	}
 	defer func() {
 		err := rows.Close()
@@ -80,21 +80,23 @@ func GetCurrentTableColumns(con *sql.DB, ctx *Ctx, table string) ([]string, erro
 		}
 	}()
 	colNames := []string{}
+	colNamesMap := make(map[string]struct{})
 	for rows.Next() {
 		var colName string
 		er := rows.Scan(&colName)
 		if er != nil {
 			Printf("Error scan column name %s: %+v\n", table, er)
-			return []string{}, err
+			return []string{}, map[string]struct{}{}, err
 		}
 		colNames = append(colNames, colName)
+		colNamesMap[colName] = struct{}{}
 	}
 	err = rows.Err()
 	if err != nil {
 		Printf("Error rows error %s: %+v\n", table, err)
-		return []string{}, err
+		return []string{}, map[string]struct{}{}, err
 	}
-	return colNames, nil
+	return colNames, colNamesMap, nil
 }
 
 // IdentifyColumnsToDelete - delete cols that are in 'currCols' and not in 'neededCols' excluding a few special ones

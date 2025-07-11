@@ -128,7 +128,7 @@ func ensureColumns() {
 			numTables := 0
 			for rows.Next() {
 				lib.FatalOnError(rows.Scan(&table))
-				currCols, er := lib.GetCurrentTableColumns(con, &ctx, table)
+				currCols, currColsMap, er := lib.GetCurrentTableColumns(con, &ctx, table)
 				lib.FatalOnError(er)
 				if ctx.Debug > 0 {
 					sort.Strings(currCols)
@@ -159,23 +159,26 @@ func ensureColumns() {
 						"alter table \""+table+"\" add column if not exists \""+colName+"\" "+colType,
 					)
 					if err == nil {
-						mtx.Lock()
-						_, ok := addedCols[table]
+						_, ok := currColsMap[colName]
 						if !ok {
-							addedCols[table] = make(map[string]struct{})
+							mtx.Lock()
+							_, ok = addedCols[table]
+							if !ok {
+								addedCols[table] = make(map[string]struct{})
+							}
+							addedCols[table][colName] = struct{}{}
+							mtx.Unlock()
+							lib.Printf("Added column \"%s\" to '%s' table\n", colName, table)
+							tables = append(tables, table)
+							cols = append(cols, colName)
+							if col.HLL {
+								hlls = append(hlls, "y")
+							} else {
+								hlls = append(hlls, "n")
+							}
+							//} else {
+							//	lib.Printf("%+v\n", err)
 						}
-						addedCols[table][colName] = struct{}{}
-						mtx.Unlock()
-						lib.Printf("Added column \"%s\" to '%s' table\n", colName, table)
-						tables = append(tables, table)
-						cols = append(cols, colName)
-						if col.HLL {
-							hlls = append(hlls, "y")
-						} else {
-							hlls = append(hlls, "n")
-						}
-						//} else {
-						//	lib.Printf("%+v\n", err)
 					} else {
 						info := "add column " + colName + "/" + colType
 						rtry := lib.HandleRowIsTooBig(con, &ctx, table, info, addedCols, &mtx, err)
