@@ -1151,7 +1151,7 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
 	if ok {
 		age := time.Now().Sub(data.dt).Seconds()
 		if age < GithubIDContributionsCacheTTL {
-			lib.Printf("Using cached value for %+v: %+v (age is %.0f < %d)\n", key, data, age, GithubIDContributionsCacheTTL)
+			lib.Printf("%s: using cached value for %+v: %+v (age is %.0f < %d)\n", apiName, key, data, age, GithubIDContributionsCacheTTL)
 			w.WriteHeader(http.StatusOK)
 			pl := githubIDContributionsResponse{
 				Contributions: data.stats[0],
@@ -1161,7 +1161,7 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
 			jsoniter.NewEncoder(w).Encode(pl)
 			return
 		}
-		lib.Printf("Deleting cached values for %+v: %+v (age is %.0f >= %d)\n", key, data, age, CumulativeCountsCacheTTL)
+		lib.Printf("%s: deleting cached values for %+v: %+v (age is %.0f >= %d)\n", apiName, key, data, age, CumulativeCountsCacheTTL)
 		githubIDContributionsCacheMtx.Lock()
 		delete(githubIDContributionsCache, key)
 		githubIDContributionsCacheMtx.Unlock()
@@ -1290,7 +1290,7 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
 	stats := [3]int{contributions, issues, prs}
 	githubIDContributionsCache[key] = githubIDContributionsCacheEntry{dt: time.Now(), stats: stats}
 	githubIDContributionsCacheMtx.Unlock()
-	lib.Printf("Written value to cache for %+v: %d\n", key, stats)
+	lib.Printf("%s: written value to cache for %+v: %d\n", apiName, key, stats)
 	// Write to cache: ends
 }
 
@@ -2279,12 +2279,12 @@ func apiCumulativeCounts(info string, w http.ResponseWriter, payload map[string]
 	if ok {
 		age := time.Now().Sub(data.dt).Seconds()
 		if age < CumulativeCountsCacheTTL {
-			lib.Printf("Using cached values for %+v (age is %.0f < %d)\n", key, age, CumulativeCountsCacheTTL)
+			lib.Printf("%s: using cached values for %+v (age is %.0f < %d)\n", apiName, key, age, CumulativeCountsCacheTTL)
 			w.WriteHeader(http.StatusOK)
 			jsoniter.NewEncoder(w).Encode(data.cumulativeCounts)
 			return
 		}
-		lib.Printf("Deleting cached values for %+v (age is %.0f >= %d)\n", key, age, CumulativeCountsCacheTTL)
+		lib.Printf("%s: deleting cached values for %+v (age is %.0f >= %d)\n", apiName, key, age, CumulativeCountsCacheTTL)
 		cumulativeCountsCacheMtx.Lock()
 		delete(cumulativeCountsCache, key)
 		cumulativeCountsCacheMtx.Unlock()
@@ -2338,7 +2338,7 @@ func apiCumulativeCounts(info string, w http.ResponseWriter, payload map[string]
 	cumulativeCountsCacheMtx.Lock()
 	cumulativeCountsCache[key] = cumulativeCountsCacheEntry{dt: time.Now(), cumulativeCounts: epl}
 	cumulativeCountsCacheMtx.Unlock()
-	lib.Printf("Stored %+v %d cached values\n", key, len(epl.Values))
+	lib.Printf("%s: stored %+v %d cached values\n", apiName, key, len(epl.Values))
 }
 
 func apiEvents(info string, w http.ResponseWriter, payload map[string]interface{}) {
@@ -2438,12 +2438,12 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 	if ok {
 		age := time.Now().Sub(data.dt).Seconds()
 		if age < SiteStatsCacheTTL {
-			lib.Printf("Using cached value for %+v: %+v (age is %.0f < %d)\n", key, data, age, SiteStatsCacheTTL)
+			lib.Printf("%s: using cached value for %+v: %+v (age is %.0f < %d)\n", apiName, key, data, age, SiteStatsCacheTTL)
 			w.WriteHeader(http.StatusOK)
 			jsoniter.NewEncoder(w).Encode(data.siteStats)
 			return
 		}
-		lib.Printf("Deleting cached values for %+v (age is %.0f >= %d)\n", key, age, CumulativeCountsCacheTTL)
+		lib.Printf("%s: deleting cached values for %+v (age is %.0f >= %d)\n", apiName, key, age, CumulativeCountsCacheTTL)
 		siteStatsCacheMtx.Lock()
 		delete(siteStatsCache, key)
 		siteStatsCacheMtx.Unlock()
@@ -2716,6 +2716,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 	siteStatsCacheMtx.Lock()
 	siteStatsCache[key] = siteStatsCacheEntry{dt: time.Now(), siteStats: sspl}
 	siteStatsCacheMtx.Unlock()
+	lib.Printf("%s: written value to cache for %+v\n", apiName, key)
 }
 
 func requestInfo(r *http.Request) string {
