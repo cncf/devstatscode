@@ -19,6 +19,90 @@ path = "src/runq.rs"
 name = "health"
 path = "src/health.rs"
 
+[[bin]]
+name = "annotations"
+path = "src/annotations.rs"
+
+[[bin]]
+name = "columns" 
+path = "src/columns.rs"
+
+[[bin]]
+name = "devstats"
+path = "src/devstats.rs"
+
+[[bin]]
+name = "get_repos"
+path = "src/get_repos.rs"
+
+[[bin]]
+name = "gha2db"
+path = "src/gha2db.rs"
+
+[[bin]]
+name = "gha2db_sync"
+path = "src/gha2db_sync.rs"
+
+[[bin]]
+name = "ghapi2db"
+path = "src/ghapi2db.rs"
+
+[[bin]]
+name = "hide_data"
+path = "src/hide_data.rs"
+
+[[bin]]
+name = "import_affs"
+path = "src/import_affs.rs"
+
+[[bin]]
+name = "merge_dbs"
+path = "src/merge_dbs.rs"
+
+[[bin]]
+name = "replacer"
+path = "src/replacer.rs"
+
+[[bin]]
+name = "splitcrons"
+path = "src/splitcrons.rs"
+
+[[bin]]
+name = "sqlitedb"
+path = "src/sqlitedb.rs"
+
+[[bin]]
+name = "structure"
+path = "src/structure.rs"
+
+[[bin]]
+name = "sync_issues"
+path = "src/sync_issues.rs"
+
+[[bin]]
+name = "tsplit"
+path = "src/tsplit.rs"
+
+[[bin]]
+name = "vars"
+path = "src/vars.rs"
+
+[[bin]]
+name = "webhook"
+path = "src/webhook.rs"
+
+[[bin]]
+name = "website_data"
+path = "src/website_data.rs"
+
+[[bin]]
+name = "api"
+path = "src/api.rs"
+
+[[bin]]
+name = "calc_metric"
+path = "src/calc_metric.rs"
+
 [dependencies]
 devstats-core = { path = "../devstats-core" }
 tokio = { workspace = true }
@@ -27,6 +111,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 anyhow = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 sqlx = { workspace = true }
 chrono = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true }
+rand = "0.8"

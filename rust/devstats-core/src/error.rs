@@ -88,6 +88,24 @@ impl From<sqlx::Error> for DevStatsError {
     }
 }
 
+impl From<std::net::AddrParseError> for DevStatsError {
+    fn from(err: std::net::AddrParseError) -> Self {
+        DevStatsError::Generic(err.to_string())
+    }
+}
+
+impl From<std::num::ParseIntError> for DevStatsError {
+    fn from(err: std::num::ParseIntError) -> Self {
+        DevStatsError::Generic(err.to_string())
+    }
+}
+
+impl From<String> for DevStatsError {
+    fn from(err: String) -> Self {
+        DevStatsError::Generic(err)
+    }
+}
+
 impl From<anyhow::Error> for DevStatsError {
     fn from(err: anyhow::Error) -> Self {
         DevStatsError::Generic(err.to_string())
