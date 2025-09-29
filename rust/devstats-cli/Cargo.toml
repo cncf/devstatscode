@@ -1,0 +1,32 @@
+[package]
+name = "devstats-tags"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "DevStats tags tool - Insert TSDB tags"
+
+[[bin]]
+name = "tags"
+path = "src/tags.rs"
+
+[[bin]]
+name = "runq"
+path = "src/runq.rs"
+
+[[bin]]
+name = "health"
+path = "src/health.rs"
+
+[dependencies]
+devstats-core = { path = "../devstats-core" }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+sqlx = { workspace = true }
+chrono = { workspace = true }
