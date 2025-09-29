@@ -1,7 +1,7 @@
-use clap::Command;
 use devstats_core::{Result};
 use tracing::{info, error};
 use regex::Regex;
+use std::env;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -10,48 +10,45 @@ async fn main() -> Result<()> {
         .with_env_filter("info")
         .init();
 
-    let matches = Command::new("devstats-replacer")
-        .version("0.1.0")
-        .about("Replace strings or regexps in files")
-        .author("DevStats Team")
-        .arg(clap::Arg::new("from")
-            .help("String or regexp to replace from")
-            .required(true)
-            .index(1))
-        .arg(clap::Arg::new("to")
-            .help("String or regexp to replace to")
-            .required(true)
-            .index(2))
-        .arg(clap::Arg::new("file")
-            .help("File to process")
-            .required(true)
-            .index(3))
-        .arg(clap::Arg::new("mode")
-            .help("Mode: ss (string to string), rs (regexp to string), rr (regexp to regexp)")
-            .required(true)
-            .index(4))
-        .get_matches();
+    // Check environment variables exactly like Go version
+    let from = env::var("FROM").unwrap_or_default();
+    if from.is_empty() {
+        println!("You need to set 'FROM' env variable");
+        std::process::exit(1);
+    }
 
-    let from = matches.get_one::<String>("from").unwrap();
-    let to = matches.get_one::<String>("to").unwrap();
-    let file_path = matches.get_one::<String>("file").unwrap();
-    let mode = matches.get_one::<String>("mode").unwrap();
+    let to = env::var("TO").unwrap_or_default();
+    let no_to = env::var("NO_TO").unwrap_or_default();
+    if to.is_empty() && no_to.is_empty() {
+        println!("You need to set 'TO' env variable or specify NO_TO");
+        std::process::exit(1);
+    }
+
+    let mode = env::var("MODE").unwrap_or_default();
+    if mode.is_empty() {
+        println!("You need to set 'MODE' env variable");
+        std::process::exit(1);
+    }
+
+    // Check command line arguments exactly like Go version
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        println!("You need to provide a file name");
+        std::process::exit(1);
+    }
+
+    let filename = &args[1];
 
     // Handle special case where "-" means empty string
-    let from = if from == "-" { "" } else { from };
-    let to = if to == "-" { "" } else { to };
-
-    info!("Replacer mode: {}", mode);
-    info!("From: '{}'", from);
-    info!("To: '{}'", to);
-    info!("File: '{}'", file_path);
+    let from = if from == "-" { "" } else { &from };
+    let to = if to == "-" { "" } else { &to };
 
     // Read file content
-    let content = match tokio::fs::read_to_string(file_path).await {
+    let content = match tokio::fs::read_to_string(filename).await {
         Ok(content) => content,
         Err(err) => {
-            error!("Failed to read file '{}': {}", file_path, err);
-            return Err(err.into());
+            println!("Error: {}", err);
+            std::process::exit(1);
         }
     };
 
@@ -59,15 +56,14 @@ async fn main() -> Result<()> {
     let new_content = match mode.as_str() {
         "ss" | "ss0" => {
             // String to string replacement
-            let replaced = content.replace(from, to);
+            let replaced = content.replace(from, &to);
             let count = (content.len() - replaced.len() + to.len()) / (from.len().max(1));
             
             if mode == "ss" && count == 0 {
-                error!("No replacements made in mode 'ss' (strict mode)");
+                println!("No replacements made in mode 'ss' (strict mode)");
                 std::process::exit(1);
             }
             
-            info!("Made {} string replacements", count);
             replaced
         }
         "rs" | "rs0" => {
@@ -75,8 +71,8 @@ async fn main() -> Result<()> {
             let regex = match Regex::new(from) {
                 Ok(regex) => regex,
                 Err(err) => {
-                    error!("Invalid regexp '{}': {}", from, err);
-                    return Err(err.into());
+                    println!("Error: {}", err);
+                    std::process::exit(1);
                 }
             };
             
@@ -84,11 +80,10 @@ async fn main() -> Result<()> {
             let count = regex.find_iter(&content).count();
             
             if mode == "rs" && count == 0 {
-                error!("No replacements made in mode 'rs' (strict mode)");
+                println!("No replacements made in mode 'rs' (strict mode)");
                 std::process::exit(1);
             }
             
-            info!("Made {} regexp to string replacements", count);
             replaced.to_string()
         }
         "rr" | "rr0" => {
@@ -96,8 +91,8 @@ async fn main() -> Result<()> {
             let regex = match Regex::new(from) {
                 Ok(regex) => regex,
                 Err(err) => {
-                    error!("Invalid regexp '{}': {}", from, err);
-                    return Err(err.into());
+                    println!("Error: {}", err);
+                    std::process::exit(1);
                 }
             };
             
@@ -105,25 +100,26 @@ async fn main() -> Result<()> {
             let count = regex.find_iter(&content).count();
             
             if mode == "rr" && count == 0 {
-                error!("No replacements made in mode 'rr' (strict mode)");
+                println!("No replacements made in mode 'rr' (strict mode)");
                 std::process::exit(1);
             }
             
-            info!("Made {} regexp to regexp replacements", count);
             replaced.to_string()
         }
         _ => {
-            error!("Invalid mode '{}'. Supported modes: ss, ss0, rs, rs0, rr, rr0", mode);
+            println!("Unknown mode '{}'", mode);
             std::process::exit(1);
         }
     };
 
     // Write back to file
-    if let Err(err) = tokio::fs::write(file_path, new_content).await {
-        error!("Failed to write file '{}': {}", file_path, err);
-        return Err(err.into());
+    if let Err(err) = tokio::fs::write(filename, &new_content).await {
+        println!("Error: {}", err);
+        std::process::exit(1);
     }
 
-    info!("File '{}' processed successfully", file_path);
+    // Output exactly like Go version
+    println!("Hits: {}", filename);
+
     Ok(())
 }

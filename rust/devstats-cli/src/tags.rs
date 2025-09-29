@@ -134,6 +134,104 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn calc_tags() -> Result<()> {
+    // Environment context parse exactly like Go version
+    let ctx = Context::from_env()?;
+    
+    // Skip TSDB processing if disabled
+    if ctx.skip_tsdb {
+        return Ok(());
+    }
+
+    // Connect to PostgreSQL database
+    let db_url = format!("postgresql://{}:{}@{}:{}/{}?sslmode={}", 
+        ctx.pg_user, ctx.pg_pass, ctx.pg_host, ctx.pg_port, ctx.pg_db, ctx.pg_ssl);
+    
+    let pool = match sqlx::PgPool::connect(&db_url).await {
+        Ok(pool) => pool,
+        Err(err) => {
+            error!("Failed to connect to database: {}", err);
+            return Err(err.into());
+        }
+    };
+
+    // Determine data prefix - local or cron mode
+    let data_prefix = if ctx.local {
+        "./".to_string()
+    } else {
+        ctx.data_dir.clone()
+    };
+
+    // Read tags to generate
+    let tags_yaml_path = format!("{}{}", data_prefix, ctx.tags_yaml);
+    let tags_content = match tokio::fs::read_to_string(&tags_yaml_path).await {
+        Ok(content) => content,
+        Err(err) => {
+            error!("Failed to read tags YAML file '{}': {}", tags_yaml_path, err);
+            return Err(err.into());
+        }
+    };
+
+    let tags_config: Tags = match serde_yaml::from_str(&tags_content) {
+        Ok(config) => config,
+        Err(err) => {
+            error!("Failed to parse tags YAML: {}", err);
+            return Err(err.into());
+        }
+    };
+
+    info!("Processing {} tags", tags_config.tags.len());
+
+    // Process each tag configuration
+    for (i, tag) in tags_config.tags.iter().enumerate() {
+        if tag.disabled {
+            info!("Skipping disabled tag: {}", tag.name);
+            continue;
+        }
+
+        info!("Processing tag {}/{}: {}", i + 1, tags_config.tags.len(), tag.name);
+
+        // Execute SQL query for this tag
+        let sql_with_substitutions = substitute_sql_parameters(&tag.sql, &ctx);
+        
+        if ctx.q_out {
+            info!("Executing SQL: {}", sql_with_substitutions);
+        }
+
+        match sqlx::query(&sql_with_substitutions).fetch_all(&pool).await {
+            Ok(rows) => {
+                info!("Tag '{}' query returned {} rows", tag.name, rows.len());
+                
+                // In full implementation, would insert TSDB data here
+                // For now, just log the processing
+                if ctx.debug > 0 {
+                    for (row_idx, _row) in rows.iter().enumerate() {
+                        if row_idx < 5 {  // Limit debug output
+                            info!("  Row {}: processed", row_idx + 1);
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                error!("Failed to execute SQL for tag '{}': {}", tag.name, err);
+                if !ctx.exit_on_error {
+                    return Err(err.into());
+                }
+            }
+        }
+    }
+
+    info!("Tags processing completed");
+    Ok(())
+}
+
+fn substitute_sql_parameters(sql: &str, ctx: &Context) -> String {
+    // Basic parameter substitution - in full implementation would handle all DevStats parameters
+    sql.replace("{{from}}", &ctx.default_start_date.format("%Y-%m-%d").to_string())
+       .replace("{{to}}", &chrono::Utc::now().format("%Y-%m-%d").to_string())
+       .replace("{{period}}", "d")
+}
+
 async fn process_tag(
     pool: &sqlx::PgPool,
     ctx: &Context,

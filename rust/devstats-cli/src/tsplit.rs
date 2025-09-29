@@ -1,81 +1,141 @@
-use clap::Command;
-use devstats_core::{Context, Result};
-use tracing::{info, error};
+use devstats_core::{Result};
+use std::env;
+use std::io::{self, Read};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .init();
-
-    let matches = Command::new("devstats-tsplit")
-        .version("0.1.0")
-        .about("Split time series data for DevStats")
-        .author("DevStats Team")
-        .arg(clap::Arg::new("input")
-            .help("Input time series data")
-            .required(true)
-            .index(1))
-        .arg(clap::Arg::new("output-prefix")
-            .help("Output file prefix")
-            .required(true)
-            .index(2))
-        .get_matches();
-
-    let input = matches.get_one::<String>("input").unwrap();
-    let output_prefix = matches.get_one::<String>("output-prefix").unwrap();
-
-    // Initialize context from environment
-    let ctx = Context::from_env()?;
-
-    if ctx.ctx_out {
-        info!("Context: {:?}", ctx);
+    // Check environment variables exactly like Go version
+    let kind = env::var("KIND").unwrap_or_default();
+    if kind.is_empty() {
+        println!("You need to specify kind via KIND=Graduated|Incubating|Sandbox");
+        return Ok(());
     }
 
-    info!("Time series split tool");
-    info!("Input: {}", input);
-    info!("Output prefix: {}", output_prefix);
+    let ssize = env::var("SIZE").unwrap_or_default();
+    if ssize.is_empty() {
+        println!("You need to specify size via SIZE=n (usually 9, 10, 11, 12)");
+        return Ok(());
+    }
 
-    // Read input data
-    let content = match tokio::fs::read_to_string(input).await {
-        Ok(content) => content,
+    let size: usize = match ssize.parse() {
+        Ok(s) => s,
         Err(err) => {
-            error!("Failed to read input file '{}': {}", input, err);
-            return Err(err.into());
+            println!("error: {:?}", err);
+            return Ok(());
         }
     };
 
-    info!("Processing {} bytes of time series data", content.len());
+    // Read from stdin exactly like Go version
+    let mut buffer = String::new();
+    if let Err(err) = io::stdin().read_to_string(&mut buffer) {
+        println!("error: {:?}", err);
+        return Ok(());
+    }
 
-    // TODO: In full implementation, would:
-    // 1. Parse time series data format
-    // 2. Split data based on time periods or other criteria
-    // 3. Write multiple output files with appropriate naming
+    let debug = env::var("DEBUG").unwrap_or_default() == "1";
 
-    // For now, demonstrate basic functionality
-    let lines: Vec<&str> = content.lines().collect();
-    info!("Input contains {} lines", lines.len());
+    // Call the tsplit function
+    let result = tsplit(size, &kind, &buffer, debug);
+    
+    // Output result
+    print!("{}", result);
 
-    // Split into chunks (example: 1000 lines per file)
-    let chunk_size = 1000;
-    let chunks: Vec<_> = lines.chunks(chunk_size).collect();
+    Ok(())
+}
 
-    for (i, chunk) in chunks.iter().enumerate() {
-        let output_file = format!("{}{:04}.txt", output_prefix, i);
-        let chunk_content = chunk.join("\n");
-        
-        match tokio::fs::write(&output_file, chunk_content).await {
-            Ok(_) => {
-                info!("Written {} lines to {}", chunk.len(), output_file);
+// Port of the Go tsplit function
+fn tsplit(size: usize, _kind: &str, input: &str, debug: bool) -> String {
+    let lines: Vec<&str> = input
+        .split('\n')
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+
+    let mut offset = String::new();
+    
+    // Find offset from first <tr> line
+    for line in &lines {
+        if line.trim() == "<tr>" {
+            if let Some(pos) = line.find("<tr>") {
+                if pos > 0 {
+                    offset = line[..pos].to_string();
+                }
             }
-            Err(err) => {
-                error!("Failed to write to '{}': {}", output_file, err);
-                return Err(err.into());
-            }
+            break;
         }
     }
 
-    info!("Time series split completed: {} output files created", chunks.len());
-    Ok(())
+    let mut link_lines = Vec::new();
+    let mut image_lines = Vec::new();
+    let mut in_links = false;
+    let mut in_images = false;
+
+    for line in &lines {
+        let trimmed = line.trim();
+        
+        if trimmed.contains("<a ") {
+            in_links = true;
+            in_images = false;
+        } else if trimmed.contains("<img ") {
+            in_links = false;
+            in_images = true;
+        }
+
+        if in_links && trimmed.starts_with("<td") {
+            link_lines.push(*line);
+        } else if in_images && trimmed.starts_with("<td") {
+            image_lines.push(*line);
+        }
+    }
+
+    if debug {
+        eprintln!("Links {}:\n{}", link_lines.len(), link_lines.join("\n"));
+        eprintln!("Images {}:\n{}", image_lines.len(), image_lines.join("\n"));
+    }
+
+    let mut out_lines = Vec::new();
+    let mut from = 0;
+
+    while from < link_lines.len() {
+        let to = (from + size).min(link_lines.len());
+        
+        out_lines.push(format!("{}<tr>", offset));
+        
+        let last_to = to - 1;
+        for i in from..to {
+            let line = link_lines[i];
+            
+            if i == from && i == last_to {
+                out_lines.push(line.replace("<td>", r#"<td class="cncf-bl cncf-br">"#));
+            } else if i == from {
+                out_lines.push(line.replace("<td>", r#"<td class="cncf-bl">"#));
+            } else if i == last_to {
+                out_lines.push(line.replace("<td>", r#"<td class="cncf-br">"#));
+            } else {
+                out_lines.push(line.to_string());
+            }
+        }
+        
+        out_lines.push(format!("{}</tr>", offset));
+        out_lines.push(format!("{}<tr>", offset));
+        
+        for i in from..to {
+            let line = image_lines[i];
+            
+            if i == from && i == last_to {
+                out_lines.push(line.replace(r#"<td class="cncf-bb">"#, r#"<td class="cncf-bb cncf-bl cncf-br">"#));
+            } else if i == from {
+                out_lines.push(line.replace(r#"<td class="cncf-bb">"#, r#"<td class="cncf-bb cncf-bl">"#));
+            } else if i == last_to {
+                out_lines.push(line.replace(r#"<td class="cncf-bb">"#, r#"<td class="cncf-bb cncf-br">"#));
+            } else {
+                out_lines.push(line.to_string());
+            }
+        }
+        
+        out_lines.push(format!("{}</tr>", offset));
+        
+        from = to;
+    }
+
+    out_lines.join("\n")
 }

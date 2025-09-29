@@ -1,4 +1,3 @@
-use clap::{Arg, Command};
 use devstats_core::{Context, Result};
 use tracing::{info, error};
 use std::collections::HashMap;
@@ -11,35 +10,16 @@ async fn main() -> Result<()> {
         .with_env_filter("info")
         .init();
 
-    let matches = Command::new("devstats-runq")
-        .version("0.1.0")
-        .about("Run SQL queries for DevStats")
-        .author("DevStats Team")
-        .arg(
-            Arg::new("sql-file")
-                .help("SQL file to execute")
-                .required(true)
-                .index(1)
-        )
-        .arg(
-            Arg::new("params")
-                .help("Parameter key-value pairs for SQL replacements")
-                .num_args(0..)
-                .index(2)
-        )
-        .get_matches();
-
-    // Initialize context from environment
-    let ctx = Context::from_env()?;
-
-    if ctx.ctx_out {
-        info!("Context: {:?}", ctx);
+    // Check command line arguments exactly like Go version
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        println!("Required SQL file name [param1 value1 [param2 value2 ...]]");
+        println!("Special replace 'qr' 'period,from,to' is used for {{{{period.alias.name}}}} replacements");
+        std::process::exit(1);
     }
 
-    let sql_file = matches.get_one::<String>("sql-file").unwrap();
-    let params: Vec<String> = matches.get_many::<String>("params")
-        .map(|vals| vals.cloned().collect())
-        .unwrap_or_default();
+    let sql_file = &args[1];
+    let params: Vec<String> = args[2..].to_vec();
 
     // SQL arguments number - must be pairs
     if params.len() % 2 != 0 {
@@ -169,6 +149,11 @@ async fn main() -> Result<()> {
             error!("Failed to execute SQL query: {}", err);
             return Err(err.into());
         }
+    }
+
+    let elapsed = start_time.elapsed();
+    if ctx.debug >= 0 {
+        println!("Time: {:?}", elapsed);
     }
 
     Ok(())
