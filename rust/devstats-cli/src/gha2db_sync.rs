@@ -1,3 +1,4 @@
+use sqlx::Row;
 use clap::Command;
 use devstats_core::{Context, Result};
 use tracing::{info, error};
@@ -141,8 +142,8 @@ async fn get_last_sync_timestamp(
 }
 
 async fn sync_github_events(
-    pool: &sqlx::PgPool,
-    ctx: &Context,
+    _pool: &sqlx::PgPool,
+    _ctx: &Context,
     from: chrono::DateTime<chrono::Utc>,
     to: chrono::DateTime<chrono::Utc>,
 ) -> Result<u32> {
@@ -167,7 +168,7 @@ async fn sync_github_events(
 }
 
 async fn process_tsdb_metrics(
-    ctx: &Context,
+    _ctx: &Context,
     from: chrono::DateTime<chrono::Utc>,
     to: chrono::DateTime<chrono::Utc>,
 ) -> Result<u32> {

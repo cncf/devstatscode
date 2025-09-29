@@ -100,6 +100,18 @@ impl From<std::num::ParseIntError> for DevStatsError {
     }
 }
 
+impl From<reqwest::header::InvalidHeaderValue> for DevStatsError {
+    fn from(err: reqwest::header::InvalidHeaderValue) -> Self {
+        DevStatsError::Generic(err.to_string())
+    }
+}
+
+impl From<regex::Error> for DevStatsError {
+    fn from(err: regex::Error) -> Self {
+        DevStatsError::Generic(err.to_string())
+    }
+}
+
 impl From<String> for DevStatsError {
     fn from(err: String) -> Self {
         DevStatsError::Generic(err)

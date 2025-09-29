@@ -1,6 +1,6 @@
 use clap::Command;
 use devstats_core::{Context, Result};
-use tracing::{info, error};
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -12,7 +12,7 @@ async fn main() -> Result<()> {
         .author("DevStats Team")
         .get_matches();
 
-    let ctx = Context::from_env()?;
+    let _ctx = Context::from_env()?;
     info!("Website data generation tool");
 
     // TODO: In full implementation would generate static data files for website

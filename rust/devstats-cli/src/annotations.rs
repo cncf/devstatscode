@@ -1,4 +1,4 @@
-use clap::{Arg, Command};
+use clap::Command;
 use devstats_core::{Context, Result};
 use tracing::{info, error};
 use serde::{Deserialize, Serialize};
@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
         .with_env_filter("info")
         .init();
 
-    let matches = Command::new("devstats-annotations")
+    let _matches = Command::new("devstats-annotations")
         .version("0.1.0")
         .about("Insert TSDB annotations for DevStats")
         .author("DevStats Team")

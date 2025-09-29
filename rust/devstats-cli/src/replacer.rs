@@ -1,5 +1,5 @@
 use clap::Command;
-use devstats_core::{Context, Result};
+use devstats_core::{Result};
 use tracing::{info, error};
 use regex::Regex;
 
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
     };
 
     // Perform replacement based on mode
-    let new_content = match mode {
+    let new_content = match mode.as_str() {
         "ss" | "ss0" => {
             // String to string replacement
             let replaced = content.replace(from, to);

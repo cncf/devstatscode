@@ -64,8 +64,8 @@ async fn main() -> Result<()> {
 
     // For now, simulate the processing
     let mut processed_events = 0;
-    let mut processed_repos = 0;
-    let mut processed_actors = 0;
+    let mut _processed_repos = 0;
+    let mut _processed_actors = 0;
 
     // Simulate processing some sample data
     let sample_events = vec![
@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
     ];
 
     for (event_type, repo_name, actor_login) in sample_events {
-        if let Some(ref pool) = pool {
+        if let Some(ref _pool) = pool {
             // Simulate database insertion
             info!("Processing {} by {} in {}", event_type, actor_login, repo_name);
             
@@ -102,16 +102,16 @@ async fn main() -> Result<()> {
         }
     }
 
-    processed_repos = 2; // example/repo and another/repo
-    processed_actors = 4; // user1, user2, user3, user4
+    _processed_repos = 2; // example/repo and another/repo
+    _processed_actors = 4; // user1, user2, user3, user4
 
     let elapsed = start_time.elapsed();
 
     info!("GHA2DB processing completed in {:?}", elapsed);
     info!("Statistics:");
     info!("  Events processed: {}", processed_events);
-    info!("  Repositories: {}", processed_repos);
-    info!("  Actors: {}", processed_actors);
+    info!("  Repositories: {}", _processed_repos);
+    info!("  Actors: {}", _processed_actors);
 
     if processed_events == 0 {
         error!("No events were processed - check configuration and data availability");

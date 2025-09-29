@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
 async fn sync_project(
     _ctx: &Context,
     project_name: &str,
-    project: &Project,
+    _project: &Project,
     cmd_prefix: &str,
 ) -> Result<()> {
     // In the real implementation, this would execute:

@@ -1,3 +1,4 @@
+use sqlx::Row;
 use clap::Command;
 use devstats_core::{Context, Result};
 use tracing::{info, error};

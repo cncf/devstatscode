@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
     info!("  GET /api/v1/companies - Company statistics");
     info!("  GET /api/v1/countries - Country statistics");
     info!("  GET /api/v1/events - Event statistics");
-    info!("  GET /api/v1/metrics/{metric_name} - Specific metric data");
+    info!("  GET /api/v1/metrics/{{metric_name}} - Specific metric data");
 
     // Simulate some API responses
     simulate_api_responses(&pool, &ctx).await?;
@@ -90,7 +90,7 @@ async fn simulate_api_responses(pool: &sqlx::PgPool, ctx: &Context) -> Result<()
     // Projects endpoint
     match get_projects_list(pool).await {
         Ok(projects) => {
-            let projects_response = serde_json::json!({
+            let _projects_response = serde_json::json!({
                 "projects": projects,
                 "count": projects.len()
             });

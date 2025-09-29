@@ -1,3 +1,4 @@
+use sqlx::Row;
 use clap::Command;
 use devstats_core::{Context, Result};
 use tracing::{info, error};
@@ -70,7 +71,7 @@ async fn main() -> Result<()> {
             info!("GitHub API rate limit: {} remaining, resets at {}", 
                 remaining, reset_time.format("%Y-%m-%d %H:%M:%S UTC"));
                 
-            if remaining < ctx.min_ghapi_points {
+            if remaining < ctx.min_ghapi_points as u32 {
                 let wait_duration = reset_time.signed_duration_since(chrono::Utc::now());
                 let wait_seconds = wait_duration.num_seconds().max(0) as u64;
                 

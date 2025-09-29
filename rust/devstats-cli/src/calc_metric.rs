@@ -1,6 +1,6 @@
 use clap::Command;
 use devstats_core::{Context, Result};
-use tracing::{info, error};
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
