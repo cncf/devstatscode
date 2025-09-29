@@ -166,6 +166,9 @@ pub struct Context {
     // Database merge configuration
     pub input_dbs: Vec<String>, // From GHA2DB_INPUT_DBS
     pub output_db: String,      // From GHA2DB_OUTPUT_DB
+    pub shared_db: String,      // From projects.yaml:shared_db - for annotations tool
+    pub skip_shared_db: bool,   // From GHA2DB_SKIP_SHAREDDB, annotations tool, default false
+    pub project_main_repo: String, // Used by annotations tool to store project's main repo name
     
     // Time configuration
     pub tm_offset: i32,         // From GHA2DB_TMOFFSET, default 0
@@ -258,6 +261,9 @@ impl Default for Context {
             exclude_repos: HashMap::new(),
             input_dbs: Vec::new(),
             output_db: String::new(),
+            shared_db: String::new(),
+            skip_shared_db: false,
+            project_main_repo: String::new(),
             tm_offset: 0,
             default_hostname: "devstats.cncf.io".to_string(),
             recent_range: "12 hours".to_string(),
@@ -325,6 +331,16 @@ impl Context {
             ctx.project = project;
         }
         
+        // Repository configuration
+        if let Ok(repos_dir) = std::env::var("GHA2DB_REPOS_DIR") {
+            ctx.repos_dir = repos_dir;
+        }
+        
+        // Projects YAML file
+        if let Ok(projects_yaml) = std::env::var("GHA2DB_PROJECTS_YAML") {
+            ctx.projects_yaml = projects_yaml;
+        }
+        
         // GitHub OAuth
         if let Ok(github_oauth) = std::env::var("GHA2DB_GITHUB_OAUTH") {
             ctx.github_oauth = github_oauth;
@@ -358,6 +374,7 @@ impl Context {
         ctx.process_commits = std::env::var("GHA2DB_PROCESS_COMMITS").is_ok();
         ctx.external_info = std::env::var("GHA2DB_EXTERNAL_INFO").is_ok();
         ctx.propagate_only_var = std::env::var("GHA2DB_PROPAGATE_ONLY_VAR").is_ok();
+        ctx.skip_shared_db = std::env::var("GHA2DB_SKIP_SHAREDDB").is_ok();
         
         Ok(ctx)
     }
