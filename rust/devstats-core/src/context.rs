@@ -153,6 +153,7 @@ pub struct Context {
     pub external_info: bool,       // From GHA2DB_EXTERNAL_INFO, default false
     pub projects_commits: String,  // From GHA2DB_PROJECTS_COMMITS, default ""
     pub propagate_only_var: bool,  // From GHA2DB_PROPAGATE_ONLY_VAR, default false
+    pub skip_get_repos: bool,      // From GHA2DB_GETREPOSSKIP, get_repos tool, default false
     
     // Configuration files
     pub projects_yaml: String,     // From GHA2DB_PROJECTS_YAML, default "projects.yaml"
@@ -254,6 +255,7 @@ impl Default for Context {
             external_info: false,
             projects_commits: String::new(),
             propagate_only_var: false,
+            skip_get_repos: false,
             projects_yaml: "projects.yaml".to_string(),
             company_acq_yaml: String::new(),
             affiliations_json: "github_users.json".to_string(),
@@ -374,6 +376,7 @@ impl Context {
         ctx.process_commits = std::env::var("GHA2DB_PROCESS_COMMITS").is_ok();
         ctx.external_info = std::env::var("GHA2DB_EXTERNAL_INFO").is_ok();
         ctx.propagate_only_var = std::env::var("GHA2DB_PROPAGATE_ONLY_VAR").is_ok();
+        ctx.skip_get_repos = std::env::var("GHA2DB_GETREPOSSKIP").is_ok();
         ctx.skip_shared_db = std::env::var("GHA2DB_SKIP_SHAREDDB").is_ok();
         
         Ok(ctx)
