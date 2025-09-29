@@ -119,3 +119,12 @@ regex = { workspace = true }
 reqwest = { workspace = true }
 rand = "0.8"
 warp = "0.3"
+num_cpus = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+md-5 = { workspace = true }
+hex = { workspace = true }
+flate2 = "1.0"

@@ -7,7 +7,9 @@
 pub mod constants;
 pub mod context;
 pub mod error;
+pub mod gha;
 
 // Re-export commonly used items
 pub use context::Context;
 pub use error::{DevStatsError, Result};
+pub use gha::{GHAEvent, GHAParser, GHAProcessor};

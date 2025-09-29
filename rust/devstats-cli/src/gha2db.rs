@@ -67,8 +67,8 @@ async fn main() -> Result<()> {
     };
 
     // Determine number of CPUs for threading (like Go version)
-    let num_threads = if ctx.ncpus > 0 { 
-        ctx.ncpus 
+    let num_threads = if ctx.n_cpus > 0 { 
+        ctx.n_cpus as usize
     } else if ctx.st { 
         1 
     } else { 
@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
     );
 
     // Process GitHub Archive files (main functionality)
-    let gha_processor = GHAProcessor::new(pool, ctx);
+    let gha_processor = GHAProcessor::new();
     let client = Client::new();
     
     // Create date/hour iterator like Go version
@@ -151,28 +151,28 @@ async fn process_gha_file(
             continue;
         }
         
-        match serde_json::from_str::<Value>(line) {
-            Ok(json_event) => {
+        match serde_json::from_str::<GHAEvent>(line) {
+            Ok(gha_event) => {
                 // Apply filters like Go version
-                if let Some(repo_name) = json_event["repo"]["name"].as_str() {
-                    // Check organization filter
-                    if let Some(orgs) = orgs_filter {
-                        let org_name = repo_name.split('/').next().unwrap_or("");
-                        if !orgs.contains_key(org_name) {
-                            continue;
-                        }
+                let repo_name = &gha_event.repo.name;
+                
+                // Check organization filter
+                if let Some(orgs) = orgs_filter {
+                    let org_name = repo_name.split('/').next().unwrap_or("");
+                    if !orgs.contains_key(org_name) {
+                        continue;
                     }
-                    
-                    // Check repository filter  
-                    if let Some(repos) = repos_filter {
-                        if !repos.contains_key(repo_name) {
-                            continue;
-                        }
+                }
+                
+                // Check repository filter  
+                if let Some(repos) = repos_filter {
+                    if !repos.contains_key(repo_name) {
+                        continue;
                     }
                 }
                 
                 // Process event into database (like Go version)
-                match processor.process_event(json_event).await {
+                match processor.process_event(&gha_event).await {
                     Ok(_) => {
                         events_count += 1;
                         // Count unique repos and actors (simplified)
