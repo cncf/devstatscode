@@ -214,9 +214,7 @@ async fn calc_tags() -> Result<()> {
             }
             Err(err) => {
                 error!("Failed to execute SQL for tag '{}': {}", tag.name, err);
-                if !ctx.exit_on_error {
-                    return Err(err.into());
-                }
+                return Err(err.into());
             }
         }
     }

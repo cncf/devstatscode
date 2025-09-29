@@ -10,6 +10,8 @@ async fn main() -> Result<()> {
         .with_env_filter("info")
         .init();
 
+    let start_time = std::time::Instant::now();
+
     // Check command line arguments exactly like Go version
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -18,6 +20,9 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    // Initialize context from environment
+    let ctx = Context::from_env()?;
+    
     let sql_file = &args[1];
     let params: Vec<String> = args[2..].to_vec();
 

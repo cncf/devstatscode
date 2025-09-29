@@ -1,8 +1,7 @@
 use devstats_core::{Context, Result};
 use std::{env, process, fs};
 use chrono::{DateTime, Utc, NaiveDateTime};
-use sqlx::PgPool;
-use std::collections::HashMap;
+use sqlx::{PgPool, Row};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -90,8 +89,8 @@ async fn main() -> Result<()> {
     let to_dt = parse_date(to_date)?;
     
     // Validate period
-    if !matches!(period, "h" | "d" | "w" | "m" | "q" | "y") {
-        return Err("Invalid period. Must be one of: h, d, w, m, q, y".into());
+    if !matches!(period.as_str(), "h" | "d" | "w" | "m" | "q" | "y") {
+        return Err(anyhow::anyhow!("Invalid period. Must be one of: h, d, w, m, q, y").into());
     }
 
     // Calculate metrics based on period and configuration
