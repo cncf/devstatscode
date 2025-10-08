@@ -671,7 +671,7 @@ func sync(ctx *lib.Ctx, args []string) {
 						dtStart := time.Now()
 						lib.Printf("Calculate metric %v, period %v, desc: '%v', aggregate: '%v' ...\n", metric.Name, period, metric.Desc, aggrSuffix)
 						execCtx := ctx
-						if metric.AllowFail {
+						if ctx.AllowMetricFail || metric.AllowFail {
 							execCtx = ctx.CopyContext()
 							execCtx.ExecFatal = false
 						}
@@ -688,7 +688,7 @@ func sync(ctx *lib.Ctx, args []string) {
 							},
 							envMap,
 						)
-						if !metric.AllowFail {
+						if !ctx.AllowMetricFail && !metric.AllowFail {
 							lib.FatalOnError(err)
 						} else if err != nil {
 							lib.Printf("WARNING: %+v failed: %+v\n", metric, err)
@@ -842,7 +842,7 @@ func calcHistogram(ch chan int, ctx *lib.Ctx, hist []string, envMap map[string]s
 	)
 	chRes := 0
 	execCtx := ctx
-	if allowFail {
+	if ctx.AllowMetricFail || allowFail {
 		execCtx = ctx.CopyContext()
 		execCtx.ExecFatal = false
 	}
@@ -860,7 +860,7 @@ func calcHistogram(ch chan int, ctx *lib.Ctx, hist []string, envMap map[string]s
 		},
 		envMap,
 	)
-	if !allowFail {
+	if !ctx.AllowMetricFail && !allowFail {
 		lib.FatalOnError(err)
 	} else if err != nil {
 		lib.Printf("WARNING: histogram %+v %+v failed: %+v\n", envMap, hist, err)

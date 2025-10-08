@@ -193,6 +193,7 @@ func TestInit(t *testing.T) {
 		AutoFetchCommits:         true,
 		GHAPIErrorIsFatal:        false,
 		AllowBrokenJSON:          false,
+		AllowMetricFail:          false,
 		WebsiteData:              false,
 		SkipUpdateEvents:         false,
 		SkipGetRepos:             false,
@@ -711,6 +712,19 @@ func TestInit(t *testing.T) {
 				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"AllowBrokenJSON": true,
+				},
+			),
+		},
+		{
+			"Allow metric fail",
+			map[string]string{
+				"GHA2DB_ALLOW_METRIC_FAIL": "1",
+			},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{
+					"AllowMetricFail": true,
 				},
 			),
 		},

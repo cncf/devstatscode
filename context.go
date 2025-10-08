@@ -154,6 +154,7 @@ type Ctx struct {
 	RandComputeAtThisDate    bool                         // Use rand to decide if a given date period must be calculated at this date or not.
 	RefreshCommitRoles       bool                         // From GHA2DB_REFRESH_COMMIT_ROLES - will process all commiths in DB and for every single one of them it will generate gha_commits_roles entries.
 	AllowRandTagsColsCompute bool                         // If set, then tags and columns will only be computed at random 0-5 hour, otherwise always when hour<6.
+	AllowMetricFail          bool                         // From GHA2DB_ALLOW_METRIC_FAIL - if set, then calc_metric will not exit on first failed metric, but will try to compute all metrics.
 }
 
 // SetCPUs - set CPUs
@@ -366,6 +367,9 @@ func (ctx *Ctx) Init() {
 
 	// Allow broken JSON
 	ctx.AllowBrokenJSON = os.Getenv("GHA2DB_ALLOW_BROKEN_JSON") != ""
+
+	// Allow metric fail
+	ctx.AllowMetricFail = os.Getenv("GHA2DB_ALLOW_METRIC_FAIL") != ""
 
 	// Run website_data tool after sync
 	ctx.WebsiteData = os.Getenv("GHA2DB_WEBSITEDATA") != ""
@@ -909,6 +913,7 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		AutoFetchCommits:         ctx.AutoFetchCommits,
 		GHAPIErrorIsFatal:        ctx.GHAPIErrorIsFatal,
 		AllowBrokenJSON:          ctx.AllowBrokenJSON,
+		AllowMetricFail:          ctx.AllowMetricFail,
 		WebsiteData:              ctx.WebsiteData,
 		SkipUpdateEvents:         ctx.SkipUpdateEvents,
 		SkipGetRepos:             ctx.SkipGetRepos,
