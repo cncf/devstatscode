@@ -251,26 +251,36 @@ func DropLeastUsedCol(con *sql.DB, ctx *Ctx, table, info string, protectedCols m
 	return true
 }
 
-// WriteTSPoints write batch of points to postgresql
-// use mergeSeries = "name" to put all series in "name" table, and create "series" column that conatins all point names.
-//
-//	without merge, alee names will create separate tables.
-//
-// use non-null mut when you are using this function from multiple threads that write to the same series name at the same time
-//
-//	use non-null mut only then.
-//
-// No more giant lock approach here, but it is up to user to spcify call context, especially 2 last parameters!
+// WriteTSPoints write batch of points to postgresql, splitting large batches into chunks of up to 1000 elements
 func WriteTSPoints(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, hllEmpty []uint8, mut *sync.Mutex) {
 	npts := len(*pts)
 	if npts == 0 {
 		return
 	}
-	Printf("WriteTSPoints: writing %d points\n", npts)
+	Printf("WriteTSPoints: writing %d points in batches of up to 1000\n", npts)
+
+	const batchSize = 1000
+	for i := 0; i < npts; i += batchSize {
+		end := i + batchSize
+		if end > npts {
+			end = npts
+		}
+		batch := TSPoints((*pts)[i:end])
+		WriteTSPointsBatch(ctx, con, &batch, mergeSeries, hllEmpty, mut)
+	}
+}
+
+// WriteTSPointsBatch write batch of points to postgresql (internal implementation)
+func WriteTSPointsBatch(ctx *Ctx, con *sql.DB, pts *TSPoints, mergeSeries string, hllEmpty []uint8, mut *sync.Mutex) {
+	npts := len(*pts)
+	if npts == 0 {
+		return
+	}
+	Printf("WriteTSPointsBatch: writing %d points\n", npts)
 	if ctx.Debug > 0 {
 		Printf("Points:\n%+v\n", pts.Str())
 	}
-	defer func() { Printf("WriteTSPoints: writing %d points - finished\n", npts) }()
+	defer func() { Printf("WriteTSPointsBatch: writing %d points - finished\n", npts) }()
 	merge := false
 	mergeS := ""
 	if mergeSeries != "" {
