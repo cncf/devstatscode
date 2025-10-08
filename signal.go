@@ -50,8 +50,12 @@ func SetupTimeoutSignal(ctx *Ctx) {
 	go func() {
 		for {
 			sig := <-sigs
-			Printf("Program '%s': timeout %v after %d seconds, will exit with %d code\n", prog, sig, seconds, status)
-			os.Exit(status)
+			if prog == "calc_metric" && ctx.AllowMetricFail {
+				Printf("Program '%s': timeout %v after %d seconds, will exit with %d code, but will not fail due to this\n", prog, sig, seconds, status)
+			} else {
+				Printf("Program '%s': timeout %v after %d seconds, will exit with %d code\n", prog, sig, seconds, status)
+				os.Exit(status)
+			}
 		}
 	}()
 	Printf("Program '%s': timeout handler installed: exit %d after %d seconds\n", prog, status, seconds)
