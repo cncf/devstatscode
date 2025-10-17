@@ -43,7 +43,11 @@ func TestGetThreadsNum(t *testing.T) {
 		} else {
 			os.Unsetenv("GHA2DB_ST")
 		}
-		os.Setenv("GHA2DB_NCPUS", fmt.Sprintf("%d", test.NCPUs))
+		if test.NCPUs > 0 {
+			os.Setenv("GHA2DB_NCPUS", fmt.Sprintf("%d", test.NCPUs))
+		} else {
+			os.Unsetenv("GHA2DB_NCPUS")
+		}
 		got := lib.GetThreadsNum(&ctx)
 		if got != expected {
 			t.Errorf(
