@@ -1,6 +1,8 @@
 package devstatscode
 
 import (
+	"fmt"
+	"os"
 	"testing"
 
 	lib "github.com/cncf/devstatscode"
@@ -36,6 +38,12 @@ func TestGetThreadsNum(t *testing.T) {
 		ctx.ST = test.ST
 		ctx.NCPUs = test.NCPUs
 		expected := test.expected
+		if test.ST {
+			os.Setenv("GHA2DB_ST", "1")
+		} else {
+			os.Unsetenv("GHA2DB_ST")
+		}
+		os.Setenv("GHA2DB_NCPUS", fmt.Sprintf("%d", test.NCPUs))
 		got := lib.GetThreadsNum(&ctx)
 		if got != expected {
 			t.Errorf(
