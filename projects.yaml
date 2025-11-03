@@ -464,12 +464,13 @@ projects:
   dragonfly:
     order: 31
     name: Dragonfly
-    status: Incubating
+    status: Graduated
     command_line:
       - dragonflyoss
     start_date: 2017-11-19T00:00:00Z
     join_date: 2018-11-13T00:00:00Z
     incubating_date: 2020-04-09T00:00:00Z
+    graduated_date: 2025-10-28T00:00:00Z
     psql_db: dragonfly
     shared_db: allprj
     main_repo: dragonflyoss/Dragonfly
@@ -879,12 +880,13 @@ projects:
   crossplane:
     order: 60
     name: Crossplane
-    status: Incubating
+    status: Graduated
     command_line:
       - crossplane,crossplaneio,crossplane-contrib
     start_date: 2018-12-04T00:00:00Z
     join_date: 2020-06-25T00:00:00Z
     incubating_date: 2021-09-14T00:00:00Z
+    graduated_date: 2025-10-28T00:00:00Z
     psql_db: crossplane
     shared_db: allprj
     main_repo: crossplane/crossplane
@@ -1985,11 +1987,12 @@ projects:
   openfga:
     order: 142
     name: OpenFGA
-    status: Sandbox
+    status: Incubating
     command_line:
       - 'openfga'
     start_date: 2022-06-09T00:00:00Z
     join_date: 2022-09-14T00:00:00Z
+    incubating_date: 2025-10-28T00:00:00Z
     psql_db: openfga
     shared_db: allprj
     main_repo: openfga/openfga
@@ -2024,11 +2027,12 @@ projects:
   lima:
     order: 145
     name: Lima
-    status: Sandbox
+    status: Incubating
     command_line:
       - 'lima-vm'
     start_date: 2021-08-02T00:00:00Z
     join_date: 2022-09-14T00:00:00Z
+    incubating_date: 2025-10-14T00:00:00Z
     psql_db: lima
     shared_db: allprj
     main_repo: lima-vm/lima
@@ -3071,12 +3075,12 @@ projects:
     name: Interlink
     status: Sandbox
     command_line:
-      - 'regexp:(?i)^interTwin-eu\/(.*interlink.*|vk-test-set)$'
+      - 'interlink-hq'
     start_date: 2023-07-05T00:00:00Z
     join_date: 2025-03-04T00:00:00Z
     psql_db: interlink
     shared_db: allprj
-    main_repo: interTwin-eu/interLink
+    main_repo: interlink-hq/interLink
     annotation_regexp: '^\d+\.\d+\.0$'
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
   cozystack:
@@ -3208,6 +3212,84 @@ projects:
     shared_db: allprj
     main_repo: modelpack/model-spec
     annotation_regexp: '^v\d+\.\d+\.\d+$'
+    files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
+  kserve:
+    order: 236
+    name: KServe
+    status: Incubating
+    command_line:
+      - kserve
+    start_date: 2019-03-27T00:00:00Z
+    join_date: 2025-09-29T00:00:00Z
+    psql_db: kserve
+    shared_db: allprj
+    main_repo: kserve/kserve
+    annotation_regexp: '^v\d+\.\d+\.0$'
+    files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
+  oauth2proxy:
+    order: 237
+    name: "Oauth2-Proxy"
+    status: Sandbox
+    command_line:
+      - oauth2-proxy
+    start_date: 2017-09-29T00:00:00Z
+    join_date: 2025-10-02T00:00:00Z
+    psql_db: oauth2proxy
+    shared_db: allprj
+    main_repo: oauth2-proxy/oauth2-proxy
+    annotation_regexp: '^v\d+\.\d+\.0$'
+    files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
+  oxia:
+    order: 238
+    name: Oxia
+    status: Sandbox
+    command_line:
+      - oxia-db
+    start_date: 2023-04-26T00:00:00Z
+    join_date: 2025-10-06T00:00:00Z
+    psql_db: oxia
+    shared_db: allprj
+    main_repo: oxia-db/oxia
+    annotation_regexp: '^v\d+\.\d+\.0$'
+    files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
+  holmesgpt:
+    order: 239
+    name: HolmesGPT
+    status: Sandbox
+    command_line:
+      - robusta-dev/holmesgpt,robusta-dev/homebrew-holmesgpt,robusta-dev/holmesgpt-community-toolsets
+    start_date: 2024-05-30T00:00:00Z
+    join_date: 2025-10-08T00:00:00Z
+    psql_db: holmesgpt
+    shared_db: allprj
+    main_repo: robusta-dev/holmesgpt
+    annotation_regexp: '^v\d+\.\d+\.0$'
+    files_skip_pattern: ''
+  cedarpolicy:
+    order: 240
+    name: "Cedar Policy"
+    status: Sandbox
+    command_line:
+      - cedar-policy
+    start_date: 2013-05-08T00:00:00Z
+    join_date: 2025-10-08T00:00:00Z
+    psql_db: cedarpolicy
+    shared_db: allprj
+    main_repo: cedar-policy/cedar
+    annotation_regexp: '^v\d+\.\d+\.0$'
+    files_skip_pattern: ''
+  dalec:
+    order: 241
+    name: Dalec
+    status: Sandbox
+    command_line:
+      - project-dalec
+    start_date: 2024-01-18T00:00:00Z
+    join_date: 2025-10-08T00:00:00Z
+    psql_db: dalec
+    shared_db: allprj
+    main_repo: project-dalec/dalec
+    annotation_regexp: '^v\d+\.\d+\.0$'
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
   opencontainers:
     order: 1200
@@ -3429,7 +3511,7 @@ projects:
          argoproj-labs,kube-vip,keycloak,oras-project,wasmCloud,project-akri,metallb,karmada-io,\
          clusternet,youki-dev,inclavare-containers,cilium,dapr,kubescape,inspektor-gadget,\
          open-cluster-management-io,vscode-kubernetes-tools,kubearmor,cncf-tags,meshery,\
-         meshery-extensions,knative,knative-sandbox,project-stacker,\
+         meshery-extensions,knative,knative-sandbox,project-stacker,kserve,oauth2-proxy,\
          confidential-containers,cncf/tag-app-delivery,knative-extensions,OpenFunction,clusterpedia-io,\
          Kuadrant,aeraki-mesh,open-feature,kubewarden,kubevela,openGemini,hexa-org,konveyor,\
          armadaproject,external-secrets,Serverless-Devs,devspace-sh,ContainerSSH,openfga,kubereboot,\
@@ -3438,20 +3520,17 @@ projects:
          krkn-chaos,kubeclipper-labs,buildpacks-community,project-copacetic,kube-logging,bpfman,\
          kanisterio,kcp-dev,kcl-lang,kube-burner,kuasar-io,kubestellar,easegress-io,xregistry,\
          spidernet-io,k8sgpt-ai,OpenMetrics,openmetrics,open-gitops,kubeslice,score-spec,\
-         connectrpc,kairos-io,kubean-io,koordinator-sh,radius-project,oscal-compass,\
+         connectrpc,kairos-io,kubean-io,koordinator-sh,radius-project,oscal-compass,interlink-hq,\
          loxilb-io,cartography-cncf,perses,ratify-project,Project-HAMi,shipwright-io,\
          flatcar,flatcar-linux,sermant-io,kmesh-net,ovn-org,ovn-kubernetes,prometheus-community,\
          tokenetes,spinframework,k0sproject,SlimPlanet,container2wasm,runmedev,cloudnative-pg,\
          Azure/Fleet-PRSE,Azure/fleet-networking,Azure/fleet,Azure/azure-rest-api-specs-fleet,\
          podman-desktop,containers/podman,containers/buildah,containers/skopeo,containers/netavark,\
          containers/aardvark-dns,containers/image,containers/storage,containers/common,\
-         containers/conmon,containers/podman-py,interTwin-eu/interLink,interTwin-eu/vk-test-set,\
-         interTwin-eu/interlink-jhub,interTwin-eu/interlink-slurm-plugin,cadence-workflow,\
-         interTwin-eu/interlink-docker-plugin,interTwin-eu/interlink-helm-chart,kagent-dev,\
-         interTwin-eu/interlink-monitoring-stack,interTwin-eu/interlink-htcondor-plugin,\
-         interTwin-eu/interlink-kueue-plugin,interTwin-eu/interlink-arc-plugin,urunc-dev,\
-         interTwin-eu/interlink-unicore-plugin,cozystack,kitops-ml,drasi-project,CloudNativeAI,\
-         hyperlight-dev,kgateway-dev,bootc-dev,composefs,kubefleet-dev,opentofu,modelpack"
+         containers/conmon,containers/podman-py,cadence-workflow,kagent-dev,urunc-dev,cozystack,\
+         kitops-ml,drasi-project,CloudNativeAI,hyperlight-dev,kgateway-dev,bootc-dev,composefs,\
+         kubefleet-dev,opentofu,modelpack,oxia-db,cedar-policy,project-dalec,robusta-dev/holmesgpt,\
+         robusta-dev/homebrew-holmesgpt,robusta-dev/holmesgpt-community-toolsets"
     start_date: 2014-01-01T00:00:00Z
     join_date: 2016-03-10T00:00:00Z
     psql_db: allprj
