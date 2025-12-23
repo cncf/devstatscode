@@ -257,7 +257,7 @@ func Structure(ctx *Ctx) {
 				"gha_repos_langs("+
 					"repo_name varchar(160) not null, "+
 					"lang_name varchar(60) not null, "+
-					"lang_loc int not null,"+
+					"lang_loc bigint not null,"+
 					"lang_perc double precision not null,"+
 					"dt {{tsnow}}, "+
 					"primary key(repo_name, lang_name))",
