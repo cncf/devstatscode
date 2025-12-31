@@ -176,6 +176,7 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index actors_affiliations_dt_from_idx on gha_actors_affiliations(dt_from)")
 		ExecSQLWithErr(c, ctx, "create index actors_affiliations_dt_to_idx on gha_actors_affiliations(dt_to)")
 		ExecSQLWithErr(c, ctx, "create index actors_affiliations_source_idx on gha_actors_affiliations(source)")
+		ExecSQLWithErr(c, ctx, "create index actors_affiliations_actor_from_to_idx on gha_actors_affiliations(actor_id, dt_from, dt_to)")
 	}
 
 	// gha_repos
