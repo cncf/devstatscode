@@ -241,6 +241,7 @@ func main() {
 	if len(os.Args) < 2 {
 		lib.Printf("Required SQL file name [param1 value1 [param2 value2 ...]]\n")
 		lib.Printf("Special replace 'qr' 'period,from,to' is used for {{period.alias.name}} replacements\n")
+		lib.Printf("Example: GHA2DB_QOUT=1 PG_DB=allprj runq metrics/shared/bus_factor.sql qr '1 week,,' {{exclude_bots}} \"not in ('')\"\n")
 		os.Exit(1)
 	}
 	ctx := runq(os.Args[1], os.Args[2:])
