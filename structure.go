@@ -39,16 +39,16 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index events_type_idx on gha_events(type)")
-		ExecSQLWithErr(c, ctx, "create index events_actor_id_idx on gha_events(actor_id)")
-		ExecSQLWithErr(c, ctx, "create index events_repo_id_idx on gha_events(repo_id)")
-		ExecSQLWithErr(c, ctx, "create index events_org_id_idx on gha_events(org_id)")
-		ExecSQLWithErr(c, ctx, "create index events_forkee_id_idx on gha_events(forkee_id)")
-		ExecSQLWithErr(c, ctx, "create index events_created_at_idx on gha_events(created_at)")
-		ExecSQLWithErr(c, ctx, "create index events_dup_actor_login_idx on gha_events(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index events_dup_repo_name_idx on gha_events(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index events_lower_dup_actor_login_idx on gha_events(lower(dup_actor_login))")
-		ExecSQLWithErr(c, ctx, "create index events_repo_name_created_at_idx on gha_events(repo_id, dup_repo_name, created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_type_idx on gha_events(type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_actor_id_idx on gha_events(actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_repo_id_idx on gha_events(repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_org_id_idx on gha_events(org_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_forkee_id_idx on gha_events(forkee_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_created_at_idx on gha_events(created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_dup_actor_login_idx on gha_events(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_dup_repo_name_idx on gha_events(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_lower_dup_actor_login_idx on gha_events(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_repo_name_created_at_idx on gha_events(repo_id, dup_repo_name, created_at)")
 	}
 
 	// gha_actors
@@ -80,17 +80,17 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index actors_id_idx on gha_actors(id)")
-		ExecSQLWithErr(c, ctx, "create index actors_login_idx on gha_actors(login)")
-		ExecSQLWithErr(c, ctx, "create index actors_lower_login_idx on gha_actors(lower(login))")
-		ExecSQLWithErr(c, ctx, "create index actors_name_idx on gha_actors(name)")
-		ExecSQLWithErr(c, ctx, "create index actors_country_id_idx on gha_actors(country_id)")
-		ExecSQLWithErr(c, ctx, "create index actors_sex_idx on gha_actors(sex)")
-		ExecSQLWithErr(c, ctx, "create index actors_sex_prob_idx on gha_actors(sex_prob)")
-		ExecSQLWithErr(c, ctx, "create index actors_tz_idx on gha_actors(tz)")
-		ExecSQLWithErr(c, ctx, "create index actors_tz_offset on gha_actors(tz_offset)")
-		ExecSQLWithErr(c, ctx, "create index actors_country_name_idx on gha_actors(country_name)")
-		ExecSQLWithErr(c, ctx, "create index actors_age_idx on gha_actors(age)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_id_idx on gha_actors(id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_login_idx on gha_actors(login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_lower_login_idx on gha_actors(lower(login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_name_idx on gha_actors(name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_country_id_idx on gha_actors(country_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_sex_idx on gha_actors(sex)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_sex_prob_idx on gha_actors(sex_prob)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_tz_idx on gha_actors(tz)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_tz_offset on gha_actors(tz_offset)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_country_name_idx on gha_actors(country_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_age_idx on gha_actors(age)")
 	}
 
 	// gha_actors_emails: this is filled by `import_affs` tool, that uses cncf/gitdm:github_users.json
@@ -110,8 +110,8 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index actors_emails_actor_id_idx on gha_actors_emails(actor_id)")
-		ExecSQLWithErr(c, ctx, "create index actors_emails_email_idx on gha_actors_emails(email)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_emails_actor_id_idx on gha_actors_emails(actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_emails_email_idx on gha_actors_emails(email)")
 	}
 
 	// gha_actors_names: this is filled by `ghapi2db` tool
@@ -131,8 +131,8 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index actors_names_actor_id_idx on gha_actors_names(actor_id)")
-		ExecSQLWithErr(c, ctx, "create index actors_names_name_idx on gha_actors_names(name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_names_actor_id_idx on gha_actors_names(actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_names_name_idx on gha_actors_names(name)")
 	}
 
 	// gha_companies: this is filled by `import_affs` tool, that uses cncf/gitdm:github_users.json
@@ -171,13 +171,13 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index actors_affiliations_actor_id_idx on gha_actors_affiliations(actor_id)")
-		ExecSQLWithErr(c, ctx, "create index actors_affiliations_company_name_idx on gha_actors_affiliations(company_name)")
-		ExecSQLWithErr(c, ctx, "create index actors_affiliations_original_company_name_idx on gha_actors_affiliations(original_company_name)")
-		ExecSQLWithErr(c, ctx, "create index actors_affiliations_dt_from_idx on gha_actors_affiliations(dt_from)")
-		ExecSQLWithErr(c, ctx, "create index actors_affiliations_dt_to_idx on gha_actors_affiliations(dt_to)")
-		ExecSQLWithErr(c, ctx, "create index actors_affiliations_source_idx on gha_actors_affiliations(source)")
-		ExecSQLWithErr(c, ctx, "create index actors_affiliations_actor_from_to_idx on gha_actors_affiliations(actor_id, dt_from, dt_to)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_affiliations_actor_id_idx on gha_actors_affiliations(actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_affiliations_company_name_idx on gha_actors_affiliations(company_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_affiliations_original_company_name_idx on gha_actors_affiliations(original_company_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_affiliations_dt_from_idx on gha_actors_affiliations(dt_from)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_affiliations_dt_to_idx on gha_actors_affiliations(dt_to)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_affiliations_source_idx on gha_actors_affiliations(source)")
+		ExecSQLWithErr(c, ctx, "create index if not exists actors_affiliations_actor_from_to_idx on gha_actors_affiliations(actor_id, dt_from, dt_to)")
 	}
 
 	// gha_repos
@@ -207,17 +207,17 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index repos_id_idx on gha_repos(id)")
-		ExecSQLWithErr(c, ctx, "create index repos_name_idx on gha_repos(name)")
-		ExecSQLWithErr(c, ctx, "create index repos_org_id_idx on gha_repos(org_id)")
-		ExecSQLWithErr(c, ctx, "create index repos_org_login_idx on gha_repos(org_login)")
-		ExecSQLWithErr(c, ctx, "create index repos_repo_group_idx on gha_repos(repo_group)")
-		ExecSQLWithErr(c, ctx, "create index repos_alias_idx on gha_repos(alias)")
-		ExecSQLWithErr(c, ctx, "create index repos_license_key_idx on gha_repos(license_key)")
-		ExecSQLWithErr(c, ctx, "create index repos_license_name_idx on gha_repos(license_name)")
-		ExecSQLWithErr(c, ctx, "create index repos_license_prob_idx on gha_repos(license_prob)")
-		ExecSQLWithErr(c, ctx, "create index repos_created_at_idx on gha_repos(created_at)")
-		ExecSQLWithErr(c, ctx, "create index repos_updated_at_idx on gha_repos(updated_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_id_idx on gha_repos(id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_name_idx on gha_repos(name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_org_id_idx on gha_repos(org_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_org_login_idx on gha_repos(org_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_repo_group_idx on gha_repos(repo_group)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_alias_idx on gha_repos(alias)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_license_key_idx on gha_repos(license_key)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_license_name_idx on gha_repos(license_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_license_prob_idx on gha_repos(license_prob)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_created_at_idx on gha_repos(created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_updated_at_idx on gha_repos(updated_at)")
 	}
 
 	// gha_repo_groups
@@ -240,12 +240,12 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index repo_groups_id_idx on gha_repo_groups(id)")
-		ExecSQLWithErr(c, ctx, "create index repo_groups_name_idx on gha_repo_groups(name)")
-		ExecSQLWithErr(c, ctx, "create index repo_groups_repo_group_idx on gha_repo_groups(repo_group)")
-		ExecSQLWithErr(c, ctx, "create index repo_groups_org_id_idx on gha_repo_groups(org_id)")
-		ExecSQLWithErr(c, ctx, "create index repo_groups_org_login_idx on gha_repo_groups(org_login)")
-		ExecSQLWithErr(c, ctx, "create index repo_groups_alias_idx on gha_repo_groups(alias)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repo_groups_id_idx on gha_repo_groups(id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repo_groups_name_idx on gha_repo_groups(name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repo_groups_repo_group_idx on gha_repo_groups(repo_group)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repo_groups_org_id_idx on gha_repo_groups(org_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repo_groups_org_login_idx on gha_repo_groups(org_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repo_groups_alias_idx on gha_repo_groups(alias)")
 	}
 
 	// gha_repos_langs
@@ -267,10 +267,10 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index repos_langs_narepo_me_idx on gha_repos_langs(repo_name)")
-		ExecSQLWithErr(c, ctx, "create index repos_langs_lang_name_idx on gha_repos_langs(lang_name)")
-		ExecSQLWithErr(c, ctx, "create index repos_langs_lang_loc_idx on gha_repos_langs(lang_loc)")
-		ExecSQLWithErr(c, ctx, "create index repos_langs_lang_perc_idx on gha_repos_langs(lang_perc)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_langs_narepo_me_idx on gha_repos_langs(repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_langs_lang_name_idx on gha_repos_langs(lang_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_langs_lang_loc_idx on gha_repos_langs(lang_loc)")
+		ExecSQLWithErr(c, ctx, "create index if not exists repos_langs_lang_perc_idx on gha_repos_langs(lang_perc)")
 	}
 
 	// gha_orgs
@@ -293,7 +293,7 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index orgs_login_idx on gha_orgs(login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists orgs_login_idx on gha_orgs(login)")
 	}
 
 	// gha_payloads
@@ -346,22 +346,22 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index payloads_action_idx on gha_payloads(action)")
-		ExecSQLWithErr(c, ctx, "create index payloads_head_idx on gha_payloads(head)")
-		ExecSQLWithErr(c, ctx, "create index payloads_issue_id_idx on gha_payloads(issue_id)")
-		ExecSQLWithErr(c, ctx, "create index payloads_pull_request_id_idx on gha_payloads(issue_id)")
-		ExecSQLWithErr(c, ctx, "create index payloads_comment_id_idx on gha_payloads(comment_id)")
-		ExecSQLWithErr(c, ctx, "create index payloads_ref_type_idx on gha_payloads(ref_type)")
-		ExecSQLWithErr(c, ctx, "create index payloads_forkee_id_idx on gha_payloads(forkee_id)")
-		ExecSQLWithErr(c, ctx, "create index payloads_release_id_idx on gha_payloads(release_id)")
-		ExecSQLWithErr(c, ctx, "create index payloads_member_id_idx on gha_payloads(member_id)")
-		ExecSQLWithErr(c, ctx, "create index payloads_commit_idx on gha_payloads(commit)")
-		ExecSQLWithErr(c, ctx, "create index payloads_dup_actor_id_idx on gha_payloads(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index payloads_dup_actor_login_idx on gha_payloads(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index payloads_dup_repo_id_idx on gha_payloads(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index payloads_dup_repo_name_idx on gha_payloads(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index payloads_dup_type_idx on gha_payloads(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index payloads_dup_created_at_idx on gha_payloads(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_action_idx on gha_payloads(action)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_head_idx on gha_payloads(head)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_issue_id_idx on gha_payloads(issue_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_pull_request_id_idx on gha_payloads(issue_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_comment_id_idx on gha_payloads(comment_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_ref_type_idx on gha_payloads(ref_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_forkee_id_idx on gha_payloads(forkee_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_release_id_idx on gha_payloads(release_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_member_id_idx on gha_payloads(member_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_commit_idx on gha_payloads(commit)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_dup_actor_id_idx on gha_payloads(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_dup_actor_login_idx on gha_payloads(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_dup_repo_id_idx on gha_payloads(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_dup_repo_name_idx on gha_payloads(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_dup_type_idx on gha_payloads(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists payloads_dup_created_at_idx on gha_payloads(dup_created_at)")
 	}
 
 	// gha_commits
@@ -407,30 +407,30 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index commits_event_id_idx on gha_commits(event_id)")
-		ExecSQLWithErr(c, ctx, "create index commits_sha_idx on gha_commits(sha)")
-		ExecSQLWithErr(c, ctx, "create index commits_loc_added_idx on gha_commits(loc_added)")
-		ExecSQLWithErr(c, ctx, "create index commits_loc_removed_idx on gha_commits(loc_removed)")
-		ExecSQLWithErr(c, ctx, "create index commits_files_changed_idx on gha_commits(files_changed)")
-		ExecSQLWithErr(c, ctx, "create index commits_author_name_idx on gha_commits(author_name)")
-		ExecSQLWithErr(c, ctx, "create index commits_author_email_idx on gha_commits(author_email)")
-		ExecSQLWithErr(c, ctx, "create index commits_committers_name_idx on gha_commits(committer_name)")
-		ExecSQLWithErr(c, ctx, "create index commits_committers_email_idx on gha_commits(committer_email)")
-		ExecSQLWithErr(c, ctx, "create index commits_encrypted_email_idx on gha_commits(encrypted_email)")
-		ExecSQLWithErr(c, ctx, "create index commits_dup_actor_id_idx on gha_commits(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index commits_dup_actor_login_idx on gha_commits(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index commits_dup_repo_id_idx on gha_commits(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index commits_dup_repo_name_idx on gha_commits(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index commits_dup_type_idx on gha_commits(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index commits_dup_created_at_idx on gha_commits(dup_created_at)")
-		ExecSQLWithErr(c, ctx, "create index commits_author_id_idx on gha_commits(author_id)")
-		ExecSQLWithErr(c, ctx, "create index commits_committer_id_idx on gha_commits(committer_id)")
-		ExecSQLWithErr(c, ctx, "create index commits_dup_author_login_idx on gha_commits(dup_author_login)")
-		ExecSQLWithErr(c, ctx, "create index commits_dup_committer_login_idx on gha_commits(dup_committer_login)")
-		ExecSQLWithErr(c, ctx, "create index commits_lower_dup_actor_login_idx on gha_commits(lower(dup_actor_login))")
-		ExecSQLWithErr(c, ctx, "create index commits_lower_dup_author_login_idx on gha_commits(lower(dup_author_login))")
-		ExecSQLWithErr(c, ctx, "create index commits_lower_dup_committer_login_idx on gha_commits(lower(dup_committer_login))")
-		ExecSQLWithErr(c, ctx, "create index commits_repo_name_created_at_idx on gha_commits(dup_repo_id, dup_repo_name, dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_event_id_idx on gha_commits(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_sha_idx on gha_commits(sha)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_loc_added_idx on gha_commits(loc_added)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_loc_removed_idx on gha_commits(loc_removed)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_files_changed_idx on gha_commits(files_changed)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_author_name_idx on gha_commits(author_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_author_email_idx on gha_commits(author_email)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_committers_name_idx on gha_commits(committer_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_committers_email_idx on gha_commits(committer_email)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_encrypted_email_idx on gha_commits(encrypted_email)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_dup_actor_id_idx on gha_commits(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_dup_actor_login_idx on gha_commits(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_dup_repo_id_idx on gha_commits(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_dup_repo_name_idx on gha_commits(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_dup_type_idx on gha_commits(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_dup_created_at_idx on gha_commits(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_author_id_idx on gha_commits(author_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_committer_id_idx on gha_commits(committer_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_dup_author_login_idx on gha_commits(dup_author_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_dup_committer_login_idx on gha_commits(dup_committer_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_lower_dup_actor_login_idx on gha_commits(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_lower_dup_author_login_idx on gha_commits(lower(dup_author_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_lower_dup_committer_login_idx on gha_commits(lower(dup_committer_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_repo_name_created_at_idx on gha_commits(dup_repo_id, dup_repo_name, dup_created_at)")
 	}
 
 	// gha_commits_roles - artificial table, created from commit trailers
@@ -457,16 +457,16 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index commits_roles_sha_idx on gha_commits_roles(sha)")
-		ExecSQLWithErr(c, ctx, "create index commits_roles_event_id_idx on gha_commits_roles(event_id)")
-		ExecSQLWithErr(c, ctx, "create index commits_roles_role_idx on gha_commits_roles(role)")
-		ExecSQLWithErr(c, ctx, "create index commits_roles_actor_id_idx on gha_commits_roles(actor_id)")
-		ExecSQLWithErr(c, ctx, "create index commits_roles_actor_login_idx on gha_commits_roles(actor_login)")
-		ExecSQLWithErr(c, ctx, "create index commits_roles_actor_name_idx on gha_commits_roles(actor_name)")
-		ExecSQLWithErr(c, ctx, "create index commits_roles_actor_email_idx on gha_commits_roles(actor_email)")
-		ExecSQLWithErr(c, ctx, "create index commits_roles_dup_repo_id_idx on gha_commits_roles(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index commits_roles_dup_repo_name_idx on gha_commits_roles(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index commits_roles_dup_created_at_idx on gha_commits_roles(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_roles_sha_idx on gha_commits_roles(sha)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_roles_event_id_idx on gha_commits_roles(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_roles_role_idx on gha_commits_roles(role)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_roles_actor_id_idx on gha_commits_roles(actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_roles_actor_login_idx on gha_commits_roles(actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_roles_actor_name_idx on gha_commits_roles(actor_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_roles_actor_email_idx on gha_commits_roles(actor_email)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_roles_dup_repo_id_idx on gha_commits_roles(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_roles_dup_repo_name_idx on gha_commits_roles(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_roles_dup_created_at_idx on gha_commits_roles(dup_created_at)")
 	}
 
 	// gha_pages
@@ -498,14 +498,14 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index pages_event_id_idx on gha_pages(event_id)")
-		ExecSQLWithErr(c, ctx, "create index pages_action_idx on gha_pages(action)")
-		ExecSQLWithErr(c, ctx, "create index pages_dup_actor_id_idx on gha_pages(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index pages_dup_actor_login_idx on gha_pages(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index pages_dup_repo_id_idx on gha_pages(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index pages_dup_repo_name_idx on gha_pages(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index pages_dup_type_idx on gha_pages(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index pages_dup_created_at_idx on gha_pages(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pages_event_id_idx on gha_pages(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pages_action_idx on gha_pages(action)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pages_dup_actor_id_idx on gha_pages(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pages_dup_actor_login_idx on gha_pages(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pages_dup_repo_id_idx on gha_pages(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pages_dup_repo_name_idx on gha_pages(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pages_dup_type_idx on gha_pages(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pages_dup_created_at_idx on gha_pages(dup_created_at)")
 	}
 
 	// gha_comments
@@ -546,27 +546,27 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index comments_id_idx on gha_comments(id)")
-		ExecSQLWithErr(c, ctx, "create index comments_event_id_idx on gha_comments(event_id)")
-		ExecSQLWithErr(c, ctx, "create index comments_created_at_idx on gha_comments(created_at)")
-		ExecSQLWithErr(c, ctx, "create index comments_updated_at_idx on gha_comments(updated_at)")
-		ExecSQLWithErr(c, ctx, "create index comments_user_id_idx on gha_comments(user_id)")
-		ExecSQLWithErr(c, ctx, "create index comments_commit_id_idx on gha_comments(commit_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_id_idx on gha_comments(id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_event_id_idx on gha_comments(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_created_at_idx on gha_comments(created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_updated_at_idx on gha_comments(updated_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_user_id_idx on gha_comments(user_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_commit_id_idx on gha_comments(commit_id)")
 		ExecSQLWithErr(
 			c,
 			ctx,
-			"create index comments_pull_request_review_id_idx on gha_comments(pull_request_review_id)",
+			"create index if not exists comments_pull_request_review_id_idx on gha_comments(pull_request_review_id)",
 		)
-		ExecSQLWithErr(c, ctx, "create index comments_dup_actor_id_idx on gha_comments(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index comments_dup_actor_login_idx on gha_comments(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index comments_dup_repo_id_idx on gha_comments(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index comments_dup_repo_name_idx on gha_comments(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index comments_dup_type_idx on gha_comments(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index comments_dup_created_at_idx on gha_comments(dup_created_at)")
-		ExecSQLWithErr(c, ctx, "create index comments_dup_user_login_idx on gha_comments(dup_user_login)")
-		ExecSQLWithErr(c, ctx, "create index comments_lower_dup_actor_login_idx on gha_comments(lower(dup_actor_login))")
-		ExecSQLWithErr(c, ctx, "create index comments_lower_dup_user_login_idx on gha_comments(lower(dup_user_login))")
-		ExecSQLWithErr(c, ctx, "create index comments_repo_name_created_at_idx on gha_comments(dup_repo_id, dup_repo_name, created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_dup_actor_id_idx on gha_comments(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_dup_actor_login_idx on gha_comments(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_dup_repo_id_idx on gha_comments(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_dup_repo_name_idx on gha_comments(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_dup_type_idx on gha_comments(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_dup_created_at_idx on gha_comments(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_dup_user_login_idx on gha_comments(dup_user_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_lower_dup_actor_login_idx on gha_comments(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_lower_dup_user_login_idx on gha_comments(lower(dup_user_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists comments_repo_name_created_at_idx on gha_comments(dup_repo_id, dup_repo_name, created_at)")
 	}
 
 	// gha_issues
@@ -624,29 +624,29 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index issues_id_idx on gha_issues(id)")
-		ExecSQLWithErr(c, ctx, "create index issues_event_id_idx on gha_issues(event_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_assignee_id_idx on gha_issues(assignee_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_created_at_idx on gha_issues(created_at)")
-		ExecSQLWithErr(c, ctx, "create index issues_updated_at_idx on gha_issues(updated_at)")
-		ExecSQLWithErr(c, ctx, "create index issues_closed_at_idx on gha_issues(closed_at)")
-		ExecSQLWithErr(c, ctx, "create index issues_milestone_id_idx on gha_issues(milestone_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_state_idx on gha_issues(state)")
-		ExecSQLWithErr(c, ctx, "create index issues_number_idx on gha_issues(number)")
-		ExecSQLWithErr(c, ctx, "create index issues_user_id_idx on gha_issues(user_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_is_pull_request_idx on gha_issues(is_pull_request)")
-		ExecSQLWithErr(c, ctx, "create index issues_dup_actor_id_idx on gha_issues(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_dup_actor_login_idx on gha_issues(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index issues_dup_repo_id_idx on gha_issues(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_dup_repo_name_idx on gha_issues(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index issues_dup_type_idx on gha_issues(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index issues_dup_created_at_idx on gha_issues(dup_created_at)")
-		ExecSQLWithErr(c, ctx, "create index issues_dup_user_login_idx on gha_issues(dup_user_login)")
-		ExecSQLWithErr(c, ctx, "create index issues_dupn_assignee_login_idx on gha_issues(dupn_assignee_login)")
-		ExecSQLWithErr(c, ctx, "create index issues_lower_dup_actor_login_idx on gha_issues(lower(dup_actor_login))")
-		ExecSQLWithErr(c, ctx, "create index issues_lower_dup_user_login_idx on gha_issues(lower(dup_user_login))")
-		ExecSQLWithErr(c, ctx, "create index issues_repo_created_at_issues_idx on gha_issues(dup_repo_id, dup_repo_name, created_at) where is_pull_request = false")
-		ExecSQLWithErr(c, ctx, "create index issues_repo_created_at_prs_idx on gha_issues(dup_repo_id, dup_repo_name, created_at) where is_pull_request = true")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_id_idx on gha_issues(id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_event_id_idx on gha_issues(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_assignee_id_idx on gha_issues(assignee_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_created_at_idx on gha_issues(created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_updated_at_idx on gha_issues(updated_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_closed_at_idx on gha_issues(closed_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_milestone_id_idx on gha_issues(milestone_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_state_idx on gha_issues(state)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_number_idx on gha_issues(number)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_user_id_idx on gha_issues(user_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_is_pull_request_idx on gha_issues(is_pull_request)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_dup_actor_id_idx on gha_issues(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_dup_actor_login_idx on gha_issues(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_dup_repo_id_idx on gha_issues(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_dup_repo_name_idx on gha_issues(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_dup_type_idx on gha_issues(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_dup_created_at_idx on gha_issues(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_dup_user_login_idx on gha_issues(dup_user_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_dupn_assignee_login_idx on gha_issues(dupn_assignee_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_lower_dup_actor_login_idx on gha_issues(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_lower_dup_user_login_idx on gha_issues(lower(dup_user_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_repo_created_at_issues_idx on gha_issues(dup_repo_id, dup_repo_name, created_at) where is_pull_request = false")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_repo_created_at_prs_idx on gha_issues(dup_repo_id, dup_repo_name, created_at) where is_pull_request = true")
 	}
 
 	// gha_milestones
@@ -686,19 +686,19 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index milestones_id_idx on gha_milestones(id)")
-		ExecSQLWithErr(c, ctx, "create index milestones_event_id_idx on gha_milestones(event_id)")
-		ExecSQLWithErr(c, ctx, "create index milestones_created_at_idx on gha_milestones(created_at)")
-		ExecSQLWithErr(c, ctx, "create index milestones_updated_at_idx on gha_milestones(updated_at)")
-		ExecSQLWithErr(c, ctx, "create index milestones_creator_id_idx on gha_milestones(creator_id)")
-		ExecSQLWithErr(c, ctx, "create index milestones_state_idx on gha_milestones(state)")
-		ExecSQLWithErr(c, ctx, "create index milestones_dup_actor_id_idx on gha_milestones(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index milestones_dup_actor_login_idx on gha_milestones(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index milestones_dup_repo_id_idx on gha_milestones(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index milestones_dup_repo_name_idx on gha_milestones(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index milestones_dup_type_idx on gha_milestones(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index milestones_dup_created_at_idx on gha_milestones(dup_created_at)")
-		ExecSQLWithErr(c, ctx, "create index milestones_dupn_creator_login_idx on gha_milestones(dupn_creator_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_id_idx on gha_milestones(id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_event_id_idx on gha_milestones(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_created_at_idx on gha_milestones(created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_updated_at_idx on gha_milestones(updated_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_creator_id_idx on gha_milestones(creator_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_state_idx on gha_milestones(state)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_dup_actor_id_idx on gha_milestones(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_dup_actor_login_idx on gha_milestones(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_dup_repo_id_idx on gha_milestones(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_dup_repo_name_idx on gha_milestones(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_dup_type_idx on gha_milestones(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_dup_created_at_idx on gha_milestones(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists milestones_dupn_creator_login_idx on gha_milestones(dupn_creator_login)")
 	}
 
 	// gha_labels
@@ -742,18 +742,18 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index labels_name_idx on gha_labels(name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists labels_name_idx on gha_labels(name)")
 
 		// gha_issues_labels
-		ExecSQLWithErr(c, ctx, "create index issues_labels_dup_actor_id_idx on gha_issues_labels(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_labels_dup_actor_login_idx on gha_issues_labels(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index issues_labels_dup_repo_id_idx on gha_issues_labels(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_labels_dup_repo_name_idx on gha_issues_labels(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index issues_labels_dup_type_idx on gha_issues_labels(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index issues_labels_dup_created_at_idx on gha_issues_labels(dup_created_at)")
-		ExecSQLWithErr(c, ctx, "create index issues_labels_dup_issue_number_idx on gha_issues_labels(dup_issue_number)")
-		ExecSQLWithErr(c, ctx, "create index issues_labels_dup_label_name_idx on gha_issues_labels(dup_label_name)")
-		ExecSQLWithErr(c, ctx, "create index issues_labels_lower_dup_actor_login_idx on gha_issues_labels(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_dup_actor_id_idx on gha_issues_labels(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_dup_actor_login_idx on gha_issues_labels(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_dup_repo_id_idx on gha_issues_labels(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_dup_repo_name_idx on gha_issues_labels(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_dup_type_idx on gha_issues_labels(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_dup_created_at_idx on gha_issues_labels(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_dup_issue_number_idx on gha_issues_labels(dup_issue_number)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_dup_label_name_idx on gha_issues_labels(dup_label_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_lower_dup_actor_login_idx on gha_issues_labels(lower(dup_actor_login))")
 	}
 
 	// gha_forkees
@@ -804,19 +804,19 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index forkees_event_id_idx on gha_forkees(event_id)")
-		ExecSQLWithErr(c, ctx, "create index forkees_owner_id_idx on gha_forkees(owner_id)")
-		ExecSQLWithErr(c, ctx, "create index forkees_created_at_idx on gha_forkees(created_at)")
-		ExecSQLWithErr(c, ctx, "create index forkees_updated_at_idx on gha_forkees(updated_at)")
-		ExecSQLWithErr(c, ctx, "create index forkees_dup_actor_id_idx on gha_forkees(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index forkees_dup_actor_login_idx on gha_forkees(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index forkees_dup_repo_id_idx on gha_forkees(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index forkees_dup_repo_name_idx on gha_forkees(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index forkees_dup_type_idx on gha_forkees(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index forkees_dup_created_at_idx on gha_forkees(dup_created_at)")
-		ExecSQLWithErr(c, ctx, "create index forkees_dup_owner_login_idx on gha_forkees(dup_owner_login)")
-		ExecSQLWithErr(c, ctx, "create index forkees_language_idx on gha_forkees(language)")
-		ExecSQLWithErr(c, ctx, "create index forkees_organization_idx on gha_forkees(organization)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_event_id_idx on gha_forkees(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_owner_id_idx on gha_forkees(owner_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_created_at_idx on gha_forkees(created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_updated_at_idx on gha_forkees(updated_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_dup_actor_id_idx on gha_forkees(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_dup_actor_login_idx on gha_forkees(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_dup_repo_id_idx on gha_forkees(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_dup_repo_name_idx on gha_forkees(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_dup_type_idx on gha_forkees(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_dup_created_at_idx on gha_forkees(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_dup_owner_login_idx on gha_forkees(dup_owner_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_language_idx on gha_forkees(language)")
+		ExecSQLWithErr(c, ctx, "create index if not exists forkees_organization_idx on gha_forkees(organization)")
 	}
 
 	// gha_releases
@@ -869,16 +869,16 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index releases_event_id_idx on gha_releases(event_id)")
-		ExecSQLWithErr(c, ctx, "create index releases_author_id_idx on gha_releases(author_id)")
-		ExecSQLWithErr(c, ctx, "create index releases_created_at_idx on gha_releases(created_at)")
-		ExecSQLWithErr(c, ctx, "create index releases_dup_actor_id_idx on gha_releases(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index releases_dup_actor_login_idx on gha_releases(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index releases_dup_repo_id_idx on gha_releases(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index releases_dup_repo_name_idx on gha_releases(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index releases_dup_type_idx on gha_releases(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index releases_dup_created_at_idx on gha_releases(dup_created_at)")
-		ExecSQLWithErr(c, ctx, "create index releases_dup_author_login_idx on gha_releases(dup_author_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists releases_event_id_idx on gha_releases(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists releases_author_id_idx on gha_releases(author_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists releases_created_at_idx on gha_releases(created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists releases_dup_actor_id_idx on gha_releases(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists releases_dup_actor_login_idx on gha_releases(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists releases_dup_repo_id_idx on gha_releases(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists releases_dup_repo_name_idx on gha_releases(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists releases_dup_type_idx on gha_releases(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists releases_dup_created_at_idx on gha_releases(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists releases_dup_author_login_idx on gha_releases(dup_author_login)")
 	}
 
 	// gha_assets
@@ -916,19 +916,19 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index assets_event_id_idx on gha_assets(event_id)")
-		ExecSQLWithErr(c, ctx, "create index assets_uploader_id_idx on gha_assets(uploader_id)")
-		ExecSQLWithErr(c, ctx, "create index assets_content_type_idx on gha_assets(content_type)")
-		ExecSQLWithErr(c, ctx, "create index assets_state_idx on gha_assets(state)")
-		ExecSQLWithErr(c, ctx, "create index assets_created_at_idx on gha_assets(created_at)")
-		ExecSQLWithErr(c, ctx, "create index assets_updated_at_idx on gha_assets(updated_at)")
-		ExecSQLWithErr(c, ctx, "create index assets_dup_actor_id_idx on gha_assets(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index assets_dup_actor_login_idx on gha_assets(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index assets_dup_repo_id_idx on gha_assets(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index assets_dup_repo_name_idx on gha_assets(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index assets_dup_type_idx on gha_assets(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index assets_dup_created_at_idx on gha_assets(dup_created_at)")
-		ExecSQLWithErr(c, ctx, "create index assets_dup_uploader_login_idx on gha_assets(dup_uploader_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_event_id_idx on gha_assets(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_uploader_id_idx on gha_assets(uploader_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_content_type_idx on gha_assets(content_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_state_idx on gha_assets(state)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_created_at_idx on gha_assets(created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_updated_at_idx on gha_assets(updated_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_dup_actor_id_idx on gha_assets(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_dup_actor_login_idx on gha_assets(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_dup_repo_id_idx on gha_assets(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_dup_repo_name_idx on gha_assets(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_dup_type_idx on gha_assets(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_dup_created_at_idx on gha_assets(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists assets_dup_uploader_login_idx on gha_assets(dup_uploader_login)")
 	}
 
 	// gha_pull_requests
@@ -1016,33 +1016,33 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index pull_requests_event_id_idx on gha_pull_requests(event_id)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_id_idx on gha_pull_requests(id)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_user_id_idx on gha_pull_requests(user_id)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_base_sha_idx on gha_pull_requests(base_sha)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_head_sha_idx on gha_pull_requests(head_sha)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_merged_by_id_idx on gha_pull_requests(merged_by_id)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_assignee_id_idx on gha_pull_requests(assignee_id)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_milestone_id_idx on gha_pull_requests(milestone_id)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_state_idx on gha_pull_requests(state)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_number_idx on gha_pull_requests(number)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_created_at_idx on gha_pull_requests(created_at)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_updated_at_idx on gha_pull_requests(updated_at)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_closed_at_idx on gha_pull_requests(closed_at)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_merged_at_idx on gha_pull_requests(merged_at)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_dup_actor_id_idx on gha_pull_requests(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_dup_actor_login_idx on gha_pull_requests(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_dup_repo_id_idx on gha_pull_requests(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_dup_repo_name_idx on gha_pull_requests(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_dup_type_idx on gha_pull_requests(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_dup_created_at_idx on gha_pull_requests(dup_created_at)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_dup_user_login_idx on gha_pull_requests(dup_user_login)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_dupn_assignee_login_idx on gha_pull_requests(dupn_assignee_login)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_dupn_merged_by_login_idx on gha_pull_requests(dupn_merged_by_login)")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_lower_dup_actor_login_idx on gha_pull_requests(lower(dup_actor_login))")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_lower_dup_user_login_idx on gha_pull_requests(lower(dup_user_login))")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_lower_dupn_merged_by_login_idx on gha_pull_requests(lower(dupn_merged_by_login))")
-		ExecSQLWithErr(c, ctx, "create index pull_requests_repo_merged_at_idx on gha_pull_requests(dup_repo_id, dup_repo_name, merged_at) where merged_at is not null")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_event_id_idx on gha_pull_requests(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_id_idx on gha_pull_requests(id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_user_id_idx on gha_pull_requests(user_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_base_sha_idx on gha_pull_requests(base_sha)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_head_sha_idx on gha_pull_requests(head_sha)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_merged_by_id_idx on gha_pull_requests(merged_by_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_assignee_id_idx on gha_pull_requests(assignee_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_milestone_id_idx on gha_pull_requests(milestone_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_state_idx on gha_pull_requests(state)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_number_idx on gha_pull_requests(number)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_created_at_idx on gha_pull_requests(created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_updated_at_idx on gha_pull_requests(updated_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_closed_at_idx on gha_pull_requests(closed_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_merged_at_idx on gha_pull_requests(merged_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_dup_actor_id_idx on gha_pull_requests(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_dup_actor_login_idx on gha_pull_requests(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_dup_repo_id_idx on gha_pull_requests(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_dup_repo_name_idx on gha_pull_requests(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_dup_type_idx on gha_pull_requests(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_dup_created_at_idx on gha_pull_requests(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_dup_user_login_idx on gha_pull_requests(dup_user_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_dupn_assignee_login_idx on gha_pull_requests(dupn_assignee_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_dupn_merged_by_login_idx on gha_pull_requests(dupn_merged_by_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_lower_dup_actor_login_idx on gha_pull_requests(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_lower_dup_user_login_idx on gha_pull_requests(lower(dup_user_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_lower_dupn_merged_by_login_idx on gha_pull_requests(lower(dupn_merged_by_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_repo_merged_at_idx on gha_pull_requests(dup_repo_id, dup_repo_name, merged_at) where merged_at is not null")
 	}
 
 	// gha_branches
@@ -1072,13 +1072,13 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index branches_event_id_idx on gha_branches(event_id)")
-		ExecSQLWithErr(c, ctx, "create index branches_user_id_idx on gha_branches(user_id)")
-		ExecSQLWithErr(c, ctx, "create index branches_repo_id_idx on gha_branches(repo_id)")
-		ExecSQLWithErr(c, ctx, "create index branches_dupn_user_login_idx on gha_branches(dupn_user_login)")
-		ExecSQLWithErr(c, ctx, "create index branches_dupn_forkee_name_idx on gha_branches(dupn_forkee_name)")
-		ExecSQLWithErr(c, ctx, "create index branches_dup_type_idx on gha_branches(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index branches_dup_created_at_idx on gha_branches(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists branches_event_id_idx on gha_branches(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists branches_user_id_idx on gha_branches(user_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists branches_repo_id_idx on gha_branches(repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists branches_dupn_user_login_idx on gha_branches(dupn_user_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists branches_dupn_forkee_name_idx on gha_branches(dupn_forkee_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists branches_dup_type_idx on gha_branches(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists branches_dup_created_at_idx on gha_branches(dup_created_at)")
 	}
 
 	// gha_teams
@@ -1120,16 +1120,16 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index teams_event_id_idx on gha_teams(event_id)")
-		ExecSQLWithErr(c, ctx, "create index teams_name_idx on gha_teams(name)")
-		ExecSQLWithErr(c, ctx, "create index teams_slug_idx on gha_teams(slug)")
-		ExecSQLWithErr(c, ctx, "create index teams_permission_idx on gha_teams(permission)")
-		ExecSQLWithErr(c, ctx, "create index teams_dup_actor_id_idx on gha_teams(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index teams_dup_actor_login_idx on gha_teams(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index teams_dup_repo_id_idx on gha_teams(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index teams_dup_repo_name_idx on gha_teams(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index teams_dup_type_idx on gha_teams(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index teams_dup_created_at_idx on gha_teams(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists teams_event_id_idx on gha_teams(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists teams_name_idx on gha_teams(name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists teams_slug_idx on gha_teams(slug)")
+		ExecSQLWithErr(c, ctx, "create index if not exists teams_permission_idx on gha_teams(permission)")
+		ExecSQLWithErr(c, ctx, "create index if not exists teams_dup_actor_id_idx on gha_teams(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists teams_dup_actor_login_idx on gha_teams(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists teams_dup_repo_id_idx on gha_teams(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists teams_dup_repo_name_idx on gha_teams(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists teams_dup_type_idx on gha_teams(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists teams_dup_created_at_idx on gha_teams(dup_created_at)")
 	}
 
 	// gha_reviews
@@ -1170,19 +1170,19 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index reviews_event_id_idx on gha_reviews(event_id)")
-		ExecSQLWithErr(c, ctx, "create index reviews_submitted_at_idx on gha_reviews(submitted_at)")
-		ExecSQLWithErr(c, ctx, "create index reviews_user_id_idx on gha_reviews(user_id)")
-		ExecSQLWithErr(c, ctx, "create index reviews_commit_id_idx on gha_reviews(commit_id)")
-		ExecSQLWithErr(c, ctx, "create index reviews_dup_actor_id_idx on gha_reviews(dup_actor_id)")
-		ExecSQLWithErr(c, ctx, "create index reviews_dup_actor_login_idx on gha_reviews(dup_actor_login)")
-		ExecSQLWithErr(c, ctx, "create index reviews_dup_repo_id_idx on gha_reviews(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index reviews_dup_repo_name_idx on gha_reviews(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index reviews_dup_type_idx on gha_reviews(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index reviews_dup_user_login_idx on gha_reviews(dup_user_login)")
-		ExecSQLWithErr(c, ctx, "create index reviews_dup_created_at_idx on gha_reviews(dup_created_at)")
-		ExecSQLWithErr(c, ctx, "create index reviews_lower_dup_actor_login_idx on gha_reviews(lower(dup_actor_login))")
-		ExecSQLWithErr(c, ctx, "create index reviews_lower_dup_user_login_idx on gha_reviews(lower(dup_user_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_event_id_idx on gha_reviews(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_submitted_at_idx on gha_reviews(submitted_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_user_id_idx on gha_reviews(user_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_commit_id_idx on gha_reviews(commit_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_dup_actor_id_idx on gha_reviews(dup_actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_dup_actor_login_idx on gha_reviews(dup_actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_dup_repo_id_idx on gha_reviews(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_dup_repo_name_idx on gha_reviews(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_dup_type_idx on gha_reviews(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_dup_user_login_idx on gha_reviews(dup_user_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_dup_created_at_idx on gha_reviews(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_lower_dup_actor_login_idx on gha_reviews(lower(dup_actor_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists reviews_lower_dup_user_login_idx on gha_reviews(lower(dup_user_login))")
 	}
 
 	// Logs table (recently this table moved to separate database `devstats` to separate logs
@@ -1205,11 +1205,11 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index logs_id_idx on gha_logs(id)")
-		ExecSQLWithErr(c, ctx, "create index logs_dt_idx on gha_logs(dt)")
-		ExecSQLWithErr(c, ctx, "create index logs_prog_idx on gha_logs(prog)")
-		ExecSQLWithErr(c, ctx, "create index logs_proj_idx on gha_logs(proj)")
-		ExecSQLWithErr(c, ctx, "create index logs_run_dt_idx on gha_logs(run_dt)")
+		ExecSQLWithErr(c, ctx, "create index if not exists logs_id_idx on gha_logs(id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists logs_dt_idx on gha_logs(dt)")
+		ExecSQLWithErr(c, ctx, "create index if not exists logs_prog_idx on gha_logs(prog)")
+		ExecSQLWithErr(c, ctx, "create index if not exists logs_proj_idx on gha_logs(proj)")
+		ExecSQLWithErr(c, ctx, "create index if not exists logs_run_dt_idx on gha_logs(run_dt)")
 	}
 
 	// `Commit - file list it refers to` mapping table, used by `get_repos` tool
@@ -1265,25 +1265,25 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index commits_files_sha_idx on gha_commits_files(sha)")
-		ExecSQLWithErr(c, ctx, "create index commits_files_path_idx on gha_commits_files(path)")
-		ExecSQLWithErr(c, ctx, "create index commits_files_ext_idx on gha_commits_files(ext)")
-		ExecSQLWithErr(c, ctx, "create index commits_files_size_idx on gha_commits_files(size)")
-		ExecSQLWithErr(c, ctx, "create index commits_files_dt_idx on gha_commits_files(dt)")
-		ExecSQLWithErr(c, ctx, "create index events_commits_files_sha_idx on gha_events_commits_files(sha)")
-		ExecSQLWithErr(c, ctx, "create index events_commits_files_event_id_idx on gha_events_commits_files(event_id)")
-		ExecSQLWithErr(c, ctx, "create index events_commits_files_path_idx on gha_events_commits_files(path)")
-		ExecSQLWithErr(c, ctx, "create index events_commits_files_ext_idx on gha_events_commits_files(ext)")
-		ExecSQLWithErr(c, ctx, "create index events_commits_files_size_idx on gha_events_commits_files(size)")
-		ExecSQLWithErr(c, ctx, "create index events_commits_files_dt_idx on gha_events_commits_files(dt)")
-		ExecSQLWithErr(c, ctx, "create index events_commits_files_repo_group_idx on gha_events_commits_files(repo_group)")
-		ExecSQLWithErr(c, ctx, "create index events_commits_files_dup_repo_id_idx on gha_events_commits_files(dup_repo_id)")
-		ExecSQLWithErr(c, ctx, "create index events_commits_files_dup_repo_name_idx on gha_events_commits_files(dup_repo_name)")
-		ExecSQLWithErr(c, ctx, "create index events_commits_files_dup_type_idx on gha_events_commits_files(dup_type)")
-		ExecSQLWithErr(c, ctx, "create index events_commits_files_dup_created_at_idx on gha_events_commits_files(dup_created_at)")
-		ExecSQLWithErr(c, ctx, "create index skip_commits_sha_idx on gha_skip_commits(sha)")
-		ExecSQLWithErr(c, ctx, "create index skip_commits_dt_idx on gha_skip_commits(dt)")
-		ExecSQLWithErr(c, ctx, "create index skip_commits_reason_idx on gha_skip_commits(reason)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_files_sha_idx on gha_commits_files(sha)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_files_path_idx on gha_commits_files(path)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_files_ext_idx on gha_commits_files(ext)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_files_size_idx on gha_commits_files(size)")
+		ExecSQLWithErr(c, ctx, "create index if not exists commits_files_dt_idx on gha_commits_files(dt)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_sha_idx on gha_events_commits_files(sha)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_event_id_idx on gha_events_commits_files(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_path_idx on gha_events_commits_files(path)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_ext_idx on gha_events_commits_files(ext)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_size_idx on gha_events_commits_files(size)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_dt_idx on gha_events_commits_files(dt)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_repo_group_idx on gha_events_commits_files(repo_group)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_dup_repo_id_idx on gha_events_commits_files(dup_repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_dup_repo_name_idx on gha_events_commits_files(dup_repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_dup_type_idx on gha_events_commits_files(dup_type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_dup_created_at_idx on gha_events_commits_files(dup_created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists skip_commits_sha_idx on gha_skip_commits(sha)")
+		ExecSQLWithErr(c, ctx, "create index if not exists skip_commits_dt_idx on gha_skip_commits(dt)")
+		ExecSQLWithErr(c, ctx, "create index if not exists skip_commits_reason_idx on gha_skip_commits(reason)")
 	}
 
 	// Scripts to run on a given database
@@ -1319,7 +1319,7 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index countries_name_idx on gha_countries(name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists countries_name_idx on gha_countries(name)")
 	}
 
 	// This table is a kind of `materialized view` of all texts
@@ -1343,14 +1343,14 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index texts_event_id_idx on gha_texts(event_id)")
-		ExecSQLWithErr(c, ctx, "create index texts_created_at_idx on gha_texts(created_at)")
-		ExecSQLWithErr(c, ctx, "create index texts_actor_id_idx on gha_texts(actor_id)")
-		ExecSQLWithErr(c, ctx, "create index texts_actor_login_idx on gha_texts(actor_login)")
-		ExecSQLWithErr(c, ctx, "create index texts_repo_id_idx on gha_texts(repo_id)")
-		ExecSQLWithErr(c, ctx, "create index texts_repo_name_idx on gha_texts(repo_name)")
-		ExecSQLWithErr(c, ctx, "create index texts_type_idx on gha_texts(type)")
-		ExecSQLWithErr(c, ctx, "create index texts_lower_actor_login_idx on gha_texts(lower(actor_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists texts_event_id_idx on gha_texts(event_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists texts_created_at_idx on gha_texts(created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists texts_actor_id_idx on gha_texts(actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists texts_actor_login_idx on gha_texts(actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists texts_repo_id_idx on gha_texts(repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists texts_repo_name_idx on gha_texts(repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists texts_type_idx on gha_texts(type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists texts_lower_actor_login_idx on gha_texts(lower(actor_login))")
 	}
 
 	// This table is a kind of `materialized view` of issue event labels
@@ -1381,35 +1381,35 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(
 			c,
 			ctx,
-			"create index issues_events_labels_issue_id_idx on gha_issues_events_labels(issue_id)",
+			"create index if not exists issues_events_labels_issue_id_idx on gha_issues_events_labels(issue_id)",
 		)
 		ExecSQLWithErr(
 			c,
 			ctx,
-			"create index issues_events_labels_event_id_idx on gha_issues_events_labels(event_id)",
+			"create index if not exists issues_events_labels_event_id_idx on gha_issues_events_labels(event_id)",
 		)
 		ExecSQLWithErr(
 			c,
 			ctx,
-			"create index issues_events_labels_label_id_idx on gha_issues_events_labels(label_id)",
+			"create index if not exists issues_events_labels_label_id_idx on gha_issues_events_labels(label_id)",
 		)
 		ExecSQLWithErr(
 			c,
 			ctx,
-			"create index issues_events_labels_label_name_idx on gha_issues_events_labels(label_name)",
+			"create index if not exists issues_events_labels_label_name_idx on gha_issues_events_labels(label_name)",
 		)
 		ExecSQLWithErr(
 			c,
 			ctx,
-			"create index issues_events_labels_created_at_idx on gha_issues_events_labels(created_at)",
+			"create index if not exists issues_events_labels_created_at_idx on gha_issues_events_labels(created_at)",
 		)
-		ExecSQLWithErr(c, ctx, "create index issues_events_labels_actor_id_idx on gha_issues_events_labels(actor_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_events_labels_actor_login_idx on gha_issues_events_labels(actor_login)")
-		ExecSQLWithErr(c, ctx, "create index issues_events_labels_repo_id_idx on gha_issues_events_labels(repo_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_events_labels_repo_name_idx on gha_issues_events_labels(repo_name)")
-		ExecSQLWithErr(c, ctx, "create index issues_events_labels_type_idx on gha_issues_events_labels(type)")
-		ExecSQLWithErr(c, ctx, "create index issues_events_labels_issue_number_idx on gha_issues_events_labels(issue_number)")
-		ExecSQLWithErr(c, ctx, "create index issues_events_labels_lower_actor_login_idx on gha_issues_events_labels(lower(actor_login))")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_events_labels_actor_id_idx on gha_issues_events_labels(actor_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_events_labels_actor_login_idx on gha_issues_events_labels(actor_login)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_events_labels_repo_id_idx on gha_issues_events_labels(repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_events_labels_repo_name_idx on gha_issues_events_labels(repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_events_labels_type_idx on gha_issues_events_labels(type)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_events_labels_issue_number_idx on gha_issues_events_labels(issue_number)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_events_labels_lower_actor_login_idx on gha_issues_events_labels(lower(actor_login))")
 	}
 
 	// This table is a kind of `materialized view` of issues - PRs connections
@@ -1431,12 +1431,12 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index issues_pull_requests_issue_id_idx on gha_issues_pull_requests(issue_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_pull_requests_pull_request_id_idx on gha_issues_pull_requests(pull_request_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_pull_requests_number_idx on gha_issues_pull_requests(number)")
-		ExecSQLWithErr(c, ctx, "create index issues_pull_requests_repo_id_idx on gha_issues_pull_requests(repo_id)")
-		ExecSQLWithErr(c, ctx, "create index issues_pull_requests_repo_name_idx on gha_issues_pull_requests(repo_name)")
-		ExecSQLWithErr(c, ctx, "create index issues_pull_requests_created_at_idx on gha_issues_pull_requests(created_at)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_pull_requests_issue_id_idx on gha_issues_pull_requests(issue_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_pull_requests_pull_request_id_idx on gha_issues_pull_requests(pull_request_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_pull_requests_number_idx on gha_issues_pull_requests(number)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_pull_requests_repo_id_idx on gha_issues_pull_requests(repo_id)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_pull_requests_repo_name_idx on gha_issues_pull_requests(repo_name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_pull_requests_created_at_idx on gha_issues_pull_requests(created_at)")
 	}
 
 	// This table holds Postgres variables defined by `vars` tool.
@@ -1458,7 +1458,7 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index vars_name_idx on gha_vars(name)")
+		ExecSQLWithErr(c, ctx, "create index if not exists vars_name_idx on gha_vars(name)")
 	}
 	// This is to determine if a given metric is computed for some period or not
 	if ctx.Table {
@@ -1476,8 +1476,8 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index computed_metric_idx on gha_computed(metric)")
-		ExecSQLWithErr(c, ctx, "create index computed_dt_idx on gha_computed(dt)")
+		ExecSQLWithErr(c, ctx, "create index if not exists computed_metric_idx on gha_computed(metric)")
+		ExecSQLWithErr(c, ctx, "create index if not exists computed_dt_idx on gha_computed(dt)")
 	}
 	// This is to determine when given metric was last calculated
 	if ctx.Table {
@@ -1513,7 +1513,7 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index parsed_dt_idx on gha_parsed(dt)")
+		ExecSQLWithErr(c, ctx, "create index if not exists parsed_dt_idx on gha_parsed(dt)")
 	}
 	// This is to determine if a given JSON was imported or not
 	if ctx.Table {
@@ -1544,7 +1544,7 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	if ctx.Index {
-		ExecSQLWithErr(c, ctx, "create index gha_bot_logins_pattern_idx on gha_bot_logins(pattern)")
+		ExecSQLWithErr(c, ctx, "create index if not exists gha_bot_logins_pattern_idx on gha_bot_logins(pattern)")
 	}
 	// Foreign keys are not needed - they slow down processing a lot
 
