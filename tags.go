@@ -81,7 +81,30 @@ func ProcessTag(con *sql.DB, ctx *Ctx, tg *Tag, replaces [][]string) {
 	if !ctx.SkipTSDB {
 		table := "t" + tg.SeriesName
 		if TableExists(con, ctx, table) {
-			ExecSQLWithErr(con, ctx, "truncate "+table)
+			// ExecSQLWIthErr(con, ctx, "truncate "+table)
+			tx, err := con.Begin()
+			FatalOnError(err)
+			defer func() { _ = tx.Rollback() }()
+
+			_, err = ExecSQLTx(tx, ctx, "set local lock_timeout='500ms'")
+			FatalOnError(err)
+			_, e := ExecSQLTx(tx, ctx, "truncate "+table)
+			if e != nil {
+				Printf("truncate failed for %s (warning): %v\n", table, e)
+				_, err = ExecSQLTx(tx, ctx, "set local lock_timeout='500ms'")
+				FatalOnError(err)
+				_, err = ExecSQLTx(tx, ctx, "set local statement_timeout='300s'")
+				FatalOnError(err)
+				_, e2 := ExecSQLTx(tx, ctx, "delete from "+table)
+				if e2 != nil {
+					_ = tx.Rollback()
+					Printf("delete failed for %s (warning): %v\n", table, e2)
+				} else {
+					FatalOnError(tx.Commit())
+				}
+			} else {
+				FatalOnError(tx.Commit())
+			}
 		}
 	}
 	tm := TimeParseAny("2012-07-01")
