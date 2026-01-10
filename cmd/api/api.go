@@ -2828,8 +2828,7 @@ func readProjects(ctx *lib.Ctx) {
 	lib.FatalOnError(yaml.Unmarshal(data, &projects))
 	gNameToDB = make(map[string]string)
 	for projName, projData := range projects.Projects {
-		disabled := projData.Disabled
-		if disabled {
+		if lib.IsProjectDisabled(ctx, projName, projData.Disabled) {
 			continue
 		}
 		db := projData.PDB
