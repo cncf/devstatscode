@@ -1368,11 +1368,12 @@ projects:
   fluid:
     order: 96
     name: Fluid
-    status: Sandbox
+    status: Incubating
     command_line:
       - 'fluid-cloudnative'
     start_date: 2020-07-22T00:00:00Z
     join_date: 2021-04-28T00:00:00Z
+    incubating_date: 2026-01-08T00:00:00Z
     psql_db: fluid
     shared_db: allprj
     main_repo: 'fluid-cloudnative/fluid'
@@ -2043,7 +2044,7 @@ projects:
     name: Istio
     status: Graduated
     command_line:
-      - istio
+      - istio,istio-ecosystem
     start_date: 2016-12-01T00:00:00Z
     join_date: 2022-09-30T00:00:00Z
     graduated_date: 2023-07-12T00:00:00Z
@@ -3491,7 +3492,7 @@ projects:
          kubernetes-graveyard,kubernetes-incubator-retired,kubernetes-sig-testing,\
          kubernetes-providers,kubernetes-addons,kubernetes-retired,kubernetes-sigs,\
          kubernetes-extensions,kubernetes-federation,kubernetes-security,crossplaneio,\
-         kubernetes-sidecars,kubernetes-tools,kubernetes-test,kubernetes-charts,\
+         kubernetes-sidecars,kubernetes-tools,kubernetes-test,kubernetes-charts,istio-ecosystem,\
          prometheus,opentracing,fluent,linkerd,grpc,coredns,containerd,notaryproject,\
          containernetworking,envoyproxy,jaegertracing,theupdateframework,crossplane-contrib,\
          rook,cncf,crosscloudci,vitessio,nats-io,open-policy-agent,spiffe,headlamp-k8s,\
