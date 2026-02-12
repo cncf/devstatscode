@@ -40,7 +40,8 @@ func dirExists(path string) (bool, error) {
 }
 
 // getRepos returns map { 'org' --> list of repos } for all devstats projects
-func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}) {
+func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}, map[string]map[string]struct{}) {
+
 	// Process all projects, or restrict from environment variable?
 	onlyProjects := make(map[string]bool)
 	selectedProjects := false
@@ -73,6 +74,7 @@ func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}) 
 	}
 
 	allRepos := make(map[string]map[string]struct{})
+	dbRepos := make(map[string]map[string]struct{})
 	for db := range dbs {
 		// Connect to Postgres `db` database.
 		con := lib.PgConnDB(ctx, db)
@@ -105,11 +107,18 @@ func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}) 
 				allRepos[org] = make(map[string]struct{})
 			}
 			allRepos[org][repo] = struct{}{}
+
+			_, ok = dbRepos[db]
+			if !ok {
+				dbRepos[db] = make(map[string]struct{})
+			}
+			dbRepos[db][repo] = struct{}{}
+
 		}
 	}
 
 	// return final map
-	return dbs, allRepos
+	return dbs, allRepos, dbRepos
 }
 
 // processRepo - processes single repo (clone or reset+pull) in a separate thread/goroutine
@@ -854,7 +863,7 @@ func main() {
 	ctx.Init()
 	lib.SetupTimeoutSignal(&ctx)
 	if !ctx.SkipGetRepos {
-		dbs, repos := getRepos(&ctx)
+		dbs, repos, repoDBs := getRepos(&ctx)
 		if ctx.Debug > 0 {
 			lib.Printf("dbs: %+v\n", dbs)
 			lib.Printf("repos: %+v\n", repos)
@@ -867,6 +876,9 @@ func main() {
 		}
 		if ctx.ProcessRepos {
 			processRepos(&ctx, repos)
+		}
+		if ctx.FetchCommitsMode != 0 {
+			backfillPushEventCommits(&ctx, dbs, repoDBs)
 		}
 		if ctx.ProcessCommits {
 			processCommits(&ctx, dbs)

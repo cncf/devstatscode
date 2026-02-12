@@ -10,11 +10,9 @@ then
   exit 2
 fi
 
-cd "$1" || exit 3
-output=`git show "$2" --shortstat --oneline`
-if [ ! "$?" = "0" ]
+if ! output=`git -C "${1}" show "$2" --shortstat --oneline 2>/dev/null`
 then
   exit 4
 fi
-output=`echo "$output" | tail -1`
-echo $output
+output=`echo "$output" | tail -1 | sed 's/^[[:space:]]*//'`
+echo "$output"

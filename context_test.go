@@ -289,6 +289,8 @@ func TestInit(t *testing.T) {
 		AllowRandTagsColsCompute: false,
 		RecalcReciprocal:         24,
 		MaxHistograms:            0,
+		FetchCommitsMode:         1,
+		GitCommitsBatch:          1000,
 	}
 
 	var nilRegexp *regexp.Regexp
@@ -1727,6 +1729,24 @@ func TestInit(t *testing.T) {
 				t,
 				defaultContext.CopyContext(),
 				map[string]interface{}{"MaxHistograms": 16},
+			),
+		},
+		{
+			"Setting fetch commits mode to 0",
+			map[string]string{"GHA2DB_FETCH_COMMITS_MODE": "0"},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{"FetchCommitsMode": 0},
+			),
+		},
+		{
+			"Setting git commits batch size",
+			map[string]string{"GHA2DB_GIT_COMMITS_BATCH": "500"},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{"GitCommitsBatch": 500},
 			),
 		},
 	}

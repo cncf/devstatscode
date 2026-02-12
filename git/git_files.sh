@@ -10,18 +10,17 @@ then
   exit 2
 fi
 
-cd "$1" || exit 3
-git show -s --format=%ct "$2" || exit 4
-#files=`git diff-tree --no-commit-id --name-only -M8 -m -r "$2"` || exit 5
-#files=`git diff-tree --no-commit-id --name-only -r "$2"` || exit 5
-files=`git diff-tree --no-commit-id --name-only -M7 -r "$2"` || exit 5
-for file in $files
+git -C "$1" show -s --format=%ct "$2" || exit 4
+
+git -C "$1" diff-tree --no-commit-id --name-only -M7 -r -z "$2" 2>/dev/null | \
+while IFS= read -r -d '' file
 do
-    file_and_size=`git ls-tree -r -l "$2" "$file" | awk '{print $5 "♂♀" $4}'`
+    file_and_size=`git -C "$1" ls-tree -r -l "$2" -- "$file" | awk '{print $5 "♂♀" $4}'`
     if [ -z "$file_and_size" ]
     then
       echo "$file♂♀-1"
     else
       echo "$file_and_size"
     fi
-done
+done || exit 5
+

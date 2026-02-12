@@ -155,6 +155,8 @@ type Ctx struct {
 	RefreshCommitRoles       bool                         // From GHA2DB_REFRESH_COMMIT_ROLES - will process all commiths in DB and for every single one of them it will generate gha_commits_roles entries.
 	AllowRandTagsColsCompute bool                         // If set, then tags and columns will only be computed at random 0-5 hour, otherwise always when hour<6.
 	AllowMetricFail          bool                         // From GHA2DB_ALLOW_METRIC_FAIL - if set, then calc_metric will not exit on first failed metric, but will try to compute all metrics.
+	FetchCommitsMode         int                          // From GHA2DB_FETCH_COMMITS_MODE get_repos tool, mode to reconstruct gha_commits from git history for PushEvents: 0-disabled, 1-missing only (default), 2-missing+truncated
+	GitCommitsBatch          int                          // From GHA2DB_GIT_COMMITS_BATCH get_repos tool, max number of commit SHAs passed to git_commits.sh in one call, default 1000
 }
 
 // SetCPUs - set CPUs
@@ -370,6 +372,26 @@ func (ctx *Ctx) Init() {
 
 	// Allow metric fail
 	ctx.AllowMetricFail = os.Getenv("GHA2DB_ALLOW_METRIC_FAIL") != ""
+
+	// Fetch commits / gha_commits reconstruction mode (get_repos)
+	ctx.FetchCommitsMode = 1
+	if os.Getenv("GHA2DB_FETCH_COMMITS_MODE") != "" {
+		mode, err := strconv.Atoi(os.Getenv("GHA2DB_FETCH_COMMITS_MODE"))
+		FatalNoLog(err)
+		if mode >= 0 {
+			ctx.FetchCommitsMode = mode
+		}
+	}
+
+	// Max number of commit SHAs passed to git_commits.sh in one call (get_repos)
+	ctx.GitCommitsBatch = 1000
+	if os.Getenv("GHA2DB_GIT_COMMITS_BATCH") != "" {
+		b, err := strconv.Atoi(os.Getenv("GHA2DB_GIT_COMMITS_BATCH"))
+		FatalNoLog(err)
+		if b > 0 {
+			ctx.GitCommitsBatch = b
+		}
+	}
 
 	// Run website_data tool after sync
 	ctx.WebsiteData = os.Getenv("GHA2DB_WEBSITEDATA") != ""
@@ -1007,5 +1029,7 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		EnableMetricsDrop:        ctx.EnableMetricsDrop,
 		RecalcReciprocal:         ctx.RecalcReciprocal,
 		MaxHistograms:            ctx.MaxHistograms,
+		FetchCommitsMode:         ctx.FetchCommitsMode,
+		GitCommitsBatch:          ctx.GitCommitsBatch,
 	}
 }
