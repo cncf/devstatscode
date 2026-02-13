@@ -4,7 +4,7 @@ set -euo pipefail
 # Usage:
 #   git_commits.sh <repo_path> <sha1> [sha2 ... shaN]
 #
-# Output (single line, no trailing newline):
+# Output (one record per commit):
 #   sha,b64(author_name),b64(author_email),b64(committer_name),b64(committer_email),b64(message);
 #
 # Fields separated by ','; records separated by ';'.
@@ -54,3 +54,4 @@ while IFS= read -r -d '' SHA; do
 done
 
 printf '\n'
+

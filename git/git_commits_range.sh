@@ -6,6 +6,7 @@ set -euo pipefail
 #
 # Outputs:
 #   One SHA per line (max <limit>), newest->oldest.
+#
 
 if [ $# -lt 3 ]; then
   exit 0

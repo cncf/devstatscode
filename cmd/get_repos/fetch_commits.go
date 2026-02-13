@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -13,17 +14,20 @@ import (
 	lib "github.com/cncf/devstatscode"
 )
 
-// git_commits.sh output gives only author name/email and message (no committer)
+// commitInfo holds commit metadata extracted from local git history.
+// git/git_commits.sh output provides: sha,b64(author_name),b64(author_email),b64(committer_name),b64(committer_email),b64(message);
 type commitInfo struct {
-	Sha         string
-	AuthorName  string
-	AuthorEmail string
-	Message     string
+	Sha            string
+	AuthorName     string
+	AuthorEmail    string
+	CommitterName  string
+	CommitterEmail string
+	Message        string
 }
 
 type pushEvent struct {
 	EventID    int64
-	ActorID    sql.NullInt64
+	ActorID    int64
 	ActorLogin string
 	RepoID     int64
 	RepoName   string
@@ -35,19 +39,20 @@ type pushEvent struct {
 }
 
 type actorCacheEntry struct {
-	ID    sql.NullInt64
-	Login string
+	id    int64
+	login string
 }
 
 type actorCache struct {
 	mu sync.RWMutex
-	m  map[string]actorCacheEntry
+	m  map[[2]string]actorCacheEntry
 }
 
 func newActorCache() *actorCache {
-	return &actorCache{m: make(map[string]actorCacheEntry)}
+	return &actorCache{m: make(map[[2]string]actorCacheEntry)}
 }
 
+// isZeroSHA returns true for empty strings and all-zero 40-hex-like SHAs.
 func isZeroSHA(sha string) bool {
 	sha = strings.TrimSpace(sha)
 	if sha == "" {
@@ -61,8 +66,19 @@ func isZeroSHA(sha string) bool {
 	return true
 }
 
-// Reconstruct gha_commits from local git history for PushEvents (missing and optionally truncated).
+func reverseStringsInPlace(a []string) {
+	for i, j := 0, len(a)-1; i < j; i, j = i+1, j-1 {
+		a[i], a[j] = a[j], a[i]
+	}
+}
+
+// backfillPushEventCommits reconstructs gha_commits (and gha_commits_roles) for PushEvent payloads.
+// dbs are processed sequentially; repos inside a DB are processed in parallel up to NCPUs.
 func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[string]map[string]struct{}) {
+	if ctx.FetchCommitsMode == 0 {
+		return
+	}
+
 	// Ensure git commands return output and don't abort the whole process from worker goroutines.
 	prevExecOutput := ctx.ExecOutput
 	prevExecFatal := ctx.ExecFatal
@@ -79,44 +95,51 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 	hideCfg := lib.GetHidden(ctx, lib.HideCfgFile)
 	maybeHide := lib.MaybeHideFuncTS(hideCfg)
 
-	thrN := ctx.NCPUs
-	if ctx.ST {
-		thrN = 1
-	}
-
+	// DBs sequentially (deterministic order).
+	dbNames := make([]string, 0, len(dbs))
 	for db := range dbs {
-		lib.Printf(
-			"Backfilling gha_commits from git history (DB %s, threads %d, mode %d, batch %d)\n",
-			db, thrN, ctx.FetchCommitsMode, ctx.GitCommitsBatch,
-		)
-		con := lib.PgConnDB(ctx, db)
+		dbNames = append(dbNames, db)
+	}
+	sort.Strings(dbNames)
 
-		// Actor cache shared across repos processed for this DB (thread-safe).
-		acache := newActorCache()
+	for _, db := range dbNames {
+		reposSet, ok := repoDBs[db]
+		if !ok || len(reposSet) == 0 {
+			continue
+		}
 
-		done := make(chan struct{})
-		throttle := make(chan struct{}, thrN)
-
-		repos := []string{}
-		for repo, inDBs := range repoDBs {
-			if _, ok := inDBs[db]; ok {
-				repos = append(repos, repo)
-			}
+		repos := make([]string, 0, len(reposSet))
+		for r := range reposSet {
+			repos = append(repos, r)
 		}
 		sort.Strings(repos)
 
+		thrN := lib.GetThreadsNum(ctx)
+		lib.Printf(
+			"FetchCommitsMode=%d: processing DB '%s' (%d repos, threads %d, batch %d)\n",
+			ctx.FetchCommitsMode, db, len(repos), thrN, ctx.GitCommitsBatch,
+		)
+
+		con := lib.PgConnDB(ctx, db)
+		// Actor cache shared across repos processed for this DB (thread-safe).
+		acache := newActorCache()
+
+		thr := make(chan struct{}, thrN)
+		done := make(chan struct{}, len(repos))
+
 		for _, repo := range repos {
-			throttle <- struct{}{}
-			go func(r string) {
+			thr <- struct{}{}
+			repo := repo
+			go func() {
 				defer func() {
-					<-throttle
+					<-thr
 					done <- struct{}{}
 				}()
-				err := backfillRepo(ctx, con, r, maybeHide, acache)
+				err := backfillRepo(ctx, con, repo, maybeHide, acache)
 				if err != nil {
-					lib.Printf("backfillRepo(%s): %v\n", r, err)
+					lib.Printf("backfillRepo(DB=%s, repo=%s) error: %v\n", db, repo, err)
 				}
-			}(repo)
+			}()
 		}
 
 		for range repos {
@@ -129,157 +152,181 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string) string, acache *actorCache) error {
 	repoPath := ctx.ReposDir + repo
 	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
-		// IMPORTANT: do not silently skip — you asked to track this.
+		// Do not silently skip: user explicitly requested tracking.
 		return fmt.Errorf("repo not cloned: %s", repoPath)
 	} else if err != nil {
 		return fmt.Errorf("cannot stat repo path %s: %w", repoPath, err)
 	}
 
-	// Mode 1: only backfill since last dup_created_at in gha_commits for this repo.
+	// For mode=1 (missing only) we can limit scanning by last commit time already inserted.
 	dtFrom := ctx.DefaultStartDate
 	if ctx.FetchCommitsMode == 1 {
-		maxDupCreatedAt := sql.NullTime{}
-		if err := con.QueryRow(
-			"select max(dup_created_at) from gha_commits where dup_repo_name = $1",
-			repo,
-		).Scan(&maxDupCreatedAt); err != nil {
-			return fmt.Errorf("select max(dup_created_at) failed for %s: %w", repo, err)
+		var maxDt sql.NullTime
+		err := con.QueryRow(`select max(dup_created_at) from gha_commits where dup_repo_name = $1`, repo).Scan(&maxDt)
+		if err != nil {
+			return fmt.Errorf("select max(dup_created_at) from gha_commits failed (repo=%s): %w", repo, err)
 		}
-		if maxDupCreatedAt.Valid {
-			dtFrom = maxDupCreatedAt.Time.Format(time.RFC3339)
+		if maxDt.Valid && maxDt.Time.After(dtFrom) {
+			dtFrom = maxDt.Time
 		}
 	}
 
-	// Earliest PushEvent created_at for this repo (used to decide if BEFORE=0 should expand to full history).
-	minPushDT := sql.NullTime{}
-	if err := con.QueryRow(
-		"select min(created_at) from gha_events where type = 'PushEvent' and dup_repo_name = $1",
-		repo,
-	).Scan(&minPushDT); err != nil {
-		lib.Printf("Warning: cannot query earliest PushEvent created_at for %s: %v\n", repo, err)
-	}
-
-	pushEvents, err := selectPushEventsNeedingCommits(ctx, con, repo, dtFrom)
+	events, err := selectPushEventsNeedingCommits(ctx, con, repo, dtFrom)
 	if err != nil {
 		return err
 	}
-	if len(pushEvents) == 0 {
+	if len(events) == 0 {
 		return nil
 	}
 
-	batchSize := ctx.GitCommitsBatch
-	if batchSize <= 0 {
-		batchSize = 1000
-	}
-
-	eventShas := make(map[int64][]string, len(pushEvents))
+	// Build: event -> shas, plus global sha set.
+	eventShas := make(map[int64][]string, len(events))
 	shaSet := make(map[string]struct{})
 
-	for _, ev := range pushEvents {
-		if isZeroSHA(ev.Head) {
-			lib.Printf("Warning: skipping PushEvent %d in %s: head SHA is empty/zero\n", ev.EventID, repo)
+	pageSize := ctx.GitCommitsBatch
+	if pageSize <= 0 {
+		pageSize = 1000
+	}
+
+	for _, ev := range events {
+		head := strings.TrimSpace(ev.Head)
+		before := strings.TrimSpace(ev.Before)
+
+		if head == "" || isZeroSHA(head) {
+			lib.Printf("Warning: skipping PushEvent %d in %s: empty/zero head SHA\n", ev.EventID, repo)
 			continue
 		}
 
-		// BEFORE=0 is ambiguous (new ref); only expand to full history if this looks like the initial push.
-		fullHistoryOnZero := false
-		if isZeroSHA(ev.Before) && minPushDT.Valid && ev.CreatedAt.Equal(minPushDT.Time) {
-			fullHistoryOnZero = true
+		// BEFORE=0 is ambiguous. We use payload size (when available) to limit the scan.
+		maxNeeded := 0
+		if isZeroSHA(before) {
+			if ev.Size.Valid {
+				if ev.Size.Int64 <= 0 {
+					// size=0 -> no commits; should be filtered out, but be defensive.
+					continue
+				}
+				// For before=0 we take the newest <size> commits reachable from head.
+				// This is a practical approximation for "new ref" events (including the initial push).
+				maxNeeded = int(ev.Size.Int64)
+				before = strings.Repeat("0", 40)
+			} else {
+				// Unknown size; safest fallback is at least head.
+				maxNeeded = 1
+				before = strings.Repeat("0", 40)
+			}
 		}
 
-		shas, rerr := gitRangeCommits(ctx, repoPath, ev.Before, ev.Head, fullHistoryOnZero, batchSize)
-		if rerr != nil {
+		shas, gerr := gitRangeCommits(ctx, repoPath, before, head, pageSize, maxNeeded)
+		if gerr != nil {
 			lib.Printf(
 				"Error listing commits range for %s (event %d, before %s, head %s): %v\n",
-				repo, ev.EventID, ev.Before, ev.Head, rerr,
+				repo, ev.EventID, ev.Before, ev.Head, gerr,
 			)
 			// Fallback: at least head commit.
-			shas = []string{ev.Head}
+			shas = []string{head}
 		}
 
+		if len(shas) == 0 {
+			continue
+		}
 		eventShas[ev.EventID] = shas
-		for _, sha := range shas {
-			sha = strings.TrimSpace(sha)
-			if sha == "" || isZeroSHA(sha) {
+		for _, s := range shas {
+			s = strings.TrimSpace(s)
+			if s == "" || isZeroSHA(s) {
 				continue
 			}
-			shaSet[sha] = struct{}{}
+			shaSet[s] = struct{}{}
 		}
 	}
 
-	if len(shaSet) == 0 {
-		lib.Printf("No commits to backfill for %s (push events %d)\n", repo, len(pushEvents))
+	if len(eventShas) == 0 || len(shaSet) == 0 {
 		return nil
 	}
 
+	// Fetch commit metadata for all SHAs in batches.
 	shaList := make([]string, 0, len(shaSet))
-	for sha := range shaSet {
-		shaList = append(shaList, sha)
+	for s := range shaSet {
+		shaList = append(shaList, s)
 	}
 	sort.Strings(shaList)
 
-	commitInfos := make(map[string]commitInfo, len(shaSet))
-	for i := 0; i < len(shaList); i += batchSize {
-		j := i + batchSize
+	infoMap := make(map[string]commitInfo, len(shaSet))
+	for i := 0; i < len(shaList); i += pageSize {
+		j := i + pageSize
 		if j > len(shaList) {
 			j = len(shaList)
 		}
-		infos, ierr := gitCommitInfoBatch(ctx, repoPath, shaList[i:j])
-		for sha, info := range infos {
-			commitInfos[sha] = info
+		batchInfos, ierr := gitCommitInfoBatch(ctx, repoPath, shaList[i:j])
+		for sha, info := range batchInfos {
+			infoMap[sha] = info
 		}
 		if ierr != nil {
 			lib.Printf("Warning: git_commits.sh error for %s batch %d-%d/%d: %v\n", repo, i, j, len(shaList), ierr)
 		}
+	}
+	if len(infoMap) == 0 {
+		return fmt.Errorf("git_commits.sh returned no commit metadata for repo=%s (shas=%d)", repo, len(shaSet))
 	}
 
 	tx, err := con.Begin()
 	if err != nil {
 		return err
 	}
-
-	updPayloadSizeStmt, err := tx.Prepare("update gha_payloads set size = $2 where event_id = $1 and size is null")
-	if err != nil {
+	defer func() {
 		_ = tx.Rollback()
-		return err
-	}
-	defer updPayloadSizeStmt.Close()
+	}()
 
-	insCommitStmt, err := tx.Prepare(`
-insert into gha_commits(sha, event_id, author_name, encrypted_email, message, is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, author_id, committer_id, dup_author_login, dup_committer_login)
-values (
-	$1, $2, $3, $4, $5,
-	not exists(select 1 from gha_commits c2 where c2.sha = $1 limit 1),
-	$6, $7, $8, $9, $10, $11,
-	$12, $13, $14, $15
+	insCommitSQL := `
+insert into gha_commits(
+  sha, event_id, author_name, encrypted_email, message,
+  is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at,
+  author_id, committer_id, dup_author_login, dup_committer_login
 )
-on conflict do nothing`)
+select
+  $1,$2,$3,$4,$5,
+  not exists(select 1 from gha_commits c2 where c2.sha = $1 limit 1),
+  $6,$7,$8,$9,$10,$11,
+  $12,$13,$14,$15
+on conflict do nothing
+`
+	insRoleSQL := `
+insert into gha_commits_roles(
+  sha, event_id, role, actor_id, actor_login, actor_name, actor_email, dup_repo_id, dup_repo_name, dup_created_at
+) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+on conflict do nothing
+`
+	// Only fill missing payload size (NULL) with the computed count.
+	updPayloadSQL := `update gha_payloads set size = $2 where event_id = $1 and size is null`
+
+	insCommitStmt, err := tx.Prepare(insCommitSQL)
 	if err != nil {
-		_ = tx.Rollback()
 		return err
 	}
-	defer insCommitStmt.Close()
+	defer func() { _ = insCommitStmt.Close() }()
 
-	insRoleStmt, err := tx.Prepare(`
-insert into gha_commits_roles(sha, event_id, role, actor_id, actor_login, actor_name, actor_email, dup_repo_id, dup_repo_name, dup_created_at)
-values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-on conflict do nothing`)
+	insRoleStmt, err := tx.Prepare(insRoleSQL)
 	if err != nil {
-		_ = tx.Rollback()
 		return err
 	}
-	defer insRoleStmt.Close()
+	defer func() { _ = insRoleStmt.Close() }()
 
-	for _, ev := range pushEvents {
-		shas, ok := eventShas[ev.EventID]
-		if !ok {
+	updPayloadStmt, err := tx.Prepare(updPayloadSQL)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = updPayloadStmt.Close() }()
+
+	for _, ev := range events {
+		shas := eventShas[ev.EventID]
+		if len(shas) == 0 {
 			continue
 		}
 
-		if _, err := updPayloadSizeStmt.Exec(ev.EventID, len(shas)); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("update payload size (repo %s, event %d): %w", repo, ev.EventID, err)
+		// Update payload size to computed commit count only if size is currently NULL.
+		if _, uerr := updPayloadStmt.Exec(ev.EventID, len(shas)); uerr != nil {
+			return fmt.Errorf("update gha_payloads.size (repo=%s, event=%d): %w", repo, ev.EventID, uerr)
 		}
+
 		if ev.Size.Valid && int64(len(shas)) != ev.Size.Int64 {
 			lib.Printf(
 				"Warning: %s PushEvent %d payload size=%d, computed commits=%d (before %s, head %s)\n",
@@ -293,74 +340,114 @@ on conflict do nothing`)
 				continue
 			}
 
-			ci, ok := commitInfos[sha]
+			ci, ok := infoMap[sha]
 			if !ok {
 				lib.Printf("Warning: missing git metadata for %s sha %s (event %d)\n", repo, sha, ev.EventID)
 				continue
 			}
 
 			// Commit table fields.
-			authorName := lib.TruncToBytes(maybeHide(ci.AuthorName), 120)
-			authorEmail := lib.TruncToBytes(maybeHide(ci.AuthorEmail), 160)
-			msg := lib.TruncToBytes(ci.Message, 0xffff)
+			authorNameRaw := strings.ReplaceAll(ci.AuthorName, "\x00", "")
+			authorEmailRaw := strings.ReplaceAll(ci.AuthorEmail, "\x00", "")
+			commNameRaw := strings.ReplaceAll(ci.CommitterName, "\x00", "")
+			commEmailRaw := strings.ReplaceAll(ci.CommitterEmail, "\x00", "")
 
-			// Roles table fields.
-			authorRoleName := lib.TruncToBytes(maybeHide(ci.AuthorName), 160)
-			authorRoleEmail := lib.TruncToBytes(maybeHide(ci.AuthorEmail), 160)
+			authorName := lib.TruncToBytes(maybeHide(authorNameRaw), 120)
+			authorEmail := lib.TruncToBytes(maybeHide(authorEmailRaw), 160)
+			msg := lib.TruncToBytes(strings.ReplaceAll(ci.Message, "\x00", ""), 0xffff)
 
-			authorID, authorLogin := lookupActorCached(tx, acache, authorRoleName, authorRoleEmail)
+			// Roles fields (longer allowed).
+			authorRoleName := lib.TruncToBytes(maybeHide(authorNameRaw), 160)
+			authorRoleEmail := lib.TruncToBytes(maybeHide(authorEmailRaw), 160)
+			commRoleName := lib.TruncToBytes(maybeHide(commNameRaw), 160)
+			commRoleEmail := lib.TruncToBytes(maybeHide(commEmailRaw), 160)
+
+			authorID, authorLogin := lookupActorNameEmailCachedTx(tx, acache, maybeHide, authorNameRaw, authorEmailRaw)
+			commID, commLogin := lookupActorNameEmailCachedTx(tx, acache, maybeHide, commNameRaw, commEmailRaw)
+
+			dupActorLogin := lib.TruncToBytes(maybeHide(ev.ActorLogin), 120)
+
+			dupAuthorLogin := ""
 			if authorLogin != "" {
-				authorLogin = maybeHide(authorLogin)
-				authorLogin = lib.TruncToBytes(authorLogin, 120)
+				dupAuthorLogin = lib.TruncToBytes(maybeHide(authorLogin), 120)
+			}
+			dupCommLogin := ""
+			if commLogin != "" {
+				dupCommLogin = lib.TruncToBytes(maybeHide(commLogin), 120)
 			}
 
-			// Committer is not available from PushEvent payload; keep NULL.
-			commID := sql.NullInt64{}
-			commLogin := sql.NullString{} // NULL
-
-			_, err := insCommitStmt.Exec(
-				sha, ev.EventID,
-				authorName, authorEmail, msg,
+			// Insert commit.
+			if _, err := insCommitStmt.Exec(
+				sha,
+				ev.EventID,
+				authorName,
+				authorEmail,
+				msg,
 				ev.ActorID,
-				lib.TruncToBytes(maybeHide(ev.ActorLogin), 120),
-				ev.RepoID, ev.RepoName,
-				"PushEvent", ev.CreatedAt,
+				dupActorLogin,
+				ev.RepoID,
+				ev.RepoName,
+				"PushEvent",
+				ev.CreatedAt,
 				authorID,
 				commID,
-				authorLogin,
-				commLogin,
-			)
-			if err != nil {
-				_ = tx.Rollback()
-				return fmt.Errorf("insert gha_commits (repo %s, event %d, sha %s): %w", repo, ev.EventID, sha, err)
+				dupAuthorLogin,
+				dupCommLogin,
+			); err != nil {
+				return fmt.Errorf("insert gha_commits (repo=%s, event=%d, sha=%s): %w", repo, ev.EventID, sha, err)
 			}
 
-			// Roles: Author + trailers.
-			if err := insertRoles(insRoleStmt, sha, ev, "Author", authorID, authorLogin, authorRoleName, authorRoleEmail); err != nil {
-				_ = tx.Rollback()
-				return fmt.Errorf("insert Author role (repo %s, event %d, sha %s): %w", repo, ev.EventID, sha, err)
+			// Insert roles: Author + Committer + trailers.
+			if err := insertRoles(insRoleStmt, sha, ev, "Author", authorID, authorLogin, authorRoleName, authorRoleEmail, maybeHide); err != nil {
+				return fmt.Errorf("insert Author role (repo=%s, event=%d, sha=%s): %w", repo, ev.EventID, sha, err)
+			}
+			if err := insertRoles(insRoleStmt, sha, ev, "Committer", commID, commLogin, commRoleName, commRoleEmail, maybeHide); err != nil {
+				return fmt.Errorf("insert Committer role (repo=%s, event=%d, sha=%s): %w", repo, ev.EventID, sha, err)
 			}
 
 			trailerRoles := parseTrailers(ci.Message)
 			for _, tr := range trailerRoles {
 				name := lib.TruncToBytes(maybeHide(tr.Name), 160)
 				email := lib.TruncToBytes(maybeHide(tr.Email), 160)
-				if err := insertRoles(insRoleStmt, sha, ev, tr.Role, sql.NullInt64{}, "", name, email); err != nil {
-					_ = tx.Rollback()
-					return fmt.Errorf("insert trailer role (repo %s, event %d, sha %s): %w", repo, ev.EventID, sha, err)
+
+				tID, tLogin := lookupActorNameEmailCachedTx(tx, acache, maybeHide, tr.Name, tr.Email)
+				if err := insertRoles(insRoleStmt, sha, ev, tr.Role, tID, tLogin, name, email, maybeHide); err != nil {
+					return fmt.Errorf("insert trailer role (repo=%s, event=%d, sha=%s, role=%s): %w", repo, ev.EventID, sha, tr.Role, err)
 				}
 			}
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		_ = tx.Rollback()
 		return err
 	}
 	return nil
 }
 
-func insertRoles(stmt *sql.Stmt, sha string, ev pushEvent, role string, actorID sql.NullInt64, actorLogin, actorName, actorEmail string) error {
+func insertRoles(stmt *sql.Stmt, sha string, ev pushEvent, role string, actorID int64, actorLogin, actorName, actorEmail string, maybeHide func(string) string) error {
+	// gha_commits_roles columns are NOT NULL (defaults: actor_id=0, actor_login/name/email='').
+	if actorID < 0 {
+		actorID = 0
+	}
+	if actorLogin != "" {
+		actorLogin = lib.TruncToBytes(maybeHide(actorLogin), 120)
+	} else {
+		actorLogin = ""
+	}
+	if actorName != "" {
+		actorName = lib.TruncToBytes(actorName, 160)
+	} else {
+		actorName = ""
+	}
+	if actorEmail != "" {
+		actorEmail = lib.TruncToBytes(actorEmail, 160)
+	} else {
+		actorEmail = ""
+	}
+	if role != "" {
+		role = lib.TruncToBytes(role, 60)
+	}
+
 	_, err := stmt.Exec(
 		sha,
 		ev.EventID,
@@ -376,14 +463,15 @@ func insertRoles(stmt *sql.Stmt, sha string, ev pushEvent, role string, actorID 
 	return err
 }
 
-// Parse git_commits.sh output:
-// record separator: ';'
-// fields: sha,b64(author_name),b64(author_email),b64(message)
-func parseGitCommitsOutput(out []byte, outMap map[string]commitInfo) error {
-	s := strings.TrimSpace(string(out))
+// parseGitCommitsOutput parses git/git_commits.sh output.
+// Record separator: ';'
+// Fields: sha,b64(author_name),b64(author_email),b64(committer_name),b64(committer_email),b64(message)
+func parseGitCommitsOutput(out string, outMap map[string]commitInfo) error {
+	s := strings.TrimSpace(out)
 	if s == "" {
 		return nil
 	}
+
 	records := strings.Split(s, ";")
 	for _, rec := range records {
 		rec = strings.TrimSpace(rec)
@@ -391,8 +479,8 @@ func parseGitCommitsOutput(out []byte, outMap map[string]commitInfo) error {
 			continue
 		}
 		parts := strings.Split(rec, ",")
-		if len(parts) != 4 {
-			return fmt.Errorf("invalid git_commits.sh record (expected 4 fields): %q", rec)
+		if len(parts) != 6 {
+			return fmt.Errorf("invalid git_commits.sh record (expected 6 fields): %q", rec)
 		}
 		sha := strings.TrimSpace(parts[0])
 		if sha == "" {
@@ -407,7 +495,15 @@ func parseGitCommitsOutput(out []byte, outMap map[string]commitInfo) error {
 		if err != nil {
 			return fmt.Errorf("base64 decode author_email for %s: %w", sha, err)
 		}
-		msgB, err := base64.StdEncoding.DecodeString(parts[3])
+		cnB, err := base64.StdEncoding.DecodeString(parts[3])
+		if err != nil {
+			return fmt.Errorf("base64 decode committer_name for %s: %w", sha, err)
+		}
+		ceB, err := base64.StdEncoding.DecodeString(parts[4])
+		if err != nil {
+			return fmt.Errorf("base64 decode committer_email for %s: %w", sha, err)
+		}
+		msgB, err := base64.StdEncoding.DecodeString(parts[5])
 		if err != nil {
 			return fmt.Errorf("base64 decode message for %s: %w", sha, err)
 		}
@@ -415,19 +511,23 @@ func parseGitCommitsOutput(out []byte, outMap map[string]commitInfo) error {
 		// PostgreSQL text cannot contain NUL bytes; strip defensively.
 		an := strings.ReplaceAll(string(anB), "\x00", "")
 		ae := strings.ReplaceAll(string(aeB), "\x00", "")
+		cn := strings.ReplaceAll(string(cnB), "\x00", "")
+		ce := strings.ReplaceAll(string(ceB), "\x00", "")
 		msg := strings.ReplaceAll(string(msgB), "\x00", "")
 
 		outMap[sha] = commitInfo{
-			Sha:         sha,
-			AuthorName:  an,
-			AuthorEmail: ae,
-			Message:     msg,
+			Sha:            sha,
+			AuthorName:     an,
+			AuthorEmail:    ae,
+			CommitterName:  cn,
+			CommitterEmail: ce,
+			Message:        msg,
 		}
 	}
 	return nil
 }
 
-// Run git_commits.sh for a batch; if it fails, bisect to salvage partial results.
+// gitCommitInfoBatch runs git/git_commits.sh for a batch. If it fails, it bisects to salvage partial results.
 func gitCommitInfoBatch(ctx *lib.Ctx, repoPath string, shas []string) (map[string]commitInfo, error) {
 	outMap := make(map[string]commitInfo, len(shas))
 	if len(shas) == 0 {
@@ -438,7 +538,6 @@ func gitCommitInfoBatch(ctx *lib.Ctx, repoPath string, shas []string) (map[strin
 	if ctx.LocalCmd {
 		cmdPrefix = lib.LocalGitScripts
 	}
-
 	args := append([]string{cmdPrefix + "git_commits.sh", repoPath}, shas...)
 	out, err := lib.ExecCommand(ctx, args, nil)
 	if err == nil {
@@ -450,7 +549,6 @@ func gitCommitInfoBatch(ctx *lib.Ctx, repoPath string, shas []string) (map[strin
 	if len(shas) == 1 {
 		return outMap, err
 	}
-
 	mid := len(shas) / 2
 	left, errL := gitCommitInfoBatch(ctx, repoPath, shas[:mid])
 	right, errR := gitCommitInfoBatch(ctx, repoPath, shas[mid:])
@@ -470,11 +568,11 @@ func gitCommitInfoBatch(ctx *lib.Ctx, repoPath string, shas []string) (map[strin
 	return left, nil
 }
 
-// List commits between BEFORE..HEAD using git_commits_range.sh paging.
-// BEFORE=0 handling:
-// - if fullHistoryOnZero=false: return [HEAD] only (safe for branch creation pointing at old history)
-// - if fullHistoryOnZero=true: list full history reachable from HEAD (likely initial push)
-func gitRangeCommits(ctx *lib.Ctx, repoPath, before, head string, fullHistoryOnZero bool, pageSize int) ([]string, error) {
+// gitRangeCommits lists commits between BEFORE..HEAD using git/git_commits_range.sh paging.
+//
+// Script output is newest->oldest for stable paging with --skip/--max-count.
+// This function reverses the final slice to return oldest->newest.
+func gitRangeCommits(ctx *lib.Ctx, repoPath, before, head string, pageSize int, maxNeeded int) ([]string, error) {
 	before = strings.TrimSpace(before)
 	head = strings.TrimSpace(head)
 
@@ -482,13 +580,9 @@ func gitRangeCommits(ctx *lib.Ctx, repoPath, before, head string, fullHistoryOnZ
 		return []string{}, nil
 	}
 
-	if before == "" || isZeroSHA(before) {
-		if !fullHistoryOnZero {
-			return []string{head}, nil
-		}
-		if before == "" {
-			before = "0000000000000000000000000000000000000000"
-		}
+	zeros := strings.Repeat("0", 40)
+	if before == "" {
+		before = zeros
 	}
 
 	limit := pageSize
@@ -501,7 +595,7 @@ func gitRangeCommits(ctx *lib.Ctx, repoPath, before, head string, fullHistoryOnZ
 		cmdPrefix = lib.LocalGitScripts
 	}
 
-	all := []string{}
+	all := make([]string, 0, limit)
 	skip := 0
 	for {
 		args := []string{
@@ -516,132 +610,177 @@ func gitRangeCommits(ctx *lib.Ctx, repoPath, before, head string, fullHistoryOnZ
 		if err != nil {
 			return all, err
 		}
-		chunk := []string{}
-		for _, line := range strings.Split(string(out), "\n") {
+
+		var chunk []string
+		for _, line := range strings.Split(out, "\n") {
 			sha := strings.TrimSpace(line)
 			if sha == "" {
 				continue
 			}
 			chunk = append(chunk, sha)
+			// For BEFORE=0 case we may only need the newest maxNeeded commits.
+			if maxNeeded > 0 && len(all)+len(chunk) >= maxNeeded {
+				break
+			}
 		}
 		if len(chunk) == 0 {
 			break
 		}
+
+		// If maxNeeded is set and we overshot by parsing a bigger page, trim.
+		if maxNeeded > 0 && len(all)+len(chunk) > maxNeeded {
+			chunk = chunk[:maxNeeded-len(all)]
+		}
+
 		all = append(all, chunk...)
+
+		if maxNeeded > 0 && len(all) >= maxNeeded {
+			break
+		}
 		if len(chunk) < limit {
 			break
 		}
 		skip += limit
 	}
+
+	// Reverse newest->oldest to oldest->newest.
+	reverseStringsInPlace(all)
 	return all, nil
 }
 
-func selectPushEventsNeedingCommits(ctx *lib.Ctx, con *sql.DB, repoName string, dtFrom string) ([]pushEvent, error) {
+func selectPushEventsNeedingCommits(ctx *lib.Ctx, con *sql.DB, repo string, dtFrom time.Time) ([]pushEvent, error) {
+	// mode=1: missing only; mode>=2: missing + truncated (cnt < payload.size).
+	// Filter out payload size=0 (no commits) to avoid re-processing "branch create without new commits".
 	q := `
 select
-	e.id as event_id,
-	e.actor_id,
-	e.dup_actor_login,
-	e.repo_id,
-	e.dup_repo_name,
-	e.created_at,
-	p.head,
-	p.befor,
-	p.size,
-	coalesce(c.cnt, 0) as cnt
+  e.id,
+  e.actor_id,
+  e.dup_actor_login,
+  e.repo_id,
+  e.dup_repo_name,
+  e.created_at,
+  p.head,
+  p.befor,
+  p.size,
+  coalesce(c.cnt,0) as cnt
 from gha_events e
 join gha_payloads p on p.event_id = e.id
 left join (
-	select event_id, count(*) as cnt
-	from gha_commits
-	group by event_id
+  select event_id, count(*) as cnt
+  from gha_commits
+  group by event_id
 ) c on c.event_id = e.id
 where e.type = 'PushEvent'
-	and e.dup_repo_name = $1
-	and e.created_at >= $2
-	and (
-		c.cnt is null
-		or c.cnt = 0
-		or (
-			$3 >= 2
-			and p.size is not null
-			and c.cnt < p.size
-		)
-	)
+  and e.dup_repo_name = $1
+  and e.created_at >= $2
+  and (p.size is null or p.size > 0)
+  and (
+    c.cnt is null
+    or c.cnt = 0
+    or (
+      $3 >= 2
+      and p.size is not null
+      and c.cnt < p.size
+    )
+  )
 order by e.created_at, e.id
 `
-	rows, err := con.Query(q, repoName, dtFrom, ctx.FetchCommitsMode)
+	rows, err := con.Query(q, repo, dtFrom, ctx.FetchCommitsMode)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []pushEvent
 	for rows.Next() {
-		ev := pushEvent{}
-		err := rows.Scan(
+		var ev pushEvent
+		var head, bef sql.NullString
+		if err := rows.Scan(
 			&ev.EventID,
 			&ev.ActorID,
 			&ev.ActorLogin,
 			&ev.RepoID,
 			&ev.RepoName,
 			&ev.CreatedAt,
-			&ev.Head,
-			&ev.Before,
+			&head,
+			&bef,
 			&ev.Size,
 			&ev.Cnt,
-		)
-		if err != nil {
+		); err != nil {
 			return nil, err
+		}
+		if head.Valid {
+			ev.Head = head.String
+		}
+		if bef.Valid {
+			ev.Before = bef.String
 		}
 		out = append(out, ev)
 	}
 	return out, nil
 }
 
-// Thread-safe cache wrapper.
-func lookupActorCached(tx *sql.Tx, cache *actorCache, name, email string) (sql.NullInt64, string) {
-	k := strings.ToLower(email) + "♂♀" + strings.ToLower(name)
+// lookupActorNameEmailCachedTx attempts to map (name,email) to (actor_id, actor_login) using the same tables
+// used by gha2db:
+// - gha_actors_emails (email -> actor)
+// - gha_actors_names  (name  -> actor)
+// - gha_actors        (name  -> actor)
+//
+// Cache key uses (lower(email), lower(name)).
+func lookupActorNameEmailCachedTx(tx *sql.Tx, cache *actorCache, maybeHide func(string) string, name, email string) (int64, string) {
+	key := [2]string{
+		strings.ToLower(strings.TrimSpace(email)),
+		strings.ToLower(strings.TrimSpace(name)),
+	}
 
 	cache.mu.RLock()
-	if v, ok := cache.m[k]; ok {
+	if v, ok := cache.m[key]; ok {
 		cache.mu.RUnlock()
-		return v.ID, v.Login
+		return v.id, v.login
 	}
 	cache.mu.RUnlock()
 
-	id := sql.NullInt64{}
-	login := sql.NullString{}
+	aName := strings.TrimSpace(maybeHide(name))
+	aEmail := strings.TrimSpace(maybeHide(email))
 
-	if email != "" {
+	id := int64(0)
+	login := ""
+
+	if aEmail != "" {
 		err := tx.QueryRow(
-			"select id, login from gha_actors where lower(email) = lower($1) order by id limit 1",
-			email,
+			`select a.id, a.login from gha_actors a, gha_actors_emails ae where a.id = ae.actor_id and lower(ae.email) = lower($1) order by a.id desc limit 1`,
+			aEmail,
 		).Scan(&id, &login)
 		if err != nil && err != sql.ErrNoRows {
-			lib.Printf("Warning: lookup actor by email failed (email=%q): %v\n", email, err)
-		}
-	}
-	if !id.Valid && name != "" {
-		err := tx.QueryRow(
-			"select id, login from gha_actors where lower(name) = lower($1) order by id limit 1",
-			name,
-		).Scan(&id, &login)
-		if err != nil && err != sql.ErrNoRows {
-			lib.Printf("Warning: lookup actor by name failed (name=%q): %v\n", name, err)
+			lib.Printf("Warning: lookup actor by email failed (email=%q): %v\n", aEmail, err)
 		}
 	}
 
-	outLogin := ""
-	if login.Valid {
-		outLogin = login.String
+	if id == 0 && aName != "" {
+		err := tx.QueryRow(
+			`select a.id, a.login from gha_actors a, gha_actors_names an where a.id = an.actor_id and lower(an.name) = lower($1) order by a.id desc limit 1`,
+			aName,
+		).Scan(&id, &login)
+		if err != nil && err != sql.ErrNoRows {
+			lib.Printf("Warning: lookup actor by gha_actors_names failed (name=%q): %v\n", aName, err)
+		}
+	}
+
+	if id == 0 && aName != "" {
+		err := tx.QueryRow(
+			`select id, login from gha_actors where lower(name) = lower($1) order by id desc limit 1`,
+			aName,
+		).Scan(&id, &login)
+		if err != nil && err != sql.ErrNoRows {
+			lib.Printf("Warning: lookup actor by gha_actors.name failed (name=%q): %v\n", aName, err)
+		}
 	}
 
 	cache.mu.Lock()
-	cache.m[k] = actorCacheEntry{ID: id, Login: outLogin}
+	cache.m[key] = actorCacheEntry{id: id, login: login}
 	cache.mu.Unlock()
 
-	return id, outLogin
+	return id, login
 }
 
 type trailer struct {
@@ -650,42 +789,65 @@ type trailer struct {
 	Email string
 }
 
-func parseTrailers(msg string) []trailer {
-	var out []trailer
-	lines := strings.Split(msg, "\n")
-	for _, l := range lines {
-		l = strings.TrimSpace(l)
-		if l == "" {
-			continue
+func matchGroups(re *regexp.Regexp, s string) map[string]string {
+	matches := re.FindStringSubmatch(s)
+	if matches == nil {
+		return nil
+	}
+	out := make(map[string]string)
+	for i, name := range re.SubexpNames() {
+		if i != 0 && name != "" {
+			out[name] = matches[i]
 		}
-		// Common DevStats roles
-		out = appendTrailer(out, l, "Signed-off-by")
-		out = appendTrailer(out, l, "Co-authored-by")
-		out = appendTrailer(out, l, "Reviewed-by")
-		out = appendTrailer(out, l, "Acked-by")
-		out = appendTrailer(out, l, "Tested-by")
-		out = appendTrailer(out, l, "Reported-by")
 	}
 	return out
 }
 
-func appendTrailer(out []trailer, line, role string) []trailer {
-	prefix := role + ":"
-	if !strings.HasPrefix(strings.ToLower(line), strings.ToLower(prefix)) {
-		return out
+// parseTrailers extracts commit roles from message trailers.
+// The set of recognized trailers and their canonical role names is shared with gha2db
+// via lib.GitTrailerPattern and lib.GitAllowedTrailers.
+func parseTrailers(msg string) []trailer {
+	var out []trailer
+	lines := strings.Split(msg, "\n")
+	for _, l := range lines {
+		l = strings.TrimSpace(strings.TrimRight(l, "\r"))
+		if l == "" {
+			continue
+		}
+
+		m := matchGroups(lib.GitTrailerPattern, l)
+		if len(m) == 0 {
+			continue
+		}
+
+		key := strings.ToLower(strings.TrimSpace(m["name"]))
+		value := strings.TrimSpace(m["value"])
+		roles, ok := lib.GitAllowedTrailers[key]
+		if !ok || len(roles) == 0 {
+			continue
+		}
+
+		// Expected: Name <email>
+		nameEmail := strings.Split(value, "<")
+		if len(nameEmail) < 2 {
+			continue
+		}
+		name := strings.TrimSpace(nameEmail[0])
+		emailEnd := strings.Split(nameEmail[1], ">")
+		if len(emailEnd) < 2 {
+			continue
+		}
+		email := strings.TrimSpace(emailEnd[0])
+		if name == "" || email == "" {
+			continue
+		}
+
+		for _, role := range roles {
+			if role == "" {
+				continue
+			}
+			out = append(out, trailer{Role: role, Name: name, Email: email})
+		}
 	}
-	rest := strings.TrimSpace(line[len(prefix):])
-	// Format: Name <email>
-	lt := strings.LastIndex(rest, "<")
-	gt := strings.LastIndex(rest, ">")
-	if lt < 0 || gt < 0 || gt <= lt {
-		return out
-	}
-	name := strings.TrimSpace(rest[:lt])
-	email := strings.TrimSpace(rest[lt+1 : gt])
-	if name == "" {
-		return out
-	}
-	out = append(out, trailer{Role: role, Name: name, Email: email})
 	return out
 }
