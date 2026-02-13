@@ -184,7 +184,7 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 		lib.Printf("%s: no need to backfill commits since %s\n", repo, dtFrom)
 		return nil
 	}
-	lib.Printf("%s: need to backfill %d commits since %s\n", repo, len(events), dtFrom)
+	lib.Printf("%s: need to backfill %d events since %s\n", repo, len(events), dtFrom)
 
 	// Build: event -> shas, plus global sha set.
 	eventShas := make(map[int64][]string, len(events))
@@ -307,13 +307,15 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 insert into gha_commits(
   sha, event_id, author_name, encrypted_email, message,
   is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at,
-  author_id, committer_id, dup_author_login, dup_committer_login
+  author_id, committer_id, dup_author_login, dup_committer_login,
+  author_email, committer_name, committer_email
 )
 select
   $1::varchar(40),$2,$3,$4,$5,
   not exists(select 1 from gha_commits c2 where c2.sha = $1::varchar(40) limit 1),
   $6,$7,$8,$9,$10,$11,
-  $12,$13,$14,$15
+  $12,$13,$14,$15,
+  $16,$17,$18
 on conflict do nothing
 `
 	insRoleSQL := `
@@ -440,6 +442,9 @@ on conflict do nothing
 				commID,
 				dupAuthorLogin,
 				dupCommLogin,
+				authorEmail,
+				commRoleName,
+				commRoleEmail,
 			); err != nil {
 				return fmt.Errorf("insert gha_commits (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
 			}
@@ -737,6 +742,8 @@ join gha_payloads p on p.event_id = e.id
 left join (
   select event_id, count(*) as cnt
   from gha_commits
+	where dup_repo_name = $1
+  and dup_created_at >= $2
   group by event_id
 ) c on c.event_id = e.id
 where e.type = 'PushEvent'

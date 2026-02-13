@@ -3,7 +3,7 @@ package devstatscode
 import "regexp"
 
 // Copied 1:1 from the old cmd/gha2db/gha2db.go:
-var GitTrailerPattern = regexp.MustCompile(`^(?P<name>[a-zA-z0-9\-]+)\:[ \t]+(?P<value>.+)$`)
+var GitTrailerPattern = regexp.MustCompile(`^(?P<name>[a-zA-Z0-9\-]+)\:[ \t]+(?P<value>.+)$`)
 
 // Copied 1:1 from the old cmd/gha2db/gha2db.go (same map literal, no changes):
 var GitAllowedTrailers = map[string][]string{
