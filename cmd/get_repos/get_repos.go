@@ -40,7 +40,8 @@ func dirExists(path string) (bool, error) {
 }
 
 // getRepos returns map { 'org' --> list of repos } for all devstats projects
-func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}) {
+func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}, map[string]map[string]struct{}) {
+
 	// Process all projects, or restrict from environment variable?
 	onlyProjects := make(map[string]bool)
 	selectedProjects := false
@@ -73,6 +74,7 @@ func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}) 
 	}
 
 	allRepos := make(map[string]map[string]struct{})
+	dbRepos := make(map[string]map[string]struct{})
 	for db := range dbs {
 		// Connect to Postgres `db` database.
 		con := lib.PgConnDB(ctx, db)
@@ -105,11 +107,18 @@ func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}) 
 				allRepos[org] = make(map[string]struct{})
 			}
 			allRepos[org][repo] = struct{}{}
+
+			_, ok = dbRepos[db]
+			if !ok {
+				dbRepos[db] = make(map[string]struct{})
+			}
+			dbRepos[db][repo] = struct{}{}
+
 		}
 	}
 
 	// return final map
-	return dbs, allRepos
+	return dbs, allRepos, dbRepos
 }
 
 // processRepo - processes single repo (clone or reset+pull) in a separate thread/goroutine
@@ -854,10 +863,11 @@ func main() {
 	ctx.Init()
 	lib.SetupTimeoutSignal(&ctx)
 	if !ctx.SkipGetRepos {
-		dbs, repos := getRepos(&ctx)
+		dbs, repos, repoDBs := getRepos(&ctx)
 		if ctx.Debug > 0 {
 			lib.Printf("dbs: %+v\n", dbs)
 			lib.Printf("repos: %+v\n", repos)
+			lib.Printf("repoDBs: %+v\n", repoDBs)
 		}
 		if len(dbs) == 0 {
 			lib.Fatalf("No databases to process")
@@ -868,10 +878,15 @@ func main() {
 		if ctx.ProcessRepos {
 			processRepos(&ctx, repos)
 		}
+		if ctx.FetchCommitsMode != 0 {
+			backfillPushEventCommits(&ctx, dbs, repoDBs)
+		}
 		if ctx.ProcessCommits {
 			processCommits(&ctx, dbs)
 		}
 	}
 	dtEnd := time.Now()
 	lib.Printf("All repos processed in: %v\n", dtEnd.Sub(dtStart))
+	// Example copy to the debug pod: make get_repos && k cp -n devstats-prod ./get_repos debug:/get_repos
+	// Example run in the debug pod: GHA2DB_LOCAL=1 GHA2DB_FETCH_COMMITS_MODE=2 GHA2DB_PROCESS_REPOS=1 GHA2DB_PROCESS_COMMITS=1 GHA2DB_PROJECTS_COMMITS=tuf GHA2DB_PROJECT=tuf PG_DB=work GHA2DB_QOUT=1 GHA2DB_DEBUG=1 GHA2DB_CMDDEBUG=1 /get_repos
 }

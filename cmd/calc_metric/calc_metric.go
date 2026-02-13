@@ -1365,6 +1365,7 @@ func main() {
 		)
 		lib.Printf("For queries returning multiple rows 'series_name_or_func' will be used as function that\n")
 		lib.Printf("receives data row and period and returns name and value(s) for it\n")
+		lib.Printf("Example run: GHA2DB_QOUT=1 GHA2DB_PROJECT=istio PG_DB=istio calc_metric multi_row_single_column /etc/gha2db/metrics/istio/project_developer_stats.sql '2026-02-12 7' '2026-02-12 19' d hist,merge_series:hdev,annotations_ranges,skip_past\n")
 		os.Exit(1)
 	}
 	var cfg calcMetricData

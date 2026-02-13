@@ -12,6 +12,12 @@ if [ -n "$DEFAULT_REF" ]
 then
   git reset --hard "$DEFAULT_REF" || exit 4
 else
-  git reset --hard origin/master || git reset --hard origin/main || exit 5
+  DEFAULT_BRANCH="$(git remote show origin 2>/dev/null | sed -n 's/^[[:space:]]*HEAD branch: //p' | head -n1)"
+  if [ -n "$DEFAULT_BRANCH" ]
+  then
+    git reset --hard "origin/$DEFAULT_BRANCH" || exit 5
+  else
+    git reset --hard origin/master || git reset --hard origin/main || exit 5
+  fi
 fi
 git pull || exit 6

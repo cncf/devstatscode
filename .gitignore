@@ -74,3 +74,4 @@ sqlite/*.sql
 .idea
 *.g
 env.env
+src.txt

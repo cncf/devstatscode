@@ -5,5 +5,4 @@ then
   exit 1
 fi
 
-cd "$1" || exit 2
-git describe --abbrev=0 --tags || echo "-"
+git -C "${1}" describe --abbrev=0 --tags || echo "-"
