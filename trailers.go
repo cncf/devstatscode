@@ -2,10 +2,10 @@ package devstatscode
 
 import "regexp"
 
-// Copied 1:1 from the old cmd/gha2db/gha2db.go:
+// GitTrailerPattern is used to parse trailers in git commit messages. It captures the trailer name and value.
 var GitTrailerPattern = regexp.MustCompile(`^(?P<name>[a-zA-Z0-9\-]+)\:[ \t]+(?P<value>.+)$`)
 
-// Copied 1:1 from the old cmd/gha2db/gha2db.go (same map literal, no changes):
+// GitAllowedTrailers maps various trailer names to their corresponding standard trailer types. This allows for flexible parsing of commit messages that may use different conventions for trailers.
 var GitAllowedTrailers = map[string][]string{
 	"about-fscking-timed-by":                 {"Reviewed-by"},
 	"accked-by":                              {"Reviewed-by"},

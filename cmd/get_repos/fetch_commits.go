@@ -49,8 +49,10 @@ type actorCache struct {
 }
 
 var (
+	// InsertCommitterRole - we don't add those roles
 	InsertCommitterRole = false
-	InsertAuthorRole    = false
+	// InsertAuthorRole - we don't add those roles
+	InsertAuthorRole = false
 )
 
 func newActorCache() *actorCache {
