@@ -327,7 +327,7 @@ insert into gha_commits_roles(
 on conflict do nothing
 `
 	// Only fill missing payload size (NULL) with the computed count.
-	updPayloadSQL := `update gha_payloads set size = $2 where event_id = $1 and size is null`
+	updPayloadSQL := `update gha_payloads set size = $2 where event_id = $1 and (size is null or size <= 1) and (size is null or size <> $2)`
 
 	insCommitStmt, err := tx.Prepare(insCommitSQL)
 	if err != nil {
@@ -726,7 +726,6 @@ func gitRangeCommits(ctx *lib.Ctx, repoPath, before, head string, pageSize int, 
 
 func selectPushEventsNeedingCommits(ctx *lib.Ctx, con *sql.DB, repo string, dtFrom time.Time) ([]pushEvent, error) {
 	// mode=1: missing only; mode>=2: missing + truncated (cnt < payload.size).
-	// Filter out payload size=0 (no commits) to avoid re-processing "branch create without new commits".
 	q := `
 select
   e.id,
@@ -751,7 +750,16 @@ left join (
 where e.type = 'PushEvent'
   and e.dup_repo_name = $1
   and e.created_at >= $2
-  and (p.size is null or p.size > 0)
+  and (
+    p.size is null
+    or p.size > 0
+    or (
+      p.size = 0
+      and p.befor is not null
+      and p.befor <> ''
+      and p.befor <> '0000000000000000000000000000000000000000'
+    )
+  )
   and (
     c.cnt is null
     or c.cnt = 0
