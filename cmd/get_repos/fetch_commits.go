@@ -48,6 +48,11 @@ type actorCache struct {
 	m  map[[2]string]actorCacheEntry
 }
 
+var (
+	InsertCommitterRole = false
+	InsertAuthorRole    = false
+)
+
 func newActorCache() *actorCache {
 	return &actorCache{m: make(map[[2]string]actorCacheEntry)}
 }
@@ -176,8 +181,10 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 		return err
 	}
 	if len(events) == 0 {
+		lib.Printf("%s: no need to backfill commits since %s\n", repo, dtFrom)
 		return nil
 	}
+	lib.Printf("%s: need to backfill %d commits since %s\n", repo, len(events), dtFrom)
 
 	// Build: event -> shas, plus global sha set.
 	eventShas := make(map[int64][]string, len(events))
@@ -193,7 +200,9 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 		before := strings.TrimSpace(ev.Before)
 
 		if head == "" || isZeroSHA(head) {
-			lib.Printf("Warning: skipping PushEvent %d in %s: empty/zero head SHA\n", ev.EventID, repo)
+			if ctx.Debug > 0 {
+				lib.Printf("Warning: skipping PushEvent %d in %s: empty/zero head SHA\n", ev.EventID, repo)
+			}
 			continue
 		}
 
@@ -203,6 +212,9 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 			if ev.Size.Valid {
 				if ev.Size.Int64 <= 0 {
 					// size=0 -> no commits; should be filtered out, but be defensive.
+					if ctx.Debug > 0 {
+						lib.Printf("Warning: skipping PushEvent %d in %s: non-positive payload size=%d with zero before SHA\n", ev.EventID, repo, ev.Size.Int64)
+					}
 					continue
 				}
 				// For before=0 we take the newest <size> commits reachable from head.
@@ -227,12 +239,23 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 		}
 
 		if len(shas) == 0 {
+			if ctx.Debug > 0 {
+				lib.Printf("Warning: no commits found for %s PushEvent %d (before %s, head %s)\n", repo, ev.EventID, ev.Before, ev.Head)
+			}
 			continue
+		}
+		if ctx.Debug > 0 {
+			lib.Printf("%s PushEvent %d: found %d commits (before %s, head %s): %+v\n", repo, ev.EventID, len(shas), ev.Before, ev.Head, shas)
+		} else {
+			lib.Printf("%s PushEvent %d: found %d commits (before %s, head %s)\n", repo, ev.EventID, len(shas), ev.Before, ev.Head)
 		}
 		eventShas[ev.EventID] = shas
 		for _, s := range shas {
 			s = strings.TrimSpace(s)
 			if s == "" || isZeroSHA(s) {
+				if ctx.Debug > 0 {
+					lib.Printf("Warning: skipping empty/zero SHA for %s PushEvent %d\n", repo, ev.EventID)
+				}
 				continue
 			}
 			shaSet[s] = struct{}{}
@@ -240,6 +263,7 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 	}
 
 	if len(eventShas) == 0 || len(shaSet) == 0 {
+		lib.Printf("%s: no commits to backfill after processing %d events\n", repo, len(events))
 		return nil
 	}
 
@@ -267,6 +291,9 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 	if len(infoMap) == 0 {
 		return fmt.Errorf("git_commits.sh returned no commit metadata for repo=%s (shas=%d)", repo, len(shaSet))
 	}
+	if ctx.Debug > 0 {
+		lib.Printf("Fetched commit metadata for %s: %d SHAs, %d records so far\n", repo, len(shaSet), len(infoMap))
+	}
 
 	tx, err := con.Begin()
 	if err != nil {
@@ -283,8 +310,8 @@ insert into gha_commits(
   author_id, committer_id, dup_author_login, dup_committer_login
 )
 select
-  $1,$2,$3,$4,$5,
-  not exists(select 1 from gha_commits c2 where c2.sha = $1 limit 1),
+  $1::varchar(40),$2,$3,$4,$5,
+  not exists(select 1 from gha_commits c2 where c2.sha = $1::varchar(40) limit 1),
   $6,$7,$8,$9,$10,$11,
   $12,$13,$14,$15
 on conflict do nothing
@@ -316,15 +343,24 @@ on conflict do nothing
 	}
 	defer func() { _ = updPayloadStmt.Close() }()
 
+	if ctx.Debug > 0 {
+		lib.Printf("%s: inserting commits for %d events\n", repo, len(events))
+	}
 	for _, ev := range events {
 		shas := eventShas[ev.EventID]
+		if ctx.Debug > 0 {
+			lib.Printf("%s PushEvent %d: inserting %d commits (before %s, head %s)\n", repo, ev.EventID, len(shas), ev.Before, ev.Head)
+		}
 		if len(shas) == 0 {
+			if ctx.Debug > 0 {
+				lib.Printf("Warning: no commits to insert for %s PushEvent %d (before %s, head %s)\n", repo, ev.EventID, ev.Before, ev.Head)
+			}
 			continue
 		}
 
 		// Update payload size to computed commit count only if size is currently NULL.
 		if _, uerr := updPayloadStmt.Exec(ev.EventID, len(shas)); uerr != nil {
-			return fmt.Errorf("update gha_payloads.size (repo=%s, event=%d): %w", repo, ev.EventID, uerr)
+			return fmt.Errorf("update gha_payloads.size (repo=%s, event=%d): error: %w", repo, ev.EventID, uerr)
 		}
 
 		if ev.Size.Valid && int64(len(shas)) != ev.Size.Int64 {
@@ -337,12 +373,17 @@ on conflict do nothing
 		for _, sha := range shas {
 			sha = strings.TrimSpace(sha)
 			if sha == "" || isZeroSHA(sha) {
+				if ctx.Debug > 0 {
+					lib.Printf("Warning: skipping empty/zero SHA for %s PushEvent %d\n", repo, ev.EventID)
+				}
 				continue
 			}
 
 			ci, ok := infoMap[sha]
 			if !ok {
-				lib.Printf("Warning: missing git metadata for %s sha %s (event %d)\n", repo, sha, ev.EventID)
+				if ctx.Debug > 0 {
+					lib.Printf("Warning: missing git metadata for %s sha %s (event %d)\n", repo, sha, ev.EventID)
+				}
 				continue
 			}
 
@@ -362,8 +403,14 @@ on conflict do nothing
 			commRoleName := lib.TruncToBytes(maybeHide(commNameRaw), 160)
 			commRoleEmail := lib.TruncToBytes(maybeHide(commEmailRaw), 160)
 
-			authorID, authorLogin := lookupActorNameEmailCachedTx(tx, acache, maybeHide, authorNameRaw, authorEmailRaw)
-			commID, commLogin := lookupActorNameEmailCachedTx(tx, acache, maybeHide, commNameRaw, commEmailRaw)
+			authorID, authorLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, authorNameRaw, authorEmailRaw)
+			commID, commLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, commNameRaw, commEmailRaw)
+			if ctx.Debug > 0 && authorID == 0 {
+				lib.Printf("Warning: could not find actor for author of %s sha %s (event %d): name=%q, email=%q\n", repo, sha, ev.EventID, authorNameRaw, authorEmailRaw)
+			}
+			if ctx.Debug > 0 && commID == 0 {
+				lib.Printf("Warning: could not find actor for committer of %s sha %s (event %d): name=%q, email=%q\n", repo, sha, ev.EventID, commNameRaw, commEmailRaw)
+			}
 
 			dupActorLogin := lib.TruncToBytes(maybeHide(ev.ActorLogin), 120)
 
@@ -394,33 +441,42 @@ on conflict do nothing
 				dupAuthorLogin,
 				dupCommLogin,
 			); err != nil {
-				return fmt.Errorf("insert gha_commits (repo=%s, event=%d, sha=%s): %w", repo, ev.EventID, sha, err)
+				return fmt.Errorf("insert gha_commits (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
 			}
 
 			// Insert roles: Author + Committer + trailers.
-			if err := insertRoles(insRoleStmt, sha, ev, "Author", authorID, authorLogin, authorRoleName, authorRoleEmail, maybeHide); err != nil {
-				return fmt.Errorf("insert Author role (repo=%s, event=%d, sha=%s): %w", repo, ev.EventID, sha, err)
+			if InsertAuthorRole {
+				if err := insertRoles(insRoleStmt, sha, ev, "Author", authorID, authorLogin, authorRoleName, authorRoleEmail, maybeHide); err != nil {
+					return fmt.Errorf("insert Author role (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
+				}
 			}
-			if err := insertRoles(insRoleStmt, sha, ev, "Committer", commID, commLogin, commRoleName, commRoleEmail, maybeHide); err != nil {
-				return fmt.Errorf("insert Committer role (repo=%s, event=%d, sha=%s): %w", repo, ev.EventID, sha, err)
+			if InsertCommitterRole {
+				if err := insertRoles(insRoleStmt, sha, ev, "Committer", commID, commLogin, commRoleName, commRoleEmail, maybeHide); err != nil {
+					return fmt.Errorf("insert Committer role (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
+				}
 			}
 
-			trailerRoles := parseTrailers(ci.Message)
+			trailerRoles := parseTrailers(ctx, ci.Message)
 			for _, tr := range trailerRoles {
 				name := lib.TruncToBytes(maybeHide(tr.Name), 160)
 				email := lib.TruncToBytes(maybeHide(tr.Email), 160)
 
-				tID, tLogin := lookupActorNameEmailCachedTx(tx, acache, maybeHide, tr.Name, tr.Email)
+				tID, tLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, tr.Name, tr.Email)
+				if ctx.Debug > 0 && tID == 0 {
+					lib.Printf("Warning: could not find actor for trailer role of %s sha %s (event %d): name=%q, email=%q\n", repo, sha, ev.EventID, tr.Name, tr.Email)
+				}
 				if err := insertRoles(insRoleStmt, sha, ev, tr.Role, tID, tLogin, name, email, maybeHide); err != nil {
-					return fmt.Errorf("insert trailer role (repo=%s, event=%d, sha=%s, role=%s): %w", repo, ev.EventID, sha, tr.Role, err)
+					return fmt.Errorf("insert trailer role (repo=%s, event=%d, sha=%s, role=%s): error: %w", repo, ev.EventID, sha, tr.Role, err)
 				}
 			}
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
+		lib.Printf("Error committing transaction for %s: %v\n", repo, err)
 		return err
 	}
+	lib.Printf("%s: successfully backfilled commits for %d events\n", repo, len(events))
 	return nil
 }
 
@@ -531,6 +587,9 @@ func parseGitCommitsOutput(out string, outMap map[string]commitInfo) error {
 func gitCommitInfoBatch(ctx *lib.Ctx, repoPath string, shas []string) (map[string]commitInfo, error) {
 	outMap := make(map[string]commitInfo, len(shas))
 	if len(shas) == 0 {
+		if ctx.Debug > 0 {
+			lib.Printf("Warning: empty SHA batch for repo %s\n", repoPath)
+		}
 		return outMap, nil
 	}
 
@@ -542,9 +601,19 @@ func gitCommitInfoBatch(ctx *lib.Ctx, repoPath string, shas []string) (map[strin
 	out, err := lib.ExecCommand(ctx, args, nil)
 	if err == nil {
 		perr := parseGitCommitsOutput(out, outMap)
+		if perr != nil {
+			lib.Printf("Parsed git_commits.sh output for repo %s, batch size %d: %d records, parse error: %v\n", repoPath, len(shas), len(outMap), perr)
+		} else {
+			if ctx.Debug > 1 {
+				lib.Printf("Parsed git_commits.sh output for repo %s, batch size %d: %d records: %+v\n", repoPath, len(shas), len(outMap), outMap)
+			}
+		}
 		return outMap, perr
 	}
 
+	if ctx.Debug > 0 {
+		lib.Printf("Error running git_commits.sh for repo %s, batch size %d: %v\n", repoPath, len(shas), err)
+	}
 	// If a batch fails, split to isolate bad SHAs but keep partial output.
 	if len(shas) == 1 {
 		return outMap, err
@@ -557,7 +626,7 @@ func gitCommitInfoBatch(ctx *lib.Ctx, repoPath string, shas []string) (map[strin
 	}
 
 	if errL != nil && errR != nil {
-		return left, fmt.Errorf("git_commits.sh failed for both halves: (%v) and (%v)", errL, errR)
+		return left, fmt.Errorf("git_commits.sh error for both halves: (%v) and (%v)", errL, errR)
 	}
 	if errL != nil {
 		return left, errL
@@ -727,7 +796,7 @@ order by e.created_at, e.id
 // - gha_actors        (name  -> actor)
 //
 // Cache key uses (lower(email), lower(name)).
-func lookupActorNameEmailCachedTx(tx *sql.Tx, cache *actorCache, maybeHide func(string) string, name, email string) (int64, string) {
+func lookupActorNameEmailCachedTx(ctx *lib.Ctx, tx *sql.Tx, cache *actorCache, maybeHide func(string) string, name, email string) (int64, string) {
 	key := [2]string{
 		strings.ToLower(strings.TrimSpace(email)),
 		strings.ToLower(strings.TrimSpace(name)),
@@ -752,27 +821,37 @@ func lookupActorNameEmailCachedTx(tx *sql.Tx, cache *actorCache, maybeHide func(
 			aEmail,
 		).Scan(&id, &login)
 		if err != nil && err != sql.ErrNoRows {
-			lib.Printf("Warning: lookup actor by email failed (email=%q): %v\n", aEmail, err)
+			lib.Printf("Warning: lookup actor by email failed (email=%q): error: %v\n", aEmail, err)
 		}
 	}
 
-	if id == 0 && aName != "" {
+	if id == 0 && aName != "" && len(aName) > 2 {
 		err := tx.QueryRow(
 			`select a.id, a.login from gha_actors a, gha_actors_names an where a.id = an.actor_id and lower(an.name) = lower($1) order by a.id desc limit 1`,
 			aName,
 		).Scan(&id, &login)
 		if err != nil && err != sql.ErrNoRows {
-			lib.Printf("Warning: lookup actor by gha_actors_names failed (name=%q): %v\n", aName, err)
+			lib.Printf("Warning: lookup actor by gha_actors_names failed (name=%q): error: %v\n", aName, err)
 		}
 	}
 
-	if id == 0 && aName != "" {
+	if id == 0 && aName != "" && len(aName) > 3 {
 		err := tx.QueryRow(
 			`select id, login from gha_actors where lower(name) = lower($1) order by id desc limit 1`,
 			aName,
 		).Scan(&id, &login)
 		if err != nil && err != sql.ErrNoRows {
-			lib.Printf("Warning: lookup actor by gha_actors.name failed (name=%q): %v\n", aName, err)
+			lib.Printf("Warning: lookup actor by gha_actors.name failed (name=%q): error: %v\n", aName, err)
+		}
+	}
+
+	if id == 0 && aName != "" && len(aName) > 3 {
+		err := tx.QueryRow(
+			`select id, login from gha_actors where lower(login) = lower($1) order by id desc limit 1`,
+			aName,
+		).Scan(&id, &login)
+		if err != nil && err != sql.ErrNoRows {
+			lib.Printf("Warning: lookup actor by gha_actors.login failed (name=%q): error: %v\n", aName, err)
 		}
 	}
 
@@ -780,6 +859,9 @@ func lookupActorNameEmailCachedTx(tx *sql.Tx, cache *actorCache, maybeHide func(
 	cache.m[key] = actorCacheEntry{id: id, login: login}
 	cache.mu.Unlock()
 
+	if ctx.Debug > 0 {
+		lib.Printf("lookupActorNameEmailCachedTx: name=%q, email=%q -> id=%d, login=%q\n", name, email, id, login)
+	}
 	return id, login
 }
 
@@ -806,7 +888,7 @@ func matchGroups(re *regexp.Regexp, s string) map[string]string {
 // parseTrailers extracts commit roles from message trailers.
 // The set of recognized trailers and their canonical role names is shared with gha2db
 // via lib.GitTrailerPattern and lib.GitAllowedTrailers.
-func parseTrailers(msg string) []trailer {
+func parseTrailers(ctx *lib.Ctx, msg string) []trailer {
 	var out []trailer
 	lines := strings.Split(msg, "\n")
 	for _, l := range lines {
@@ -848,6 +930,9 @@ func parseTrailers(msg string) []trailer {
 			}
 			out = append(out, trailer{Role: role, Name: name, Email: email})
 		}
+	}
+	if ctx.Debug > 1 {
+		lib.Printf("parse trailers: '%s' -> %+v\n", msg, out)
 	}
 	return out
 }

@@ -867,6 +867,7 @@ func main() {
 		if ctx.Debug > 0 {
 			lib.Printf("dbs: %+v\n", dbs)
 			lib.Printf("repos: %+v\n", repos)
+			lib.Printf("repoDBs: %+v\n", repoDBs)
 		}
 		if len(dbs) == 0 {
 			lib.Fatalf("No databases to process")
@@ -886,4 +887,6 @@ func main() {
 	}
 	dtEnd := time.Now()
 	lib.Printf("All repos processed in: %v\n", dtEnd.Sub(dtStart))
+	// Example copy to the debug pod: make get_repos && k cp -n devstats-prod ./get_repos debug:/get_repos
+	// Example run in the debug pod: GHA2DB_LOCAL=1 GHA2DB_FETCH_COMMITS_MODE=2 GHA2DB_PROCESS_REPOS=1 GHA2DB_PROCESS_COMMITS=1 GHA2DB_PROJECTS_COMMITS=tuf GHA2DB_PROJECT=tuf PG_DB=work GHA2DB_QOUT=1 GHA2DB_DEBUG=1 GHA2DB_CMDDEBUG=1 /get_repos
 }

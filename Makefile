@@ -71,7 +71,7 @@ columns: cmd/columns/columns.go ${GO_LIB_FILES}
 webhook: cmd/webhook/webhook.go ${GO_LIB_FILES}
 	 ${GO_ENV} ${GO_BUILD} -o webhook cmd/webhook/webhook.go
 
-get_repos: cmd/get_repos/get_repos.go ${GO_LIB_FILES}
+get_repos: cmd/get_repos/get_repos.go cmd/get_repos/fetch_commits.go ${GO_LIB_FILES}
 	 ${GO_ENV} ${GO_BUILD} -o get_repos cmd/get_repos/get_repos.go cmd/get_repos/fetch_commits.go
 
 merge_dbs: cmd/merge_dbs/merge_dbs.go ${GO_LIB_FILES}
