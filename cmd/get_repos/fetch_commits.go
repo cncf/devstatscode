@@ -109,6 +109,8 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 	}
 	sort.Strings(dbNames)
 
+	allCommits := 0
+	allRoles := 0
 	for _, db := range dbNames {
 		reposSet, ok := repoDBs[db]
 		if !ok || len(reposSet) == 0 {
@@ -133,6 +135,9 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 
 		thr := make(chan struct{}, thrN)
 		done := make(chan struct{}, len(repos))
+		var mtx sync.Mutex
+		nCommits := 0
+		nRoles := 0
 
 		for _, repo := range repos {
 			thr <- struct{}{}
@@ -142,10 +147,14 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 					<-thr
 					done <- struct{}{}
 				}()
-				err := backfillRepo(ctx, con, repo, maybeHide, acache)
+				commits, roles, err := backfillRepo(ctx, con, repo, maybeHide, acache)
 				if err != nil {
 					lib.Printf("backfillRepo(DB=%s, repo=%s) error: %v\n", db, repo, err)
 				}
+				mtx.Lock()
+				nCommits += commits
+				nRoles += roles
+				mtx.Unlock()
 			}()
 		}
 
@@ -153,16 +162,20 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 			<-done
 		}
 		lib.FatalOnError(con.Close())
+		lib.Printf("Finished DB '%s': backfilled %d commits and %d commit roles for %d repos\n", db, nCommits, nRoles, len(repos))
+		allCommits += nCommits
+		allRoles += nRoles
 	}
+	lib.Printf("Finished all DBs: backfilled %d commits and %d commit roles\n", allCommits, allRoles)
 }
 
-func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string) string, acache *actorCache) error {
+func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string) string, acache *actorCache) (int, int, error) {
 	repoPath := ctx.ReposDir + repo
 	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
 		// Do not silently skip: user explicitly requested tracking.
-		return fmt.Errorf("repo not cloned: %s", repoPath)
+		return 0, 0, fmt.Errorf("repo not cloned: %s", repoPath)
 	} else if err != nil {
-		return fmt.Errorf("cannot stat repo path %s: %w", repoPath, err)
+		return 0, 0, fmt.Errorf("cannot stat repo path %s: %w", repoPath, err)
 	}
 
 	// For mode=1 (missing only) we can limit scanning by last commit time already inserted.
@@ -171,7 +184,7 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 		var maxDt sql.NullTime
 		err := con.QueryRow(`select max(dup_created_at) from gha_commits where dup_repo_name = $1`, repo).Scan(&maxDt)
 		if err != nil {
-			return fmt.Errorf("select max(dup_created_at) from gha_commits failed (repo=%s): %w", repo, err)
+			return 0, 0, fmt.Errorf("select max(dup_created_at) from gha_commits failed (repo=%s): %w", repo, err)
 		}
 		if maxDt.Valid && maxDt.Time.After(dtFrom) {
 			dtFrom = maxDt.Time
@@ -180,11 +193,11 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 
 	events, err := selectPushEventsNeedingCommits(ctx, con, repo, dtFrom)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	if len(events) == 0 {
 		lib.Printf("%s: no need to backfill commits since %s\n", repo, dtFrom)
-		return nil
+		return 0, 0, nil
 	}
 	lib.Printf("%s: need to backfill %d events since %s\n", repo, len(events), dtFrom)
 
@@ -266,7 +279,7 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 
 	if len(eventShas) == 0 || len(shaSet) == 0 {
 		lib.Printf("%s: no commits to backfill after processing %d events\n", repo, len(events))
-		return nil
+		return 0, 0, nil
 	}
 	lib.Printf("%s: need to backfill %d commits for %d events\n", repo, len(shaSet), len(events))
 
@@ -292,7 +305,7 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 		}
 	}
 	if len(infoMap) == 0 {
-		return fmt.Errorf("git_commits.sh returned no commit metadata for repo=%s (shas=%d)", repo, len(shaSet))
+		return 0, 0, fmt.Errorf("git_commits.sh returned no commit metadata for repo=%s (shas=%d)", repo, len(shaSet))
 	}
 	if ctx.Debug > 0 {
 		lib.Printf("Fetched commit metadata for %s: %d SHAs, %d records so far\n", repo, len(shaSet), len(infoMap))
@@ -300,7 +313,7 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 
 	tx, err := con.Begin()
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	defer func() {
 		_ = tx.Rollback()
@@ -332,19 +345,19 @@ on conflict do nothing
 
 	insCommitStmt, err := tx.Prepare(insCommitSQL)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	defer func() { _ = insCommitStmt.Close() }()
 
 	insRoleStmt, err := tx.Prepare(insRoleSQL)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	defer func() { _ = insRoleStmt.Close() }()
 
 	updPayloadStmt, err := tx.Prepare(updPayloadSQL)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	defer func() { _ = updPayloadStmt.Close() }()
 
@@ -365,7 +378,7 @@ on conflict do nothing
 
 		// Update payload size to computed commit count only if size is currently NULL.
 		if _, uerr := updPayloadStmt.Exec(ev.EventID, len(shas)); uerr != nil {
-			return fmt.Errorf("update gha_payloads.size (repo=%s, event=%d): error: %w", repo, ev.EventID, uerr)
+			return 0, 0, fmt.Errorf("update gha_payloads.size (repo=%s, event=%d): error: %w", repo, ev.EventID, uerr)
 		}
 
 		if ev.Size.Valid && int64(len(shas)) != ev.Size.Int64 {
@@ -449,20 +462,20 @@ on conflict do nothing
 				commRoleName,
 				commRoleEmail,
 			); err != nil {
-				return fmt.Errorf("insert gha_commits (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
+				return 0, 0, fmt.Errorf("insert gha_commits (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
 			}
 			nCommits++
 
 			// Insert roles: Author + Committer + trailers.
 			if InsertAuthorRole {
 				if err := insertRoles(insRoleStmt, sha, ev, "Author", authorID, authorLogin, authorRoleName, authorRoleEmail, maybeHide); err != nil {
-					return fmt.Errorf("insert Author role (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
+					return 0, 0, fmt.Errorf("insert Author role (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
 				}
 				nRoles++
 			}
 			if InsertCommitterRole {
 				if err := insertRoles(insRoleStmt, sha, ev, "Committer", commID, commLogin, commRoleName, commRoleEmail, maybeHide); err != nil {
-					return fmt.Errorf("insert Committer role (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
+					return 0, 0, fmt.Errorf("insert Committer role (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
 				}
 				nRoles++
 			}
@@ -477,7 +490,7 @@ on conflict do nothing
 					lib.Printf("Warning: could not find actor for trailer role of %s sha %s (event %d): name=%q, email=%q\n", repo, sha, ev.EventID, tr.Name, tr.Email)
 				}
 				if err := insertRoles(insRoleStmt, sha, ev, tr.Role, tID, tLogin, name, email, maybeHide); err != nil {
-					return fmt.Errorf("insert trailer role (repo=%s, event=%d, sha=%s, role=%s): error: %w", repo, ev.EventID, sha, tr.Role, err)
+					return 0, 0, fmt.Errorf("insert trailer role (repo=%s, event=%d, sha=%s, role=%s): error: %w", repo, ev.EventID, sha, tr.Role, err)
 				}
 				nRoles++
 			}
@@ -486,10 +499,10 @@ on conflict do nothing
 
 	if err := tx.Commit(); err != nil {
 		lib.Printf("Error committing transaction for %s: %v\n", repo, err)
-		return err
+		return 0, 0, err
 	}
 	lib.Printf("%s: successfully backfilled %d commits and %d commit roles for %d events\n", repo, nCommits, nRoles, len(events))
-	return nil
+	return nCommits, nRoles, nil
 }
 
 func insertRoles(stmt *sql.Stmt, sha string, ev pushEvent, role string, actorID int64, actorLogin, actorName, actorEmail string, maybeHide func(string) string) error {
