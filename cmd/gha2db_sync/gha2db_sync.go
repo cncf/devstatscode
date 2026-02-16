@@ -328,6 +328,15 @@ func sync(ctx *lib.Ctx, args []string) {
 		// We have updated repos to the newest state as 1st step in "devstats" call
 		// We have also fetched all data from current GHA hour using "gha2db"
 		// Now let's update new commits files (from newest hour)
+		env := map[string]string{
+			"GHA2DB_FETCH_COMMITS_MODE": "1",
+			"GHA2DB_PROCESS_COMMITS":    "1",
+			"GHA2DB_PROJECTS_COMMITS":   ctx.Project,
+			"GHA2DB_PROJECT":            ctx.Project,
+		}
+		if ctx.FetchCommitsMode != 1 {
+			env["GHA2DB_FETCH_COMMITS_MODE"] = strconv.Itoa(ctx.FetchCommitsMode)
+		}
 		if !ctx.SkipGetRepos {
 			lib.Printf("Update git commits\n")
 			_, err = lib.ExecCommand(
@@ -335,12 +344,7 @@ func sync(ctx *lib.Ctx, args []string) {
 				[]string{
 					cmdPrefix + "get_repos",
 				},
-				map[string]string{
-					"GHA2DB_FETCH_COMMITS_MODE": "1",
-					"GHA2DB_PROCESS_COMMITS":    "1",
-					"GHA2DB_PROJECTS_COMMITS":   ctx.Project,
-					"GHA2DB_PROJECT":            ctx.Project,
-				},
+				env,
 			)
 			lib.FatalOnError(err)
 		}

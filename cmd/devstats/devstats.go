@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
+	"strconv"
 	"time"
 
 	lib "github.com/cncf/devstatscode"
@@ -244,15 +245,16 @@ func syncAllProjects() bool {
 	if !ctx.SkipGetRepos {
 		lib.Printf("Updating git repos for all projects\n")
 		dtStart := time.Now()
+		env := map[string]string{"GHA2DB_PROCESS_REPOS": "1", "GHA2DB_FETCH_COMMITS_MODE": "0"}
+		if ctx.FetchCommitsMode == 2 {
+			env["GHA2DB_FETCH_COMMITS_MODE"] = strconv.Itoa(ctx.FetchCommitsMode)
+		}
 		_, res := lib.ExecCommand(
 			&ctx,
 			[]string{
 				cmdPrefix + "get_repos",
 			},
-			map[string]string{
-				"GHA2DB_FETCH_COMMITS_MODE": "0",
-				"GHA2DB_PROCESS_REPOS":      "1",
-			},
+			env,
 		)
 		dtEnd := time.Now()
 		if res != nil {
