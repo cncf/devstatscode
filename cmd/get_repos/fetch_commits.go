@@ -268,6 +268,7 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, repo string, maybeHide func(string)
 		lib.Printf("%s: no commits to backfill after processing %d events\n", repo, len(events))
 		return nil
 	}
+	lib.Printf("%s: need to backfill %d commits for %d events\n", repo, len(shaSet), len(events))
 
 	// Fetch commit metadata for all SHAs in batches.
 	shaList := make([]string, 0, len(shaSet))
@@ -347,9 +348,9 @@ on conflict do nothing
 	}
 	defer func() { _ = updPayloadStmt.Close() }()
 
-	if ctx.Debug > 0 {
-		lib.Printf("%s: inserting commits for %d events\n", repo, len(events))
-	}
+	lib.Printf("%s: inserting commits for %d events\n", repo, len(events))
+	nCommits := 0
+	nRoles := 0
 	for _, ev := range events {
 		shas := eventShas[ev.EventID]
 		if ctx.Debug > 0 {
@@ -450,17 +451,20 @@ on conflict do nothing
 			); err != nil {
 				return fmt.Errorf("insert gha_commits (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
 			}
+			nCommits++
 
 			// Insert roles: Author + Committer + trailers.
 			if InsertAuthorRole {
 				if err := insertRoles(insRoleStmt, sha, ev, "Author", authorID, authorLogin, authorRoleName, authorRoleEmail, maybeHide); err != nil {
 					return fmt.Errorf("insert Author role (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
 				}
+				nRoles++
 			}
 			if InsertCommitterRole {
 				if err := insertRoles(insRoleStmt, sha, ev, "Committer", commID, commLogin, commRoleName, commRoleEmail, maybeHide); err != nil {
 					return fmt.Errorf("insert Committer role (repo=%s, event=%d, sha=%s): error: %w", repo, ev.EventID, sha, err)
 				}
+				nRoles++
 			}
 
 			trailerRoles := parseTrailers(ctx, ci.Message)
@@ -475,6 +479,7 @@ on conflict do nothing
 				if err := insertRoles(insRoleStmt, sha, ev, tr.Role, tID, tLogin, name, email, maybeHide); err != nil {
 					return fmt.Errorf("insert trailer role (repo=%s, event=%d, sha=%s, role=%s): error: %w", repo, ev.EventID, sha, tr.Role, err)
 				}
+				nRoles++
 			}
 		}
 	}
@@ -483,7 +488,7 @@ on conflict do nothing
 		lib.Printf("Error committing transaction for %s: %v\n", repo, err)
 		return err
 	}
-	lib.Printf("%s: successfully backfilled commits for %d events\n", repo, len(events))
+	lib.Printf("%s: successfully backfilled %d commits and %d commit roles for %d events\n", repo, nCommits, nRoles, len(events))
 	return nil
 }
 
