@@ -338,6 +338,7 @@ func sync(ctx *lib.Ctx, args []string) {
 				map[string]string{
 					"GHA2DB_PROCESS_COMMITS":  "1",
 					"GHA2DB_PROJECTS_COMMITS": ctx.Project,
+					"GHA2DB_PROJECT":          ctx.Project,
 				},
 			)
 			lib.FatalOnError(err)
