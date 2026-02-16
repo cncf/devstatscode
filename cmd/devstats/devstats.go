@@ -250,7 +250,8 @@ func syncAllProjects() bool {
 				cmdPrefix + "get_repos",
 			},
 			map[string]string{
-				"GHA2DB_PROCESS_REPOS": "1",
+				"GHA2DB_FETCH_COMMITS_MODE": "0",
+				"GHA2DB_PROCESS_REPOS":      "1",
 			},
 		)
 		dtEnd := time.Now()
