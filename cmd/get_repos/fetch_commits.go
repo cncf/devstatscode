@@ -842,7 +842,8 @@ func lookupActorNameEmailCachedTx(ctx *lib.Ctx, tx *sql.Tx, cache *actorCache, m
 		}
 	}
 
-	if id == 0 && aName != "" && len(aName) > 2 {
+	// if id == 0 && aName != "" && len(aName) > 2 {
+	if id == 0 && aName != "" {
 		err := tx.QueryRow(
 			`select a.id, a.login from gha_actors a, gha_actors_names an where a.id = an.actor_id and lower(an.name) = lower($1) order by a.id desc limit 1`,
 			aName,
@@ -852,7 +853,8 @@ func lookupActorNameEmailCachedTx(ctx *lib.Ctx, tx *sql.Tx, cache *actorCache, m
 		}
 	}
 
-	if id == 0 && aName != "" && len(aName) > 3 {
+	// if id == 0 && aName != "" && len(aName) > 3 {
+	if id == 0 && aName != "" {
 		err := tx.QueryRow(
 			`select id, login from gha_actors where lower(name) = lower($1) order by id desc limit 1`,
 			aName,
@@ -862,7 +864,8 @@ func lookupActorNameEmailCachedTx(ctx *lib.Ctx, tx *sql.Tx, cache *actorCache, m
 		}
 	}
 
-	if id == 0 && aName != "" && len(aName) > 3 {
+	// if id == 0 && aName != "" && len(aName) > 3 {
+	if id == 0 && aName != "" {
 		err := tx.QueryRow(
 			`select id, login from gha_actors where lower(login) = lower($1) order by id desc limit 1`,
 			aName,

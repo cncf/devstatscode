@@ -451,7 +451,7 @@ func Structure(ctx *Ctx) {
 					"dup_repo_id bigint not null, "+
 					"dup_repo_name varchar(160) not null, "+
 					"dup_created_at {{ts}} not null, "+
-					"primary key(sha, event_id, role)"+
+					"primary key(sha, event_id, role, actor_email)"+
 					")",
 			),
 		)

@@ -431,6 +431,29 @@ func lookupActorNameEmail(con *sql.DB, ctx *lib.Ctx, name, email string, maybeHi
 		}
 		return n2aid, n2login
 	}
+
+	// By login from actors table
+	lrows := lib.QuerySQLWithErr(
+		con,
+		ctx,
+		fmt.Sprintf("select id, login from gha_actors where login=%s order by id desc limit 1", lib.NValue(1)),
+		hname,
+	)
+	defer func() { lib.FatalOnError(lrows.Close()) }()
+	laid := 0
+	llogin := ""
+	for lrows.Next() {
+		lib.FatalOnError(lrows.Scan(&laid, &llogin))
+	}
+	lib.FatalOnError(lrows.Err())
+	if laid != 0 {
+		if gUseCache {
+			gCacheMtx.Lock()
+			gEmailName2LoginIDCache[[2]string{email, name}] = [2]string{strconv.Itoa(laid), llogin}
+			gCacheMtx.Unlock()
+		}
+		return laid, llogin
+	}
 	return 0, ""
 }
 
@@ -517,6 +540,29 @@ func lookupActorNameEmailTx(con *sql.Tx, ctx *lib.Ctx, name, email string, maybe
 			gCacheMtx.Unlock()
 		}
 		return n2aid, n2login
+	}
+
+	// By login from actors table
+	lrows := lib.QuerySQLTxWithErr(
+		con,
+		ctx,
+		fmt.Sprintf("select id, login from gha_actors where login=%s order by id desc limit 1", lib.NValue(1)),
+		hname,
+	)
+	defer func() { lib.FatalOnError(lrows.Close()) }()
+	laid := 0
+	llogin := ""
+	for lrows.Next() {
+		lib.FatalOnError(lrows.Scan(&laid, &llogin))
+	}
+	lib.FatalOnError(lrows.Err())
+	if laid != 0 {
+		if gUseCache {
+			gCacheMtx.Lock()
+			gEmailName2LoginIDCache[[2]string{email, name}] = [2]string{strconv.Itoa(laid), llogin}
+			gCacheMtx.Unlock()
+		}
+		return laid, llogin
 	}
 	return 0, ""
 }
@@ -1801,7 +1847,7 @@ func refreshCommitRoles(ctx *lib.Ctx) {
 			id, login := lookupActorNameEmail(con, ctx, name, email, maybeHide)
 			// fmt.Printf("got trailer(s) '%s': %+v -> ('%s', '%s', %d, '%s')\n", line, trailers, name, email, id, login)
 			for _, role := range trailers {
-				ky := kyRoot + role
+				ky := kyRoot + role + "-" + strings.ToLower(email)
 				if ch != nil {
 					rmtx.RLock()
 				}
