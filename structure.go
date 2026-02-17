@@ -372,6 +372,7 @@ func Structure(ctx *Ctx) {
 	// author: {"name"=>96, "email"=>95}
 	// 23265
 	// variable (per event)
+	// origin: 0-gha2db, 1-get_repos/fetch_commits
 	if ctx.Table {
 		ExecSQLWithErr(c, ctx, "drop table if exists gha_commits")
 		ExecSQLWithErr(
@@ -401,6 +402,7 @@ func Structure(ctx *Ctx) {
 					"loc_added int, "+
 					"loc_removed int, "+
 					"files_changed int, "+
+					"origin smallint not null default 0, "+
 					"primary key(sha, event_id)"+
 					")",
 			),

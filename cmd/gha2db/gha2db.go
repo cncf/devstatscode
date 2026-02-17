@@ -1266,8 +1266,8 @@ func writeToDBOldFmt(db *sql.DB, ctx *lib.Ctx, eventID string, ev *lib.EventOld,
 				ctx,
 				"insert into gha_commits("+
 					"sha, event_id, author_name, encrypted_email, message, is_distinct, "+
-					"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at"+
-					") "+lib.NValues(12),
+					"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, origin"+
+					") "+lib.NValues(13),
 				lib.AnyArray{
 					sha,
 					eventID,
@@ -1281,6 +1281,7 @@ func writeToDBOldFmt(db *sql.DB, ctx *lib.Ctx, eventID string, ev *lib.EventOld,
 					repo.Name,
 					ev.Type,
 					ev.CreatedAt,
+					0,
 				}...,
 			)
 			// Commit Roles
@@ -1541,8 +1542,8 @@ func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) 
 			ctx,
 			"insert into gha_commits("+
 				"sha, event_id, author_name, encrypted_email, message, is_distinct, "+
-				"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at"+
-				") "+lib.NValues(12),
+				"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, origin"+
+				") "+lib.NValues(13),
 			lib.AnyArray{
 				sha,
 				eventID,
@@ -1556,6 +1557,7 @@ func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) 
 				ev.Repo.Name,
 				ev.Type,
 				ev.CreatedAt,
+				0,
 			}...,
 		)
 		// Commit Roles

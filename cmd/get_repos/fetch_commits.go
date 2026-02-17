@@ -326,14 +326,14 @@ insert into gha_commits(
   sha, event_id, author_name, encrypted_email, message,
   is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at,
   author_id, committer_id, dup_author_login, dup_committer_login,
-  author_email, committer_name, committer_email
+  author_email, committer_name, committer_email, origin
 )
 select
   $1::varchar(40),$2,$3,$4,$5,
   not exists(select 1 from gha_commits c2 where c2.sha = $1::varchar(40) limit 1),
   $6,$7,$8,$9,$10,$11,
   $12,$13,$14,$15,
-  $16,$17,$18
+  $16,$17,$18,1
 on conflict do nothing
 `
 	insRoleSQL := `
