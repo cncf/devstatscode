@@ -196,7 +196,9 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 		return 0, 0, err
 	}
 	if len(events) == 0 {
-		lib.Printf("%s/%s: no need to backfill commits since %s\n", db, repo, dtFrom)
+		if ctx.Debug > 0 {
+			lib.Printf("%s/%s: no need to backfill commits since %s\n", db, repo, dtFrom)
+		}
 		return 0, 0, nil
 	}
 	lib.Printf("%s/%s: need to backfill %d events since %s\n", db, repo, len(events), dtFrom)
@@ -259,9 +261,9 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 			}
 			continue
 		}
-		if ctx.Debug > 0 {
+		if ctx.Debug > 1 {
 			lib.Printf("%s/%s PushEvent %d: found %d commits (before %s, head %s): %+v\n", db, repo, ev.EventID, len(shas), ev.Before, ev.Head, shas)
-		} else {
+		} else if ctx.Debug == 1 {
 			lib.Printf("%s/%s PushEvent %d: found %d commits (before %s, head %s)\n", db, repo, ev.EventID, len(shas), ev.Before, ev.Head)
 		}
 		eventShas[ev.EventID] = shas
