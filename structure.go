@@ -403,6 +403,7 @@ func Structure(ctx *Ctx) {
 					"loc_removed int, "+
 					"files_changed int, "+
 					"origin smallint not null default 0, "+
+					"inserted_at {{tsnow}}, "+
 					"primary key(sha, event_id)"+
 					")",
 			),
