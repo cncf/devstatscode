@@ -144,6 +144,25 @@ func gitIsAncestor(ctx *lib.Ctx, repoPath, ancestor, commit string) (bool, error
 	return mb == ancestor, nil
 }
 
+// isExitStatus128 is a best-effort detector for "unknown revision / bad object" style git failures.
+func isExitStatus128(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "exit status 128")
+}
+
+// gitFetchGitHubPullRefs best-effort fetch of GitHub PR refs.
+// This can recover historical commits that were only reachable via refs/pull/*.
+func gitFetchGitHubPullRefs(ctx *lib.Ctx, repoPath string) error {
+	_, err := lib.ExecCommand(ctx, []string{
+		"git", "-C", repoPath, "fetch", "origin",
+		"+refs/pull/*/head:refs/pull/*/head",
+		"+refs/pull/*/merge:refs/pull/*/merge",
+	}, nil)
+	return err
+}
+
 func reverseStringsInPlace(a []string) {
 	for i, j := 0, len(a)-1; i < j; i, j = i+1, j-1 {
 		a[i], a[j] = a[j], a[i]
@@ -276,6 +295,8 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 	}
 	lib.Printf("%s/%s: need to backfill %d events since %s\n", db, repo, len(events), dtFrom)
 
+	pullRefsFetched := false
+
 	// Build: event -> shas, plus global sha set.
 	eventShas := make(map[int64][]string, len(events))
 	shaSet := make(map[string]struct{})
@@ -313,12 +334,34 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 			}
 			shas, gerr = gitRangeCommits(ctx, repoPath, before, head, pageSize, 0)
 			if gerr != nil {
-				lib.Printf(
-					"Error listing commits range for %s/%s (strict mode, event %d, before %s, head %s): %v\n",
-					db, repo, ev.EventID, ev.Before, ev.Head, gerr,
-				)
-				// No fallback in strict mode.
-				continue
+				// If the repo clone doesn't have the objects, try fetching GitHub PR refs once.
+				if !pullRefsFetched && isExitStatus128(gerr) {
+					lib.Printf("Warning: git range failed for %s/%s event %d (%s..%s): %v, trying to fetch GitHub PR refs and retry\n",
+						db, repo, ev.EventID, before, head, gerr,
+					)
+					if ferr := gitFetchGitHubPullRefs(ctx, repoPath); ferr != nil {
+						lib.Printf("Warning: git fetch GitHub PR refs failed for %s/%s (event %d): %v\n",
+							db, repo, ev.EventID, ferr,
+						)
+					}
+					pullRefsFetched = true
+					shas, gerr = gitRangeCommits(ctx, repoPath, before, head, pageSize, 0)
+					if gerr != nil {
+						lib.Printf(
+							"Error listing commits range for %s/%s after fetching PR refs (strict mode, event %d, before %s, head %s): %v\n",
+							db, repo, ev.EventID, ev.Before, ev.Head, gerr,
+						)
+					}
+				} else {
+					lib.Printf(
+						"Error listing commits range for %s/%s (strict mode, event %d, before %s, head %s): %v\n",
+						db, repo, ev.EventID, ev.Before, ev.Head, gerr,
+					)
+				}
+				if gerr != nil {
+					// No fallback in strict mode.
+					continue
+				}
 			}
 			// No-op push; nothing to backfill.
 			if before == head {
@@ -364,12 +407,36 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 
 			shas, gerr = gitRangeCommits(ctx, repoPath, before, head, pageSize, maxNeeded)
 			if gerr != nil {
-				lib.Printf(
-					"Error listing commits range for %s/%s (legacy mode, event %d, before %s, head %s): %v\n",
-					db, repo, ev.EventID, ev.Before, ev.Head, gerr,
-				)
+				// Best-effort: try fetching PR refs once before falling back to head-only.
+				if !pullRefsFetched && isExitStatus128(gerr) {
+					if ctx.Debug > 0 {
+						lib.Printf("Warning: git range failed for %s/%s event %d (%s..%s): %v, trying to fetch GitHub PR refs and retry\n",
+							db, repo, ev.EventID, before, head, gerr,
+						)
+					}
+					if ferr := gitFetchGitHubPullRefs(ctx, repoPath); ferr != nil {
+						lib.Printf("Warning: git fetch GitHub PR refs failed for %s/%s (event %d): %v\n",
+							db, repo, ev.EventID, ferr,
+						)
+					}
+					pullRefsFetched = true
+					shas, gerr = gitRangeCommits(ctx, repoPath, before, head, pageSize, maxNeeded)
+					if gerr != nil {
+						lib.Printf(
+							"Error listing commits range for %s/%s after fetching PR refs (legacy mode, event %d, before %s, head %s): %v\n",
+							db, repo, ev.EventID, ev.Before, ev.Head, gerr,
+						)
+					}
+				} else {
+					lib.Printf(
+						"Error listing commits range for %s/%s (legacy mode, event %d, before %s, head %s): %v\n",
+						db, repo, ev.EventID, ev.Before, ev.Head, gerr,
+					)
+				}
 				// Legacy fallback: at least head commit.
-				shas = []string{head}
+				if gerr != nil || (len(shas) == 0 && isValidNonZeroSHA40(head)) {
+					shas = []string{head}
+				}
 			}
 		}
 		if len(shas) == 0 {
