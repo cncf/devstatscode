@@ -85,6 +85,7 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 	if ctx.FetchCommitsMode == 0 {
 		return
 	}
+	dtStart := time.Now()
 
 	// Ensure git commands return output and don't abort the whole process from worker goroutines.
 	prevExecOutput := ctx.ExecOutput
@@ -166,7 +167,8 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 		allCommits += nCommits
 		allRoles += nRoles
 	}
-	lib.Printf("Finished all DBs: backfilled %d commits and %d commit roles\n", allCommits, allRoles)
+	dtEnd := time.Now()
+	lib.Printf("Finished all DBs: backfilled %d commits and %d commit roles in: %v\n", allCommits, allRoles, dtEnd.Sub(dtStart))
 }
 
 func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(string) string, acache *actorCache) (int, int, error) {
