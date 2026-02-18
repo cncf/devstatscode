@@ -887,5 +887,7 @@ func main() {
 	dtEnd := time.Now()
 	lib.Printf("All repos processed in: %v\n", dtEnd.Sub(dtStart))
 	// Example copy to the debug pod: make get_repos && k cp -n devstats-prod ./get_repos debug:/get_repos
+	// Inside pod update devstats-helm/projects -> tuf -> psql_db: work (instead of tuf)
+	// in work database, optionally: delete from gha_commits
 	// Example run in the debug pod: GHA2DB_LOCAL=1 GHA2DB_FETCH_COMMITS_MODE=2 GHA2DB_PROCESS_REPOS=1 GHA2DB_PROCESS_COMMITS=1 GHA2DB_PROJECTS_COMMITS=tuf GHA2DB_PROJECT=tuf PG_DB=work GHA2DB_QOUT=1 GHA2DB_DEBUG=1 GHA2DB_CMDDEBUG=1 /get_repos
 }

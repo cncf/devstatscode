@@ -14,6 +14,8 @@ import (
 	lib "github.com/cncf/devstatscode"
 )
 
+const zeroSHA40 = "0000000000000000000000000000000000000000"
+
 // commitInfo holds commit metadata extracted from local git history.
 // git/git_commits.sh output provides: sha,b64(author_name),b64(author_email),b64(committer_name),b64(committer_email),b64(message);
 type commitInfo struct {
@@ -34,6 +36,8 @@ type pushEvent struct {
 	CreatedAt  time.Time
 	Head       string
 	Before     string
+	Ref        string
+	PushID     sql.NullInt64
 	Size       sql.NullInt64
 	Cnt        int64
 }
@@ -53,6 +57,27 @@ var (
 	InsertCommitterRole = false
 	// InsertAuthorRole - we don't add those roles
 	InsertAuthorRole = false
+
+	// LegacyUnsafeBackfill controls how aggressively we backfill commits for PushEvents.
+	//
+	// When false (default): ONLY backfill events that are "100% deterministic" from payload:
+	//   - head and before must both be present and be valid non-zero 40-hex SHAs.
+	//   - no guessing for before==0/empty/null
+	//   - no fallback to inserting head-only on git range errors
+	//
+	// When true: keep legacy/best-effort behavior (process before==0/empty/null, missing size, etc),
+	// while still avoiding the known footgun: before==0 with size that looks like a cap/truncation marker.
+	LegacyUnsafeBackfill = false
+
+	// LegacyCappedSizes - historical "cap/truncation marker" sizes observed in GHA payloads.
+	// Using these as exact commit counts for before==0 caused huge over-backfills (10k explosions).
+	LegacyCappedSizes = map[int64]struct{}{
+		1000:  {},
+		10000: {},
+	}
+
+	// AllowNonFastForwardPushes - default=true. Ignored when LegacyUnsafeBackfill=true.
+	AllowNonFastForwardPushes = true
 )
 
 func newActorCache() *actorCache {
@@ -71,6 +96,52 @@ func isZeroSHA(sha string) bool {
 		}
 	}
 	return true
+}
+
+func normalizeSHA(sha string) string {
+	return strings.ToLower(strings.TrimSpace(sha))
+}
+
+// isValidHexSHA40 returns true iff sha is exactly 40 hex chars (case-insensitive).
+func isValidHexSHA40(sha string) bool {
+	if len(sha) != 40 {
+		return false
+	}
+	for _, c := range sha {
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// isValidNonZeroSHA40 returns true iff sha is a 40-hex SHA and not all-zero.
+func isValidNonZeroSHA40(sha string) bool {
+	sha = strings.TrimSpace(sha)
+	return isValidHexSHA40(sha) && !isZeroSHA(sha)
+}
+
+// gitIsAncestor checks if "ancestor" is an ancestor (or equal) of "commit" in the given repo.
+// It uses "git merge-base ancestor commit" and compares the result to ancestor.
+func gitIsAncestor(ctx *lib.Ctx, repoPath, ancestor, commit string) (bool, error) {
+	ancestor = normalizeSHA(ancestor)
+	commit = normalizeSHA(commit)
+	if ancestor == "" || commit == "" {
+		return false, fmt.Errorf("empty sha in ancestor check: ancestor=%q commit=%q", ancestor, commit)
+	}
+	out, err := lib.ExecCommand(ctx, []string{"git", "-C", repoPath, "merge-base", ancestor, commit}, nil)
+	if err != nil {
+		return false, err
+	}
+	mb := normalizeSHA(out)
+	if idx := strings.IndexAny(mb, "\n\t "); idx >= 0 {
+		mb = mb[:idx]
+	}
+	if !isValidNonZeroSHA40(mb) {
+		return false, fmt.Errorf("git merge-base returned unexpected output %q", out)
+	}
+	return mb == ancestor, nil
 }
 
 func reverseStringsInPlace(a []string) {
@@ -215,48 +286,92 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 	}
 
 	for _, ev := range events {
-		head := strings.TrimSpace(ev.Head)
-		before := strings.TrimSpace(ev.Before)
+		head := normalizeSHA(ev.Head)
+		before := normalizeSHA(ev.Before)
 
-		if head == "" || isZeroSHA(head) {
+		// Always require a sane HEAD; otherwise we can't safely insert into gha_commits.sha (varchar(40)).
+		if !isValidNonZeroSHA40(head) {
 			if ctx.Debug > 0 {
-				lib.Printf("Warning: skipping PushEvent %d in %s/%s: empty/zero head SHA\n", ev.EventID, db, repo)
+				lib.Printf("Warning: skipping PushEvent %d in %s/%s: invalid/empty/zero head SHA %q\n", ev.EventID, db, repo, ev.Head)
 			}
 			continue
 		}
 
-		// BEFORE=0 is ambiguous. We use payload size (when available) to limit the scan.
-		maxNeeded := 0
-		if isZeroSHA(before) {
-			if ev.Size.Valid {
-				if ev.Size.Int64 <= 0 {
-					// size=0 -> no commits; should be filtered out, but be defensive.
+		var (
+			shas []string
+			gerr error
+		)
+
+		if !LegacyUnsafeBackfill {
+			// STRICT mode ("100% sure"):
+			// only process events where BOTH BEFORE and HEAD are valid non-zero SHAs.
+			if !isValidNonZeroSHA40(before) {
+				if ctx.Debug > 0 {
+					lib.Printf("Warning: strict mode: skipping PushEvent %d in %s/%s: invalid/empty/zero before SHA %q\n", ev.EventID, db, repo, ev.Before)
+				}
+				continue
+			}
+			shas, gerr = gitRangeCommits(ctx, repoPath, before, head, pageSize, 0)
+			if gerr != nil {
+				lib.Printf(
+					"Error listing commits range for %s/%s (strict mode, event %d, before %s, head %s): %v\n",
+					db, repo, ev.EventID, ev.Before, ev.Head, gerr,
+				)
+				// No fallback in strict mode.
+				continue
+			}
+			// No-op push; nothing to backfill.
+			if before == head {
+				continue
+			}
+			// Optionally skip non-fast-forward / force pushes in strict mode.
+			if !AllowNonFastForwardPushes {
+				isFF, err := gitIsAncestor(ctx, repoPath, before, head)
+				if err != nil {
 					if ctx.Debug > 0 {
-						lib.Printf("Warning: skipping PushEvent %d in %s/%s: non-positive payload size=%d with zero before SHA\n", ev.EventID, db, repo, ev.Size.Int64)
+						lib.Printf("Warning: skipping PushEvent %d for %s (cannot determine ancestry %s..%s: %v)\n", ev.EventID, repo, before, head, err)
 					}
 					continue
 				}
-				// For before=0 we take the newest <size> commits reachable from head.
-				// This is a practical approximation for "new ref" events (including the initial push).
-				maxNeeded = int(ev.Size.Int64)
-				before = strings.Repeat("0", 40)
-			} else {
-				// Unknown size; safest fallback is at least head.
-				maxNeeded = 1
-				before = strings.Repeat("0", 40)
+				if !isFF {
+					if ctx.Debug > 0 {
+						lib.Printf("Warning: skipping PushEvent %d for %s (non-fast-forward %s..%s)\n", ev.EventID, repo, before, head)
+					}
+					continue
+				}
+			}
+		} else {
+			// Legacy/best-effort mode (compatible with previous behavior).
+			// BEFORE=0/empty is ambiguous. Historically we used payload.size to limit the scan.
+			maxNeeded := 0
+			if before == "" || isZeroSHA(before) || !isValidHexSHA40(before) {
+				// Treat missing/zero/invalid BEFORE as 000..0 sentinel for the git range script.
+				before = zeroSHA40
+
+				if ev.Size.Valid && ev.Size.Int64 > 0 {
+					// Avoid the known "cap size" footgun for before==0.
+					if _, capped := LegacyCappedSizes[ev.Size.Int64]; capped {
+						// Treat as unknown; safest legacy fallback is head-only.
+						maxNeeded = 1
+					} else {
+						maxNeeded = int(ev.Size.Int64)
+					}
+				} else {
+					// No size available (post-2025 GHA); safest fallback is head-only.
+					maxNeeded = 1
+				}
+			}
+
+			shas, gerr = gitRangeCommits(ctx, repoPath, before, head, pageSize, maxNeeded)
+			if gerr != nil {
+				lib.Printf(
+					"Error listing commits range for %s/%s (legacy mode, event %d, before %s, head %s): %v\n",
+					db, repo, ev.EventID, ev.Before, ev.Head, gerr,
+				)
+				// Legacy fallback: at least head commit.
+				shas = []string{head}
 			}
 		}
-
-		shas, gerr := gitRangeCommits(ctx, repoPath, before, head, pageSize, maxNeeded)
-		if gerr != nil {
-			lib.Printf(
-				"Error listing commits range for %s/%s (event %d, before %s, head %s): %v\n",
-				db, repo, ev.EventID, ev.Before, ev.Head, gerr,
-			)
-			// Fallback: at least head commit.
-			shas = []string{head}
-		}
-
 		if len(shas) == 0 {
 			if ctx.Debug > 0 {
 				lib.Printf("Warning: no commits found for %s/%s PushEvent %d (before %s, head %s)\n", db, repo, ev.EventID, ev.Before, ev.Head)
@@ -270,10 +385,10 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 		}
 		eventShas[ev.EventID] = shas
 		for _, s := range shas {
-			s = strings.TrimSpace(s)
-			if s == "" || isZeroSHA(s) {
+			s = normalizeSHA(s)
+			if !isValidNonZeroSHA40(s) {
 				if ctx.Debug > 0 {
-					lib.Printf("Warning: skipping empty/zero SHA for %s/%s PushEvent %d\n", db, repo, ev.EventID)
+					lib.Printf("Warning: skipping invalid/empty/zero SHA for %s/%s PushEvent %d: %q\n", db, repo, ev.EventID, s)
 				}
 				continue
 			}
@@ -302,7 +417,7 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 		}
 		batchInfos, ierr := gitCommitInfoBatch(ctx, repoPath, shaList[i:j])
 		for sha, info := range batchInfos {
-			infoMap[sha] = info
+			infoMap[normalizeSHA(sha)] = info
 		}
 		if ierr != nil {
 			lib.Printf("Warning: git_commits.sh error for %s/%s batch %d-%d/%d: %v\n", db, repo, i, j, len(shaList), ierr)
@@ -359,11 +474,15 @@ on conflict do nothing
 	}
 	defer func() { _ = insRoleStmt.Close() }()
 
-	updPayloadStmt, err := tx.Prepare(updPayloadSQL)
-	if err != nil {
-		return 0, 0, err
+	var updPayloadStmt *sql.Stmt
+	if LegacyUnsafeBackfill {
+		// Keep legacy behavior (and keep older workflows intact).
+		updPayloadStmt, err = tx.Prepare(updPayloadSQL)
+		if err != nil {
+			return 0, 0, err
+		}
+		defer func() { _ = updPayloadStmt.Close() }()
 	}
-	defer func() { _ = updPayloadStmt.Close() }()
 
 	lib.Printf("%s/%s: inserting commits for %d events\n", db, repo, len(events))
 	nCommits := 0
@@ -380,9 +499,11 @@ on conflict do nothing
 			continue
 		}
 
-		// Update payload size to computed commit count only if size is currently NULL.
-		if _, uerr := updPayloadStmt.Exec(ev.EventID, len(shas)); uerr != nil {
-			return 0, 0, fmt.Errorf("update gha_payloads.size (db=%s, repo=%s, event=%d): error: %w", db, repo, ev.EventID, uerr)
+		// Legacy mode: optionally update payload.size when missing/<=1.
+		if updPayloadStmt != nil {
+			if _, uerr := updPayloadStmt.Exec(ev.EventID, len(shas)); uerr != nil {
+				return 0, 0, fmt.Errorf("update gha_payloads.size (db=%s, repo=%s, event=%d): error: %w", db, repo, ev.EventID, uerr)
+			}
 		}
 
 		if ev.Size.Valid && int64(len(shas)) != ev.Size.Int64 {
@@ -393,8 +514,8 @@ on conflict do nothing
 		}
 
 		for _, sha := range shas {
-			sha = strings.TrimSpace(sha)
-			if sha == "" || isZeroSHA(sha) {
+			sha = normalizeSHA(sha)
+			if !isValidNonZeroSHA40(sha) {
 				if ctx.Debug > 0 {
 					lib.Printf("Warning: skipping empty/zero SHA for %s/%s PushEvent %d\n", db, repo, ev.EventID)
 				}
@@ -758,6 +879,8 @@ select
   e.created_at,
   p.head,
   p.befor,
+  p.ref,
+  p.push_id,
   p.size,
   coalesce(c.cnt,0) as cnt
 from gha_events e
@@ -802,7 +925,7 @@ order by e.created_at, e.id
 	var out []pushEvent
 	for rows.Next() {
 		var ev pushEvent
-		var head, bef sql.NullString
+		var head, bef, ref sql.NullString
 		if err := rows.Scan(
 			&ev.EventID,
 			&ev.ActorID,
@@ -812,6 +935,8 @@ order by e.created_at, e.id
 			&ev.CreatedAt,
 			&head,
 			&bef,
+			&ref,
+			&ev.PushID,
 			&ev.Size,
 			&ev.Cnt,
 		); err != nil {
@@ -823,7 +948,13 @@ order by e.created_at, e.id
 		if bef.Valid {
 			ev.Before = bef.String
 		}
+		if ref.Valid {
+			ev.Ref = ref.String
+		}
 		out = append(out, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
