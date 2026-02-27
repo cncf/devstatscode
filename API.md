@@ -117,7 +117,7 @@ List of APIs:
       - If you specify one element array `["All"]` - data for all repositories will be returned. If there are more than 1 items `"All"` has no special meaning then.
   - Returns: `{"project":"kubernetes","db_name":"gha","repo_groups":["Other","Not specified",...],"repos":["kubernetes/application-images","kubernetes/example-not-specified",...]}`.
   - Result contains projects repositories - repository groups configuration information.
-  - Example API call: `./devel/api_repos.sh all '["Harbor", "OPA"]'`.
+  - Example API call: `./devel/api_repos.sh all '["Harbor", "Open Policy Agent"]'`.
 
 - `CompaniesTable`: `{"api": "CompaniesTable", "payload": {"project": "projectName", "range": "range", "metric": "metric"}}`.
   - Arguments: (like in "Companies Table" DevStats dashboards).
