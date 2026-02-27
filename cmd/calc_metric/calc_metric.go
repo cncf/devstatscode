@@ -72,8 +72,8 @@ func mapName(cfg *calcMetricData, name string) string {
 	if cfg.seriesNameMap == nil {
 		return name
 	}
-	for k, v := range cfg.seriesNameMap {
-		name = strings.Replace(name, k, v, -1)
+	if v, ok := cfg.seriesNameMap[name]; ok {
+		return v
 	}
 	return name
 }
