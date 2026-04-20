@@ -1090,6 +1090,10 @@ func SyncIssuesState(gctx context.Context, gc []*github.Client, ctx *Ctx, c *sql
 				issuesMutex.RLock()
 				cfg := issues[iid][idx]
 				issuesMutex.RUnlock()
+				if ctx.SkipAPIIssues || (ctx.SkipAPIPRs && cfg.Pr) {
+					ch <- false
+					return
+				}
 				if ctx.Debug > 1 {
 					Printf("GHA Issue ID '%d' --> '%v'\n", iid, cfg)
 				}
@@ -1527,6 +1531,9 @@ func SyncIssuesState(gctx context.Context, gc []*github.Client, ctx *Ctx, c *sql
 	outputInfo(infos, "Issues")
 
 	// PRs sync (using state at run date XX:08+)
+	if ctx.SkipAPIPRs {
+		return
+	}
 	// Use map key to pass to the closure
 	outputPRsInfo(prs, "PRs to process")
 	infos = make(map[string][]string)

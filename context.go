@@ -101,6 +101,8 @@ type Ctx struct {
 	GHAPIErrorIsFatal        bool                         // From GHA2DB_GHAPI_ERROR_FATAL, ghapi2db tool, make any GH API error fatal, default false
 	SkipGHAPI                bool                         // From GHA2DB_GHAPISKIP, ghapi2db tool, if set then tool is skipping GH API calls (all: events (artificial events to make sure we are in sync with GH) and commits (enriches obfuscated GHA commits data)
 	SkipAPIEvents            bool                         // From GHA2DB_GHAPISKIPEVENTS, ghapi2db tool, if set then tool is skipping GH API events sync
+	SkipAPIIssues            bool                         // From GHA2DB_GHAPISKIPISSUES, ghapi2db tool, if set then tool is skipping GH API issues sync
+	SkipAPIPRs               bool                         // From GHA2DB_GHAPISKIPPRS, ghapi2db tool, if set then tool is skipping GH API PRs sync
 	SkipAPICommits           bool                         // From GHA2DB_GHAPISKIPCOMMITS, ghapi2db tool, if set then tool is skipping GH API commits enrichment
 	SkipAPILicenses          bool                         // From GHA2DB_GHAPISKIPLICENSES, ghapi2db tool, if set then tool is skipping GH API licenses enrichment
 	ForceAPILicenses         bool                         // From GHA2DB_GHAPIFORCELICENSES, ghapi2db tool, if set, recheck licenses on repos that already have licenses fetched
@@ -338,6 +340,8 @@ func (ctx *Ctx) Init() {
 	ctx.SkipGetRepos = os.Getenv("GHA2DB_GETREPOSSKIP") != ""
 	ctx.SkipGHAPI = os.Getenv("GHA2DB_GHAPISKIP") != ""
 	ctx.SkipAPIEvents = os.Getenv("GHA2DB_GHAPISKIPEVENTS") != ""
+	ctx.SkipAPIIssues = os.Getenv("GHA2DB_GHAPISKIPISSUES") != ""
+	ctx.SkipAPIPRs = os.Getenv("GHA2DB_GHAPISKIPPRS") != ""
 	ctx.SkipAPICommits = os.Getenv("GHA2DB_GHAPISKIPCOMMITS") != ""
 	ctx.SkipAPILicenses = os.Getenv("GHA2DB_GHAPISKIPLICENSES") != ""
 	ctx.ForceAPILicenses = os.Getenv("GHA2DB_GHAPIFORCELICENSES") != ""
@@ -927,6 +931,8 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		SkipPDB:                  ctx.SkipPDB,
 		SkipGHAPI:                ctx.SkipGHAPI,
 		SkipAPIEvents:            ctx.SkipAPIEvents,
+		SkipAPIIssues:            ctx.SkipAPIIssues,
+		SkipAPIPRs:               ctx.SkipAPIPRs,
 		SkipAPICommits:           ctx.SkipAPICommits,
 		SkipAPILicenses:          ctx.SkipAPILicenses,
 		ForceAPILicenses:         ctx.ForceAPILicenses,

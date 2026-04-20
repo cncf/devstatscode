@@ -905,6 +905,13 @@ func syncEvents(ctx *lib.Ctx) {
 						continue
 					}
 					issue := event.Issue
+					isPR := issue.IsPullRequest()
+					if ctx.SkipAPIIssues && !isPR {
+						continue
+					}
+					if ctx.SkipAPIPRs && isPR {
+						continue
+					}
 					if isSingleIssue && (issue.Number == nil || *issue.Number != singleIssue) {
 						continue
 					}
@@ -953,7 +960,7 @@ func syncEvents(ctx *lib.Ctx) {
 					cfg.GhIssue = issue
 					cfg.GhEvent = event
 					cfg.Number = *issue.Number
-					cfg.Pr = issue.IsPullRequest()
+					cfg.Pr = isPR
 					// Labels
 					cfg.LabelsMap = make(map[int64]string)
 					for _, label := range issue.Labels {
@@ -1004,7 +1011,7 @@ func syncEvents(ctx *lib.Ctx) {
 						lib.Printf("Processing %s issue number %d, event: %s, date: %s\n", cfg.Repo, cfg.Number, cfg.EventType, lib.ToYMDHMSDate(cfg.CreatedAt))
 					}
 					// Handle PR
-					if issue.IsPullRequest() {
+					if isPR {
 						prsMutex.Lock()
 						_, foundPR := prs[cfg.IssueID]
 						prsMutex.Unlock()
