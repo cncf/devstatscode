@@ -1122,8 +1122,8 @@ projects:
     join_date: 2020-11-10T00:00:00Z
     psql_db: tinkerbell
     shared_db: allprj
-    main_repo: tinkerbell/tink
-    annotation_regexp: ''
+    main_repo: tinkerbell/tinkerbell
+    annotation_regexp: '^v\d+\.\d+\.0$'
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
   pravega:
     order: 78
@@ -1142,12 +1142,13 @@ projects:
   kyverno:
     order: 79
     name: Kyverno
-    status: Incubating
+    status: Graduated
     command_line:
       - 'kyverno'
     start_date: 2019-05-23T00:00:00Z
     join_date: 2020-11-10T00:00:00Z
     incubating_date: 2022-07-13T00:00:00Z
+    graduated_date: 2026-03-16T00:00:00Z
     psql_db: kyverno
     shared_db: allprj
     main_repo: kyverno/kyverno
@@ -1909,7 +1910,7 @@ projects:
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
   hexapolicyorchestrator:
     order: 136
-    name: "Hexa"
+    name: Hexa
     status: Sandbox
     command_line:
       - 'hexa-org'
@@ -3331,6 +3332,84 @@ projects:
     main_repo: truefoundry/KubeElasti
     annotation_regexp: '^v\d+\.\d+\.\d*0$'
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
+  kaischeduler:
+    order: 245
+    name: KAI-Scheduler
+    status: Sandbox
+    command_line:
+      - kai-scheduler
+    start_date: 2025-03-20T00:00:00Z
+    join_date: 2025-12-21T00:00:00Z
+    psql_db: kaischeduler
+    shared_db: allprj
+    main_repo: kai-scheduler/KAI-Scheduler
+    annotation_regexp: '^v\d+\.\d+\.\d*0$'
+    files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
+  agones:
+    order: 245
+    name: Agones
+    status: Sandbox
+    command_line:
+      - agones-dev,googleforgames/space-agon,googleforgames/global-multiplayer-demo
+    start_date: 2018-03-05T00:00:00Z
+    join_date: 2025-12-21T00:00:00Z
+    psql_db: agones
+    shared_db: allprj
+    main_repo: agones-dev/agones
+    annotation_regexp: '^v\d+\.\d+\.0$'
+    files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
+  velero:
+    order: 246
+    name: Velero
+    status: Sandbox
+    command_line:
+      - 'regexp:(?i)^(velero-io\/.*|vmware-tanzu\/.*velero.*)$'
+    start_date: 2017-08-03T00:00:00Z
+    join_date: 2026-03-17T00:00:00Z
+    psql_db: velero
+    shared_db: allprj
+    main_repo: vmware-tanzu/velero
+    annotation_regexp: '^v\d+\.\d+\.0$'
+    files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
+  openeverest:
+    order: 247
+    name: OpenEverest
+    status: Sandbox
+    command_line:
+      - openeverest
+    start_date: 2024-01-04T00:00:00Z
+    join_date: 2026-03-15T00:00:00Z
+    psql_db: openeverest
+    shared_db: allprj
+    main_repo: openeverest/openeverest
+    annotation_regexp: '^v\d+\.\d+\.0$'
+    files_skip_pattern: ''
+  nmstate:
+    order: 248
+    name: NMstate
+    status: Sandbox
+    command_line:
+      - nmstate
+    start_date: 2018-05-08T00:00:00Z
+    join_date: 2026-03-12T00:00:00Z
+    psql_db: nmstate
+    shared_db: allprj
+    main_repo: nmstate/nmstate
+    annotation_regexp: '^v\d+\.\d+\.\d*0$'
+    files_skip_pattern: ''
+  higress:
+    order: 249
+    name: Higress
+    status: Sandbox
+    command_line:
+      - higress-group,alibaba/higress
+    start_date: 2022-10-25T00:00:00Z
+    join_date: 2026-03-15T00:00:00Z
+    psql_db: higress
+    shared_db: allprj
+    main_repo: alibaba/higress
+    annotation_regexp: '^v\d+\.\d+\.0$'
+    files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
   opencontainers:
     order: 1200
     name: OCI
@@ -3571,7 +3650,12 @@ projects:
          kitops-ml,drasi-project,CloudNativeAI,hyperlight-dev,kgateway-dev,bootc-dev,composefs,\
          kubefleet-dev,opentofu,modelpack,oxia-db,cedar-policy,project-dalec,HolmesGPT,\
          robusta-dev/homebrew-holmesgpt,robusta-dev/holmesgpt-community-toolsets,openchoreo,CoHDI,\
-         truefoundry/KubeElasti"
+         truefoundry/KubeElasti,kai-scheduler,agones-dev,googleforgames/space-agon,\
+         googleforgames/global-multiplayer-demo,velero-io,vmware-tanzu/velero,\
+         vmware-tanzu/velero-plugin-example,vmware-tanzu/velero-plugin-for-aws,\
+         vmware-tanzu/velero-plugin-for-gcp,vmware-tanzu/velero-plugin-for-microsoft-azure,\
+         vmware-tanzu/velero-plugin-for-vsphere,vmware-tanzu/velero-plugin-for-csi,\
+         vmware-tanzu/velero-csi-plugin,openeverest,nmstate,higress-group,alibaba/higress"
     start_date: 2014-01-01T00:00:00Z
     join_date: 2016-03-10T00:00:00Z
     psql_db: allprj
