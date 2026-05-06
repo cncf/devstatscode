@@ -2,6 +2,7 @@ package devstatscode
 
 import (
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -87,4 +88,61 @@ func AddTSPoint(ctx *Ctx, pts *TSPoints, pt TSPoint) {
 	if ctx.Debug > 0 {
 		Printf("AddTSPoint: point added, now %d points\n", len(*pts))
 	}
+}
+
+// MakeTSPointsUniqueTimes add microseconds to duplicate TS point times.
+func MakeTSPointsUniqueTimes(ctx *Ctx, pts *TSPoints) {
+	type key struct {
+		t      time.Time
+		name   string
+		period string
+	}
+	keys := make(map[key][]int)
+	for idx, pt := range *pts {
+		k := key{t: pt.t, name: pt.name, period: pt.period}
+		keys[k] = append(keys[k], idx)
+	}
+	for k, idxs := range keys {
+		n := len(idxs)
+		if n < 2 {
+			continue
+		}
+		if n > 1000000 {
+			Fatalf("MakeTSPointsUniqueTimes: too many points for %v %s %s: %d", k.t, k.name, k.period, n)
+		}
+		sort.SliceStable(idxs, func(i, j int) bool {
+			return tsPointKey((*pts)[idxs[i]]) < tsPointKey((*pts)[idxs[j]])
+		})
+		for idx, ptIdx := range idxs {
+			(*pts)[ptIdx].t = (*pts)[ptIdx].t.Add(time.Duration(idx) * time.Microsecond)
+		}
+		if ctx.Debug > 0 {
+			Printf("MakeTSPointsUniqueTimes: adjusted %d points for %v %s %s\n", n, k.t, k.name, k.period)
+		}
+	}
+}
+
+func tsPointKey(pt TSPoint) (s string) {
+	s = pt.name + "\000" + pt.period
+	if pt.tags != nil {
+		keys := make([]string, 0, len(pt.tags))
+		for key := range pt.tags {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			s += "\000" + key + "=" + pt.tags[key]
+		}
+	}
+	if pt.fields != nil {
+		keys := make([]string, 0, len(pt.fields))
+		for key := range pt.fields {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			s += "\000" + key + "=" + fmt.Sprintf("%v", pt.fields[key])
+		}
+	}
+	return
 }

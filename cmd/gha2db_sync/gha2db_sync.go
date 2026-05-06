@@ -36,6 +36,7 @@ type metric struct {
 	AnnotationsRanges    bool              `yaml:"annotations_ranges"`
 	MergeSeries          string            `yaml:"merge_series"`
 	CustomData           bool              `yaml:"custom_data"`
+	CustomDataUniqueTime bool              `yaml:"custom_data_unique_time"`
 	StartFrom            *time.Time        `yaml:"start_from"`
 	LastHours            int               `yaml:"last_hours"`
 	SeriesNameMap        map[string]string `yaml:"series_name_map"`
@@ -578,6 +579,9 @@ func sync(ctx *lib.Ctx, args []string) {
 			}
 			if metric.CustomData {
 				extraParams = append(extraParams, "custom_data")
+				if metric.CustomDataUniqueTime {
+					extraParams = append(extraParams, "custom_data_unique_time")
+				}
 			}
 			if metric.SeriesNameMap != nil {
 				extraParams = append(extraParams, "series_name_map:"+fmt.Sprintf("%v", metric.SeriesNameMap))

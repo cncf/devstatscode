@@ -24,6 +24,7 @@ type calcMetricData struct {
 	desc                 string
 	mergeSeries          string
 	customData           bool
+	customDataUniqueTime bool
 	seriesNameMap        map[string]string
 	drop                 []string
 	projectScale         string
@@ -671,6 +672,9 @@ func calcRange(
 		if mut != nil {
 			mut.Unlock()
 		}
+		if cfg.customDataUniqueTime {
+			lib.MakeTSPointsUniqueTimes(ctx, &pts)
+		}
 		lib.WriteTSPoints(ctx, sqlc, &pts, cfg.mergeSeries, hllEmpty, mut)
 	} else if ctx.Debug > 0 {
 		lib.Printf("Skipping series write\n")
@@ -1166,6 +1170,9 @@ func calcHistogram(ctx *lib.Ctx, seriesNameOrFunc, sqlFile, sqlQuery, excludeBot
 	// Write the batch
 	if !ctx.SkipTSDB {
 		// Mark this metric & period as already computed if this is a QR period
+		if cfg.customDataUniqueTime {
+			lib.MakeTSPointsUniqueTimes(ctx, &pts)
+		}
 		lib.WriteTSPoints(ctx, sqlc, &pts, cfg.mergeSeries, []uint8{}, nil)
 		if qrDt != nil {
 			setAlreadyComputed(sqlc, ctx, sqlFile, *qrDt)
@@ -1255,8 +1262,8 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 
 	// Run
 	lib.Printf(
-		"calc_metric.go: %s: Running (on %d CPUs): %v - %v with interval %d %s, descriptions '%s', multivalue: %v, escape_value_name: %v, skip_escape_series_name: %v, custom_data: %v\n",
-		sqlFile, thrN, dFrom, dTo, nIntervals, interval, cfg.desc, cfg.multivalue, cfg.escapeValueName, cfg.skipEscapeSeriesName, cfg.customData,
+		"calc_metric.go: %s: Running (on %d CPUs): %v - %v with interval %d %s, descriptions '%s', multivalue: %v, escape_value_name: %v, skip_escape_series_name: %v, custom_data: %v, custom_data_unique_time: %v\n",
+		sqlFile, thrN, dFrom, dTo, nIntervals, interval, cfg.desc, cfg.multivalue, cfg.escapeValueName, cfg.skipEscapeSeriesName, cfg.customData, cfg.customDataUniqueTime,
 	)
 
 	dt := dFrom
@@ -1357,7 +1364,7 @@ func main() {
 	if len(os.Args) < 6 {
 		lib.Printf(
 			"Required series name, SQL file name, from, to, period " +
-				"[series_name_or_func some.sql '2015-08-03' '2017-08-21' h|d|w|m|q|y [hist,desc:time_diff_as_string,multivalue,escape_value_name,annotations_ranges,skip_past,merge_series:name,custom_data,drop:table1;table2,project_scale:float]]\n",
+				"[series_name_or_func some.sql '2015-08-03' '2017-08-21' h|d|w|m|q|y [hist,desc:time_diff_as_string,multivalue,escape_value_name,annotations_ranges,skip_past,merge_series:name,custom_data,custom_data_unique_time,drop:table1;table2,project_scale:float]]\n",
 		)
 		lib.Printf(
 			"Series name (series_name_or_func) will become exact series name if " +
@@ -1416,6 +1423,9 @@ func main() {
 		if _, ok := optMap["custom_data"]; ok {
 			cfg.customData = true
 		}
+		if _, ok := optMap["custom_data_unique_time"]; ok {
+			cfg.customDataUniqueTime = true
+		}
 		if snm, ok := optMap["series_name_map"]; ok {
 			cfg.seriesNameMap = lib.MapFromString(snm)
 		}
@@ -1428,6 +1438,9 @@ func main() {
 		if _, ok := optMap["hll"]; ok {
 			cfg.hll = true
 		}
+	}
+	if cfg.customDataUniqueTime && !cfg.customData {
+		lib.Fatalf("custom_data_unique_time requires custom_data")
 	}
 	gCmd = strings.Join(os.Args[1:], " ")
 	lib.Printf("%s...\n", os.Args[2])
