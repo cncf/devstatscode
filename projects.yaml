@@ -2347,11 +2347,12 @@ projects:
   microcks:
     order: 169
     name: Microcks
-    status: Sandbox
+    status: Incubating
     command_line:
       - 'microcks'
     start_date: 2015-02-23T00:00:00Z
     join_date: 2023-06-22T00:00:00Z
+    incubating_date: 2026-05-03T00:00:00Z
     psql_db: 'microcks'
     shared_db: allprj
     main_repo: microcks/microcks
@@ -3402,14 +3403,27 @@ projects:
     name: Higress
     status: Sandbox
     command_line:
-      - higress-group,alibaba/higress
+      - higress-group
     start_date: 2022-10-25T00:00:00Z
     join_date: 2026-03-15T00:00:00Z
     psql_db: higress
     shared_db: allprj
-    main_repo: alibaba/higress
+    main_repo: higress-group/higress
     annotation_regexp: '^v\d+\.\d+\.0$'
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
+  llmd:
+    order: 250
+    name: llm-d
+    status: Sandbox
+    command_line:
+      - llm-d
+    start_date: 2025-05-14T00:00:00Z
+    join_date: 2026-03-12T00:00:00Z
+    psql_db: llmd
+    shared_db: allprj
+    main_repo: llm-d/llm-d
+    annotation_regexp: '^v\d+\.\d+'
+    files_skip_pattern: ''
   opencontainers:
     order: 1200
     name: OCI
@@ -3654,8 +3668,8 @@ projects:
          googleforgames/global-multiplayer-demo,velero-io,vmware-tanzu/velero,\
          vmware-tanzu/velero-plugin-example,vmware-tanzu/velero-plugin-for-aws,\
          vmware-tanzu/velero-plugin-for-gcp,vmware-tanzu/velero-plugin-for-microsoft-azure,\
-         vmware-tanzu/velero-plugin-for-vsphere,vmware-tanzu/velero-plugin-for-csi,\
-         vmware-tanzu/velero-csi-plugin,openeverest,nmstate,higress-group,alibaba/higress"
+         vmware-tanzu/velero-plugin-for-vsphere,vmware-tanzu/velero-plugin-for-csi,llm-d,\
+         vmware-tanzu/velero-csi-plugin,openeverest,nmstate,higress-group"
     start_date: 2014-01-01T00:00:00Z
     join_date: 2016-03-10T00:00:00Z
     psql_db: allprj
