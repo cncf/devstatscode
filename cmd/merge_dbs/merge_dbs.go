@@ -3,14 +3,103 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
 	lib "github.com/cncf/devstatscode"
 	"github.com/lib/pq"
+	yaml "gopkg.in/yaml.v2"
 )
+
+const allInputDBs = "-all-"
+
+func projectDBsForSharedDB(ctx *lib.Ctx) []string {
+	dataPrefix := ctx.DataDir
+	if ctx.Local {
+		dataPrefix = "./"
+	}
+	data, err := ioutil.ReadFile(dataPrefix + ctx.ProjectsYaml)
+	lib.FatalOnError(err)
+
+	var projects lib.AllProjects
+	lib.FatalOnError(yaml.Unmarshal(data, &projects))
+
+	type projectDB struct {
+		order int
+		name  string
+		db    string
+	}
+
+	projectDBs := []projectDB{}
+	for projectName, projectData := range projects.Projects {
+		if lib.IsProjectDisabled(ctx, projectName, projectData.Disabled) {
+			continue
+		}
+		if strings.TrimSpace(projectData.SharedDB) != ctx.OutputDB {
+			continue
+		}
+		db := strings.TrimSpace(projectData.PDB)
+		if db == "" || db == ctx.OutputDB {
+			continue
+		}
+		projectDBs = append(projectDBs, projectDB{
+			order: projectData.Order,
+			name:  projectName,
+			db:    db,
+		})
+	}
+
+	sort.SliceStable(projectDBs, func(i, j int) bool {
+		if projectDBs[i].order == projectDBs[j].order {
+			if projectDBs[i].name == projectDBs[j].name {
+				return projectDBs[i].db < projectDBs[j].db
+			}
+			return projectDBs[i].name < projectDBs[j].name
+		}
+		return projectDBs[i].order < projectDBs[j].order
+	})
+
+	seen := make(map[string]struct{})
+	dbs := []string{}
+	for _, projectDB := range projectDBs {
+		if _, ok := seen[projectDB.db]; ok {
+			continue
+		}
+		seen[projectDB.db] = struct{}{}
+		dbs = append(dbs, projectDB.db)
+	}
+	return dbs
+}
+
+func resolveInputDBs(ctx *lib.Ctx) {
+	inputDBs := []string{}
+	for _, db := range ctx.InputDBs {
+		db = strings.TrimSpace(db)
+		if db == "" {
+			continue
+		}
+		inputDBs = append(inputDBs, db)
+	}
+	ctx.InputDBs = inputDBs
+
+	for _, db := range ctx.InputDBs {
+		if db == allInputDBs && len(ctx.InputDBs) != 1 {
+			lib.Fatalf("%s must be used alone in GHA2DB_INPUT_DBS, got %+v", allInputDBs, ctx.InputDBs)
+		}
+	}
+
+	if len(ctx.InputDBs) == 1 && ctx.InputDBs[0] == allInputDBs {
+		ctx.InputDBs = projectDBsForSharedDB(ctx)
+		if len(ctx.InputDBs) == 0 {
+			lib.Fatalf("no enabled projects in %s have shared_db=%q", ctx.ProjectsYaml, ctx.OutputDB)
+		}
+		lib.Printf("merge_dbs: expanded GHA2DB_INPUT_DBS=%q to %d DB(s) with shared_db=%q: %+v\n", allInputDBs, len(ctx.InputDBs), ctx.OutputDB, ctx.InputDBs)
+	}
+}
 
 func parseTableList(envName string) map[string]struct{} {
 	value := strings.TrimSpace(os.Getenv(envName))
@@ -34,12 +123,13 @@ func mergePDBs() {
 	ctx.Init()
 	lib.SetupTimeoutSignal(&ctx)
 
-	if len(ctx.InputDBs) < 1 {
-		lib.Fatalf("required at least 1 input database, got %d: %+v", len(ctx.InputDBs), ctx.InputDBs)
-		return
-	}
 	if ctx.OutputDB == "" {
 		lib.Fatalf("output database required")
+		return
+	}
+	resolveInputDBs(&ctx)
+	if len(ctx.InputDBs) < 1 {
+		lib.Fatalf("required at least 1 input database, got %d: %+v", len(ctx.InputDBs), ctx.InputDBs)
 		return
 	}
 
