@@ -83,6 +83,83 @@ func envFlag(name string) bool {
 	return false
 }
 
+func parseMergeDtFrom() (time.Time, bool) {
+	dtFrom := strings.TrimSpace(os.Getenv("MERGE_DT_FROM"))
+	dtDrom := strings.TrimSpace(os.Getenv("MERGE_DT_DROM"))
+	if dtFrom != "" && dtDrom != "" && dtFrom != dtDrom {
+		lib.Fatalf("MERGE_DT_FROM and MERGE_DT_DROM are both set but differ: %q != %q", dtFrom, dtDrom)
+	}
+	if dtFrom == "" {
+		dtFrom = dtDrom
+	}
+	if dtFrom == "" {
+		return time.Time{}, false
+	}
+
+	formats := []string{
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02 15",
+		"2006-01-02",
+	}
+	for _, format := range formats {
+		tm, err := time.Parse(format, dtFrom)
+		if err == nil {
+			return tm, true
+		}
+	}
+	lib.Fatalf("MERGE_DT_FROM/MERGE_DT_DROM must be YYYY-MM-DD or parseable timestamp, got %q", dtFrom)
+	return time.Time{}, false
+}
+
+func addWhereCondition(queryRoot, condition string) string {
+	if condition == "" {
+		return queryRoot
+	}
+	if strings.Contains(queryRoot, " where ") {
+		return queryRoot + " and " + condition
+	}
+	return queryRoot + " where " + condition
+}
+
+func mergeDateCondition(table string) string {
+	switch table {
+	case "gha_assets",
+		"gha_branches",
+		"gha_comments",
+		"gha_commits",
+		"gha_commits_roles",
+		"gha_forkees",
+		"gha_issues",
+		"gha_issues_labels",
+		"gha_milestones",
+		"gha_pages",
+		"gha_payloads",
+		"gha_pull_requests",
+		"gha_releases",
+		"gha_teams":
+		return "dup_created_at >= $1"
+	case "gha_events",
+		"gha_issues_events_labels",
+		"gha_issues_pull_requests",
+		"gha_texts":
+		return "created_at >= $1"
+	case "gha_commits_files",
+		"gha_repos_langs",
+		"gha_skip_commits":
+		return "dt >= $1"
+	case "gha_issues_assignees",
+		"gha_pull_requests_assignees",
+		"gha_pull_requests_requested_reviewers",
+		"gha_releases_assets",
+		"gha_teams_repositories":
+		return "event_id in (select id from gha_events where created_at >= $1)"
+	default:
+		return ""
+	}
+}
+
 func resolveInputDBs(ctx *lib.Ctx) bool {
 	inputDBs := []string{}
 	for _, db := range ctx.InputDBs {
@@ -187,6 +264,10 @@ func mergePDBs() {
 	if ctx.OutputDB == "" {
 		lib.Fatalf("output database required")
 		return
+	}
+	mergeDtFrom, mergeDtFromSet := parseMergeDtFrom()
+	if mergeDtFromSet {
+		lib.Printf("merge_dbs date filter: MERGE_DT_FROM=%q; tables without a merge date mapping are copied fully\n", lib.ToYMDHMSDate(mergeDtFrom))
 	}
 	allMode := resolveInputDBs(&ctx)
 	ignoreNoDB := envFlag("IGNORE_NO_DB")
@@ -342,10 +423,21 @@ func mergePDBs() {
 				// First get row count
 				rc := 0
 				queryRoot := "from " + table
+				queryArgs := []interface{}{}
 				if cond != "" {
 					queryRoot += " where " + cond
 				}
-				row := c.QueryRow("select count(*) " + queryRoot)
+
+				if mergeDtFromSet {
+					mergeDtCond := mergeDateCondition(table)
+					if mergeDtCond != "" {
+						queryRoot = addWhereCondition(queryRoot, mergeDtCond)
+						queryArgs = append(queryArgs, mergeDtFrom)
+					} else if dbi == 0 {
+						lib.Printf("merge_dbs date filter: table %s has no merge date mapping, copying all rows\n", table)
+					}
+				}
+				row := lib.QueryRowSQL(c, &ctx, "select count(*) "+queryRoot, queryArgs...)
 				lib.FatalOnError(row.Scan(&rc))
 
 				// Now get all data
@@ -357,6 +449,7 @@ func mergePDBs() {
 					c,
 					&ctx,
 					"select * "+queryRoot,
+					queryArgs...,
 				)
 				//defer func() { lib.FatalOnError(rows.Close()) }()
 				// Now unknown rows, with unknown types
