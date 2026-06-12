@@ -3,12 +3,30 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"reflect"
+	"strings"
 	"time"
 
 	lib "github.com/cncf/devstatscode"
 	"github.com/lib/pq"
 )
+
+func parseTableList(envName string) map[string]struct{} {
+	value := strings.TrimSpace(os.Getenv(envName))
+	if value == "" {
+		return nil
+	}
+	tables := make(map[string]struct{})
+	for _, table := range strings.Split(value, ",") {
+		table = strings.TrimSpace(table)
+		if table == "" {
+			continue
+		}
+		tables[table] = struct{}{}
+	}
+	return tables
+}
 
 func mergePDBs() {
 	// Environment context parse
@@ -95,6 +113,50 @@ func mergePDBs() {
 		{"gha_texts", "", "-"},
 		// {"gha_parsed", "", "-"},
 		// {"gha_last_computed", "", "-"},
+	}
+
+	onlyTables := parseTableList("ONLY_TABLES")
+	skipTables := parseTableList("SKIP_TABLES")
+	if len(onlyTables) > 0 || len(skipTables) > 0 {
+		knownTables := make(map[string]struct{}, len(tableData))
+		for _, data := range tableData {
+			knownTables[data[0]] = struct{}{}
+		}
+
+		for table := range onlyTables {
+			if _, ok := knownTables[table]; !ok {
+				lib.Fatalf("ONLY_TABLES contains unknown table '%s'", table)
+			}
+		}
+		if len(onlyTables) == 0 {
+			for table := range skipTables {
+				if _, ok := knownTables[table]; !ok {
+					lib.Fatalf("SKIP_TABLES contains unknown table '%s'", table)
+				}
+			}
+		}
+
+		filteredTableData := [][]string{}
+		for _, data := range tableData {
+			table := data[0]
+			if len(onlyTables) > 0 {
+				if _, ok := onlyTables[table]; !ok {
+					continue
+				}
+			} else {
+				if _, ok := skipTables[table]; ok {
+					continue
+				}
+			}
+			filteredTableData = append(filteredTableData, data)
+		}
+		tableData = filteredTableData
+		lib.Printf(
+			"merge_dbs table filter: selected %d table(s), ONLY_TABLES=%q, SKIP_TABLES=%q\n",
+			len(tableData),
+			os.Getenv("ONLY_TABLES"),
+			os.Getenv("SKIP_TABLES"),
+		)
 	}
 
 	for pass, passInfo := range []string{"1st pass", "2nd pass"} {
