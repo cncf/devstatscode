@@ -1218,19 +1218,19 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
     from
       gha_commits
     where
+      (lower(dup_actor_login) = $1 or lower(dup_author_login) = $1 or lower(dup_committer_login) = $1)
+    union select
+      event_id
+    from
+      gha_issues
+    where
       lower(dup_actor_login) = $1
     union select
       event_id
     from
-      gha_commits
+      gha_pull_requests
     where
-      lower(dup_author_login) = $1
-    union select
-      event_id
-    from
-      gha_commits
-    where
-      lower(dup_committer_login) = $1
+      (lower(dup_actor_login) = $1 or lower(dupn_merged_by_login) = $1)
     union select
       event_id
     from
@@ -1252,23 +1252,33 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
 
 	go runQuery(`
   select
+    count(distinct (s.number, s.dup_repo_id)) as prs
+  from (
+    select
+      number, dup_repo_id
+    from
+      gha_issues
+    where
+      is_pull_request = true
+      and (lower(dup_actor_login) = $1 or lower(dup_user_login) = $1)
+    union select
+      number, dup_repo_id
+    from
+      gha_pull_requests
+    where
+      (lower(dup_actor_login) = $1 or lower(dup_user_login) = $1 or lower(dupn_merged_by_login) = $1)
+    ) s
+  `, ghID, &prs)
+
+	go runQuery(`
+  select
     count(distinct id) as issues
   from
     gha_issues
   where
     is_pull_request = false
-    and lower(dup_actor_login) = $1
+    and (lower(dup_actor_login) = $1 or lower(dup_user_login) = $1)
   `, ghID, &issues)
-
-	go runQuery(`
-  select
-    count(distinct id) as prs
-  from
-    gha_issues
-  where
-    is_pull_request = true
-    and lower(dup_actor_login) = $1
-  `, ghID, &prs)
 
 	wg.Wait()
 
