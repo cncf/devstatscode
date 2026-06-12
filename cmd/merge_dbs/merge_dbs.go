@@ -75,7 +75,15 @@ func projectDBsForSharedDB(ctx *lib.Ctx) []string {
 	return dbs
 }
 
-func resolveInputDBs(ctx *lib.Ctx) {
+func envFlag(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "t", "true", "y", "yes":
+		return true
+	}
+	return false
+}
+
+func resolveInputDBs(ctx *lib.Ctx) bool {
 	inputDBs := []string{}
 	for _, db := range ctx.InputDBs {
 		db = strings.TrimSpace(db)
@@ -92,13 +100,47 @@ func resolveInputDBs(ctx *lib.Ctx) {
 		}
 	}
 
-	if len(ctx.InputDBs) == 1 && ctx.InputDBs[0] == allInputDBs {
+	allMode := len(ctx.InputDBs) == 1 && ctx.InputDBs[0] == allInputDBs
+	skipDBs := parseTableList("SKIP_DBS")
+	if len(skipDBs) > 0 && !allMode {
+		lib.Fatalf("SKIP_DBS can only be used with GHA2DB_INPUT_DBS=%q", allInputDBs)
+	}
+
+	if allMode {
 		ctx.InputDBs = projectDBsForSharedDB(ctx)
+		if len(skipDBs) > 0 {
+			filteredInputDBs := []string{}
+			skippedInputDBs := []string{}
+			for _, db := range ctx.InputDBs {
+				if _, ok := skipDBs[db]; ok {
+					skippedInputDBs = append(skippedInputDBs, db)
+					continue
+				}
+				filteredInputDBs = append(filteredInputDBs, db)
+			}
+			ctx.InputDBs = filteredInputDBs
+			lib.Printf(
+				"merge_dbs: skipped %d DB(s) using SKIP_DBS=%q: %+v\n",
+				len(skippedInputDBs),
+				os.Getenv("SKIP_DBS"),
+				skippedInputDBs,
+			)
+		}
 		if len(ctx.InputDBs) == 0 {
 			lib.Fatalf("no enabled projects in %s have shared_db=%q", ctx.ProjectsYaml, ctx.OutputDB)
 		}
 		lib.Printf("merge_dbs: expanded GHA2DB_INPUT_DBS=%q to %d DB(s) with shared_db=%q: %+v\n", allInputDBs, len(ctx.InputDBs), ctx.OutputDB, ctx.InputDBs)
 	}
+
+	return allMode
+}
+
+func isNoDBError(err error) bool {
+	if e, ok := err.(*pq.Error); ok {
+		return e.Code.Name() == "invalid_catalog_name" || string(e.Code) == "3D000"
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database") && strings.Contains(msg, "does not exist")
 }
 
 func parseTableList(envName string) map[string]struct{} {
@@ -117,6 +159,25 @@ func parseTableList(envName string) map[string]struct{} {
 	return tables
 }
 
+func connectInputDB(ctx *lib.Ctx, db string, allMode, ignoreNoDB bool) (*sql.DB, error) {
+	if !(allMode && ignoreNoDB) {
+		return lib.PgConnDB(ctx, db), nil
+	}
+	lctx := *ctx
+	lctx.PgDB = db
+	lctx.ExecFatal = false
+	lctx.ExecOutput = true
+	c, err := lib.PgConnErr(&lctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = c.Ping(); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	return c, nil
+}
+
 func mergePDBs() {
 	// Environment context parse
 	var ctx lib.Ctx
@@ -127,7 +188,11 @@ func mergePDBs() {
 		lib.Fatalf("output database required")
 		return
 	}
-	resolveInputDBs(&ctx)
+	allMode := resolveInputDBs(&ctx)
+	ignoreNoDB := envFlag("IGNORE_NO_DB")
+	if ignoreNoDB && !allMode {
+		lib.Fatalf("IGNORE_NO_DB=1 can only be used with GHA2DB_INPUT_DBS=%q", allInputDBs)
+	}
 	if len(ctx.InputDBs) < 1 {
 		lib.Fatalf("required at least 1 input database, got %d: %+v", len(ctx.InputDBs), ctx.InputDBs)
 		return
@@ -137,9 +202,23 @@ func mergePDBs() {
 	ci := []*sql.DB{}
 	iNames := []string{}
 	for _, iName := range ctx.InputDBs {
-		c := lib.PgConnDB(&ctx, iName)
+		c, err := connectInputDB(&ctx, iName, allMode, ignoreNoDB)
+		if err != nil {
+			if allMode && ignoreNoDB && isNoDBError(err) {
+				lib.Printf("merge_dbs: skipping unavailable input DB %q due to IGNORE_NO_DB=1: %v\n", iName, err)
+				continue
+			}
+			lib.FatalOnError(err)
+		}
 		ci = append(ci, c)
 		iNames = append(iNames, iName)
+	}
+
+	if len(ci) < 1 {
+		lib.Fatalf(
+			"required at least 1 available input database after filtering/connection, got %d from %+v",
+			len(ci), ctx.InputDBs,
+		)
 	}
 
 	// Defer closing all input connections
