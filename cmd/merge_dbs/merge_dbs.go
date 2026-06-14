@@ -89,7 +89,7 @@ func envFlag(name string) bool {
 	return false
 }
 
-// parseBatchSize reads BATCH_SIZE used in batch insert mode (default 1000, minimum 2).
+// parseBatchSize reads BATCH_SIZE used in batch insert mode (default 1000, clamped to [2, 1000]).
 // The effective batch is additionally capped at insert time so that rows*columns
 // never exceeds maxParams.
 func parseBatchSize() int {
@@ -105,10 +105,14 @@ func parseBatchSize() int {
 		lib.Printf("merge_dbs: BATCH_SIZE=%d is below minimum, using 2\n", n)
 		n = 2
 	}
+	if n > 1000 {
+		lib.Printf("merge_dbs: BATCH_SIZE=%d is above maximum, using 1000\n", n)
+		n = 1000
+	}
 	return n
 }
 
-// parseParallel reads PARALLEL - the number of tables processed concurrently (default 1, minimum 1).
+// parseParallel reads PARALLEL - the number of tables processed concurrently (default 1, clamped to [1, 16]).
 func parseParallel() int {
 	value := strings.TrimSpace(os.Getenv("PARALLEL"))
 	if value == "" {
@@ -121,6 +125,10 @@ func parseParallel() int {
 	if n < 1 {
 		lib.Printf("merge_dbs: PARALLEL=%d is below minimum, using 1\n", n)
 		n = 1
+	}
+	if n > 16 {
+		lib.Printf("merge_dbs: PARALLEL=%d is above maximum, using 16\n", n)
+		n = 16
 	}
 	return n
 }
