@@ -7,7 +7,9 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	lib "github.com/cncf/devstatscode"
@@ -16,6 +18,10 @@ import (
 )
 
 const allInputDBs = "-all-"
+
+// maxParams is the maximum number of bind parameters a single Postgres query can use.
+// The wire protocol stores the parameter count in a 16-bit field, so the limit is 65535.
+const maxParams = 65535
 
 func projectDBsForSharedDB(ctx *lib.Ctx) []string {
 	dataPrefix := ctx.DataDir
@@ -81,6 +87,66 @@ func envFlag(name string) bool {
 		return true
 	}
 	return false
+}
+
+// parseBatchSize reads BATCH_SIZE used in batch insert mode (default 1000, minimum 2).
+// The effective batch is additionally capped at insert time so that rows*columns
+// never exceeds maxParams.
+func parseBatchSize() int {
+	value := strings.TrimSpace(os.Getenv("BATCH_SIZE"))
+	if value == "" {
+		return 1000
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		lib.Fatalf("invalid BATCH_SIZE=%q: %v", value, err)
+	}
+	if n < 2 {
+		lib.Printf("merge_dbs: BATCH_SIZE=%d is below minimum, using 2\n", n)
+		n = 2
+	}
+	return n
+}
+
+// parseParallel reads PARALLEL - the number of tables processed concurrently (default 1, minimum 1).
+func parseParallel() int {
+	value := strings.TrimSpace(os.Getenv("PARALLEL"))
+	if value == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		lib.Fatalf("invalid PARALLEL=%q: %v", value, err)
+	}
+	if n < 1 {
+		lib.Printf("merge_dbs: PARALLEL=%d is below minimum, using 1\n", n)
+		n = 1
+	}
+	return n
+}
+
+// batchValues builds a multi-row VALUES clause for a batch insert:
+// "values ($1,...,$nCols),($nCols+1,...),..." for nRows rows of nCols columns each.
+func batchValues(nRows, nCols int) string {
+	var sb strings.Builder
+	sb.WriteString("values ")
+	param := 1
+	for r := 0; r < nRows; r++ {
+		if r > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteByte('(')
+		for c := 0; c < nCols; c++ {
+			if c > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteByte('$')
+			sb.WriteString(strconv.Itoa(param))
+			param++
+		}
+		sb.WriteByte(')')
+	}
+	return sb.String()
 }
 
 func parseMergeDtFrom() (time.Time, bool) {
@@ -409,70 +475,153 @@ func mergePDBs() {
 		)
 	}
 
-	for pass, passInfo := range []string{"1st pass", "2nd pass"} {
-		for i, data := range tableData {
-			table := data[0]
-			cond := data[pass+1]
-			if cond == "-" {
-				continue
-			}
-			allRows := 0
-			allErrs := 0
-			allIns := 0
-			for dbi, c := range ci {
-				// First get row count
-				rc := 0
-				queryRoot := "from " + table
-				queryArgs := []interface{}{}
-				if cond != "" {
-					queryRoot += " where " + cond
-				}
+	// Batch / parallelism configuration (all default to the legacy single-row, single-threaded behavior)
+	useBatch := envFlag("USE_BATCH")
+	batchSize := 1000
+	if useBatch {
+		batchSize = parseBatchSize()
+	}
+	parallel := parseParallel()
+	lib.Printf("merge_dbs: USE_BATCH=%v, BATCH_SIZE=%d, PARALLEL=%d (max %d psql params per batch insert)\n", useBatch, batchSize, parallel, maxParams)
 
-				if mergeDtFromSet {
-					mergeDtCond := mergeDateCondition(table)
-					if mergeDtCond != "" {
-						queryRoot = addWhereCondition(queryRoot, mergeDtCond)
-						queryArgs = append(queryArgs, mergeDtFrom)
-					} else if dbi == 0 {
-						lib.Printf("merge_dbs date filter: table %s has no merge date mapping, copying all rows\n", table)
+	// processTable merges a single table (for a single pass) from all input DBs into the output DB.
+	// It is called directly (sequentially) when PARALLEL=1 and from up to PARALLEL goroutines otherwise.
+	// All state it uses is either read-only and shared (ctx, co, ci, iNames, ...) or local to this call,
+	// so concurrent invocations for different tables are safe.
+	processTable := func(pass int, passInfo string, i int, data []string) {
+		table := data[0]
+		cond := data[pass+1]
+		if cond == "-" {
+			return
+		}
+		allRows := 0
+		allErrs := 0
+		allIns := 0
+		for dbi, c := range ci {
+			// First get row count
+			rc := 0
+			queryRoot := "from " + table
+			queryArgs := []interface{}{}
+			if cond != "" {
+				queryRoot += " where " + cond
+			}
+
+			if mergeDtFromSet {
+				mergeDtCond := mergeDateCondition(table)
+				if mergeDtCond != "" {
+					queryRoot = addWhereCondition(queryRoot, mergeDtCond)
+					queryArgs = append(queryArgs, mergeDtFrom)
+				} else if dbi == 0 {
+					lib.Printf("merge_dbs date filter: table %s has no merge date mapping, copying all rows\n", table)
+				}
+			}
+			row := lib.QueryRowSQL(c, &ctx, "select count(*) "+queryRoot, queryArgs...)
+			lib.FatalOnError(row.Scan(&rc))
+
+			// Now get all data
+			lib.Printf(
+				"%s: start table: #%d: %s, DB #%d: %s, rows: %d...\n",
+				passInfo, i, table, dbi, iNames[dbi], rc,
+			)
+			rows := lib.QuerySQLWithErr(
+				c,
+				&ctx,
+				"select * "+queryRoot,
+				queryArgs...,
+			)
+			//defer func() { lib.FatalOnError(rows.Close()) }()
+			// Now unknown rows, with unknown types
+			columns, err := rows.Columns()
+			lib.FatalOnError(err)
+
+			// Vals to hold any type as []interface{}
+			nColumns := len(columns)
+			vals := make([]interface{}, nColumns)
+			cols := "("
+			for i, col := range columns {
+				vals[i] = new(interface{})
+				cols += "\"" + col + "\", "
+			}
+			cols = cols[:len(cols)-2] + ")"
+
+			// Get results into `results` array of maps
+			rowCount := 0
+			errCount := 0
+			insCount := 0
+			// For ProgressInfo()
+			dtStart := time.Now()
+			lastTime := dtStart
+			if useBatch {
+				// Batch insert mode: insert many rows per statement using
+				// "insert into t(cols) values (...),(...),... on conflict do nothing".
+				// Conflicts are not raised as errors here, so the number of inserted rows
+				// is taken from RowsAffected() and the rest of the batch are collisions.
+				// Cap rows per insert so that rows*columns never exceeds maxParams.
+				maxRowsByParams := maxParams / nColumns
+				if maxRowsByParams < 1 {
+					maxRowsByParams = 1
+				}
+				effBatch := batchSize
+				if effBatch > maxRowsByParams {
+					effBatch = maxRowsByParams
+				}
+				if effBatch < batchSize {
+					lib.Printf(
+						"%s: table #%d %s, DB #%d %s: batch size capped from %d to %d (%d columns, max %d psql params)\n",
+						passInfo, i, table, dbi, iNames[dbi], batchSize, effBatch, nColumns, maxParams,
+					)
+				}
+				insertPrefix := "insert into " + table + cols + " "
+				// Precompute the VALUES clause for a full batch; only the last (partial) batch differs.
+				fullValues := batchValues(effBatch, nColumns)
+				batchArgs := make([]interface{}, 0, effBatch*nColumns)
+				rowsInBatch := 0
+				flush := func() {
+					if rowsInBatch == 0 {
+						return
+					}
+					valuesClause := fullValues
+					if rowsInBatch != effBatch {
+						valuesClause = batchValues(rowsInBatch, nColumns)
+					}
+					res, err := lib.ExecSQL(co, &ctx, insertPrefix+valuesClause+" on conflict do nothing", batchArgs...)
+					if err != nil {
+						// "on conflict do nothing" never raises a unique violation, so any error
+						// here is a real problem (usually different columns order).
+						lib.Printf("Failing batch insert into %s (rows: %d, columns: %d)\n", table, rowsInBatch, nColumns)
+						lib.FatalOnError(err)
+					}
+					affected, err := res.RowsAffected()
+					lib.FatalOnError(err)
+					ins := int(affected)
+					if ins < 0 {
+						ins = 0
+					}
+					if ins > rowsInBatch {
+						ins = rowsInBatch
+					}
+					insCount += ins
+					errCount += rowsInBatch - ins
+					rowCount += rowsInBatch
+					batchArgs = batchArgs[:0]
+					rowsInBatch = 0
+					lib.ProgressInfo(
+						rowCount, rc, dtStart, &lastTime, time.Duration(10)*time.Second,
+						fmt.Sprintf("%s: table #%d %s, DB #%d %s", passInfo, i, table, dbi, iNames[dbi]),
+					)
+				}
+				for rows.Next() {
+					lib.FatalOnError(rows.Scan(vals...))
+					for vi := range vals {
+						batchArgs = append(batchArgs, *(vals[vi].(*interface{})))
+					}
+					rowsInBatch++
+					if rowsInBatch >= effBatch {
+						flush()
 					}
 				}
-				row := lib.QueryRowSQL(c, &ctx, "select count(*) "+queryRoot, queryArgs...)
-				lib.FatalOnError(row.Scan(&rc))
-
-				// Now get all data
-				lib.Printf(
-					"%s: start table: #%d: %s, DB #%d: %s, rows: %d...\n",
-					passInfo, i, table, dbi, iNames[dbi], rc,
-				)
-				rows := lib.QuerySQLWithErr(
-					c,
-					&ctx,
-					"select * "+queryRoot,
-					queryArgs...,
-				)
-				//defer func() { lib.FatalOnError(rows.Close()) }()
-				// Now unknown rows, with unknown types
-				columns, err := rows.Columns()
-				lib.FatalOnError(err)
-
-				// Vals to hold any type as []interface{}
-				nColumns := len(columns)
-				vals := make([]interface{}, nColumns)
-				cols := "("
-				for i, col := range columns {
-					vals[i] = new(interface{})
-					cols += "\"" + col + "\", "
-				}
-				cols = cols[:len(cols)-2] + ")"
-
-				// Get results into `results` array of maps
-				rowCount := 0
-				errCount := 0
-				insCount := 0
-				// For ProgressInfo()
-				dtStart := time.Now()
-				lastTime := dtStart
+				flush()
+			} else {
 				for rows.Next() {
 					lib.FatalOnError(rows.Scan(vals...))
 					_, err := lib.ExecSQL(
@@ -506,28 +655,53 @@ func mergePDBs() {
 						fmt.Sprintf("%s: table #%d %s, DB #%d %s", passInfo, i, table, dbi, iNames[dbi]),
 					)
 				}
-				lib.FatalOnError(rows.Err())
-				lib.FatalOnError(rows.Close())
-				perc := 0.0
-				if rowCount > 0 {
-					perc = float64(errCount) * 100.0 / (float64(rowCount))
-				}
-				lib.Printf(
-					"%s: done table: #%d: %s, DB #%d: %s, rows: %d, inserted: %d, collisions: %d (%.3f%%)\n",
-					passInfo, i, table, dbi, iNames[dbi], rowCount, insCount, errCount, perc,
-				)
-				allRows += rowCount
-				allErrs += errCount
-				allIns += insCount
 			}
+			lib.FatalOnError(rows.Err())
+			lib.FatalOnError(rows.Close())
 			perc := 0.0
-			if allRows > 0 {
-				perc = float64(allErrs) * 100.0 / (float64(allRows))
+			if rowCount > 0 {
+				perc = float64(errCount) * 100.0 / (float64(rowCount))
 			}
 			lib.Printf(
-				"%s: done table: #%d: %s, all rows: %d, inserted: %d, collisions: %d (%.3f%%)\n",
-				passInfo, i, table, allRows, allIns, allErrs, perc,
+				"%s: done table: #%d: %s, DB #%d: %s, rows: %d, inserted: %d, collisions: %d (%.3f%%)\n",
+				passInfo, i, table, dbi, iNames[dbi], rowCount, insCount, errCount, perc,
 			)
+			allRows += rowCount
+			allErrs += errCount
+			allIns += insCount
+		}
+		perc := 0.0
+		if allRows > 0 {
+			perc = float64(allErrs) * 100.0 / (float64(allRows))
+		}
+		lib.Printf(
+			"%s: done table: #%d: %s, all rows: %d, inserted: %d, collisions: %d (%.3f%%)\n",
+			passInfo, i, table, allRows, allIns, allErrs, perc,
+		)
+	}
+
+	for pass, passInfo := range []string{"1st pass", "2nd pass"} {
+		if parallel > 1 {
+			// Parallel mode: process up to `parallel` tables concurrently within a pass.
+			// Passes stay sequential (we join all tables of a pass before starting the next),
+			// preserving the original ordering between the 1st and 2nd pass.
+			var wg sync.WaitGroup
+			sem := make(chan struct{}, parallel)
+			for i, data := range tableData {
+				sem <- struct{}{}
+				wg.Add(1)
+				go func(pass int, passInfo string, i int, data []string) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					processTable(pass, passInfo, i, data)
+				}(pass, passInfo, i, data)
+			}
+			wg.Wait()
+		} else {
+			// Sequential mode (PARALLEL=1): no goroutines at all, exactly as the legacy code.
+			for i, data := range tableData {
+				processTable(pass, passInfo, i, data)
+			}
 		}
 	}
 }
