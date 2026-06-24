@@ -103,6 +103,7 @@ type Ctx struct {
 	SkipAPIEvents            bool                         // From GHA2DB_GHAPISKIPEVENTS, ghapi2db tool, if set then tool is skipping GH API events sync
 	SkipAPIIssues            bool                         // From GHA2DB_GHAPISKIPISSUES, ghapi2db tool, if set then tool is skipping GH API issues sync
 	SkipAPIPRs               bool                         // From GHA2DB_GHAPISKIPPRS, ghapi2db tool, if set then tool is skipping GH API PRs sync
+	AllowGHAPIInsertFail     bool                         // From GHA2DB_GHAPIALLOWINSERTFAIL, ghapi2db tool, if set then an artificial event DB insert error is not fatal - the whole event is rolled back, reported and skipped (handles bad GH API data, like events without an actor)
 	SkipAPICommits           bool                         // From GHA2DB_GHAPISKIPCOMMITS, ghapi2db tool, if set then tool is skipping GH API commits enrichment
 	SkipAPILicenses          bool                         // From GHA2DB_GHAPISKIPLICENSES, ghapi2db tool, if set then tool is skipping GH API licenses enrichment
 	ForceAPILicenses         bool                         // From GHA2DB_GHAPIFORCELICENSES, ghapi2db tool, if set, recheck licenses on repos that already have licenses fetched
@@ -342,6 +343,7 @@ func (ctx *Ctx) Init() {
 	ctx.SkipAPIEvents = os.Getenv("GHA2DB_GHAPISKIPEVENTS") != ""
 	ctx.SkipAPIIssues = os.Getenv("GHA2DB_GHAPISKIPISSUES") != ""
 	ctx.SkipAPIPRs = os.Getenv("GHA2DB_GHAPISKIPPRS") != ""
+	ctx.AllowGHAPIInsertFail = os.Getenv("GHA2DB_GHAPIALLOWINSERTFAIL") != ""
 	ctx.SkipAPICommits = os.Getenv("GHA2DB_GHAPISKIPCOMMITS") != ""
 	ctx.SkipAPILicenses = os.Getenv("GHA2DB_GHAPISKIPLICENSES") != ""
 	ctx.ForceAPILicenses = os.Getenv("GHA2DB_GHAPIFORCELICENSES") != ""
@@ -933,6 +935,7 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		SkipAPIEvents:            ctx.SkipAPIEvents,
 		SkipAPIIssues:            ctx.SkipAPIIssues,
 		SkipAPIPRs:               ctx.SkipAPIPRs,
+		AllowGHAPIInsertFail:     ctx.AllowGHAPIInsertFail,
 		SkipAPICommits:           ctx.SkipAPICommits,
 		SkipAPILicenses:          ctx.SkipAPILicenses,
 		ForceAPILicenses:         ctx.ForceAPILicenses,

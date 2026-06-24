@@ -484,6 +484,13 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 	iid := *issue.ID
 	actor := event.Actor
 
+	// Bad GH API data: an event without an actor cannot be inserted (NOT NULL actor columns)
+	// When GHA2DB_GHAPIALLOWINSERTFAIL is set, report and skip such an event instead of aborting
+	if ctx.AllowGHAPIInsertFail && (actor == nil || actor.Login == nil) {
+		Printf("Warning: GHA2DB_GHAPIALLOWINSERTFAIL: skipped artificial PR event for %s %d (%s, %v): event has no actor\n", cfg.Repo, cfg.Number, cfg.EventType, ToYMDHMSDate(cfg.CreatedAt))
+		return nil
+	}
+
 	// Start transaction
 	tc, err := c.Begin()
 	FatalOnError(err)
@@ -798,6 +805,13 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 
 	// To handle GDPR
 	maybeHide := MaybeHideFunc(GetHidden(ctx, HideCfgFile))
+
+	// Bad GH API data: an event without an actor cannot be inserted (NOT NULL actor columns)
+	// When GHA2DB_GHAPIALLOWINSERTFAIL is set, report and skip such an event instead of aborting
+	if ctx.AllowGHAPIInsertFail && (event.Actor == nil || event.Actor.Login == nil) {
+		Printf("Warning: GHA2DB_GHAPIALLOWINSERTFAIL: skipped artificial event for %s %d (%s, %v): event has no actor\n", cfg.Repo, cfg.Number, cfg.EventType, ToYMDHMSDate(cfg.CreatedAt))
+		return nil
+	}
 
 	// Start transaction
 	tc, err := c.Begin()
