@@ -104,6 +104,8 @@ type Ctx struct {
 	SkipAPIIssues            bool                         // From GHA2DB_GHAPISKIPISSUES, ghapi2db tool, if set then tool is skipping GH API issues sync
 	SkipAPIPRs               bool                         // From GHA2DB_GHAPISKIPPRS, ghapi2db tool, if set then tool is skipping GH API PRs sync
 	AllowGHAPIInsertFail     bool                         // From GHA2DB_GHAPIALLOWINSERTFAIL, ghapi2db tool, if set then an artificial event DB insert error is not fatal - the whole event is rolled back, reported and skipped (handles bad GH API data, like events without an actor)
+	PostprocessFrom          string                       // From GHA2DB_POSTPROCESS_FROM, structure tool: when set together with PostprocessTo, generated tables (gha_texts, gha_issues_events_labels, gha_issues_pull_requests) are rebuilt for rows in [from, to) instead of the default max(event_id) incremental append - makes historical backfills correct
+	PostprocessTo            string                       // From GHA2DB_POSTPROCESS_TO, structure tool: exclusive upper bound of the postprocess rebuild range, see PostprocessFrom
 	SkipAPICommits           bool                         // From GHA2DB_GHAPISKIPCOMMITS, ghapi2db tool, if set then tool is skipping GH API commits enrichment
 	SkipAPILicenses          bool                         // From GHA2DB_GHAPISKIPLICENSES, ghapi2db tool, if set then tool is skipping GH API licenses enrichment
 	ForceAPILicenses         bool                         // From GHA2DB_GHAPIFORCELICENSES, ghapi2db tool, if set, recheck licenses on repos that already have licenses fetched
@@ -344,6 +346,23 @@ func (ctx *Ctx) Init() {
 	ctx.SkipAPIIssues = os.Getenv("GHA2DB_GHAPISKIPISSUES") != ""
 	ctx.SkipAPIPRs = os.Getenv("GHA2DB_GHAPISKIPPRS") != ""
 	ctx.AllowGHAPIInsertFail = os.Getenv("GHA2DB_GHAPIALLOWINSERTFAIL") != ""
+	ctx.PostprocessFrom = os.Getenv("GHA2DB_POSTPROCESS_FROM")
+	ctx.PostprocessTo = os.Getenv("GHA2DB_POSTPROCESS_TO")
+	if ctx.PostprocessFrom != "" || ctx.PostprocessTo != "" {
+		if ctx.PostprocessFrom == "" || ctx.PostprocessTo == "" {
+			Fatalf("GHA2DB_POSTPROCESS_FROM and GHA2DB_POSTPROCESS_TO must both be set (or both empty), got from='%s' to='%s'", ctx.PostprocessFrom, ctx.PostprocessTo)
+		}
+		// Validate & canonicalize to 'YYYY-MM-DD HH:MM:SS' (this also prevents SQL injection when the
+		// values are embedded into the postprocess SQL by the structure tool), and require from < to
+		// so a silent empty-range no-op cannot waste debugging time.
+		ppFrom := TimeParseAny(ctx.PostprocessFrom)
+		ppTo := TimeParseAny(ctx.PostprocessTo)
+		if !ppFrom.Before(ppTo) {
+			Fatalf("GHA2DB_POSTPROCESS_FROM (%s) must be strictly before GHA2DB_POSTPROCESS_TO (%s)", ctx.PostprocessFrom, ctx.PostprocessTo)
+		}
+		ctx.PostprocessFrom = ToYMDHMSDate(ppFrom)
+		ctx.PostprocessTo = ToYMDHMSDate(ppTo)
+	}
 	ctx.SkipAPICommits = os.Getenv("GHA2DB_GHAPISKIPCOMMITS") != ""
 	ctx.SkipAPILicenses = os.Getenv("GHA2DB_GHAPISKIPLICENSES") != ""
 	ctx.ForceAPILicenses = os.Getenv("GHA2DB_GHAPIFORCELICENSES") != ""
@@ -936,6 +955,8 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		SkipAPIIssues:            ctx.SkipAPIIssues,
 		SkipAPIPRs:               ctx.SkipAPIPRs,
 		AllowGHAPIInsertFail:     ctx.AllowGHAPIInsertFail,
+		PostprocessFrom:          ctx.PostprocessFrom,
+		PostprocessTo:            ctx.PostprocessTo,
 		SkipAPICommits:           ctx.SkipAPICommits,
 		SkipAPILicenses:          ctx.SkipAPILicenses,
 		ForceAPILicenses:         ctx.ForceAPILicenses,

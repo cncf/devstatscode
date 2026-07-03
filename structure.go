@@ -1558,53 +1558,79 @@ func Structure(ctx *Ctx) {
 		if ctx.Local {
 			dataPrefix = "./"
 		}
-		// Get list of script files
-		rows, err := c.Query("select path from gha_postprocess_scripts order by ord")
-		defer func() { FatalOnError(rows.Close()) }()
-		FatalOnError(err)
-		script := ""
-		for rows.Next() {
+		// Optional bounded rebuild of the generated tables (gha_texts, gha_issues_events_labels,
+		// gha_issues_pull_requests). When GHA2DB_POSTPROCESS_FROM/GHA2DB_POSTPROCESS_TO are set, run ONLY
+		// the dedicated *_range.sql rebuild scripts for [from, to) - a targeted backfill repair. This does
+		// NOT touch the normal max(event_id) hourly scripts (zero regression on the hot path) and skips the
+		// full Tools refresh (country codes, bot logins, affiliations). The range is passed via session
+		// settings prepended to the same Exec batch (one Exec = one pooled connection). Values are already
+		// canonicalized to 'YYYY-MM-DD HH:MM:SS' in Ctx.Init (validated, injection-safe).
+		if ctx.PostprocessFrom != "" && ctx.PostprocessTo != "" {
+			prefix := "select set_config('devstats.postprocess_from', '" + ctx.PostprocessFrom +
+				"', false); select set_config('devstats.postprocess_to', '" + ctx.PostprocessTo + "', false);\n"
+			Printf("Postprocess: bounded rebuild of generated tables for range [%s, %s)\n", ctx.PostprocessFrom, ctx.PostprocessTo)
+			for _, script := range []string{
+				"util_sql/postprocess_texts_range.sql",
+				"util_sql/postprocess_labels_range.sql",
+				"util_sql/postprocess_issues_prs_range.sql",
+			} {
+				dtStart := time.Now()
+				bytes, err := ReadFile(ctx, dataPrefix+script)
+				FatalOnError(err)
+				ExecSQLWithErr(c, ctx, prefix+string(bytes))
+				if ctx.Debug > 0 {
+					Printf("Executed range script: %s: took %v\n", script, time.Now().Sub(dtStart))
+				}
+			}
+		} else {
+			// Get list of script files
+			rows, err := c.Query("select path from gha_postprocess_scripts order by ord")
+			defer func() { FatalOnError(rows.Close()) }()
+			FatalOnError(err)
+			script := ""
+			for rows.Next() {
+				dtStart := time.Now()
+				FatalOnError(rows.Scan(&script))
+				bytes, err := ReadFile(ctx, dataPrefix+script)
+				FatalOnError(err)
+				sql := string(bytes)
+				ExecSQLWithErr(c, ctx, sql)
+				if ctx.Debug > 0 {
+					dtEnd := time.Now()
+					Printf("Executed script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+				}
+			}
+			FatalOnError(rows.Err())
 			dtStart := time.Now()
-			FatalOnError(rows.Scan(&script))
+			script = "util_sql/country_codes.sql"
 			bytes, err := ReadFile(ctx, dataPrefix+script)
 			FatalOnError(err)
 			sql := string(bytes)
 			ExecSQLWithErr(c, ctx, sql)
 			if ctx.Debug > 0 {
 				dtEnd := time.Now()
-				Printf("Executed script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+				Printf("Executed countries script: %s: took %v\n", script, dtEnd.Sub(dtStart))
 			}
-		}
-		FatalOnError(rows.Err())
-		dtStart := time.Now()
-		script = "util_sql/country_codes.sql"
-		bytes, err := ReadFile(ctx, dataPrefix+script)
-		FatalOnError(err)
-		sql := string(bytes)
-		ExecSQLWithErr(c, ctx, sql)
-		if ctx.Debug > 0 {
-			dtEnd := time.Now()
-			Printf("Executed countries script: %s: took %v\n", script, dtEnd.Sub(dtStart))
-		}
-		dtStart = time.Now()
-		script = "util_sql/exclude_bots_table_insert.sql"
-		bytes, err = ReadFile(ctx, dataPrefix+script)
-		FatalOnError(err)
-		sql = string(bytes)
-		ExecSQLWithErr(c, ctx, sql)
-		if ctx.Debug > 0 {
-			dtEnd := time.Now()
-			Printf("Executed bot logins table insert script: %s: took %v\n", script, dtEnd.Sub(dtStart))
-		}
-		dtStart = time.Now()
-		script = "util_sql/update_affiliations.sql"
-		bytes, err = ReadFile(ctx, dataPrefix+script)
-		FatalOnError(err)
-		sql = string(bytes)
-		ExecSQLWithErr(c, ctx, sql)
-		if ctx.Debug > 0 {
-			dtEnd := time.Now()
-			Printf("Updated missing affiliations for multiple ID actors script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+			dtStart = time.Now()
+			script = "util_sql/exclude_bots_table_insert.sql"
+			bytes, err = ReadFile(ctx, dataPrefix+script)
+			FatalOnError(err)
+			sql = string(bytes)
+			ExecSQLWithErr(c, ctx, sql)
+			if ctx.Debug > 0 {
+				dtEnd := time.Now()
+				Printf("Executed bot logins table insert script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+			}
+			dtStart = time.Now()
+			script = "util_sql/update_affiliations.sql"
+			bytes, err = ReadFile(ctx, dataPrefix+script)
+			FatalOnError(err)
+			sql = string(bytes)
+			ExecSQLWithErr(c, ctx, sql)
+			if ctx.Debug > 0 {
+				dtEnd := time.Now()
+				Printf("Updated missing affiliations for multiple ID actors script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+			}
 		}
 	}
 }
