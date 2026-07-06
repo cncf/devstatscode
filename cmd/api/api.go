@@ -1209,6 +1209,7 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
 
 	wg.Add(3)
 
+	// Number of contributions
 	go runQuery(`
   select
     count(distinct s.event_id) as contributions
@@ -1224,13 +1225,13 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
     from
       gha_issues
     where
-      lower(dup_actor_login) = $1
+      (lower(dup_actor_login) = $1 or lower(dup_user_login) = $1)
     union select
       event_id
     from
       gha_pull_requests
     where
-      (lower(dup_actor_login) = $1 or lower(dupn_merged_by_login) = $1)
+      (lower(dup_actor_login) = $1 or lower(dup_user_login) = $1 or lower(dupn_merged_by_login) = $1)
     union select
       event_id
     from
@@ -1250,6 +1251,7 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
     ) s
   `, ghID, &contributions)
 
+	// Number of PRs contributed to
 	go runQuery(`
   select
     count(distinct (s.number, s.dup_repo_id)) as prs
@@ -1270,6 +1272,7 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
     ) s
   `, ghID, &prs)
 
+	// Number of issues contributed to
 	go runQuery(`
   select
     count(distinct id) as issues
