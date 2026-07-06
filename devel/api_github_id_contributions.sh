@@ -1,4 +1,5 @@
 #!/bin/bash
+# API_URL=https://devstats.cncf.io/api/v1 ./devel/api_github_id_contributions.sh lukaszgryglicki
 if [ -z "$1" ]
 then
   echo "$0: please specify Github login a 1st arg"
