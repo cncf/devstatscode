@@ -49,6 +49,7 @@ type actorCacheEntry struct {
 	login string
 }
 
+// actorCache is safe for concurrent use (guarded by mu); shared across repo goroutines.
 type actorCache struct {
 	mu sync.RWMutex
 	m  map[[2]string]actorCacheEntry
@@ -1236,6 +1237,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		nReposProcessed := 0
 		nCommitsChecked := 0
 		nCommitsRestored := 0
+		var dbMinDt, dbMaxDt time.Time
 
 		for _, repo := range repos {
 			thr <- struct{}{}
@@ -1245,7 +1247,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 					<-thr
 					done <- struct{}{}
 				}()
-				rp, cc, cr, err := restoreOrphanRepo(ctx, con, db, repo, maybeHide, acache)
+				rp, cc, cr, mnDt, mxDt, err := restoreOrphanRepo(ctx, con, db, repo, maybeHide, acache)
 				if err != nil {
 					lib.Printf("restoreOrphanRepo(DB=%s, repo=%s) error: %v\n", db, repo, err)
 				}
@@ -1253,6 +1255,12 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 				nReposProcessed += rp
 				nCommitsChecked += cc
 				nCommitsRestored += cr
+				if !mnDt.IsZero() && (dbMinDt.IsZero() || mnDt.Before(dbMinDt)) {
+					dbMinDt = mnDt
+				}
+				if mxDt.After(dbMaxDt) {
+					dbMaxDt = mxDt
+				}
 				mtx.Unlock()
 			}()
 		}
@@ -1262,6 +1270,9 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		}
 		lib.FatalOnError(con.Close())
 		lib.Printf("Finished DB '%s': processed %d repos, checked %d commits, restored %d\n", db, nReposProcessed, nCommitsChecked, nCommitsRestored)
+		if nCommitsRestored > 0 && !dbMinDt.IsZero() {
+			lib.RunRangePostprocessDB(ctx, db, dbMinDt, dbMaxDt.Add(time.Second))
+		}
 		allReposProcessed += nReposProcessed
 		allCommitsChecked += nCommitsChecked
 		allCommitsRestored += nCommitsRestored
@@ -1272,12 +1283,13 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		allReposProcessed, allCommitsChecked, allCommitsRestored, dtEnd.Sub(dtStart))
 }
 
-func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(string) string, acache *actorCache) (int, int, int, error) {
+func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(string) string, acache *actorCache) (int, int, int, time.Time, time.Time, error) {
+	var minDt, maxDt time.Time
 	repoPath := ctx.ReposDir + repo
 	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
-		return 0, 0, 0, fmt.Errorf("%s: repo not cloned: %s", db, repoPath)
+		return 0, 0, 0, minDt, maxDt, fmt.Errorf("%s: repo not cloned: %s", db, repoPath)
 	} else if err != nil {
-		return 0, 0, 0, fmt.Errorf("%s: cannot stat repo path %s: %w", db, repoPath, err)
+		return 0, 0, 0, minDt, maxDt, fmt.Errorf("%s: cannot stat repo path %s: %w", db, repoPath, err)
 	}
 
 	dtFrom := ctx.DefaultStartDate
@@ -1285,7 +1297,7 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 		var dtTo sql.NullTime
 		err := con.QueryRow("select now()").Scan(&dtTo)
 		if err != nil {
-			return 0, 0, 0, fmt.Errorf("select now() failed (db=%s, repo=%s): %w", db, repo, err)
+			return 0, 0, 0, minDt, maxDt, fmt.Errorf("select now() failed (db=%s, repo=%s): %w", db, repo, err)
 		}
 		if dtTo.Valid {
 			dtFrom = lib.GetDateAgo(con, ctx, dtTo.Time, ctx.RecentRange)
@@ -1294,14 +1306,14 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 
 	shas, commitDates, err := gitListCommits(ctx, repoPath, dtFrom)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("gitListCommits failed for %s/%s: %w", db, repo, err)
+		return 0, 0, 0, minDt, maxDt, fmt.Errorf("gitListCommits failed for %s/%s: %w", db, repo, err)
 	}
 
 	if len(shas) == 0 {
 		if ctx.Debug > 0 {
 			lib.Printf("%s/%s: no commits found since %s\n", db, repo, dtFrom)
 		}
-		return 0, 0, 0, nil
+		return 0, 0, 0, minDt, maxDt, nil
 	}
 
 	if ctx.Debug > 0 {
@@ -1310,29 +1322,29 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 
 	skipSet, err := selectSkipCommits(ctx, con)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, minDt, maxDt, err
 	}
 
 	existingSet := make(map[string]struct{})
 	err = con.QueryRow(`select 1 from gha_commits where dup_repo_name = $1 limit 1`, repo).Scan()
 	if err != nil && err != sql.ErrNoRows {
-		return 0, 0, 0, fmt.Errorf("check gha_commits existence failed (db=%s, repo=%s): %w", db, repo, err)
+		return 0, 0, 0, minDt, maxDt, fmt.Errorf("check gha_commits existence failed (db=%s, repo=%s): %w", db, repo, err)
 	}
 	if err != sql.ErrNoRows {
 		rows, err := con.Query(`select sha from gha_commits where dup_repo_name = $1`, repo)
 		if err != nil {
-			return 0, 0, 0, fmt.Errorf("select gha_commits shas failed (db=%s, repo=%s): %w", db, repo, err)
+			return 0, 0, 0, minDt, maxDt, fmt.Errorf("select gha_commits shas failed (db=%s, repo=%s): %w", db, repo, err)
 		}
 		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var sha string
 			if err := rows.Scan(&sha); err != nil {
-				return 0, 0, 0, err
+				return 0, 0, 0, minDt, maxDt, err
 			}
 			existingSet[normalizeSHA(sha)] = struct{}{}
 		}
 		if err := rows.Err(); err != nil {
-			return 0, 0, 0, err
+			return 0, 0, 0, minDt, maxDt, err
 		}
 	}
 
@@ -1350,7 +1362,7 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 		if ctx.Debug > 0 {
 			lib.Printf("%s/%s: no orphan commits to restore\n", db, repo)
 		}
-		return 1, len(shas), 0, nil
+		return 1, len(shas), 0, minDt, maxDt, nil
 	}
 
 	if ctx.Debug > 0 {
@@ -1378,7 +1390,7 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 	}
 
 	if len(infoMap) == 0 {
-		return 1, len(shas), 0, fmt.Errorf("git_commits.sh returned no commit metadata for db=%s, repo=%s (shas=%d)", db, repo, len(toRestore))
+		return 1, len(shas), 0, minDt, maxDt, fmt.Errorf("git_commits.sh returned no commit metadata for db=%s, repo=%s (shas=%d)", db, repo, len(toRestore))
 	}
 
 	if ctx.Debug > 0 {
@@ -1387,13 +1399,13 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 
 	repoID, err := getRepoID(con, repo)
 	if err != nil {
-		return 1, len(shas), 0, err
+		return 1, len(shas), 0, minDt, maxDt, err
 	}
 	if repoID == 0 {
 		if ctx.Debug > 0 {
 			lib.Printf("%s/%s: no gha_events rows for this repo, skipping orphan commits restore\n", db, repo)
 		}
-		return 1, len(shas), 0, nil
+		return 1, len(shas), 0, minDt, maxDt, nil
 	}
 
 	defaultRef, err := gitDefaultRef(ctx, repoPath)
@@ -1406,7 +1418,7 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 
 	tx, err := con.Begin()
 	if err != nil {
-		return 1, len(shas), 0, err
+		return 1, len(shas), 0, minDt, maxDt, err
 	}
 	defer func() {
 		_ = tx.Rollback()
@@ -1419,8 +1431,8 @@ on conflict do nothing
 `
 
 	insPayloadSQL := `
-insert into gha_payloads(event_id, size, ref, head, befor, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at)
-values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+insert into gha_payloads(event_id, size, ref, head, befor, action, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at)
+values($1,$2,$3,$4,$5,'restored_orphan_commit',$6,$7,$8,$9,$10,$11)
 on conflict do nothing
 `
 
@@ -1431,25 +1443,25 @@ insert into gha_commits(
   author_id, committer_id, dup_author_login, dup_committer_login,
   author_email, committer_name, committer_email, origin
 )
-values($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,1)
+values($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,2)
 on conflict do nothing
 `
 
 	insEventStmt, err := tx.Prepare(insEventSQL)
 	if err != nil {
-		return 1, len(shas), 0, err
+		return 1, len(shas), 0, minDt, maxDt, err
 	}
 	defer func() { _ = insEventStmt.Close() }()
 
 	insPayloadStmt, err := tx.Prepare(insPayloadSQL)
 	if err != nil {
-		return 1, len(shas), 0, err
+		return 1, len(shas), 0, minDt, maxDt, err
 	}
 	defer func() { _ = insPayloadStmt.Close() }()
 
 	insCommitStmt, err := tx.Prepare(insCommitSQL)
 	if err != nil {
-		return 1, len(shas), 0, err
+		return 1, len(shas), 0, minDt, maxDt, err
 	}
 	defer func() { _ = insCommitStmt.Close() }()
 
@@ -1472,7 +1484,7 @@ on conflict do nothing
 
 		authorName := lib.TruncToBytes(maybeHide(authorNameRaw), 120)
 		authorEmail := lib.TruncToBytes(maybeHide(authorEmailRaw), 160)
-		msg := lib.TruncToBytes(msgRaw, 0xffff)
+		msg := lib.TruncToBytes(maybeHide(msgRaw), 0xffff)
 
 		authorID, authorLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, authorNameRaw, authorEmailRaw)
 		commID, commLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, commNameRaw, commEmailRaw)
@@ -1490,9 +1502,16 @@ on conflict do nothing
 
 		createdAt, okDt := commitDates[shaNorm]
 		if !okDt {
-			createdAt = time.Now()
+			lib.Printf("Warning: missing commit date for %s/%s sha %s, skipping\n", db, repo, shaNorm)
+			continue
 		}
-		eventID := lib.HashStrings([]string{"PushEvent", repo, shaNorm})
+		eventID := lib.NegativeArtificialID([]string{"PushEvent", repo, shaNorm})
+		if conflict, cerr := orphanEventConflict(tx, eventID, repo, shaNorm, createdAt); cerr != nil || conflict {
+			if cerr != nil {
+				lib.Printf("Warning: event id check failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, cerr)
+			}
+			continue
+		}
 
 		if _, err := insEventStmt.Exec(
 			eventID, "PushEvent", authorID, repoID, createdAt, dupAuthorLogin, repo,
@@ -1522,18 +1541,24 @@ on conflict do nothing
 		}
 
 		nRestored++
+		if minDt.IsZero() || createdAt.Before(minDt) {
+			minDt = createdAt
+		}
+		if createdAt.After(maxDt) {
+			maxDt = createdAt
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		lib.Printf("Error committing transaction for %s/%s: %v\n", db, repo, err)
-		return 1, len(shas), nRestored, err
+		return 1, len(shas), nRestored, minDt, maxDt, err
 	}
 
 	if ctx.Debug > 0 {
 		lib.Printf("%s/%s: successfully restored %d orphan commits\n", db, repo, nRestored)
 	}
 
-	return 1, len(shas), nRestored, nil
+	return 1, len(shas), nRestored, minDt, maxDt, nil
 }
 
 func selectSkipCommits(ctx *lib.Ctx, con *sql.DB) (map[string]struct{}, error) {
@@ -1605,4 +1630,27 @@ func gitDefaultRef(ctx *lib.Ctx, repoPath string) (string, error) {
 		ref = strings.TrimPrefix(ref, "ref: ")
 	}
 	return ref, nil
+}
+
+// orphanEventConflict - true when eventID already exists for a DIFFERENT event (hash collision):
+// full identity check: type, repo, created_at and payload head (commit sha) when present
+func orphanEventConflict(tx *sql.Tx, eventID int64, repo, sha string, createdAt time.Time) (bool, error) {
+	var eType, eRepo string
+	var eDt time.Time
+	var head *string
+	err := tx.QueryRow(
+		`select e.type, e.dup_repo_name, e.created_at, p.head from gha_events e left join gha_payloads p on p.event_id = e.id where e.id = $1`,
+		eventID,
+	).Scan(&eType, &eRepo, &eDt, &head)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if eType != "PushEvent" || eRepo != repo || !eDt.Equal(createdAt) || head == nil || *head != sha {
+		lib.Printf("orphan event id %d conflict: existing (%s, %s, %v), skipping\n", eventID, eType, eRepo, eDt)
+		return true, nil
+	}
+	return false, nil
 }

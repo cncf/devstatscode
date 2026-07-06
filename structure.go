@@ -372,7 +372,7 @@ func Structure(ctx *Ctx) {
 	// author: {"name"=>96, "email"=>95}
 	// 23265
 	// variable (per event)
-	// origin: 0-gha2db, 1-get_repos/fetch_commits
+	// origin: 0-gha2db, 1-get_repos/fetch_commits, 2-get_repos/restore_orphan_commits
 	if ctx.Table {
 		ExecSQLWithErr(c, ctx, "drop table if exists gha_commits")
 		ExecSQLWithErr(

@@ -1548,20 +1548,24 @@ func main() {
 		if !ctx.SkipAPICommits {
 			syncCommits(&ctx)
 		}
+		restored := restoreStats{}
 		if !ctx.SkipAPIComments {
-			syncComments(&ctx)
+			restored.merge(syncComments(&ctx))
 		}
 		if !ctx.SkipAPIReviews {
-			syncReviews(&ctx)
+			restored.merge(syncReviews(&ctx))
 		}
 		if !ctx.SkipAPIForks {
-			syncForks(&ctx)
+			restored.merge(syncForks(&ctx))
 		}
 		if !ctx.SkipAPIReleases {
-			syncReleases(&ctx)
+			restored.merge(syncReleases(&ctx))
 		}
 		if !ctx.SkipAPIStars {
-			syncStars(&ctx)
+			restored.merge(syncStars(&ctx))
+		}
+		if restored.restored > 0 && !restored.minDt.IsZero() {
+			lib.RunRangePostprocess(&ctx, restored.minDt, restored.maxDt.Add(time.Second))
 		}
 	}
 	dtEnd := time.Now()

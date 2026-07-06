@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -19,6 +20,29 @@ type restoreStats struct {
 	checked  int
 	restored int
 	pages    int
+	minDt    time.Time
+	maxDt    time.Time
+}
+
+func (st *restoreStats) mark(dt time.Time) {
+	if st.minDt.IsZero() || dt.Before(st.minDt) {
+		st.minDt = dt
+	}
+	if dt.After(st.maxDt) {
+		st.maxDt = dt
+	}
+}
+
+func (st *restoreStats) merge(o restoreStats) {
+	st.checked += o.checked
+	st.restored += o.restored
+	st.pages += o.pages
+	if !o.minDt.IsZero() {
+		st.mark(o.minDt)
+	}
+	if !o.maxDt.IsZero() {
+		st.mark(o.maxDt)
+	}
 }
 
 type restoreRepoFunc func(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats)
@@ -46,8 +70,8 @@ func idPresent(c *sql.DB, ctx *lib.Ctx, table, eType string, id int64) bool {
 	return present
 }
 
-func starPresent(c *sql.DB, ctx *lib.Ctx, actorID int64, orgRepo string) bool {
-	rows := lib.QuerySQLWithErr(c, ctx, "select 1 from gha_events where type = 'WatchEvent' and actor_id = "+lib.NValue(1)+" and dup_repo_name = "+lib.NValue(2)+" limit 1", actorID, orgRepo)
+func starPresent(c *sql.DB, ctx *lib.Ctx, actorID int64, orgRepo string, starredAt time.Time) bool {
+	rows := lib.QuerySQLWithErr(c, ctx, "select 1 from gha_events where type = 'WatchEvent' and actor_id = "+lib.NValue(1)+" and dup_repo_name = "+lib.NValue(2)+" and created_at = "+lib.NValue(3)+" limit 1", actorID, orgRepo, starredAt)
 	defer func() { lib.FatalOnError(rows.Close()) }()
 	present := false
 	for rows.Next() {
@@ -58,7 +82,7 @@ func starPresent(c *sql.DB, ctx *lib.Ctx, actorID int64, orgRepo string) bool {
 }
 
 func repoIDs(c *sql.DB, ctx *lib.Ctx, orgRepo string) (repoID int64, orgID interface{}) {
-	rows := lib.QuerySQLWithErr(c, ctx, "select coalesce(max(repo_id), -1), max(org_id) from gha_events where dup_repo_name = "+lib.NValue(1), orgRepo)
+	rows := lib.QuerySQLWithErr(c, ctx, "select coalesce(max(repo_id), 0), max(org_id) from gha_events where dup_repo_name = "+lib.NValue(1), orgRepo)
 	defer func() { lib.FatalOnError(rows.Close()) }()
 	var oid *int64
 	for rows.Next() {
@@ -77,6 +101,40 @@ func apiPage(ctx *lib.Ctx, info string, call func() (*github.Response, bool, err
 		resp, more, err := call()
 		if resp != nil && (resp.StatusCode == 404 || resp.StatusCode == 410) {
 			return false
+		}
+		if err != nil {
+			var rle *github.RateLimitError
+			if errors.As(err, &rle) {
+				wait := time.Until(rle.Rate.Reset.Time)
+				if wait.Seconds() <= float64(ctx.MaxGHAPIWaitSeconds) {
+					if wait > 0 {
+						time.Sleep(wait + time.Second)
+					}
+					continue
+				}
+				if ctx.GHAPIErrorIsFatal {
+					lib.Fatalf("%s: rate limited, don't want to wait %v", info, wait)
+				}
+				lib.Printf("%s: rate limited, reset in %v, skipping\n", info, wait)
+				return false
+			}
+			var arle *github.AbuseRateLimitError
+			if errors.As(err, &arle) {
+				wait := time.Duration(10*try) * time.Second
+				if arle.RetryAfter != nil {
+					wait = *arle.RetryAfter
+				}
+				if wait.Seconds() <= float64(ctx.MaxGHAPIWaitSeconds) {
+					lib.Printf("%s: abuse detected, waiting %v, retry %d/%d\n", info, wait, try, ctx.MaxGHAPIRetry)
+					time.Sleep(wait)
+					continue
+				}
+				if ctx.GHAPIErrorIsFatal {
+					lib.Fatalf("%s: abuse detected, don't want to wait %v", info, wait)
+				}
+				lib.Printf("%s: abuse detected, don't want to wait %v, skipping\n", info, wait)
+				return false
+			}
 		}
 		if resp != nil && resp.StatusCode == 403 {
 			lib.Printf("%s: abuse detected, retry %d/%d\n", info, try, ctx.MaxGHAPIRetry)
@@ -100,7 +158,7 @@ func apiPage(ctx *lib.Ctx, info string, call func() (*github.Response, bool, err
 	return false
 }
 
-func restorePass(ctx *lib.Ctx, name string, process restoreRepoFunc) {
+func restorePass(ctx *lib.Ctx, name string, process restoreRepoFunc) restoreStats {
 	repos, isSingleRepo, singleRepo, gctx, gcs, c, recentDt := getAPIParams(ctx)
 	defer func() { lib.FatalOnError(c.Close()) }()
 	maybeHide := lib.MaybeHideFunc(lib.GetHidden(ctx, lib.HideCfgFile))
@@ -150,15 +208,17 @@ func restorePass(ctx *lib.Ctx, name string, process restoreRepoFunc) {
 			return
 		}
 		repoID, orgID := repoIDs(c, ctx, orgRepo)
+		if repoID <= 0 {
+			lib.Printf("%s: %s: no existing repo_id, skipping restore\n", name, orgRepo)
+			return
+		}
 		stats := restoreStats{}
 		mtx.Lock()
 		cl := gcs[hint]
 		mtx.Unlock()
 		process(gctx, cl, c, ctx, ary[0], ary[1], orgRepo, repoID, orgID, recentDt, maybeHide, &stats)
 		mtx.Lock()
-		total.checked += stats.checked
-		total.restored += stats.restored
-		total.pages += stats.pages
+		total.merge(stats)
 		mtx.Unlock()
 	}
 	if thrN > 1 {
@@ -191,6 +251,7 @@ func restorePass(ctx *lib.Ctx, name string, process restoreRepoFunc) {
 		}
 	}
 	lib.Printf("%s: processed %d repos, %d pages, checked %d, restored %d\n", name, processed, total.pages, total.checked, total.restored)
+	return total
 }
 
 func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
@@ -214,8 +275,11 @@ func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 				if idPresent(c, ctx, "gha_comments", "IssueCommentEvent", *cmt.ID) {
 					continue
 				}
-				lib.RestoreIssueComment(c, ctx, orgRepo, repoID, orgID, numberFromURL(cmt.IssueURL), cmt, maybeHide)
-				stats.restored++
+				if lib.RestoreIssueComment(c, ctx, orgRepo, repoID, orgID, numberFromURL(cmt.IssueURL), cmt, maybeHide) {
+					stats.restored++
+					stats.mark(*cmt.CreatedAt)
+				}
+
 			}
 			return resp, resp.NextPage != 0, nil
 		})
@@ -241,8 +305,11 @@ func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 				if idPresent(c, ctx, "gha_comments", "PullRequestReviewCommentEvent", *cmt.ID) {
 					continue
 				}
-				lib.RestoreReviewComment(c, ctx, orgRepo, repoID, orgID, numberFromURL(cmt.PullRequestURL), cmt, maybeHide)
-				stats.restored++
+				if lib.RestoreReviewComment(c, ctx, orgRepo, repoID, orgID, numberFromURL(cmt.PullRequestURL), cmt, maybeHide) {
+					stats.restored++
+					stats.mark(*cmt.CreatedAt)
+				}
+
 			}
 			return resp, resp.NextPage != 0, nil
 		})
@@ -281,8 +348,11 @@ func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 				if idPresent(c, ctx, "gha_comments", "CommitCommentEvent", *cmt.ID) {
 					continue
 				}
-				lib.RestoreCommitComment(c, ctx, orgRepo, repoID, orgID, cmt, maybeHide)
-				stats.restored++
+				if lib.RestoreCommitComment(c, ctx, orgRepo, repoID, orgID, cmt, maybeHide) {
+					stats.restored++
+					stats.mark(*cmt.CreatedAt)
+				}
+
 			}
 			return resp, true, nil
 		})
@@ -321,11 +391,14 @@ func restoreStarsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *l
 				}
 				anyRecent = true
 				stats.checked++
-				if starPresent(c, ctx, *star.User.ID, orgRepo) {
+				if starPresent(c, ctx, *star.User.ID, orgRepo, star.StarredAt.Time) {
 					continue
 				}
-				lib.RestoreStar(c, ctx, orgRepo, repoID, orgID, star, maybeHide)
-				stats.restored++
+				if lib.RestoreStar(c, ctx, orgRepo, repoID, orgID, star, maybeHide) {
+					stats.restored++
+					stats.mark(star.StarredAt.Time)
+				}
+
 			}
 			return resp, true, nil
 		})
@@ -382,8 +455,11 @@ func restoreReviewsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx 
 					if idPresent(c, ctx, "gha_reviews", "PullRequestReviewEvent", *rev.ID) {
 						continue
 					}
-					lib.RestoreReview(c, ctx, orgRepo, repoID, orgID, number, rev, maybeHide)
-					stats.restored++
+					if lib.RestoreReview(c, ctx, orgRepo, repoID, orgID, number, rev, maybeHide) {
+						stats.restored++
+						stats.mark(*rev.SubmittedAt)
+					}
+
 				}
 				return resp, resp.NextPage != 0, nil
 			})
@@ -418,8 +494,11 @@ func restoreForksRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *l
 				if idPresent(c, ctx, "gha_forkees", "ForkEvent", *fork.ID) {
 					continue
 				}
-				lib.RestoreFork(c, ctx, orgRepo, repoID, orgID, fork, maybeHide)
-				stats.restored++
+				if lib.RestoreFork(c, ctx, orgRepo, repoID, orgID, fork, maybeHide) {
+					stats.restored++
+					stats.mark(fork.CreatedAt.Time)
+				}
+
 			}
 			return resp, resp.NextPage != 0, nil
 		})
@@ -441,10 +520,14 @@ func restoreReleasesRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 			}
 			stats.pages++
 			for _, rel := range rels {
-				if rel == nil || rel.ID == nil {
+				if rel == nil || rel.ID == nil || rel.CreatedAt == nil {
 					continue
 				}
-				if rel.CreatedAt != nil && rel.CreatedAt.Time.Before(recentDt) {
+				relDt := rel.CreatedAt.Time
+				if rel.PublishedAt != nil {
+					relDt = rel.PublishedAt.Time
+				}
+				if relDt.Before(recentDt) {
 					older = true
 					break
 				}
@@ -452,8 +535,10 @@ func restoreReleasesRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 				if idPresent(c, ctx, "gha_releases", "ReleaseEvent", *rel.ID) {
 					continue
 				}
-				lib.RestoreRelease(c, ctx, orgRepo, repoID, orgID, rel, maybeHide)
-				stats.restored++
+				if lib.RestoreRelease(c, ctx, orgRepo, repoID, orgID, rel, maybeHide) {
+					stats.restored++
+					stats.mark(relDt)
+				}
 			}
 			return resp, resp.NextPage != 0, nil
 		})
@@ -463,22 +548,22 @@ func restoreReleasesRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 	}
 }
 
-func syncComments(ctx *lib.Ctx) {
-	restorePass(ctx, "ghapi2db comments restore", restoreCommentsRepo)
+func syncComments(ctx *lib.Ctx) restoreStats {
+	return restorePass(ctx, "ghapi2db comments restore", restoreCommentsRepo)
 }
 
-func syncReviews(ctx *lib.Ctx) {
-	restorePass(ctx, "ghapi2db reviews restore", restoreReviewsRepo)
+func syncReviews(ctx *lib.Ctx) restoreStats {
+	return restorePass(ctx, "ghapi2db reviews restore", restoreReviewsRepo)
 }
 
-func syncForks(ctx *lib.Ctx) {
-	restorePass(ctx, "ghapi2db forks restore", restoreForksRepo)
+func syncForks(ctx *lib.Ctx) restoreStats {
+	return restorePass(ctx, "ghapi2db forks restore", restoreForksRepo)
 }
 
-func syncStars(ctx *lib.Ctx) {
-	restorePass(ctx, "ghapi2db stars restore", restoreStarsRepo)
+func syncStars(ctx *lib.Ctx) restoreStats {
+	return restorePass(ctx, "ghapi2db stars restore", restoreStarsRepo)
 }
 
-func syncReleases(ctx *lib.Ctx) {
-	restorePass(ctx, "ghapi2db releases restore", restoreReleasesRepo)
+func syncReleases(ctx *lib.Ctx) restoreStats {
+	return restorePass(ctx, "ghapi2db releases restore", restoreReleasesRepo)
 }

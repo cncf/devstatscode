@@ -67,6 +67,113 @@ func lookupID(tc *sql.Tx, ctx *Ctx, query string, args ...interface{}) interface
 	return *id
 }
 
+// NegativeArtificialID - deterministic negative event id for API/git-restored objects with no natural id (like pre-2015 events)
+func NegativeArtificialID(parts []string) int64 {
+	id := int64(HashStrings(parts))
+	if id > 0 {
+		id = -id
+	}
+	if id == 0 {
+		id = -1
+	}
+	return id
+}
+
+func truncStringOrNilHidden(strPtr *string, maxLen int, maybeHide func(string) string) interface{} {
+	if strPtr == nil {
+		return nil
+	}
+	return TruncToBytes(maybeHide(*strPtr), maxLen)
+}
+
+func findRawEventID(tc *sql.Tx, ctx *Ctx, eType, repo string, actor *github.User, createdAt time.Time, payloadCol string, objID interface{}) interface{} {
+	if actor == nil || actor.ID == nil {
+		return nil
+	}
+	rows := QuerySQLTxWithErr(
+		tc,
+		ctx,
+		"select id from gha_events where id < 281474976710657 and type = "+NValue(1)+" and dup_repo_name = "+NValue(2)+" and actor_id = "+NValue(3)+" and created_at = "+NValue(4)+" order by id limit 3",
+		eType, repo, *actor.ID, createdAt,
+	)
+	defer func() { FatalOnError(rows.Close()) }()
+	ids := []int64{}
+	id := int64(0)
+	for rows.Next() {
+		FatalOnError(rows.Scan(&id))
+		ids = append(ids, id)
+	}
+	FatalOnError(rows.Err())
+	if len(ids) == 0 {
+		return nil
+	}
+	if payloadCol == "" || objID == nil {
+		if len(ids) == 1 {
+			return ids[0]
+		}
+		Printf("findRawEventID: ambiguous raw events for (%s, %s, %d, %v), creating artificial event\n", eType, repo, *actor.ID, createdAt)
+		return nil
+	}
+	// verify the object id via gha_payloads; NULL/missing payload value is acceptable only
+	// for a single candidate (payload gets enriched on reuse), a different value is not
+	matched := []int64{}
+	weak := []int64{}
+	oid := int64(0)
+	switch o := objID.(type) {
+	case int64:
+		oid = o
+	case int:
+		oid = int64(o)
+	default:
+		return nil
+	}
+	for _, cid := range ids {
+		prows := QuerySQLTxWithErr(tc, ctx, "select "+payloadCol+" from gha_payloads where event_id = "+NValue(1), cid)
+		var pv *int64
+		found := false
+		for prows.Next() {
+			FatalOnError(prows.Scan(&pv))
+			found = true
+		}
+		FatalOnError(prows.Err())
+		FatalOnError(prows.Close())
+		if found && pv != nil {
+			if *pv == oid {
+				matched = append(matched, cid)
+			}
+		} else {
+			weak = append(weak, cid)
+		}
+	}
+	if len(matched) == 1 {
+		return matched[0]
+	}
+	if len(matched) == 0 && len(weak) == 1 && len(ids) == 1 {
+		return weak[0]
+	}
+	if len(matched) > 1 || len(weak) > 0 {
+		Printf("findRawEventID: cannot verify raw event for (%s, %s, %d, %v, %s=%d), creating artificial event\n", eType, repo, *actor.ID, createdAt, payloadCol, oid)
+	}
+	return nil
+}
+func hashIDConflict(tc *sql.Tx, ctx *Ctx, eid int64, eType, repo string, actorID int64, createdAt time.Time) bool {
+	rows := QuerySQLTxWithErr(tc, ctx, "select type, dup_repo_name, actor_id, created_at from gha_events where id = "+NValue(1), eid)
+	defer func() { FatalOnError(rows.Close()) }()
+	conflict := false
+	eT, eR, eA, eD := "", "", int64(0), time.Time{}
+	for rows.Next() {
+		FatalOnError(rows.Scan(&eT, &eR, &eA, &eD))
+		if eT != eType || eR != repo || eA != actorID || !eD.Equal(createdAt) {
+			conflict = true
+		}
+	}
+	FatalOnError(rows.Err())
+	if conflict {
+		Printf("hash id %d conflict: existing (%s, %s, %d, %v) vs new (%s, %s, %d, %v), skipping\n", eid, eT, eR, eA, eD, eType, repo, actorID, createdAt)
+	}
+	return conflict
+}
+
 func artificialIDOK(eid int64, what, repo string) bool {
 	if eid >= SyncEventIDThreshold {
 		Printf("%s: %s: artificial event id %d reached the sync events range, skipping\n", what, repo, eid)
@@ -75,8 +182,8 @@ func artificialIDOK(eid int64, what, repo string) bool {
 	return true
 }
 
-func restoreEventPayload(tc *sql.Tx, ctx *Ctx, eid int64, eType string, actor *github.User, repo string, repoID int64, orgID interface{}, createdAt time.Time, action, number, issueID, prID, commentID, forkeeID, releaseID, commitSHA interface{}, maybeHide func(string) string) {
-	ExecSQLTxWithErr(
+func restoreEventPayload(tc *sql.Tx, ctx *Ctx, eid int64, eType string, actor *github.User, repo string, repoID int64, orgID interface{}, createdAt time.Time, action, number, issueID, prID, commentID, forkeeID, releaseID, commitSHA interface{}, maybeHide func(string) string) sql.Result {
+	res := ExecSQLTxWithErr(
 		tc,
 		ctx,
 		InsertIgnore(
@@ -98,10 +205,17 @@ func restoreEventPayload(tc *sql.Tx, ctx *Ctx, eid int64, eType string, actor *g
 	ExecSQLTxWithErr(
 		tc,
 		ctx,
-		InsertIgnore(
-			"into gha_payloads(event_id, action, number, issue_id, pull_request_id, comment_id, forkee_id, release_id, commit, "+
-				"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) "+NValues(15),
-		),
+		"insert into gha_payloads(event_id, action, number, issue_id, pull_request_id, comment_id, forkee_id, release_id, commit, "+
+			"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) "+NValues(15)+
+			" on conflict(event_id) do update set "+
+			"action = coalesce(gha_payloads.action, excluded.action), "+
+			"number = coalesce(gha_payloads.number, excluded.number), "+
+			"issue_id = coalesce(gha_payloads.issue_id, excluded.issue_id), "+
+			"pull_request_id = coalesce(gha_payloads.pull_request_id, excluded.pull_request_id), "+
+			"comment_id = coalesce(gha_payloads.comment_id, excluded.comment_id), "+
+			"forkee_id = coalesce(gha_payloads.forkee_id, excluded.forkee_id), "+
+			"release_id = coalesce(gha_payloads.release_id, excluded.release_id), "+
+			"commit = coalesce(gha_payloads.commit, excluded.commit)",
 		AnyArray{
 			eid,
 			action,
@@ -120,30 +234,34 @@ func restoreEventPayload(tc *sql.Tx, ctx *Ctx, eid int64, eType string, actor *g
 			createdAt,
 		}...,
 	)
+	return res
 }
 
 // RestoreIssueComment - restores a comment missed by GH Archive: artificial IssueCommentEvent + gha_comments row
-func RestoreIssueComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, issueNumber int, cmt *github.IssueComment, maybeHide func(string) string) {
+func RestoreIssueComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, issueNumber int, cmt *github.IssueComment, maybeHide func(string) string) bool {
 	if ctx.SkipPDB {
-		return
+		return false
 	}
 	if cmt == nil || cmt.ID == nil || cmt.User == nil || cmt.User.Login == nil || cmt.CreatedAt == nil {
 		Printf("RestoreIssueComment: %s: skipping comment with missing id/user/created_at\n", repo)
-		return
+		return false
 	}
 	cid := *cmt.ID
 	eid := ArtificialCommentIDBase + cid
 	if !artificialIDOK(eid, "RestoreIssueComment", repo) {
-		return
+		return false
 	}
 	createdAt := *cmt.CreatedAt
 	eType := "IssueCommentEvent"
 	tc, err := c.Begin()
 	FatalOnError(err)
+	if raw := findRawEventID(tc, ctx, eType, repo, cmt.User, createdAt, "comment_id", cid); raw != nil {
+		eid = raw.(int64)
+	}
 	ghActor(tc, ctx, cmt.User, maybeHide)
 	issueID := lookupID(tc, ctx, "select max(id) from gha_issues where number = "+NValue(1)+" and dup_repo_name = "+NValue(2), issueNumber, repo)
 	restoreEventPayload(tc, ctx, eid, eType, cmt.User, repo, repoID, orgID, createdAt, "created", issueNumber, issueID, nil, cid, nil, nil, nil, maybeHide)
-	ExecSQLTxWithErr(
+	res := ExecSQLTxWithErr(
 		tc,
 		ctx,
 		InsertIgnore(
@@ -158,7 +276,7 @@ func RestoreIssueComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID i
 		AnyArray{
 			cid,
 			eid,
-			TruncToBytes(strOr(cmt.Body, ""), 0xffff),
+			TruncToBytes(maybeHide(strOr(cmt.Body, "")), 0xffff),
 			createdAt,
 			timeOr(cmt.UpdatedAt, createdAt),
 			ghActorIDOrNil(cmt.User),
@@ -172,30 +290,35 @@ func RestoreIssueComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID i
 		}...,
 	)
 	FatalOnError(tc.Commit())
+	n, _ := res.RowsAffected()
+	return n > 0
 }
 
 // RestoreReviewComment - restores a PR review comment missed by GH Archive: artificial PullRequestReviewCommentEvent + gha_comments row
-func RestoreReviewComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, prNumber int, cmt *github.PullRequestComment, maybeHide func(string) string) {
+func RestoreReviewComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, prNumber int, cmt *github.PullRequestComment, maybeHide func(string) string) bool {
 	if ctx.SkipPDB {
-		return
+		return false
 	}
 	if cmt == nil || cmt.ID == nil || cmt.User == nil || cmt.User.Login == nil || cmt.CreatedAt == nil {
 		Printf("RestoreReviewComment: %s: skipping comment with missing id/user/created_at\n", repo)
-		return
+		return false
 	}
 	cid := *cmt.ID
 	eid := ArtificialReviewCommentIDBase + cid
 	if !artificialIDOK(eid, "RestoreReviewComment", repo) {
-		return
+		return false
 	}
 	createdAt := *cmt.CreatedAt
 	eType := "PullRequestReviewCommentEvent"
 	tc, err := c.Begin()
 	FatalOnError(err)
+	if raw := findRawEventID(tc, ctx, eType, repo, cmt.User, createdAt, "comment_id", cid); raw != nil {
+		eid = raw.(int64)
+	}
 	ghActor(tc, ctx, cmt.User, maybeHide)
 	prID := lookupID(tc, ctx, "select max(id) from gha_pull_requests where number = "+NValue(1)+" and dup_repo_name = "+NValue(2), prNumber, repo)
 	restoreEventPayload(tc, ctx, eid, eType, cmt.User, repo, repoID, orgID, createdAt, "created", prNumber, nil, prID, cid, nil, nil, nil, maybeHide)
-	ExecSQLTxWithErr(
+	res := ExecSQLTxWithErr(
 		tc,
 		ctx,
 		InsertIgnore(
@@ -211,13 +334,13 @@ func RestoreReviewComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID 
 		AnyArray{
 			cid,
 			eid,
-			TruncToBytes(strOr(cmt.Body, ""), 0xffff),
+			TruncToBytes(maybeHide(strOr(cmt.Body, "")), 0xffff),
 			createdAt,
 			timeOr(cmt.UpdatedAt, createdAt),
 			ghActorIDOrNil(cmt.User),
 			StringOrNil(cmt.CommitID),
 			StringOrNil(cmt.OriginalCommitID),
-			TruncStringOrNil(cmt.DiffHunk, 0xffff),
+			truncStringOrNilHidden(cmt.DiffHunk, 0xffff, maybeHide),
 			IntOrNil(cmt.Position),
 			IntOrNil(cmt.OriginalPosition),
 			StringOrNil(cmt.Path),
@@ -232,29 +355,34 @@ func RestoreReviewComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID 
 		}...,
 	)
 	FatalOnError(tc.Commit())
+	n, _ := res.RowsAffected()
+	return n > 0
 }
 
 // RestoreReview - restores a PR review missed by GH Archive: artificial PullRequestReviewEvent + gha_reviews row
-func RestoreReview(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, prNumber int, rev *github.PullRequestReview, maybeHide func(string) string) {
+func RestoreReview(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, prNumber int, rev *github.PullRequestReview, maybeHide func(string) string) bool {
 	if ctx.SkipPDB {
-		return
+		return false
 	}
 	if rev == nil || rev.ID == nil || rev.User == nil || rev.User.Login == nil || rev.SubmittedAt == nil {
-		return
+		return false
 	}
 	rid := *rev.ID
 	eid := ArtificialReviewIDBase + rid
 	if !artificialIDOK(eid, "RestoreReview", repo) {
-		return
+		return false
 	}
 	createdAt := *rev.SubmittedAt
 	eType := "PullRequestReviewEvent"
 	tc, err := c.Begin()
 	FatalOnError(err)
+	if raw := findRawEventID(tc, ctx, eType, repo, rev.User, createdAt, "", nil); raw != nil {
+		eid = raw.(int64)
+	}
 	ghActor(tc, ctx, rev.User, maybeHide)
 	prID := lookupID(tc, ctx, "select max(id) from gha_pull_requests where number = "+NValue(1)+" and dup_repo_name = "+NValue(2), prNumber, repo)
 	restoreEventPayload(tc, ctx, eid, eType, rev.User, repo, repoID, orgID, createdAt, "created", prNumber, nil, prID, nil, nil, nil, nil, maybeHide)
-	ExecSQLTxWithErr(
+	res := ExecSQLTxWithErr(
 		tc,
 		ctx,
 		InsertIgnore(
@@ -273,7 +401,7 @@ func RestoreReview(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interfa
 			createdAt,
 			strOr(rev.AuthorAssociation, "NONE"),
 			strOr(rev.State, ""),
-			TruncStringOrNil(rev.Body, 0xffff),
+			truncStringOrNilHidden(rev.Body, 0xffff, maybeHide),
 			eid,
 			ghActorIDOrNil(rev.User),
 			ghActorLoginOrNil(rev.User, maybeHide),
@@ -285,20 +413,22 @@ func RestoreReview(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interfa
 		}...,
 	)
 	FatalOnError(tc.Commit())
+	n, _ := res.RowsAffected()
+	return n > 0
 }
 
 // RestoreFork - restores a fork missed by GH Archive: artificial ForkEvent + gha_forkees row
-func RestoreFork(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, fork *github.Repository, maybeHide func(string) string) {
+func RestoreFork(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, fork *github.Repository, maybeHide func(string) string) bool {
 	if ctx.SkipPDB {
-		return
+		return false
 	}
 	if fork == nil || fork.ID == nil || fork.Owner == nil || fork.Owner.Login == nil || fork.CreatedAt == nil {
-		return
+		return false
 	}
 	fid := *fork.ID
 	eid := ArtificialForkIDBase + fid
 	if !artificialIDOK(eid, "RestoreFork", repo) {
-		return
+		return false
 	}
 	createdAt := fork.CreatedAt.Time
 	eType := "ForkEvent"
@@ -308,9 +438,12 @@ func RestoreFork(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface
 	}
 	tc, err := c.Begin()
 	FatalOnError(err)
+	if raw := findRawEventID(tc, ctx, eType, repo, fork.Owner, createdAt, "forkee_id", fid); raw != nil {
+		eid = raw.(int64)
+	}
 	ghActor(tc, ctx, fork.Owner, maybeHide)
-	restoreEventPayload(tc, ctx, eid, eType, fork.Owner, repo, repoID, orgID, createdAt, "created", nil, nil, nil, nil, fid, nil, nil, maybeHide)
-	ExecSQLTxWithErr(
+	restoreEventPayload(tc, ctx, eid, eType, fork.Owner, repo, repoID, orgID, createdAt, nil, nil, nil, nil, nil, fid, nil, nil, maybeHide)
+	res := ExecSQLTxWithErr(
 		tc,
 		ctx,
 		InsertIgnore(
@@ -332,12 +465,12 @@ func RestoreFork(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface
 			TruncToBytes(strOr(fork.Name, ""), 80),
 			TruncToBytes(strOr(fork.FullName, ""), 200),
 			ghActorIDOrNil(fork.Owner),
-			TruncStringOrNil(fork.Description, 0xffff),
+			truncStringOrNilHidden(fork.Description, 0xffff, maybeHide),
 			true,
 			createdAt,
 			tsOr(fork.UpdatedAt, createdAt),
 			tsOrNil(fork.PushedAt),
-			StringOrNil(fork.Homepage),
+			truncStringOrNilHidden(fork.Homepage, 0xffff, maybeHide),
 			intOr(fork.Size, 0),
 			intOr(fork.StargazersCount, 0),
 			boolOr(fork.HasIssues, false),
@@ -362,28 +495,33 @@ func RestoreFork(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface
 		}...,
 	)
 	FatalOnError(tc.Commit())
+	n, _ := res.RowsAffected()
+	return n > 0
 }
 
 // RestoreRelease - restores a release missed by GH Archive: artificial ReleaseEvent + gha_releases (+assets) rows
-func RestoreRelease(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, rel *github.RepositoryRelease, maybeHide func(string) string) {
+func RestoreRelease(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, rel *github.RepositoryRelease, maybeHide func(string) string) bool {
 	if ctx.SkipPDB {
-		return
+		return false
 	}
 	if rel == nil || rel.ID == nil || rel.Author == nil || rel.Author.Login == nil || rel.CreatedAt == nil {
-		return
+		return false
 	}
 	rid := *rel.ID
 	eid := ArtificialReleaseIDBase + rid
 	if !artificialIDOK(eid, "RestoreRelease", repo) {
-		return
+		return false
 	}
-	createdAt := rel.CreatedAt.Time
+	createdAt := tsOr(rel.PublishedAt, rel.CreatedAt.Time)
 	eType := "ReleaseEvent"
 	tc, err := c.Begin()
 	FatalOnError(err)
+	if raw := findRawEventID(tc, ctx, eType, repo, rel.Author, createdAt, "release_id", rid); raw != nil {
+		eid = raw.(int64)
+	}
 	ghActor(tc, ctx, rel.Author, maybeHide)
 	restoreEventPayload(tc, ctx, eid, eType, rel.Author, repo, repoID, orgID, createdAt, "published", nil, nil, nil, nil, nil, rid, nil, maybeHide)
-	ExecSQLTxWithErr(
+	res := ExecSQLTxWithErr(
 		tc,
 		ctx,
 		InsertIgnore(
@@ -401,13 +539,13 @@ func RestoreRelease(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interf
 			eid,
 			TruncToBytes(strOr(rel.TagName, ""), 200),
 			TruncToBytes(strOr(rel.TargetCommitish, ""), 200),
-			TruncStringOrNil(rel.Name, 200),
+			truncStringOrNilHidden(rel.Name, 200, maybeHide),
 			boolOr(rel.Draft, false),
 			ghActorIDOrNil(rel.Author),
 			boolOr(rel.Prerelease, false),
 			createdAt,
 			tsOrNil(rel.PublishedAt),
-			TruncStringOrNil(rel.Body, 0xffff),
+			truncStringOrNilHidden(rel.Body, 0xffff, maybeHide),
 			ghActorIDOrNil(rel.Author),
 			ghActorLoginOrNil(rel.Author, maybeHide),
 			repoID,
@@ -443,8 +581,8 @@ func RestoreRelease(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interf
 			AnyArray{
 				aid,
 				eid,
-				TruncToBytes(strOr(asset.Name, ""), 200),
-				TruncStringOrNil(asset.Label, 120),
+				TruncToBytes(maybeHide(strOr(asset.Name, "")), 200),
+				truncStringOrNilHidden(asset.Label, 120, maybeHide),
 				ghActorIDOrNil(uploader),
 				TruncToBytes(strOr(asset.ContentType, ""), 80),
 				TruncToBytes(strOr(asset.State, ""), 20),
@@ -469,29 +607,34 @@ func RestoreRelease(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interf
 		)
 	}
 	FatalOnError(tc.Commit())
+	n, _ := res.RowsAffected()
+	return n > 0
 }
 
 // RestoreCommitComment - restores a commit comment missed by GH Archive: artificial CommitCommentEvent + gha_comments row
-func RestoreCommitComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, cmt *github.RepositoryComment, maybeHide func(string) string) {
+func RestoreCommitComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, cmt *github.RepositoryComment, maybeHide func(string) string) bool {
 	if ctx.SkipPDB {
-		return
+		return false
 	}
 	if cmt == nil || cmt.ID == nil || cmt.User == nil || cmt.User.Login == nil || cmt.CreatedAt == nil {
 		Printf("RestoreCommitComment: %s: skipping comment with missing id/user/created_at\n", repo)
-		return
+		return false
 	}
 	cid := *cmt.ID
 	eid := ArtificialCommitCommentIDBase + cid
 	if !artificialIDOK(eid, "RestoreCommitComment", repo) {
-		return
+		return false
 	}
 	createdAt := *cmt.CreatedAt
 	eType := "CommitCommentEvent"
 	tc, err := c.Begin()
 	FatalOnError(err)
+	if raw := findRawEventID(tc, ctx, eType, repo, cmt.User, createdAt, "comment_id", cid); raw != nil {
+		eid = raw.(int64)
+	}
 	ghActor(tc, ctx, cmt.User, maybeHide)
 	restoreEventPayload(tc, ctx, eid, eType, cmt.User, repo, repoID, orgID, createdAt, "created", nil, nil, nil, cid, nil, nil, StringOrNil(cmt.CommitID), maybeHide)
-	ExecSQLTxWithErr(
+	res := ExecSQLTxWithErr(
 		tc,
 		ctx,
 		InsertIgnore(
@@ -506,7 +649,7 @@ func RestoreCommitComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID 
 		AnyArray{
 			cid,
 			eid,
-			TruncToBytes(strOr(cmt.Body, ""), 0xffff),
+			TruncToBytes(maybeHide(strOr(cmt.Body, "")), 0xffff),
 			createdAt,
 			timeOr(cmt.UpdatedAt, createdAt),
 			ghActorIDOrNil(cmt.User),
@@ -523,22 +666,71 @@ func RestoreCommitComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID 
 		}...,
 	)
 	FatalOnError(tc.Commit())
+	n, _ := res.RowsAffected()
+	return n > 0
 }
 
 // RestoreStar - restores a star missed by GH Archive as an artificial WatchEvent (hash-based negative id, like pre-2015 events)
-func RestoreStar(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, star *github.Stargazer, maybeHide func(string) string) {
+func RestoreStar(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, star *github.Stargazer, maybeHide func(string) string) bool {
 	if ctx.SkipPDB {
-		return
+		return false
 	}
 	if star == nil || star.User == nil || star.User.Login == nil || star.StarredAt == nil {
-		return
+		return false
 	}
 	createdAt := star.StarredAt.Time
 	eType := "WatchEvent"
-	eid := int64(HashStrings([]string{eType, *star.User.Login, repo, ToYMDHMSDate(createdAt)}))
+	if star.User.ID == nil {
+		return false
+	}
+	eid := NegativeArtificialID([]string{eType, fmt.Sprint(*star.User.ID), repo, ToYMDHMSDate(createdAt)})
 	tc, err := c.Begin()
 	FatalOnError(err)
+	if hashIDConflict(tc, ctx, eid, eType, repo, *star.User.ID, createdAt) {
+		FatalOnError(tc.Rollback())
+		return false
+	}
 	ghActor(tc, ctx, star.User, maybeHide)
-	restoreEventPayload(tc, ctx, eid, eType, star.User, repo, repoID, orgID, createdAt, "started", nil, nil, nil, nil, nil, nil, nil, maybeHide)
+	res := restoreEventPayload(tc, ctx, eid, eType, star.User, repo, repoID, orgID, createdAt, "started", nil, nil, nil, nil, nil, nil, nil, maybeHide)
 	FatalOnError(tc.Commit())
+	n, _ := res.RowsAffected()
+	return n > 0
+}
+
+// RunRangePostprocess - runs the bounded *_range.sql postprocess scripts for [from, to),
+// used after API restores that insert rows older than the hourly postprocess window
+func RunRangePostprocess(ctx *Ctx, from, to time.Time) {
+	RunRangePostprocessDB(ctx, "", from, to)
+}
+
+// RunRangePostprocessDB - RunRangePostprocess against an explicit database (empty db = ctx.PgDB)
+func RunRangePostprocessDB(ctx *Ctx, db string, from, to time.Time) {
+	if ctx.SkipPDB {
+		return
+	}
+	c := PgConn(ctx)
+	if db != "" {
+		FatalOnError(c.Close())
+		c = PgConnDB(ctx, db)
+	}
+	defer func() { FatalOnError(c.Close()) }()
+	dataPrefix := ctx.DataDir
+	if ctx.Local {
+		dataPrefix = "./"
+	}
+	tc, err := c.Begin()
+	FatalOnError(err)
+	ExecSQLTxWithErr(tc, ctx, "select set_config('devstats.postprocess_from', "+NValue(1)+", true)", ToYMDHMSDate(from))
+	ExecSQLTxWithErr(tc, ctx, "select set_config('devstats.postprocess_to', "+NValue(1)+", true)", ToYMDHMSDate(to))
+	for _, script := range []string{
+		"util_sql/postprocess_texts_range.sql",
+		"util_sql/postprocess_labels_range.sql",
+		"util_sql/postprocess_issues_prs_range.sql",
+	} {
+		bytes, err := ReadFile(ctx, dataPrefix+script)
+		FatalOnError(err)
+		ExecSQLTxWithErr(tc, ctx, string(bytes))
+	}
+	FatalOnError(tc.Commit())
+	Printf("bounded postprocess executed for [%s, %s)\n", ToYMDHMSDate(from), ToYMDHMSDate(to))
 }

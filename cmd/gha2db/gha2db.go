@@ -639,6 +639,24 @@ func eventExists(db *sql.DB, ctx *lib.Ctx, eventID string) bool {
 	return exists
 }
 
+// eventExistsCollision - like eventExists, but logs when the existing row is a DIFFERENT event
+// (GitHub reset the event id sequence on 2025-10-08; new real ids can reuse 2016-2020 ids)
+func eventExistsCollision(db *sql.DB, ctx *lib.Ctx, eventID string, eType, repoName string, createdAt time.Time) bool {
+	rows := lib.QuerySQLWithErr(db, ctx, fmt.Sprintf("select type, dup_repo_name, created_at from gha_events where id=%s", lib.NValue(1)), eventID)
+	defer func() { lib.FatalOnError(rows.Close()) }()
+	exists := false
+	eT, eR, eD := "", "", time.Time{}
+	for rows.Next() {
+		lib.FatalOnError(rows.Scan(&eT, &eR, &eD))
+		exists = true
+	}
+	lib.FatalOnError(rows.Err())
+	if exists && (eT != eType || eR != repoName || !eD.Equal(createdAt)) {
+		lib.Printf("event id collision: id %s already exists as (%s, %s, %v), new event (%s, %s, %v) skipped\n", eventID, eT, eR, eD, eType, repoName, createdAt)
+	}
+	return exists
+}
+
 // matchGroups - return regular expression matching groups as a map
 func matchGroups(re *regexp.Regexp, arg string) (result map[string]string) {
 	match := re.FindStringSubmatch(arg)
@@ -1121,7 +1139,7 @@ func ghaTeam(con *sql.Tx, ctx *lib.Ctx, payloadTeam *lib.Team, payloadRepo *lib.
 
 // Write GHA entire event (in old pre 2015 format) into Postgres DB
 func writeToDBOldFmt(db *sql.DB, ctx *lib.Ctx, eventID string, ev *lib.EventOld, shas map[string]string) int {
-	if eventExists(db, ctx, eventID) {
+	if eventExistsCollision(db, ctx, eventID, ev.Type, ev.Repository.Name, ev.CreatedAt) {
 		return 0
 	}
 
@@ -1401,7 +1419,7 @@ func writeToDBOldFmt(db *sql.DB, ctx *lib.Ctx, eventID string, ev *lib.EventOld,
 // Write entire GHA event (in a new 2015+ format) into Postgres DB
 func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) int {
 	eventID := ev.ID
-	if eventExists(db, ctx, eventID) {
+	if eventExistsCollision(db, ctx, eventID, ev.Type, ev.Repo.Name, ev.CreatedAt) {
 		return 0
 	}
 

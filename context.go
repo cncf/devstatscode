@@ -167,7 +167,7 @@ type Ctx struct {
 	AllowMetricFail          bool                         // From GHA2DB_ALLOW_METRIC_FAIL - if set, then calc_metric will not exit on first failed metric, but will try to compute all metrics.
 	FetchCommitsMode         int                          // From GHA2DB_FETCH_COMMITS_MODE get_repos tool, mode to reconstruct gha_commits from git history for PushEvents: 0-disabled, 1-missing only (default), 2-missing+truncated
 	GitCommitsBatch          int                          // From GHA2DB_GIT_COMMITS_BATCH get_repos tool, max number of commit SHAs passed to git_commits.sh in one call, default 1000
-	RestoreOrphanCommits     bool                         // From GHA2DB_RESTORE_ORPHAN_COMMITS, get_repos tool, enable restoring commits present in git but with no gha_commits row, default false
+	RestoreOrphanCommits     bool                         // From GHA2DB_RESTORE_ORPHAN_COMMITS, get_repos tool, enable restoring commits present in git but with no gha_commits row, binary default false (prod enables it via repos.sh/helm)
 }
 
 // SetCPUs - set CPUs
