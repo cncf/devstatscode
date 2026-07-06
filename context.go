@@ -111,6 +111,11 @@ type Ctx struct {
 	ForceAPILicenses         bool                         // From GHA2DB_GHAPIFORCELICENSES, ghapi2db tool, if set, recheck licenses on repos that already have licenses fetched
 	SkipAPILangs             bool                         // From GHA2DB_GHAPISKIPLANGS, ghapi2db tool, if set then tool is skipping GH API repos programming languages enrichment
 	ForceAPILangs            bool                         // From GHA2DB_GHAPIFORCELANGS, ghapi2db tool, if set, recheck programming languages on repos that already have them fetched
+	SkipAPIComments          bool                         // From GHA2DB_GHAPISKIPCOMMENTS, ghapi2db tool, if set then tool is skipping GH API comments restore (issue + PR review comments missed by GH Archive)
+	SkipAPIReviews           bool                         // From GHA2DB_GHAPISKIPREVIEWS, ghapi2db tool, if set then tool is skipping GH API PR reviews restore
+	SkipAPIForks             bool                         // From GHA2DB_GHAPISKIPFORKS, ghapi2db tool, if set then tool is skipping GH API forks restore
+	SkipAPIReleases          bool                         // From GHA2DB_GHAPISKIPRELEASES, ghapi2db tool, if set then tool is skipping GH API releases restore
+	SkipAPIStars             bool                         // From GHA2DB_GHAPISKIPSTARS, ghapi2db tool, if set then tool is skipping GH API stars (WatchEvent) restore
 	SkipGetRepos             bool                         // From GHA2DB_GETREPOSSKIP, get_repos tool, if set then tool does nothing
 	CSVFile                  string                       // From GHA2DB_CSVOUT, runq tool, if set, saves result in this file
 	ComputeAll               bool                         // From GHA2DB_COMPUTE_ALL, all tools, if set then no period decisions are taken based on time, but all possible periods are recalculated
@@ -162,6 +167,7 @@ type Ctx struct {
 	AllowMetricFail          bool                         // From GHA2DB_ALLOW_METRIC_FAIL - if set, then calc_metric will not exit on first failed metric, but will try to compute all metrics.
 	FetchCommitsMode         int                          // From GHA2DB_FETCH_COMMITS_MODE get_repos tool, mode to reconstruct gha_commits from git history for PushEvents: 0-disabled, 1-missing only (default), 2-missing+truncated
 	GitCommitsBatch          int                          // From GHA2DB_GIT_COMMITS_BATCH get_repos tool, max number of commit SHAs passed to git_commits.sh in one call, default 1000
+	RestoreOrphanCommits     bool                         // From GHA2DB_RESTORE_ORPHAN_COMMITS, get_repos tool, enable restoring commits present in git but with no gha_commits row, default false
 }
 
 // SetCPUs - set CPUs
@@ -368,6 +374,11 @@ func (ctx *Ctx) Init() {
 	ctx.ForceAPILicenses = os.Getenv("GHA2DB_GHAPIFORCELICENSES") != ""
 	ctx.SkipAPILangs = os.Getenv("GHA2DB_GHAPISKIPLANGS") != ""
 	ctx.ForceAPILangs = os.Getenv("GHA2DB_GHAPIFORCELANGS") != ""
+	ctx.SkipAPIComments = os.Getenv("GHA2DB_GHAPISKIPCOMMENTS") != ""
+	ctx.SkipAPIReviews = os.Getenv("GHA2DB_GHAPISKIPREVIEWS") != ""
+	ctx.SkipAPIForks = os.Getenv("GHA2DB_GHAPISKIPFORKS") != ""
+	ctx.SkipAPIReleases = os.Getenv("GHA2DB_GHAPISKIPRELEASES") != ""
+	ctx.SkipAPIStars = os.Getenv("GHA2DB_GHAPISKIPSTARS") != ""
 	ctx.GHAPIErrorIsFatal = os.Getenv("GHA2DB_GHAPI_ERROR_FATAL") != ""
 	ctx.AutoFetchCommits = os.Getenv("GHA2DB_NO_AUTOFETCHCOMMITS") == ""
 
@@ -417,6 +428,9 @@ func (ctx *Ctx) Init() {
 			ctx.GitCommitsBatch = b
 		}
 	}
+
+	// Restore orphan commits (get_repos)
+	ctx.RestoreOrphanCommits = os.Getenv("GHA2DB_RESTORE_ORPHAN_COMMITS") != ""
 
 	// Run website_data tool after sync
 	ctx.WebsiteData = os.Getenv("GHA2DB_WEBSITEDATA") != ""
@@ -962,6 +976,11 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		ForceAPILicenses:         ctx.ForceAPILicenses,
 		SkipAPILangs:             ctx.SkipAPILangs,
 		ForceAPILangs:            ctx.ForceAPILangs,
+		SkipAPIComments:          ctx.SkipAPIComments,
+		SkipAPIReviews:           ctx.SkipAPIReviews,
+		SkipAPIForks:             ctx.SkipAPIForks,
+		SkipAPIReleases:          ctx.SkipAPIReleases,
+		SkipAPIStars:             ctx.SkipAPIStars,
 		AutoFetchCommits:         ctx.AutoFetchCommits,
 		GHAPIErrorIsFatal:        ctx.GHAPIErrorIsFatal,
 		AllowBrokenJSON:          ctx.AllowBrokenJSON,
@@ -1061,5 +1080,6 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		MaxHistograms:            ctx.MaxHistograms,
 		FetchCommitsMode:         ctx.FetchCommitsMode,
 		GitCommitsBatch:          ctx.GitCommitsBatch,
+		RestoreOrphanCommits:     ctx.RestoreOrphanCommits,
 	}
 }

@@ -1548,6 +1548,21 @@ func main() {
 		if !ctx.SkipAPICommits {
 			syncCommits(&ctx)
 		}
+		if !ctx.SkipAPIComments {
+			syncComments(&ctx)
+		}
+		if !ctx.SkipAPIReviews {
+			syncReviews(&ctx)
+		}
+		if !ctx.SkipAPIForks {
+			syncForks(&ctx)
+		}
+		if !ctx.SkipAPIReleases {
+			syncReleases(&ctx)
+		}
+		if !ctx.SkipAPIStars {
+			syncStars(&ctx)
+		}
 	}
 	dtEnd := time.Now()
 	lib.Printf("Time: %v\n", dtEnd.Sub(dtStart))

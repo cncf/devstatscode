@@ -880,6 +880,9 @@ func main() {
 		if ctx.FetchCommitsMode != 0 {
 			backfillPushEventCommits(&ctx, dbs, repoDBs)
 		}
+		if ctx.RestoreOrphanCommits {
+			restoreOrphanCommits(&ctx, dbs, repoDBs)
+		}
 		if ctx.ProcessCommits {
 			processCommits(&ctx, dbs)
 		}

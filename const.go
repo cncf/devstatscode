@@ -72,6 +72,34 @@ const ALL string = "All"
 // Kubernetes - common constant string
 const Kubernetes string = "kubernetes"
 
+// ArtificialIDBase - artificial (GitHub API sourced) event id base: 2^48.
+// Issue/PR timeline events use ArtificialIDBase + REST event id (offsets ~2.8e10 in 2026, growing ~1e10/year).
+// API-restored object classes below get uniform 4e12-wide sub-bands (object ids are ~3e9 in 2026, growing <1e9/year),
+// so classes cannot collide for centuries. Sync events (ArtificialIDBase + UnixNano/31622) stay >= 329900000000000
+// (offset >= ~48.4e12 since 2018 and growing), above all sub-bands.
+const ArtificialIDBase int64 = 281474976710656
+
+// ArtificialCommentIDBase - API-restored issue comments
+const ArtificialCommentIDBase int64 = ArtificialIDBase + 4000000000000
+
+// ArtificialReviewCommentIDBase - API-restored PR review comments
+const ArtificialReviewCommentIDBase int64 = ArtificialIDBase + 8000000000000
+
+// ArtificialCommitCommentIDBase - API-restored commit comments
+const ArtificialCommitCommentIDBase int64 = ArtificialIDBase + 12000000000000
+
+// ArtificialReviewIDBase - API-restored PR reviews
+const ArtificialReviewIDBase int64 = ArtificialIDBase + 16000000000000
+
+// ArtificialForkIDBase - API-restored forks
+const ArtificialForkIDBase int64 = ArtificialIDBase + 20000000000000
+
+// ArtificialReleaseIDBase - API-restored releases
+const ArtificialReleaseIDBase int64 = ArtificialIDBase + 24000000000000
+
+// SyncEventIDThreshold - event ids >= this are 'sync' events; artificial sub-bands must stay below
+const SyncEventIDThreshold int64 = 329900000000000
+
 // Abuse - common constant string
 const Abuse string = "abuse"
 
