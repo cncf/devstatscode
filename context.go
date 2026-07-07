@@ -93,7 +93,7 @@ type Ctx struct {
 	OutputDB                 string                       // From GHA2DB_OUTPUT_DB, merge_dbs tool - output database to merge into
 	TmOffset                 int                          // From GHA2DB_TMOFFSET, gha2db_sync tool - uses time offset to decide when to calculate various metrics, default offset is 0 which means UTC, good offset for USA is -6, and for Poland is 1 or 2
 	DefaultHostname          string                       // "devstats.cncf.io"
-	RecentRange              string                       // From GHA2DB_RECENT_RANGE, ghapi2db tool, default '12 hours'. This is a recent period to check open issues/PR to fix their labels and milestones.
+	RecentRange              string                       // From GHA2DB_RECENT_RANGE, ghapi2db tool, default '8 hours' (6h sync cadence + 2h overlap). This is a recent period to check open issues/PR to fix their labels and milestones; also the API restore passes window.
 	RecentReposRange         string                       // From GHA2DB_RECENT_REPOS_RANGE, ghapi2db tool, default '1 day'. This is a recent period to check modified repositories.
 	MinGHAPIPoints           int                          // From GHA2DB_MIN_GHAPI_POINTS, ghapi2db tool, minimum GitHub API points, before waiting for reset.
 	MaxGHAPIWaitSeconds      int                          // From GHA2DB_MAX_GHAPI_WAIT, ghapi2db tool, maximum wait time for GitHub API points reset (in seconds).
@@ -168,6 +168,7 @@ type Ctx struct {
 	FetchCommitsMode         int                          // From GHA2DB_FETCH_COMMITS_MODE get_repos tool, mode to reconstruct gha_commits from git history for PushEvents: 0-disabled, 1-missing only (default), 2-missing+truncated
 	GitCommitsBatch          int                          // From GHA2DB_GIT_COMMITS_BATCH get_repos tool, max number of commit SHAs passed to git_commits.sh in one call, default 1000
 	RestoreOrphanCommits     bool                         // From GHA2DB_RESTORE_ORPHAN_COMMITS, get_repos tool, enable restoring commits present in git but with no gha_commits row, binary default false (prod enables it via repos.sh/helm)
+	OrphanCommitsRange       string                       // From GHA2DB_ORPHAN_COMMITS_RANGE, get_repos tool, orphan commits restore window, default '8 hours' (6h sync cadence + 2h overlap, keep equal to GHA2DB_RECENT_RANGE)
 }
 
 // SetCPUs - set CPUs
@@ -431,6 +432,10 @@ func (ctx *Ctx) Init() {
 
 	// Restore orphan commits (get_repos)
 	ctx.RestoreOrphanCommits = os.Getenv("GHA2DB_RESTORE_ORPHAN_COMMITS") != ""
+	ctx.OrphanCommitsRange = os.Getenv("GHA2DB_ORPHAN_COMMITS_RANGE")
+	if ctx.OrphanCommitsRange == "" {
+		ctx.OrphanCommitsRange = "8 hours"
+	}
 
 	// Run website_data tool after sync
 	ctx.WebsiteData = os.Getenv("GHA2DB_WEBSITEDATA") != ""
@@ -874,7 +879,7 @@ func (ctx *Ctx) Init() {
 	// RecentRange - ghapi2db will check issues/PRs from now() - this range to now()
 	ctx.RecentRange = os.Getenv("GHA2DB_RECENT_RANGE")
 	if ctx.RecentRange == "" {
-		ctx.RecentRange = "2 hours"
+		ctx.RecentRange = "8 hours"
 	}
 	ctx.RecentReposRange = os.Getenv("GHA2DB_RECENT_REPOS_RANGE")
 	if ctx.RecentReposRange == "" {
@@ -1081,5 +1086,6 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		FetchCommitsMode:         ctx.FetchCommitsMode,
 		GitCommitsBatch:          ctx.GitCommitsBatch,
 		RestoreOrphanCommits:     ctx.RestoreOrphanCommits,
+		OrphanCommitsRange:       ctx.OrphanCommitsRange,
 	}
 }

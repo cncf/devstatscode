@@ -259,7 +259,7 @@ func TestInit(t *testing.T) {
 		InputDBs:                 []string{},
 		OutputDB:                 "",
 		TmOffset:                 0,
-		RecentRange:              "2 hours",
+		RecentRange:              "8 hours",
 		RecentReposRange:         "1 day",
 		CSVFile:                  "",
 		ComputeAll:               false,
@@ -299,6 +299,7 @@ func TestInit(t *testing.T) {
 		FetchCommitsMode:         1,
 		GitCommitsBatch:          1000,
 		RestoreOrphanCommits:     false,
+		OrphanCommitsRange:       "8 hours",
 	}
 
 	var nilRegexp *regexp.Regexp
@@ -1773,11 +1774,11 @@ func TestInit(t *testing.T) {
 		},
 		{
 			"Setting restore orphan commits",
-			map[string]string{"GHA2DB_RESTORE_ORPHAN_COMMITS": "1"},
+			map[string]string{"GHA2DB_RESTORE_ORPHAN_COMMITS": "1", "GHA2DB_ORPHAN_COMMITS_RANGE": "9 months"},
 			dynamicSetFields(
 				t,
 				defaultContext.CopyContext(),
-				map[string]interface{}{"RestoreOrphanCommits": true},
+				map[string]interface{}{"RestoreOrphanCommits": true, "OrphanCommitsRange": "9 months"},
 			),
 		},
 	}

@@ -1293,14 +1293,14 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 	}
 
 	dtFrom := ctx.DefaultStartDate
-	if ctx.RecentRange != "" {
+	if ctx.OrphanCommitsRange != "" {
 		var dtTo sql.NullTime
 		err := con.QueryRow("select now()").Scan(&dtTo)
 		if err != nil {
 			return 0, 0, 0, minDt, maxDt, fmt.Errorf("select now() failed (db=%s, repo=%s): %w", db, repo, err)
 		}
 		if dtTo.Valid {
-			dtFrom = lib.GetDateAgo(con, ctx, dtTo.Time, ctx.RecentRange)
+			dtFrom = lib.GetDateAgo(con, ctx, dtTo.Time, ctx.OrphanCommitsRange)
 		}
 	}
 
