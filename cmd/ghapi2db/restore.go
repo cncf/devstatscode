@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -362,52 +366,138 @@ func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 	}
 }
 
-func restoreStarsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
-	// stargazers list ascending by starred_at - walk from the last page down
-	opt := &github.ListOptions{PerPage: 100, Page: 1}
-	last := 1
-	apiPage(ctx, orgRepo+" stargazers last page", func() (*github.Response, bool, error) {
-		_, resp, err := gc.Activity.ListStargazers(gctx, org, repo, opt)
-		if err != nil || resp == nil || resp.StatusCode >= 400 {
-			return resp, false, err
-		}
-		if resp.LastPage > 1 {
-			last = resp.LastPage
-		}
-		return resp, false, nil
-	})
-	for page := last; page >= 1; page-- {
-		opt.Page = page
-		anyRecent := false
-		ok := apiPage(ctx, orgRepo+" stargazers", func() (*github.Response, bool, error) {
-			stars, resp, err := gc.Activity.ListStargazers(gctx, org, repo, opt)
-			if err != nil || resp == nil || resp.StatusCode >= 400 {
-				return resp, false, err
-			}
-			stats.pages++
-			for _, star := range stars {
-				if star == nil || star.User == nil || star.User.ID == nil || star.StarredAt == nil || star.StarredAt.Time.Before(recentDt) {
-					continue
-				}
-				anyRecent = true
-				stats.checked++
-				if starPresent(c, ctx, *star.User.ID, orgRepo, star.StarredAt.Time) {
-					continue
-				}
-				if lib.RestoreStar(c, ctx, orgRepo, repoID, orgID, star, maybeHide) {
-					stats.restored++
-					stats.mark(star.StarredAt.Time)
-				}
-
-			}
-			return resp, true, nil
-		})
-		if !ok || !anyRecent {
-			break
-		}
+func ghTokens(ctx *lib.Ctx) []string {
+	oAuth := ctx.GitHubOAuth
+	if strings.Contains(oAuth, "/") {
+		bytes, err := lib.ReadFile(ctx, oAuth)
+		lib.FatalOnError(err)
+		oAuth = strings.TrimSpace(string(bytes))
 	}
+	if oAuth == "" || oAuth == "-" {
+		return []string{}
+	}
+	return strings.Split(oAuth, ",")
 }
 
+type gqlStargazer struct {
+	starredAt time.Time
+	login     string
+	id        int64
+}
+
+// ghGraphQLStargazers - GitHub removed the REST stargazers listing (404 since ~2026), GraphQL still serves it newest-first
+func ghGraphQLStargazers(ctx *lib.Ctx, tokens []string, org, repo, before string) (gazers []gqlStargazer, prevCursor string, hasPrev bool, err error) {
+	vars := map[string]interface{}{"o": org, "r": repo}
+	if before != "" {
+		vars["b"] = before
+	}
+	payload, err := json.Marshal(map[string]interface{}{
+		"query":     "query($o: String!, $r: String!, $b: String) { repository(owner: $o, name: $r) { stargazers(last: 100, before: $b) { pageInfo { hasPreviousPage startCursor } edges { starredAt node { login databaseId } } } } }",
+		"variables": vars,
+	})
+	if err != nil {
+		return
+	}
+	var out struct {
+		Data struct {
+			Repository struct {
+				Stargazers struct {
+					PageInfo struct {
+						HasPreviousPage bool   `json:"hasPreviousPage"`
+						StartCursor     string `json:"startCursor"`
+					} `json:"pageInfo"`
+					Edges []struct {
+						StarredAt time.Time `json:"starredAt"`
+						Node      struct {
+							Login      string `json:"login"`
+							DatabaseID int64  `json:"databaseId"`
+						} `json:"node"`
+					} `json:"edges"`
+				} `json:"stargazers"`
+			} `json:"repository"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	cl := &http.Client{Timeout: time.Duration(60) * time.Second}
+	for i, token := range tokens {
+		var req *http.Request
+		req, err = http.NewRequest("POST", "https://api.github.com/graphql", bytes.NewReader(payload))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Authorization", "bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		var resp *http.Response
+		resp, err = cl.Do(req)
+		if err != nil {
+			continue
+		}
+		var body []byte
+		body, err = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != 200 {
+			err = fmt.Errorf("graphql status %d (token %d/%d)", resp.StatusCode, i+1, len(tokens))
+			continue
+		}
+		err = json.Unmarshal(body, &out)
+		if err != nil {
+			continue
+		}
+		if len(out.Errors) > 0 {
+			err = fmt.Errorf("graphql: %s", out.Errors[0].Message)
+			continue
+		}
+		sg := out.Data.Repository.Stargazers
+		for _, edge := range sg.Edges {
+			gazers = append(gazers, gqlStargazer{starredAt: edge.StarredAt, login: edge.Node.Login, id: edge.Node.DatabaseID})
+		}
+		return gazers, sg.PageInfo.StartCursor, sg.PageInfo.HasPreviousPage, nil
+	}
+	return
+}
+
+func restoreStarsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
+	tokens := ghTokens(ctx)
+	if len(tokens) == 0 {
+		lib.Printf("%s: stars restore needs GHA2DB_GITHUB_OAUTH token(s), skipping\n", orgRepo)
+		return
+	}
+	before := ""
+	for page := 1; page <= restorePageCap; page++ {
+		gazers, prev, hasPrev, err := ghGraphQLStargazers(ctx, tokens, org, repo, before)
+		if err != nil {
+			lib.Printf("%s: stargazers graphql: %+v, skipping\n", orgRepo, err)
+			return
+		}
+		stats.pages++
+		anyRecent := false
+		for _, g := range gazers {
+			if g.starredAt.Before(recentDt) {
+				continue
+			}
+			anyRecent = true
+			stats.checked++
+			if starPresent(c, ctx, g.id, orgRepo, g.starredAt) {
+				continue
+			}
+			id, login, dt := g.id, g.login, g.starredAt
+			star := &github.Stargazer{StarredAt: &github.Timestamp{Time: dt}, User: &github.User{ID: &id, Login: &login}}
+			if lib.RestoreStar(c, ctx, orgRepo, repoID, orgID, star, maybeHide) {
+				stats.restored++
+				stats.mark(dt)
+			}
+		}
+		if !anyRecent || !hasPrev {
+			break
+		}
+		before = prev
+	}
+}
 func restoreReviewsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
 	prNumbers := []int{}
 	opt := &github.PullRequestListOptions{State: "all", Sort: "updated", Direction: "desc"}
