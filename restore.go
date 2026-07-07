@@ -714,6 +714,19 @@ func RunRangePostprocessDB(ctx *Ctx, db string, from, to time.Time) {
 		c = PgConnDB(ctx, db)
 	}
 	defer func() { FatalOnError(c.Close()) }()
+	// empty (truncated) target: skip - the same cycle's structure run performs the full rebuild,
+	// and inserting the bounded range here first would lock its 1 month window to a partial table
+	rows := QuerySQLWithErr(c, ctx, "select 1 from gha_texts limit 1")
+	empty := true
+	for rows.Next() {
+		empty = false
+	}
+	FatalOnError(rows.Err())
+	FatalOnError(rows.Close())
+	if empty {
+		Printf("bounded postprocess skipped: gha_texts is empty, full structure rebuild pending\n")
+		return
+	}
 	dataPrefix := ctx.DataDir
 	if ctx.Local {
 		dataPrefix = "./"
