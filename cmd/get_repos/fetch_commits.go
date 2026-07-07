@@ -1326,26 +1326,20 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 	}
 
 	existingSet := make(map[string]struct{})
-	err = con.QueryRow(`select 1 from gha_commits where dup_repo_name = $1 limit 1`, repo).Scan()
-	if err != nil && err != sql.ErrNoRows {
-		return 0, 0, 0, minDt, maxDt, fmt.Errorf("check gha_commits existence failed (db=%s, repo=%s): %w", db, repo, err)
+	rows, err := con.Query(`select sha from gha_commits where dup_repo_name = $1`, repo)
+	if err != nil {
+		return 0, 0, 0, minDt, maxDt, fmt.Errorf("select gha_commits shas failed (db=%s, repo=%s): %w", db, repo, err)
 	}
-	if err != sql.ErrNoRows {
-		rows, err := con.Query(`select sha from gha_commits where dup_repo_name = $1`, repo)
-		if err != nil {
-			return 0, 0, 0, minDt, maxDt, fmt.Errorf("select gha_commits shas failed (db=%s, repo=%s): %w", db, repo, err)
-		}
-		defer func() { _ = rows.Close() }()
-		for rows.Next() {
-			var sha string
-			if err := rows.Scan(&sha); err != nil {
-				return 0, 0, 0, minDt, maxDt, err
-			}
-			existingSet[normalizeSHA(sha)] = struct{}{}
-		}
-		if err := rows.Err(); err != nil {
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var sha string
+		if err := rows.Scan(&sha); err != nil {
 			return 0, 0, 0, minDt, maxDt, err
 		}
+		existingSet[normalizeSHA(sha)] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, minDt, maxDt, err
 	}
 
 	toRestore := make([]string, 0)
