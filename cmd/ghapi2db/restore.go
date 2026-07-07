@@ -367,16 +367,22 @@ func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 }
 
 func ghTokens(ctx *lib.Ctx) []string {
-	oAuth := ctx.GitHubOAuth
+	oAuth := strings.TrimSpace(ctx.GitHubOAuth)
 	if strings.Contains(oAuth, "/") {
 		bytes, err := lib.ReadFile(ctx, oAuth)
 		lib.FatalOnError(err)
-		oAuth = strings.TrimSpace(string(bytes))
+		oAuth = string(bytes)
 	}
-	if oAuth == "" || oAuth == "-" {
-		return []string{}
+	parts := strings.FieldsFunc(oAuth, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
+	tokens := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" && p != "-" {
+			tokens = append(tokens, p)
+		}
 	}
-	return strings.Split(oAuth, ",")
+	return tokens
 }
 
 type gqlStargazer struct {
@@ -385,78 +391,105 @@ type gqlStargazer struct {
 	id        int64
 }
 
-// ghGraphQLStargazers - GitHub removed the REST stargazers listing (404 since ~2026), GraphQL still serves it newest-first
-func ghGraphQLStargazers(ctx *lib.Ctx, tokens []string, org, repo, before string) (gazers []gqlStargazer, prevCursor string, hasPrev bool, err error) {
+// ghGraphQLStargazers - stars restore uses GraphQL: the REST stargazers path returns 404 / no usable
+// starred_at data on prod as of 2026-07; GraphQL exposes starredAt directly, ordered by STARRED_AT
+func ghGraphQLStargazers(gctx context.Context, ctx *lib.Ctx, tokens []string, org, repo, before string) (gazers []gqlStargazer, prevCursor string, hasPrev bool, err error) {
 	vars := map[string]interface{}{"o": org, "r": repo}
 	if before != "" {
 		vars["b"] = before
 	}
 	payload, err := json.Marshal(map[string]interface{}{
-		"query":     "query($o: String!, $r: String!, $b: String) { repository(owner: $o, name: $r) { stargazers(last: 100, before: $b) { pageInfo { hasPreviousPage startCursor } edges { starredAt node { login databaseId } } } } }",
+		"query":     "query($o: String!, $r: String!, $b: String) { repository(owner: $o, name: $r) { stargazers(last: 100, before: $b, orderBy: {field: STARRED_AT, direction: ASC}) { pageInfo { hasPreviousPage startCursor } edges { starredAt node { login databaseId } } } } }",
 		"variables": vars,
 	})
 	if err != nil {
 		return
 	}
-	var out struct {
-		Data struct {
-			Repository struct {
-				Stargazers struct {
-					PageInfo struct {
-						HasPreviousPage bool   `json:"hasPreviousPage"`
-						StartCursor     string `json:"startCursor"`
-					} `json:"pageInfo"`
-					Edges []struct {
-						StarredAt time.Time `json:"starredAt"`
-						Node      struct {
-							Login      string `json:"login"`
-							DatabaseID int64  `json:"databaseId"`
-						} `json:"node"`
-					} `json:"edges"`
-				} `json:"stargazers"`
-			} `json:"repository"`
-		} `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
 	cl := &http.Client{Timeout: time.Duration(60) * time.Second}
 	for i, token := range tokens {
-		var req *http.Request
-		req, err = http.NewRequest("POST", "https://api.github.com/graphql", bytes.NewReader(payload))
-		if err != nil {
-			return
+		for try := 1; try <= ctx.MaxGHAPIRetry; try++ {
+			var req *http.Request
+			req, err = http.NewRequestWithContext(gctx, "POST", "https://api.github.com/graphql", bytes.NewReader(payload))
+			if err != nil {
+				return
+			}
+			req.Header.Set("Authorization", "bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			var resp *http.Response
+			resp, err = cl.Do(req)
+			if err != nil {
+				break
+			}
+			var body []byte
+			body, err = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				break
+			}
+			snippet := string(body[:min(len(body), 200)])
+			if resp.StatusCode == 403 || resp.StatusCode == 429 {
+				wait := time.Duration(10*try) * time.Second
+				if ra := resp.Header.Get("Retry-After"); ra != "" {
+					if secs, perr := strconv.Atoi(ra); perr == nil {
+						wait = time.Duration(secs) * time.Second
+					}
+				} else if xr := resp.Header.Get("X-RateLimit-Reset"); xr != "" {
+					if epoch, perr := strconv.ParseInt(xr, 10, 64); perr == nil {
+						wait = time.Until(time.Unix(epoch, 0))
+					}
+				}
+				if wait > 0 && wait.Seconds() <= float64(ctx.MaxGHAPIWaitSeconds) {
+					time.Sleep(wait)
+					continue
+				}
+				if ctx.GHAPIErrorIsFatal {
+					lib.Fatalf("%s/%s: graphql rate limited, don't want to wait %v: %s", org, repo, wait, snippet)
+				}
+				err = fmt.Errorf("graphql rate limited (token %d/%d), reset in %v: %s", i+1, len(tokens), wait, snippet)
+				break
+			}
+			if resp.StatusCode != 200 {
+				err = fmt.Errorf("graphql status %d (token %d/%d): %s", resp.StatusCode, i+1, len(tokens), snippet)
+				break
+			}
+			var out struct {
+				Data struct {
+					Repository struct {
+						Stargazers struct {
+							PageInfo struct {
+								HasPreviousPage bool   `json:"hasPreviousPage"`
+								StartCursor     string `json:"startCursor"`
+							} `json:"pageInfo"`
+							Edges []struct {
+								StarredAt time.Time `json:"starredAt"`
+								Node      struct {
+									Login      string `json:"login"`
+									DatabaseID int64  `json:"databaseId"`
+								} `json:"node"`
+							} `json:"edges"`
+						} `json:"stargazers"`
+					} `json:"repository"`
+				} `json:"data"`
+				Errors []struct {
+					Message string `json:"message"`
+				} `json:"errors"`
+			}
+			if err = json.Unmarshal(body, &out); err != nil {
+				break
+			}
+			if len(out.Errors) > 0 {
+				err = fmt.Errorf("graphql (token %d/%d): %s", i+1, len(tokens), out.Errors[0].Message)
+				break
+			}
+			sg := out.Data.Repository.Stargazers
+			for _, edge := range sg.Edges {
+				if edge.Node.DatabaseID <= 0 || edge.Node.Login == "" || edge.StarredAt.IsZero() {
+					continue
+				}
+				gazers = append(gazers, gqlStargazer{starredAt: edge.StarredAt, login: edge.Node.Login, id: edge.Node.DatabaseID})
+			}
+			return gazers, sg.PageInfo.StartCursor, sg.PageInfo.HasPreviousPage, nil
 		}
-		req.Header.Set("Authorization", "bearer "+token)
-		req.Header.Set("Content-Type", "application/json")
-		var resp *http.Response
-		resp, err = cl.Do(req)
-		if err != nil {
-			continue
-		}
-		var body []byte
-		body, err = io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if err != nil {
-			continue
-		}
-		if resp.StatusCode != 200 {
-			err = fmt.Errorf("graphql status %d (token %d/%d)", resp.StatusCode, i+1, len(tokens))
-			continue
-		}
-		err = json.Unmarshal(body, &out)
-		if err != nil {
-			continue
-		}
-		if len(out.Errors) > 0 {
-			err = fmt.Errorf("graphql: %s", out.Errors[0].Message)
-			continue
-		}
-		sg := out.Data.Repository.Stargazers
-		for _, edge := range sg.Edges {
-			gazers = append(gazers, gqlStargazer{starredAt: edge.StarredAt, login: edge.Node.Login, id: edge.Node.DatabaseID})
-		}
-		return gazers, sg.PageInfo.StartCursor, sg.PageInfo.HasPreviousPage, nil
 	}
 	return
 }
@@ -469,7 +502,7 @@ func restoreStarsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *l
 	}
 	before := ""
 	for page := 1; page <= restorePageCap; page++ {
-		gazers, prev, hasPrev, err := ghGraphQLStargazers(ctx, tokens, org, repo, before)
+		gazers, prev, hasPrev, err := ghGraphQLStargazers(gctx, ctx, tokens, org, repo, before)
 		if err != nil {
 			lib.Printf("%s: stargazers graphql: %+v, skipping\n", orgRepo, err)
 			return
