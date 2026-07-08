@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -1231,6 +1232,13 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		con := lib.PgConnDB(ctx, db)
 		acache := newActorCache()
 
+		skipSet, err := selectSkipCommits(ctx, con)
+		if err != nil {
+			lib.Printf("selectSkipCommits(DB=%s) error: %v\n", db, err)
+			lib.FatalOnError(con.Close())
+			continue
+		}
+
 		thr := make(chan struct{}, thrN)
 		done := make(chan struct{}, len(repos))
 		var mtx sync.Mutex
@@ -1247,7 +1255,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 					<-thr
 					done <- struct{}{}
 				}()
-				rp, cc, cr, mnDt, mxDt, err := restoreOrphanRepo(ctx, con, db, repo, maybeHide, acache)
+				rp, cc, cr, mnDt, mxDt, err := restoreOrphanRepo(ctx, con, db, repo, maybeHide, acache, skipSet)
 				if err != nil {
 					lib.Printf("restoreOrphanRepo(DB=%s, repo=%s) error: %v\n", db, repo, err)
 				}
@@ -1276,6 +1284,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		allReposProcessed += nReposProcessed
 		allCommitsChecked += nCommitsChecked
 		allCommitsRestored += nCommitsRestored
+		debug.FreeOSMemory()
 	}
 
 	dtEnd := time.Now()
@@ -1283,7 +1292,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		allReposProcessed, allCommitsChecked, allCommitsRestored, dtEnd.Sub(dtStart))
 }
 
-func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(string) string, acache *actorCache) (int, int, int, time.Time, time.Time, error) {
+func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(string) string, acache *actorCache, skipSet map[string]struct{}) (int, int, int, time.Time, time.Time, error) {
 	var minDt, maxDt time.Time
 	repoPath := ctx.ReposDir + repo
 	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
@@ -1318,11 +1327,6 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 
 	if ctx.Debug > 0 {
 		lib.Printf("%s/%s: found %d commits since %s\n", db, repo, len(shas), dtFrom)
-	}
-
-	skipSet, err := selectSkipCommits(ctx, con)
-	if err != nil {
-		return 0, 0, 0, minDt, maxDt, err
 	}
 
 	existingSet := make(map[string]struct{})

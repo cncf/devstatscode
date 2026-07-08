@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -1532,6 +1533,13 @@ func main() {
 	var ctx lib.Ctx
 	ctx.Init()
 	lib.SetupTimeoutSignal(&ctx)
+	debug.SetGCPercent(25)
+	// Heartbeat returning freed memory to the OS, restore passes can hold multi-GB maps.
+	go func() {
+		for range time.Tick(time.Minute) {
+			debug.FreeOSMemory()
+		}
+	}()
 
 	dtStart := time.Now()
 	// Create artificial events

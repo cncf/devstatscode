@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -861,6 +862,13 @@ func main() {
 	var ctx lib.Ctx
 	ctx.Init()
 	lib.SetupTimeoutSignal(&ctx)
+	debug.SetGCPercent(25)
+	// Heartbeat returning freed memory to the OS, restore passes can hold multi-GB maps.
+	go func() {
+		for range time.Tick(time.Minute) {
+			debug.FreeOSMemory()
+		}
+	}()
 	if !ctx.SkipGetRepos {
 		dbs, repos, repoDBs := getRepos(&ctx)
 		if ctx.Debug > 0 {
