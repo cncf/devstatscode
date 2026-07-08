@@ -18,6 +18,13 @@ import (
 
 const zeroSHA40 = "0000000000000000000000000000000000000000"
 
+const insCommitRoleSQL = `
+insert into gha_commits_roles(
+  sha, event_id, role, actor_id, actor_login, actor_name, actor_email, dup_repo_id, dup_repo_name, dup_created_at
+) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+on conflict do nothing
+`
+
 // commitInfo holds commit metadata extracted from local git history.
 // git/git_commits.sh output provides: sha,b64(author_name),b64(author_email),b64(committer_name),b64(committer_email),b64(message);
 type commitInfo struct {
@@ -524,12 +531,6 @@ select
   $16,$17,$18,1
 on conflict do nothing
 `
-	insRoleSQL := `
-insert into gha_commits_roles(
-  sha, event_id, role, actor_id, actor_login, actor_name, actor_email, dup_repo_id, dup_repo_name, dup_created_at
-) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-on conflict do nothing
-`
 	// Only fill missing payload size (NULL) with the computed count.
 	updPayloadSQL := `update gha_payloads set size = $2 where event_id = $1 and (size is null or size <= 1) and (size is null or size <> $2)`
 
@@ -539,7 +540,7 @@ on conflict do nothing
 	}
 	defer func() { _ = insCommitStmt.Close() }()
 
-	insRoleStmt, err := tx.Prepare(insRoleSQL)
+	insRoleStmt, err := tx.Prepare(insCommitRoleSQL)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -1495,6 +1496,12 @@ on conflict do nothing
 	}
 	defer func() { _ = insCommitStmt.Close() }()
 
+	insRoleStmt, err := tx.Prepare(insCommitRoleSQL)
+	if err != nil {
+		return 1, len(shas), 0, minDt, maxDt, err
+	}
+	defer func() { _ = insRoleStmt.Close() }()
+
 	nRestored := 0
 	for _, sha := range toRestore {
 		shaNorm := normalizeSHA(sha)
@@ -1568,6 +1575,24 @@ on conflict do nothing
 		); err != nil {
 			lib.Printf("Warning: insert gha_commits failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, err)
 			continue
+		}
+
+		ev := pushEvent{EventID: eventID, RepoID: repoID, RepoName: repo, CreatedAt: createdAt}
+		if InsertAuthorRole {
+			if err := insertRoles(insRoleStmt, shaNorm, ev, "Author", authorID, authorLogin, lib.TruncToBytes(maybeHide(authorNameRaw), 160), lib.TruncToBytes(maybeHide(authorEmailRaw), 160), maybeHide); err != nil {
+				lib.Printf("Warning: insert Author role failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, err)
+			}
+		}
+		if InsertCommitterRole {
+			if err := insertRoles(insRoleStmt, shaNorm, ev, "Committer", commID, commLogin, commRoleName, commRoleEmail, maybeHide); err != nil {
+				lib.Printf("Warning: insert Committer role failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, err)
+			}
+		}
+		for _, tr := range parseTrailers(ctx, msgRaw) {
+			tID, tLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, tr.Name, tr.Email)
+			if err := insertRoles(insRoleStmt, shaNorm, ev, tr.Role, tID, tLogin, lib.TruncToBytes(maybeHide(tr.Name), 160), lib.TruncToBytes(maybeHide(tr.Email), 160), maybeHide); err != nil {
+				lib.Printf("Warning: insert trailer role failed (db=%s, repo=%s, sha=%s, role=%s): %v\n", db, repo, shaNorm, tr.Role, err)
+			}
 		}
 
 		nRestored++
