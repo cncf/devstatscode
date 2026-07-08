@@ -1284,6 +1284,9 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		allReposProcessed += nReposProcessed
 		allCommitsChecked += nCommitsChecked
 		allCommitsRestored += nCommitsRestored
+		skipSet = nil
+		repos = nil
+		acache = nil
 		debug.FreeOSMemory()
 	}
 
