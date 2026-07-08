@@ -1388,13 +1388,9 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 
 	toRestore := make([]string, 0, len(candidates))
 	for _, sha := range candidates {
-		if _, inExisting := existingSet[sha]; inExisting {
-			continue
+		if _, inExisting := existingSet[sha]; !inExisting {
+			toRestore = append(toRestore, sha)
 		}
-		if _, loaded := claimedShas.LoadOrStore(sha, struct{}{}); loaded {
-			continue
-		}
-		toRestore = append(toRestore, sha)
 	}
 
 	if len(toRestore) == 0 {
@@ -1540,6 +1536,10 @@ on conflict do nothing
 		createdAt, okDt := commitDates[shaNorm]
 		if !okDt {
 			lib.Printf("Warning: missing commit date for %s/%s sha %s, skipping\n", db, repo, shaNorm)
+			continue
+		}
+		// Claim late: an un-restorable alias must not block a valid one.
+		if _, loaded := claimedShas.LoadOrStore(shaNorm, struct{}{}); loaded {
 			continue
 		}
 		eventID := lib.NegativeArtificialID([]string{"PushEvent", repo, shaNorm})
