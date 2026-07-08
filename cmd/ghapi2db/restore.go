@@ -165,7 +165,7 @@ func apiPage(ctx *lib.Ctx, info string, call func() (*github.Response, bool, err
 func restorePass(ctx *lib.Ctx, name string, process restoreRepoFunc) restoreStats {
 	repos, isSingleRepo, singleRepo, gctx, gcs, c, recentDt := getAPIParams(ctx)
 	defer func() { lib.FatalOnError(c.Close()) }()
-	maybeHide := lib.MaybeHideFunc(lib.GetHidden(ctx, lib.HideCfgFile))
+	maybeHide := lib.MaybeHideFuncTS(lib.GetHidden(ctx, lib.HideCfgFile))
 	nRepos := len(repos)
 	lib.Printf("%s: processing %d repos, recent date: %v\n", name, nRepos, recentDt)
 	hint, _, rem, _ := lib.GetRateLimits(gctx, ctx, gcs, true)
