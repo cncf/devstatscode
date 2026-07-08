@@ -1238,6 +1238,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 			lib.FatalOnError(con.Close())
 			continue
 		}
+		var claimedShas sync.Map
 
 		thr := make(chan struct{}, thrN)
 		done := make(chan struct{}, len(repos))
@@ -1255,7 +1256,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 					<-thr
 					done <- struct{}{}
 				}()
-				rp, cc, cr, mnDt, mxDt, err := restoreOrphanRepo(ctx, con, db, repo, maybeHide, acache, skipSet)
+				rp, cc, cr, mnDt, mxDt, err := restoreOrphanRepo(ctx, con, db, repo, maybeHide, acache, skipSet, &claimedShas)
 				if err != nil {
 					lib.Printf("restoreOrphanRepo(DB=%s, repo=%s) error: %v\n", db, repo, err)
 				}
@@ -1295,7 +1296,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		allReposProcessed, allCommitsChecked, allCommitsRestored, dtEnd.Sub(dtStart))
 }
 
-func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(string) string, acache *actorCache, skipSet map[string]struct{}) (int, int, int, time.Time, time.Time, error) {
+func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(string) string, acache *actorCache, skipSet map[string]struct{}, claimedShas *sync.Map) (int, int, int, time.Time, time.Time, error) {
 	var minDt, maxDt time.Time
 	repoPath := ctx.ReposDir + repo
 	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
@@ -1316,7 +1317,14 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 		}
 	}
 
-	shas, commitDates, err := gitListCommits(ctx, repoPath, dtFrom)
+	// Scan the default ref only, --all would also pick upstream history reachable in fork clones.
+	defaultRef, err := gitDefaultRef(ctx, repoPath)
+	if err != nil || defaultRef == "" {
+		defaultRef = "HEAD"
+		lib.Printf("Warning: could not determine default ref for %s/%s: %v, using %s\n", db, repo, err, defaultRef)
+	}
+
+	shas, commitDates, err := gitListCommits(ctx, repoPath, defaultRef, dtFrom)
 	if err != nil {
 		return 0, 0, 0, minDt, maxDt, fmt.Errorf("gitListCommits failed for %s/%s: %w", db, repo, err)
 	}
@@ -1332,31 +1340,60 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 		lib.Printf("%s/%s: found %d commits since %s\n", db, repo, len(shas), dtFrom)
 	}
 
-	existingSet := make(map[string]struct{})
-	rows, err := con.Query(`select sha from gha_commits where dup_repo_name = $1`, repo)
-	if err != nil {
-		return 0, 0, 0, minDt, maxDt, fmt.Errorf("select gha_commits shas failed (db=%s, repo=%s): %w", db, repo, err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var sha string
-		if err := rows.Scan(&sha); err != nil {
-			return 0, 0, 0, minDt, maxDt, err
-		}
-		existingSet[normalizeSHA(sha)] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, 0, 0, minDt, maxDt, err
-	}
-
-	toRestore := make([]string, 0)
+	candidates := make([]string, 0)
 	for _, sha := range shas {
 		shaNorm := normalizeSHA(sha)
-		if _, inExisting := existingSet[shaNorm]; !inExisting {
-			if _, inSkip := skipSet[shaNorm]; !inSkip {
-				toRestore = append(toRestore, shaNorm)
-			}
+		if _, inSkip := skipSet[shaNorm]; !inSkip {
+			candidates = append(candidates, shaNorm)
 		}
+	}
+
+	// Existence check is DB-wide (not per dup_repo_name): renamed repos are cloned under
+	// every historical name and per-name checks restored the same commits once per alias.
+	batch := ctx.GitCommitsBatch
+	if batch <= 0 {
+		batch = 1000
+	}
+	existingSet := make(map[string]struct{})
+	for i := 0; i < len(candidates); i += batch {
+		j := i + batch
+		if j > len(candidates) {
+			j = len(candidates)
+		}
+		args := make([]interface{}, 0, j-i)
+		ph := make([]string, 0, j-i)
+		for k, sha := range candidates[i:j] {
+			args = append(args, sha)
+			ph = append(ph, "$"+strconv.Itoa(k+1))
+		}
+		rows, err := con.Query("select sha from gha_commits where sha in ("+strings.Join(ph, ",")+")", args...)
+		if err != nil {
+			return 0, 0, 0, minDt, maxDt, fmt.Errorf("select gha_commits shas failed (db=%s, repo=%s): %w", db, repo, err)
+		}
+		for rows.Next() {
+			var sha string
+			if err := rows.Scan(&sha); err != nil {
+				_ = rows.Close()
+				return 0, 0, 0, minDt, maxDt, err
+			}
+			existingSet[normalizeSHA(sha)] = struct{}{}
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return 0, 0, 0, minDt, maxDt, err
+		}
+	}
+
+	toRestore := make([]string, 0, len(candidates))
+	for _, sha := range candidates {
+		if _, inExisting := existingSet[sha]; inExisting {
+			continue
+		}
+		if _, loaded := claimedShas.LoadOrStore(sha, struct{}{}); loaded {
+			continue
+		}
+		toRestore = append(toRestore, sha)
 	}
 
 	if len(toRestore) == 0 {
@@ -1407,14 +1444,6 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 			lib.Printf("%s/%s: no gha_events rows for this repo, skipping orphan commits restore\n", db, repo)
 		}
 		return 1, len(shas), 0, minDt, maxDt, nil
-	}
-
-	defaultRef, err := gitDefaultRef(ctx, repoPath)
-	if err != nil {
-		defaultRef = "refs/heads/master"
-		if ctx.Debug > 0 {
-			lib.Printf("Warning: could not determine default ref for %s/%s: %v, using %s\n", db, repo, err, defaultRef)
-		}
 	}
 
 	tx, err := con.Begin()
@@ -1589,10 +1618,10 @@ func getRepoID(con *sql.DB, repoName string) (int64, error) {
 	return repoID, nil
 }
 
-func gitListCommits(ctx *lib.Ctx, repoPath string, since time.Time) ([]string, map[string]time.Time, error) {
+func gitListCommits(ctx *lib.Ctx, repoPath, ref string, since time.Time) ([]string, map[string]time.Time, error) {
 	args := []string{
 		"git", "-C", repoPath, "log",
-		"--all",
+		ref,
 		"--format=%H %at",
 		"--since=" + lib.ToYMDDate(since),
 	}
