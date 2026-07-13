@@ -310,7 +310,7 @@ func processRepos(ctx *lib.Ctx, allRepos map[string]map[string]struct{}) {
 		fmt.Printf("AllRepos:\n%s\n", allOkReposStr)
 		fmt.Printf("Final command:\n%s\n", finalCmd)
 	}
-	lib.Printf("Sucesfully processed %d/%d repos\n", len(allOkRepos), checked)
+	lib.Printf("Successfully processed %d/%d repos\n", len(allOkRepos), checked)
 }
 
 // processCommitsLOC creates/updates commits LOC stats on database 'db'
