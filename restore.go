@@ -187,26 +187,28 @@ func restoreEventPayload(tc *sql.Tx, ctx *Ctx, eid int64, eType string, actor *g
 		tc,
 		ctx,
 		InsertIgnore(
-			"into gha_events(id, type, actor_id, repo_id, public, created_at, dup_actor_login, dup_repo_name, org_id, forkee_id) "+NValues(10),
+			// "into gha_events(id, type, actor_id, repo_id, public, created_at, dup_actor_login, dup_repo_name, org_id, forkee_id) "+NValues(10),
+			"into gha_events(id, type, actor_id, repo_id, created_at, dup_actor_login, dup_repo_name, org_id) "+NValues(8),
 		),
 		AnyArray{
 			eid,
 			eType,
 			ghActorIDOrNil(actor),
 			repoID,
-			true,
+			// true,
 			createdAt,
 			ghActorLoginOrNil(actor, maybeHide),
 			repo,
 			orgID,
-			forkeeID,
+			// forkeeID,
 		}...,
 	)
 	ExecSQLTxWithErr(
 		tc,
 		ctx,
 		"insert into gha_payloads(event_id, action, number, issue_id, pull_request_id, comment_id, forkee_id, release_id, commit, "+
-			"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) "+NValues(15)+
+			// "dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) "+NValues(15)+
+			"dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) "+NValues(14)+
 			" on conflict(event_id) do update set "+
 			"action = coalesce(gha_payloads.action, excluded.action), "+
 			"number = coalesce(gha_payloads.number, excluded.number), "+
@@ -226,7 +228,7 @@ func restoreEventPayload(tc *sql.Tx, ctx *Ctx, eid int64, eType string, actor *g
 			forkeeID,
 			releaseID,
 			commitSHA,
-			ghActorIDOrNil(actor),
+			// ghActorIDOrNil(actor),
 			ghActorLoginOrNil(actor, maybeHide),
 			repoID,
 			repo,
@@ -324,11 +326,14 @@ func RestoreReviewComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID 
 		InsertIgnore(
 			fmt.Sprintf(
 				"into gha_comments(id, event_id, body, created_at, updated_at, user_id, "+
-					"commit_id, original_commit_id, diff_hunk, position, original_position, path, pull_request_review_id, "+
+					// "commit_id, original_commit_id, diff_hunk, position, original_position, path, pull_request_review_id, "+
+					"commit_id, original_commit_id, position, original_position, path, pull_request_review_id, "+
 					"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, dup_user_login) "+
-					"values(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+					// "values(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+					"values(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
 				NValue(1), NValue(2), NValue(3), NValue(4), NValue(5), NValue(6), NValue(7), NValue(8), NValue(9), NValue(10),
-				NValue(11), NValue(12), NValue(13), NValue(14), NValue(15), NValue(16), NValue(17), NValue(18), NValue(19), NValue(20),
+				// NValue(11), NValue(12), NValue(13), NValue(14), NValue(15), NValue(16), NValue(17), NValue(18), NValue(19), NValue(20),
+				NValue(11), NValue(12), NValue(13), NValue(14), NValue(15), NValue(16), NValue(17), NValue(18), NValue(19),
 			),
 		),
 		AnyArray{
@@ -340,7 +345,7 @@ func RestoreReviewComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID 
 			ghActorIDOrNil(cmt.User),
 			StringOrNil(cmt.CommitID),
 			StringOrNil(cmt.OriginalCommitID),
-			truncStringOrNilHidden(cmt.DiffHunk, 0xffff, maybeHide),
+			// truncStringOrNilHidden(cmt.DiffHunk, 0xffff, maybeHide),
 			IntOrNil(cmt.Position),
 			IntOrNil(cmt.OriginalPosition),
 			StringOrNil(cmt.Path),
@@ -432,10 +437,10 @@ func RestoreFork(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface
 	}
 	createdAt := fork.CreatedAt.Time
 	eType := "ForkEvent"
-	var organization interface{}
-	if fork.Organization != nil && fork.Organization.Login != nil {
-		organization = *fork.Organization.Login
-	}
+	// var organization interface{}
+	// if fork.Organization != nil && fork.Organization.Login != nil {
+	// organization = *fork.Organization.Login
+	// }
 	tc, err := c.Begin()
 	FatalOnError(err)
 	if raw := findRawEventID(tc, ctx, eType, repo, fork.Owner, createdAt, "forkee_id", fid); raw != nil {
@@ -448,15 +453,21 @@ func RestoreFork(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface
 		ctx,
 		InsertIgnore(
 			fmt.Sprintf(
-				"into gha_forkees(id, event_id, name, full_name, owner_id, description, fork, created_at, updated_at, pushed_at, "+
-					"homepage, size, stargazers_count, has_issues, has_projects, has_downloads, has_wiki, has_pages, forks, "+
-					"open_issues, watchers, default_branch, public, language, organization, "+
-					"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, dup_owner_login) "+
-					"values(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+				// "into gha_forkees(id, event_id, name, full_name, owner_id, description, fork, created_at, updated_at, pushed_at, "+
+				"into gha_forkees(id, event_id, name, full_name, owner_id, updated_at, "+
+					// "homepage, size, stargazers_count, has_issues, has_projects, has_downloads, has_wiki, has_pages, forks, "+
+					"stargazers_count, forks, "+
+					// "open_issues, watchers, default_branch, public, language, organization, "+
+					"open_issues, watchers, "+
+					// "dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, dup_owner_login) "+
+					"dup_actor_id, dup_repo_id, dup_repo_name, dup_created_at) "+
+					// "values(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+					"values(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
 				NValue(1), NValue(2), NValue(3), NValue(4), NValue(5), NValue(6), NValue(7), NValue(8), NValue(9), NValue(10),
-				NValue(11), NValue(12), NValue(13), NValue(14), NValue(15), NValue(16), NValue(17), NValue(18), NValue(19), NValue(20),
-				NValue(21), NValue(22), NValue(23), NValue(24), NValue(25), NValue(26), NValue(27), NValue(28), NValue(29), NValue(30),
-				NValue(31), NValue(32),
+				// NValue(11), NValue(12), NValue(13), NValue(14), NValue(15), NValue(16), NValue(17), NValue(18), NValue(19), NValue(20),
+				NValue(11), NValue(12), NValue(13), NValue(14),
+				// NValue(21), NValue(22), NValue(23), NValue(24), NValue(25), NValue(26), NValue(27), NValue(28), NValue(29), NValue(30),
+				// NValue(31), NValue(32),
 			),
 		),
 		AnyArray{
@@ -465,33 +476,33 @@ func RestoreFork(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface
 			TruncToBytes(strOr(fork.Name, ""), 80),
 			TruncToBytes(strOr(fork.FullName, ""), 200),
 			ghActorIDOrNil(fork.Owner),
-			truncStringOrNilHidden(fork.Description, 0xffff, maybeHide),
-			true,
-			createdAt,
+			// truncStringOrNilHidden(fork.Description, 0xffff, maybeHide),
+			// true,
+			// createdAt,
 			tsOr(fork.UpdatedAt, createdAt),
-			tsOrNil(fork.PushedAt),
-			truncStringOrNilHidden(fork.Homepage, 0xffff, maybeHide),
-			intOr(fork.Size, 0),
+			// tsOrNil(fork.PushedAt),
+			// truncStringOrNilHidden(fork.Homepage, 0xffff, maybeHide),
+			// intOr(fork.Size, 0),
 			intOr(fork.StargazersCount, 0),
-			boolOr(fork.HasIssues, false),
-			BoolOrNil(fork.HasProjects),
-			boolOr(fork.HasDownloads, false),
-			boolOr(fork.HasWiki, false),
-			BoolOrNil(fork.HasPages),
+			// boolOr(fork.HasIssues, false),
+			// BoolOrNil(fork.HasProjects),
+			// boolOr(fork.HasDownloads, false),
+			// boolOr(fork.HasWiki, false),
+			// BoolOrNil(fork.HasPages),
 			intOr(fork.ForksCount, 0),
 			intOr(fork.OpenIssuesCount, 0),
 			intOr(fork.WatchersCount, 0),
-			TruncToBytes(strOr(fork.DefaultBranch, "master"), 200),
-			!boolOr(fork.Private, false),
-			StringOrNil(fork.Language),
-			organization,
+			// TruncToBytes(strOr(fork.DefaultBranch, "master"), 200),
+			// !boolOr(fork.Private, false),
+			// StringOrNil(fork.Language),
+			// organization,
 			ghActorIDOrNil(fork.Owner),
-			ghActorLoginOrNil(fork.Owner, maybeHide),
+			// ghActorLoginOrNil(fork.Owner, maybeHide),
 			repoID,
 			repo,
-			eType,
+			// eType,
 			createdAt,
-			ghActorLoginOrNil(fork.Owner, maybeHide),
+			// ghActorLoginOrNil(fork.Owner, maybeHide),
 		}...,
 	)
 	FatalOnError(tc.Commit())

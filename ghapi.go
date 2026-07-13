@@ -531,13 +531,15 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 					"merge_commit_sha, merged, mergeable, mergeable_state, comments, "+
 					"maintainer_can_modify, commits, additions, deletions, changed_files, "+
 					"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-					"dup_user_login, dupn_assignee_login, dupn_merged_by_login) values("+
+					// "dup_user_login, dupn_assignee_login, dupn_merged_by_login) values("+
+					"dup_user_login, dupn_merged_by_login) values("+
 					"%s, %s, %s, %s, %s, %s, %s, %s, "+
 					"%s, %s, %s, %s, %s, %s, %s, %s, "+
 					"%s, %s, %s, %s, %s, "+
 					"%s, %s, %s, %s, %s, "+
 					"%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s, "+
-					"%s, %s, %s)",
+					// "%s, %s, %s)",
+					"%s, %s)",
 				NValue(1),
 				NValue(2),
 				NValue(3),
@@ -572,7 +574,7 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 				NValue(32),
 				NValue(33),
 				NValue(34),
-				NValue(35),
+				// NValue(35),
 			),
 		),
 		AnyArray{
@@ -609,7 +611,7 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 			eType,
 			eCreatedAt,
 			ghActorLoginOrNil(pr.User, maybeHide),
-			ghActorLoginOrNil(pr.Assignee, maybeHide),
+			// ghActorLoginOrNil(pr.Assignee, maybeHide),
 			ghActorLoginOrNil(pr.MergedBy, maybeHide),
 		}...,
 	)
@@ -621,10 +623,14 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 		InsertIgnore(
 			fmt.Sprintf(
 				"into gha_events("+
-					"id, type, actor_id, repo_id, public, created_at, "+
-					"dup_actor_login, dup_repo_name, org_id, forkee_id) "+
-					"values(%s, %s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), true, %s, "+
-					"%s, %s, (select max(org_id) from gha_events where dup_repo_name = %s), null)",
+					// "id, type, actor_id, repo_id, public, created_at, "+
+					"id, type, actor_id, repo_id, created_at, "+
+					// "dup_actor_login, dup_repo_name, org_id, forkee_id) "+
+					"dup_actor_login, dup_repo_name, org_id) "+
+					// "values(%s, %s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), true, %s, "+
+					"values(%s, %s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, "+
+					// "%s, %s, (select max(org_id) from gha_events where dup_repo_name = %s), null)",
+					"%s, %s, (select max(org_id) from gha_events where dup_repo_name = %s))",
 				NValue(1),
 				NValue(2),
 				NValue(3),
@@ -655,13 +661,19 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 			fmt.Sprintf(
 				"into gha_payloads("+
 					"event_id, push_id, size, ref, head, befor, action, "+
-					"issue_id, pull_request_id, comment_id, ref_type, master_branch, commit, "+
-					"description, number, forkee_id, release_id, member_id, "+
-					"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) "+
+					// "issue_id, pull_request_id, comment_id, ref_type, master_branch, commit, "+
+					"issue_id, pull_request_id, comment_id, commit, "+
+					// "description, number, forkee_id, release_id, member_id, "+
+					"number, forkee_id, release_id, member_id, "+
+					// "dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) "+
+					"dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) "+
 					"values(%s, null, null, null, null, null, %s, "+
-					"%s, %s, null, null, null, null, "+
-					"null, %s, null, null, null, "+
-					"%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s)",
+					// "%s, %s, null, null, null, null, "+
+					"%s, %s, null, null, "+
+					// "null, %s, null, null, null, "+
+					"%s, null, null, null, "+
+					// "%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s)",
+					"%s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s)",
 				NValue(1),
 				NValue(2),
 				NValue(3),
@@ -672,7 +684,7 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 				NValue(8),
 				NValue(9),
 				NValue(10),
-				NValue(11),
+				// NValue(11),
 			),
 		),
 		AnyArray{
@@ -681,7 +693,7 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 			iid,
 			prid,
 			issue.Number,
-			ghActorIDOrNil(event.Actor),
+			// ghActorIDOrNil(event.Actor),
 			ghActorLoginOrNil(event.Actor, maybeHide),
 			cfg.Repo,
 			cfg.Repo,
@@ -837,11 +849,13 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 					"id, event_id, assignee_id, body, closed_at, comments, created_at, "+
 					"locked, milestone_id, number, state, title, updated_at, user_id, "+
 					"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-					"dup_user_login, dupn_assignee_login, is_pull_request) "+
+					// "dup_user_login, dupn_assignee_login, is_pull_request) "+
+					"dup_user_login, is_pull_request) "+
 					"values(%s, %s, %s, %s, %s, %s, %s, "+
 					"%s, %s, %s, %s, %s, %s, %s, "+
 					"%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s, "+
-					"%s, %s, %s) ",
+					// "%s, %s, %s) ",
+					"%s, %s) ",
 				NValue(1),
 				NValue(2),
 				NValue(3),
@@ -864,7 +878,7 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 				NValue(20),
 				NValue(21),
 				NValue(22),
-				NValue(23),
+				// NValue(23),
 			),
 		),
 		AnyArray{
@@ -889,7 +903,7 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 			cfg.EventType,
 			now,
 			ghActorLoginOrNil(issue.User, maybeHide),
-			ghActorLoginOrNil(issue.Assignee, maybeHide),
+			// ghActorLoginOrNil(issue.Assignee, maybeHide),
 			issue.IsPullRequest(),
 		}...,
 	)
@@ -906,10 +920,14 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 		InsertIgnore(
 			fmt.Sprintf(
 				"into gha_events("+
-					"id, type, actor_id, repo_id, public, created_at, "+
-					"dup_actor_login, dup_repo_name, org_id, forkee_id) "+
-					"values(%s, %s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), true, %s, "+
-					"%s, %s, (select max(org_id) from gha_events where dup_repo_name = %s), null)",
+					// "id, type, actor_id, repo_id, public, created_at, "+
+					"id, type, actor_id, repo_id, created_at, "+
+					// "dup_actor_login, dup_repo_name, org_id, forkee_id) "+
+					"dup_actor_login, dup_repo_name, org_id) "+
+					// "values(%s, %s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), true, %s, "+
+					"values(%s, %s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, "+
+					// "%s, %s, (select max(org_id) from gha_events where dup_repo_name = %s), null)",
+					"%s, %s, (select max(org_id) from gha_events where dup_repo_name = %s))",
 				NValue(1),
 				NValue(2),
 				NValue(3),
@@ -940,13 +958,19 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 			fmt.Sprintf(
 				"into gha_payloads("+
 					"event_id, push_id, size, ref, head, befor, action, "+
-					"issue_id, pull_request_id, comment_id, ref_type, master_branch, commit, "+
-					"description, number, forkee_id, release_id, member_id, "+
-					"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) "+
+					// "issue_id, pull_request_id, comment_id, ref_type, master_branch, commit, "+
+					"issue_id, pull_request_id, comment_id, commit, "+
+					// "description, number, forkee_id, release_id, member_id, "+
+					"number, forkee_id, release_id, member_id, "+
+					// "dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) "+
+					"dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) "+
 					"values(%s, null, null, null, null, null, %s, "+
-					"%s, null, null, null, null, null, "+
-					"null, %s, null, null, null, "+
-					"%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s)",
+					// "%s, null, null, null, null, null, "+
+					"%s, null, null, null, "+
+					// "null, %s, null, null, null, "+
+					"%s, null, null, null, "+
+					// "%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s)",
+					"%s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s)",
 				NValue(1),
 				NValue(2),
 				NValue(3),
@@ -956,7 +980,7 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 				NValue(7),
 				NValue(8),
 				NValue(9),
-				NValue(10),
+				// NValue(10),
 			),
 		),
 		AnyArray{
@@ -964,7 +988,7 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 			cfg.EventType,
 			iid,
 			issue.Number,
-			ghActorIDOrNil(event.Actor),
+			// ghActorIDOrNil(event.Actor),
 			ghActorLoginOrNil(event.Actor, maybeHide),
 			cfg.Repo,
 			cfg.Repo,

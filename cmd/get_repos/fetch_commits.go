@@ -516,19 +516,34 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 		_ = tx.Rollback()
 	}()
 
+	// 	insCommitSQL := `
+	// insert into gha_commits(
+	//   sha, event_id, author_name, encrypted_email, message,
+	//   is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at,
+	//   author_id, committer_id, dup_author_login, dup_committer_login,
+	//   author_email, committer_name, committer_email, origin
+	// )
+	// select
+	//   $1::varchar(40),$2,$3,$4,$5,
+	//   not exists(select 1 from gha_commits c2 where c2.sha = $1::varchar(40) limit 1),
+	//   $6,$7,$8,$9,$10,$11,
+	//   $12,$13,$14,$15,
+	//   $16,$17,$18,1
+	// on conflict do nothing
+	// `
 	insCommitSQL := `
 insert into gha_commits(
-  sha, event_id, author_name, encrypted_email, message,
+  sha, event_id, author_name, message,
   is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at,
   author_id, committer_id, dup_author_login, dup_committer_login,
   author_email, committer_name, committer_email, origin
 )
 select
-  $1::varchar(40),$2,$3,$4,$5,
+  $1::varchar(40),$2,$3,$4,
   not exists(select 1 from gha_commits c2 where c2.sha = $1::varchar(40) limit 1),
-  $6,$7,$8,$9,$10,$11,
-  $12,$13,$14,$15,
-  $16,$17,$18,1
+  $5,$6,$7,$8,$9,$10,
+  $11,$12,$13,$14,
+  $15,$16,$17,1
 on conflict do nothing
 `
 	// Only fill missing payload size (NULL) with the computed count.
@@ -643,7 +658,7 @@ on conflict do nothing
 				sha,
 				ev.EventID,
 				authorName,
-				authorEmail,
+				// authorEmail,
 				msg,
 				ev.ActorID,
 				dupActorLogin,
@@ -1451,26 +1466,46 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 		_ = tx.Rollback()
 	}()
 
+	// 	insEventSQL := `
+	// insert into gha_events(id, type, actor_id, repo_id, public, created_at, dup_actor_login, dup_repo_name)
+	// values($1,$2,$3,$4,true,$5,$6,$7)
+	// on conflict do nothing
+	// `
 	insEventSQL := `
-insert into gha_events(id, type, actor_id, repo_id, public, created_at, dup_actor_login, dup_repo_name)
-values($1,$2,$3,$4,true,$5,$6,$7)
+insert into gha_events(id, type, actor_id, repo_id, created_at, dup_actor_login, dup_repo_name)
+values($1,$2,$3,$4,$5,$6,$7)
 on conflict do nothing
 `
 
+	// 	insPayloadSQL := `
+	// insert into gha_payloads(event_id, size, ref, head, befor, action, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at)
+	// values($1,$2,$3,$4,$5,'restored_orphan_commit',$6,$7,$8,$9,$10,$11)
+	// on conflict do nothing
+	// `
 	insPayloadSQL := `
-insert into gha_payloads(event_id, size, ref, head, befor, action, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at)
-values($1,$2,$3,$4,$5,'restored_orphan_commit',$6,$7,$8,$9,$10,$11)
+insert into gha_payloads(event_id, size, ref, head, befor, action, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at)
+values($1,$2,$3,$4,$5,'restored_orphan_commit',$6,$7,$8,$9,$10)
 on conflict do nothing
 `
 
+	// 	insCommitSQL := `
+	// insert into gha_commits(
+	//   sha, event_id, author_name, encrypted_email, message,
+	//   is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at,
+	//   author_id, committer_id, dup_author_login, dup_committer_login,
+	//   author_email, committer_name, committer_email, origin
+	// )
+	// values($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,2)
+	// on conflict do nothing
+	// `
 	insCommitSQL := `
 insert into gha_commits(
-  sha, event_id, author_name, encrypted_email, message,
+  sha, event_id, author_name, message,
   is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at,
   author_id, committer_id, dup_author_login, dup_committer_login,
   author_email, committer_name, committer_email, origin
 )
-values($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,2)
+values($1,$2,$3,$4,true,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,2)
 on conflict do nothing
 `
 
@@ -1558,7 +1593,8 @@ on conflict do nothing
 		}
 
 		if _, err := insPayloadStmt.Exec(
-			eventID, 1, defaultRef, shaNorm, "", authorID, dupAuthorLogin, repoID, repo, "PushEvent", createdAt,
+			// eventID, 1, defaultRef, shaNorm, "", authorID, dupAuthorLogin, repoID, repo, "PushEvent", createdAt,
+			eventID, 1, defaultRef, shaNorm, "", dupAuthorLogin, repoID, repo, "PushEvent", createdAt,
 		); err != nil {
 			lib.Printf("Warning: insert gha_payloads failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, err)
 			continue
@@ -1568,7 +1604,8 @@ on conflict do nothing
 		commRoleEmail := lib.TruncToBytes(maybeHide(commEmailRaw), 160)
 
 		if _, err := insCommitStmt.Exec(
-			shaNorm, eventID, authorName, authorEmail, msg,
+			// shaNorm, eventID, authorName, authorEmail, msg,
+			shaNorm, eventID, authorName, msg,
 			authorID, dupAuthorLogin, repoID, repo, "PushEvent", createdAt,
 			authorID, commID, dupAuthorLogin, dupCommLogin,
 			authorEmail, commRoleName, commRoleEmail,

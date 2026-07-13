@@ -135,45 +135,51 @@ func ghaForkeeOld(con *sql.Tx, ctx *lib.Ctx, eid string, forkee *lib.ForkeeOld, 
 		con,
 		ctx,
 		"insert into gha_forkees("+
-			"id, event_id, name, full_name, owner_id, description, fork, "+
-			"created_at, updated_at, pushed_at, homepage, size, language, organization, "+
-			"stargazers_count, has_issues, has_projects, has_downloads, "+
-			"has_wiki, has_pages, forks, default_branch, open_issues, watchers, public, "+
-			"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-			"dup_owner_login) "+lib.NValues(32),
+			// "id, event_id, name, full_name, owner_id, description, fork, "+
+			"id, event_id, name, full_name, owner_id, "+
+			// "created_at, updated_at, pushed_at, homepage, size, language, organization, "+
+			"updated_at, "+
+			// "stargazers_count, has_issues, has_projects, has_downloads, "+
+			"stargazers_count, "+
+			// "has_wiki, has_pages, forks, default_branch, open_issues, watchers, public, "+
+			"forks, open_issues, watchers, "+
+			// "dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
+			"dup_actor_id, dup_repo_id, dup_repo_name, dup_created_at"+
+			// "dup_owner_login) "+lib.NValues(32),
+			") "+lib.NValues(14),
 		lib.AnyArray{
 			forkee.ID,
 			eid,
 			lib.TruncToBytes(forkee.Name, 80),
 			lib.TruncToBytes(forkee.Name, 200), // ForkeeOld has no FullName
 			owner.ID,
-			lib.TruncStringOrNil(forkee.Description, 0xffff),
-			forkee.Fork,
-			forkee.CreatedAt,
+			// lib.TruncStringOrNil(forkee.Description, 0xffff),
+			// forkee.Fork,
+			// forkee.CreatedAt,
 			forkee.CreatedAt, // ForkeeOld has no UpdatedAt
-			lib.TimeOrNil(forkee.PushedAt),
-			lib.StringOrNil(forkee.Homepage),
-			forkee.Size,
-			lib.StringOrNil(forkee.Language),
-			lib.StringOrNil(forkee.Organization),
+			// lib.TimeOrNil(forkee.PushedAt),
+			// lib.StringOrNil(forkee.Homepage),
+			// forkee.Size,
+			// lib.StringOrNil(forkee.Language),
+			// lib.StringOrNil(forkee.Organization),
 			forkee.Stargazers,
-			forkee.HasIssues,
-			nil,
-			forkee.HasDownloads,
-			forkee.HasWiki,
-			nil,
+			// forkee.HasIssues,
+			// nil,
+			// forkee.HasDownloads,
+			// forkee.HasWiki,
+			// nil,
 			forkee.Forks,
-			lib.TruncToBytes(forkee.DefaultBranch, 200),
+			// lib.TruncToBytes(forkee.DefaultBranch, 200),
 			forkee.OpenIssues,
 			forkee.Watchers,
-			lib.NegatedBoolOrNil(forkee.Private),
+			// lib.NegatedBoolOrNil(forkee.Private),
 			actor.ID,
-			maybeHide(actor.Login),
+			// maybeHide(actor.Login),
 			repo.ID,
 			repo.Name,
-			ev.Type,
+			// ev.Type,
 			ev.CreatedAt,
-			maybeHide(owner.Login),
+			// maybeHide(owner.Login),
 		}...,
 	)
 }
@@ -189,45 +195,51 @@ func ghaForkee(con *sql.Tx, ctx *lib.Ctx, eid string, forkee *lib.Forkee, ev *li
 		con,
 		ctx,
 		"insert into gha_forkees("+
-			"id, event_id, name, full_name, owner_id, description, fork, "+
-			"created_at, updated_at, pushed_at, homepage, size, language, organization, "+
-			"stargazers_count, has_issues, has_projects, has_downloads, "+
-			"has_wiki, has_pages, forks, default_branch, open_issues, watchers, public, "+
-			"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-			"dup_owner_login) "+lib.NValues(32),
+			// "id, event_id, name, full_name, owner_id, description, fork, "+
+			"id, event_id, name, full_name, owner_id, "+
+			// "created_at, updated_at, pushed_at, homepage, size, language, organization, "+
+			"updated_at, "+
+			// "stargazers_count, has_issues, has_projects, has_downloads, "+
+			"stargazers_count, "+
+			// "has_wiki, has_pages, forks, default_branch, open_issues, watchers, public, "+
+			"forks, open_issues, watchers, "+
+			// "dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
+			"dup_actor_id, dup_repo_id, dup_repo_name, dup_created_at"+
+			// "dup_owner_login) "+lib.NValues(32),
+			") "+lib.NValues(14),
 		lib.AnyArray{
 			forkee.ID,
 			eid,
 			lib.TruncToBytes(forkee.Name, 80),
 			lib.TruncToBytes(forkee.FullName, 200),
 			forkee.Owner.ID,
-			lib.TruncStringOrNil(forkee.Description, 0xffff),
-			forkee.Fork,
-			forkee.CreatedAt,
+			// lib.TruncStringOrNil(forkee.Description, 0xffff),
+			// forkee.Fork,
+			// forkee.CreatedAt,
 			forkee.UpdatedAt,
-			lib.TimeOrNil(forkee.PushedAt),
-			lib.StringOrNil(forkee.Homepage),
-			forkee.Size,
-			nil,
-			nil,
+			// lib.TimeOrNil(forkee.PushedAt),
+			// lib.StringOrNil(forkee.Homepage),
+			// forkee.Size,
+			// nil,
+			// nil,
 			forkee.StargazersCount,
-			forkee.HasIssues,
-			lib.BoolOrNil(forkee.HasProjects),
-			forkee.HasDownloads,
-			forkee.HasWiki,
-			lib.BoolOrNil(forkee.HasPages),
+			// forkee.HasIssues,
+			// lib.BoolOrNil(forkee.HasProjects),
+			// forkee.HasDownloads,
+			// forkee.HasWiki,
+			// lib.BoolOrNil(forkee.HasPages),
 			forkee.Forks,
-			lib.TruncToBytes(forkee.DefaultBranch, 200),
+			// lib.TruncToBytes(forkee.DefaultBranch, 200),
 			forkee.OpenIssues,
 			forkee.Watchers,
-			lib.BoolOrNil(forkee.Public),
+			// lib.BoolOrNil(forkee.Public),
 			ev.Actor.ID,
-			maybeHide(ev.Actor.Login),
+			// maybeHide(ev.Actor.Login),
 			ev.Repo.ID,
 			ev.Repo.Name,
-			ev.Type,
+			// ev.Type,
 			ev.CreatedAt,
-			maybeHide(forkee.Owner.Login),
+			// maybeHide(forkee.Owner.Login),
 		}...,
 	)
 }
@@ -259,20 +271,23 @@ func ghaBranch(con *sql.Tx, ctx *lib.Ctx, eid string, branch *lib.Branch, ev *li
 		con,
 		ctx,
 		"insert into gha_branches("+
-			"sha, event_id, user_id, repo_id, label, ref, "+
-			"dup_type, dup_created_at, dupn_user_login, dupn_forkee_name"+
-			") "+lib.NValues(10),
+			// "sha, event_id, user_id, repo_id, label, ref, "+
+			"sha, event_id, user_id, repo_id, "+
+			// "dup_type, dup_created_at, dupn_user_login, dupn_forkee_name"+
+			"dup_created_at"+
+			// ") "+lib.NValues(10),
+			") "+lib.NValues(5),
 		lib.AnyArray{
 			branch.SHA,
 			eid,
 			lib.ActorIDOrNil(branch.User),
 			lib.ForkeeIDOrNil(branch.Repo), // GitHub uses JSON "repo" but it conatins Forkee
-			lib.TruncToBytes(branch.Label, 200),
-			lib.TruncToBytes(branch.Ref, 200),
-			ev.Type,
+			// lib.TruncToBytes(branch.Label, 200),
+			// lib.TruncToBytes(branch.Ref, 200),
+			// ev.Type,
 			ev.CreatedAt,
-			lib.ActorLoginOrNil(branch.User, maybeHide),
-			lib.ForkeeNameOrNil(branch.Repo),
+			// lib.ActorLoginOrNil(branch.User, maybeHide),
+			// lib.ForkeeNameOrNil(branch.Repo),
 		}...,
 	)
 }
@@ -783,10 +798,12 @@ func ghaComment(con *sql.Tx, ctx *lib.Ctx, payloadComment *lib.Comment, eventID 
 		lib.InsertIgnore(
 			"into gha_comments("+
 				"id, event_id, body, created_at, updated_at, user_id, "+
-				"commit_id, original_commit_id, diff_hunk, position, "+
+				// "commit_id, original_commit_id, diff_hunk, position, "+
+				"commit_id, original_commit_id, position, "+
 				"original_position, path, pull_request_review_id, line, "+
 				"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-				"dup_user_login) "+lib.NValues(21),
+				// "dup_user_login) "+lib.NValues(21),
+				"dup_user_login) "+lib.NValues(20),
 		),
 		lib.AnyArray{
 			cid,
@@ -797,7 +814,7 @@ func ghaComment(con *sql.Tx, ctx *lib.Ctx, payloadComment *lib.Comment, eventID 
 			comment.User.ID,
 			lib.StringOrNil(comment.CommitID),
 			lib.StringOrNil(comment.OriginalCommitID),
-			lib.StringOrNil(comment.DiffHunk),
+			// lib.StringOrNil(comment.DiffHunk),
 			lib.IntOrNil(comment.Position),
 			lib.IntOrNil(comment.OriginalPosition),
 			lib.StringOrNil(comment.Path),
@@ -1003,7 +1020,8 @@ func ghaPullRequest(con *sql.Tx, ctx *lib.Ctx, payloadPullRequest *lib.PullReque
 			"merge_commit_sha, merged, mergeable, rebaseable, mergeable_state, comments, "+
 			"review_comments, maintainer_can_modify, commits, additions, deletions, changed_files, "+
 			"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-			"dup_user_login, dupn_assignee_login, dupn_merged_by_login) "+lib.NValues(38),
+			// "dup_user_login, dupn_assignee_login, dupn_merged_by_login) "+lib.NValues(38),
+			"dup_user_login, dupn_merged_by_login) "+lib.NValues(37),
 		lib.AnyArray{
 			prid,
 			eventID,
@@ -1041,7 +1059,7 @@ func ghaPullRequest(con *sql.Tx, ctx *lib.Ctx, payloadPullRequest *lib.PullReque
 			eType,
 			eCreatedAt,
 			maybeHide(pr.User.Login),
-			lib.ActorLoginOrNil(pr.Assignee, maybeHide),
+			// lib.ActorLoginOrNil(pr.Assignee, maybeHide),
 			lib.ActorLoginOrNil(pr.MergedBy, maybeHide),
 		}...,
 	)
@@ -1167,19 +1185,21 @@ func writeToDBOldFmt(db *sql.DB, ctx *lib.Ctx, eventID string, ev *lib.EventOld,
 		db,
 		ctx,
 		"insert into gha_events("+
-			"id, type, actor_id, repo_id, public, created_at, "+
-			"dup_actor_login, dup_repo_name, org_id, forkee_id) "+lib.NValues(10),
+			// "id, type, actor_id, repo_id, public, created_at, "+
+			"id, type, actor_id, repo_id, created_at, "+
+			// "dup_actor_login, dup_repo_name, org_id, forkee_id) "+lib.NValues(10),
+			"dup_actor_login, dup_repo_name, org_id) "+lib.NValues(8),
 		lib.AnyArray{
 			eventID,
 			ev.Type,
 			aid,
 			rid,
-			ev.Public,
+			// ev.Public,
 			ev.CreatedAt,
 			maybeHide(ev.Actor),
 			ev.Repository.Name,
 			oid,
-			ev.Repository.ID,
+			// ev.Repository.ID,
 		}...,
 	)
 
@@ -1213,10 +1233,14 @@ func writeToDBOldFmt(db *sql.DB, ctx *lib.Ctx, eventID string, ev *lib.EventOld,
 		ctx,
 		"insert into gha_payloads("+
 			"event_id, push_id, size, ref, head, befor, action, "+
-			"issue_id, pull_request_id, comment_id, ref_type, master_branch, commit, "+
-			"description, number, forkee_id, release_id, member_id, "+
-			"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at"+
-			") "+lib.NValues(24),
+			// "issue_id, pull_request_id, comment_id, ref_type, master_branch, commit, "+
+			"issue_id, pull_request_id, comment_id, commit, "+
+			// "description, number, forkee_id, release_id, member_id, "+
+			"number, forkee_id, release_id, member_id, "+
+			// "dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at"+
+			"dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at"+
+			// ") "+lib.NValues(24),
+			") "+lib.NValues(20),
 		lib.AnyArray{
 			eventID,
 			nil,
@@ -1228,15 +1252,15 @@ func writeToDBOldFmt(db *sql.DB, ctx *lib.Ctx, eventID string, ev *lib.EventOld,
 			iid,
 			lib.PullRequestIDOrNil(pl.PullRequest),
 			cid,
-			lib.StringOrNil(pl.RefType),
-			lib.TruncStringOrNil(pl.MasterBranch, 200),
+			// lib.StringOrNil(pl.RefType),
+			// lib.TruncStringOrNil(pl.MasterBranch, 200),
 			lib.StringOrNil(pl.Commit),
-			lib.TruncStringOrNil(pl.Description, 0xffff),
+			// lib.TruncStringOrNil(pl.Description, 0xffff),
 			lib.IntOrNil(pl.Number),
 			lib.ForkeeIDOrNil(pl.Repository),
 			lib.ReleaseIDOrNil(pl.Release),
 			lib.ActorIDOrNil(pl.Member),
-			actor.ID,
+			// actor.ID,
 			maybeHide(actor.Login),
 			repo.ID,
 			repo.Name,
@@ -1283,14 +1307,16 @@ func writeToDBOldFmt(db *sql.DB, ctx *lib.Ctx, eventID string, ev *lib.EventOld,
 				con,
 				ctx,
 				"insert into gha_commits("+
-					"sha, event_id, author_name, encrypted_email, message, is_distinct, "+
+					// "sha, event_id, author_name, encrypted_email, message, is_distinct, "+
+					"sha, event_id, author_name, message, is_distinct, "+
 					"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, origin"+
-					") "+lib.NValues(13),
+					// ") "+lib.NValues(13),
+					") "+lib.NValues(12),
 				lib.AnyArray{
 					sha,
 					eventID,
 					maybeHide(lib.TruncToBytes(commit[3].(string), 160)),
-					lib.TruncToBytes(commit[1].(string), 160),
+					// lib.TruncToBytes(commit[1].(string), 160),
 					lib.TruncToBytes(commit[2].(string), 0xffff),
 					commit[4].(bool),
 					actor.ID,
@@ -1355,7 +1381,8 @@ func writeToDBOldFmt(db *sql.DB, ctx *lib.Ctx, eventID string, ev *lib.EventOld,
 				"id, event_id, assignee_id, body, closed_at, comments, created_at, "+
 				"locked, milestone_id, number, state, title, updated_at, user_id, "+
 				"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-				"dup_user_login, dupn_assignee_login, is_pull_request) "+lib.NValues(23),
+				// "dup_user_login, dupn_assignee_login, is_pull_request) "+lib.NValues(23),
+				"dup_user_login, is_pull_request) "+lib.NValues(22),
 			lib.AnyArray{
 				iid,
 				eventID,
@@ -1378,7 +1405,7 @@ func writeToDBOldFmt(db *sql.DB, ctx *lib.Ctx, eventID string, ev *lib.EventOld,
 				ev.Type,
 				ev.CreatedAt,
 				maybeHide(pr.User.Login),
-				lib.ActorLoginOrNil(pr.Assignee, maybeHide),
+				// lib.ActorLoginOrNil(pr.Assignee, maybeHide),
 				isPR,
 			}...,
 		)
@@ -1439,19 +1466,21 @@ func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) 
 		db,
 		ctx,
 		"insert into gha_events("+
-			"id, type, actor_id, repo_id, public, created_at, "+
-			"dup_actor_login, dup_repo_name, org_id, forkee_id) "+lib.NValues(10),
+			// "id, type, actor_id, repo_id, public, created_at, "+
+			"id, type, actor_id, repo_id, created_at, "+
+			// "dup_actor_login, dup_repo_name, org_id, forkee_id) "+lib.NValues(10),
+			"dup_actor_login, dup_repo_name, org_id) "+lib.NValues(8),
 		lib.AnyArray{
 			eventID,
 			ev.Type,
 			ev.Actor.ID,
 			ev.Repo.ID,
-			ev.Public,
+			// ev.Public,
 			ev.CreatedAt,
 			maybeHide(ev.Actor.Login),
 			ev.Repo.Name,
 			lib.OrgIDOrNil(ev.Org),
-			nil,
+			// nil,
 		}...,
 	)
 
@@ -1486,10 +1515,14 @@ func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) 
 		ctx,
 		"insert into gha_payloads("+
 			"event_id, push_id, size, ref, head, befor, action, "+
-			"issue_id, pull_request_id, comment_id, ref_type, master_branch, commit, "+
-			"description, number, forkee_id, release_id, member_id, "+
-			"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at"+
-			") "+lib.NValues(24),
+			// "issue_id, pull_request_id, comment_id, ref_type, master_branch, commit, "+
+			"issue_id, pull_request_id, comment_id, commit, "+
+			// "description, number, forkee_id, release_id, member_id, "+
+			"number, forkee_id, release_id, member_id, "+
+			// "dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at"+
+			"dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at"+
+			// ") "+lib.NValues(24),
+			") "+lib.NValues(20),
 		lib.AnyArray{
 			eventID,
 			lib.IntOrNil(pl.PushID),
@@ -1501,15 +1534,15 @@ func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) 
 			lib.IssueIDOrNil(pl.Issue),
 			lib.PullRequestIDOrNil(pl.PullRequest),
 			lib.CommentIDOrNil(pl.Comment),
-			lib.StringOrNil(pl.RefType),
-			lib.TruncStringOrNil(pl.MasterBranch, 200),
+			// lib.StringOrNil(pl.RefType),
+			// lib.TruncStringOrNil(pl.MasterBranch, 200),
 			nil,
-			lib.TruncStringOrNil(pl.Description, 0xffff),
+			// lib.TruncStringOrNil(pl.Description, 0xffff),
 			lib.IntOrNil(pl.Number),
 			lib.ForkeeIDOrNil(pl.Forkee),
 			lib.ReleaseIDOrNil(pl.Release),
 			lib.ActorIDOrNil(pl.Member),
-			ev.Actor.ID,
+			// ev.Actor.ID,
 			maybeHide(ev.Actor.Login),
 			ev.Repo.ID,
 			ev.Repo.Name,
@@ -1559,14 +1592,16 @@ func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) 
 			con,
 			ctx,
 			"insert into gha_commits("+
-				"sha, event_id, author_name, encrypted_email, message, is_distinct, "+
+				// "sha, event_id, author_name, encrypted_email, message, is_distinct, "+
+				"sha, event_id, author_name, message, is_distinct, "+
 				"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, origin"+
-				") "+lib.NValues(13),
+				// ") "+lib.NValues(13),
+				") "+lib.NValues(12),
 			lib.AnyArray{
 				sha,
 				eventID,
 				maybeHide(lib.TruncToBytes(commit.Author.Name, 160)),
-				lib.TruncToBytes(commit.Author.Email, 160),
+				// lib.TruncToBytes(commit.Author.Email, 160),
 				lib.TruncToBytes(commit.Message, 0xffff),
 				commit.Distinct,
 				ev.Actor.ID,
@@ -1617,7 +1652,8 @@ func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) 
 				"id, event_id, assignee_id, body, closed_at, comments, created_at, "+
 				"locked, milestone_id, number, state, title, updated_at, user_id, "+
 				"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-				"dup_user_login, dupn_assignee_login, is_pull_request) "+lib.NValues(23),
+				// "dup_user_login, dupn_assignee_login, is_pull_request) "+lib.NValues(23),
+				"dup_user_login, is_pull_request) "+lib.NValues(22),
 			lib.AnyArray{
 				iid,
 				eventID,
@@ -1640,7 +1676,7 @@ func writeToDB(db *sql.DB, ctx *lib.Ctx, ev *lib.Event, shas map[string]string) 
 				ev.Type,
 				ev.CreatedAt,
 				maybeHide(issue.User.Login),
-				lib.ActorLoginOrNil(issue.Assignee, maybeHide),
+				// lib.ActorLoginOrNil(issue.Assignee, maybeHide),
 				isPR,
 			}...,
 		)

@@ -74,6 +74,17 @@ func idPresent(c *sql.DB, ctx *lib.Ctx, table, eType string, id int64) bool {
 	return present
 }
 
+func forkPresent(c *sql.DB, ctx *lib.Ctx, forkeeID int64) bool {
+	rows := lib.QuerySQLWithErr(c, ctx, "select 1 from gha_forkees f, gha_payloads p where f.id = "+lib.NValue(1)+" and p.event_id = f.event_id and p.forkee_id = f.id and p.dup_type = 'ForkEvent' limit 1", forkeeID)
+	defer func() { lib.FatalOnError(rows.Close()) }()
+	present := false
+	for rows.Next() {
+		present = true
+	}
+	lib.FatalOnError(rows.Err())
+	return present
+}
+
 func starPresent(c *sql.DB, ctx *lib.Ctx, actorID int64, orgRepo string, starredAt time.Time) bool {
 	rows := lib.QuerySQLWithErr(c, ctx, "select 1 from gha_events where type = 'WatchEvent' and actor_id = "+lib.NValue(1)+" and dup_repo_name = "+lib.NValue(2)+" and created_at = "+lib.NValue(3)+" limit 1", actorID, orgRepo, starredAt)
 	defer func() { lib.FatalOnError(rows.Close()) }()
@@ -614,7 +625,8 @@ func restoreForksRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *l
 					break
 				}
 				stats.checked++
-				if idPresent(c, ctx, "gha_forkees", "ForkEvent", *fork.ID) {
+				// if idPresent(c, ctx, "gha_forkees", "ForkEvent", *fork.ID) {
+				if forkPresent(c, ctx, *fork.ID) {
 					continue
 				}
 				if lib.RestoreFork(c, ctx, orgRepo, repoID, orgID, fork, maybeHide) {

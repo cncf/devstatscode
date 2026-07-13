@@ -142,14 +142,14 @@ func processHidden(ctx *lib.Ctx) {
 			table:  "gha_issues_labels",
 			column: "dup_actor_login",
 		},
-		{
-			table:  "gha_forkees",
-			column: "dup_actor_login",
-		},
-		{
-			table:  "gha_forkees",
-			column: "dup_owner_login",
-		},
+		// {
+		// 	table:  "gha_forkees",
+		// 	column: "dup_actor_login",
+		// },
+		// {
+		// 	table:  "gha_forkees",
+		// 	column: "dup_owner_login",
+		// },
 		{
 			table:  "gha_releases",
 			column: "dup_actor_login",
@@ -174,14 +174,14 @@ func processHidden(ctx *lib.Ctx) {
 			table:  "gha_pull_requests",
 			column: "dup_user_login",
 		},
-		{
-			table:  "gha_branches",
-			column: "dupn_forkee_name",
-		},
-		{
-			table:  "gha_branches",
-			column: "dupn_user_login",
-		},
+		// {
+		// 	table:  "gha_branches",
+		// 	column: "dupn_forkee_name",
+		// },
+		// {
+		// 	table:  "gha_branches",
+		// 	column: "dupn_user_login",
+		// },
 		{
 			table:  "gha_teams",
 			column: "dup_actor_login",
