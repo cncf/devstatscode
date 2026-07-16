@@ -169,6 +169,7 @@ func TestInit(t *testing.T) {
 		PgHost:                   "localhost",
 		PgPort:                   "5432",
 		PgDB:                     "gha",
+		AffiliationsDB:           "",
 		PgUser:                   "gha_admin",
 		PgPass:                   pass,
 		PgSSL:                    "disable",
@@ -635,6 +636,15 @@ func TestInit(t *testing.T) {
 				t,
 				defaultContext.CopyContext(),
 				map[string]interface{}{"SkipPDB": true},
+			),
+		},
+		{
+			"Setting affiliations DB",
+			map[string]string{"GHA2DB_AFFILIATIONS_DB": "affiliations"},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{"AffiliationsDB": "affiliations"},
 			),
 		},
 		{

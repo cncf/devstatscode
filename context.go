@@ -28,6 +28,7 @@ type Ctx struct {
 	PgHost                   string                       // From PG_HOST, default "localhost"
 	PgPort                   string                       // From PG_PORT, default "5432"
 	PgDB                     string                       // From PG_DB, default "gha"
+	AffiliationsDB           string                       // From GHA2DB_AFFILIATIONS_DB, name of the shared affiliations database holding gha_actors* & related tables, empty (default) means legacy mode: those tables are project-local
 	PgUser                   string                       // From PG_USER, default "gha_admin"
 	PgPass                   string                       // From PG_PASS, default "password"
 	PgSSL                    string                       // From PG_SSL, default "disable"
@@ -286,6 +287,7 @@ func (ctx *Ctx) Init() {
 	ctx.PgHost = os.Getenv("PG_HOST")
 	ctx.PgPort = os.Getenv("PG_PORT")
 	ctx.PgDB = os.Getenv("PG_DB")
+	ctx.AffiliationsDB = os.Getenv("GHA2DB_AFFILIATIONS_DB")
 	ctx.PgUser = os.Getenv("PG_USER")
 	ctx.PgPass = os.Getenv("PG_PASS")
 	ctx.PgSSL = os.Getenv("PG_SSL")
@@ -955,6 +957,7 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		PgHost:                   ctx.PgHost,
 		PgPort:                   ctx.PgPort,
 		PgDB:                     ctx.PgDB,
+		AffiliationsDB:           ctx.AffiliationsDB,
 		PgUser:                   ctx.PgUser,
 		PgPass:                   ctx.PgPass,
 		PgSSL:                    ctx.PgSSL,

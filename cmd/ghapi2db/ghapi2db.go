@@ -17,6 +17,20 @@ import (
 	"github.com/google/go-github/v38/github"
 )
 
+// gSharedAffsDB/gSharedAffsCtx - direct connection to the shared affiliations DB (GHA2DB_AFFILIATIONS_DB)
+var (
+	gSharedAffsDB  *sql.DB
+	gSharedAffsCtx *lib.Ctx
+)
+
+func execAffsUpsert(tx *sql.Tx, ctx *lib.Ctx, query string, args ...interface{}) {
+	if gSharedAffsDB != nil {
+		lib.ExecSQLWithErr(gSharedAffsDB, gSharedAffsCtx, query, args...)
+		return
+	}
+	lib.ExecSQLTxWithErr(tx, ctx, query, args...)
+}
+
 // getAPIParams connects to GitHub and Postgres
 // Returns list of recent repositories and recent date to fetch commits from
 func getAPIParams(ctx *lib.Ctx) (repos []string, isSingleRepo bool, singleRepo string, gctx context.Context, gcs []*github.Client, c *sql.DB, recentDt time.Time) {
@@ -305,70 +319,66 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 
 	// Author email
 	mEmail := maybeHide(lib.TruncToBytes(authorEmail, 120))
-	lib.ExecSQLTxWithErr(
+	execAffsUpsert(
 		tx,
 		ctx,
-		//lib.InsertIgnore("into gha_actors_emails(actor_id, email) "+lib.NValues(2)),
 		fmt.Sprintf(
-			"insert into gha_actors_emails(actor_id, email) %s on conflict(actor_id, email) "+
+			"insert into gha_actors_emails(actor_id, email, origin) %s on conflict(actor_id, email) "+
 				"do update set origin = 1 where gha_actors_emails.actor_id = %s "+
 				"and gha_actors_emails.email = %s",
-			lib.NValues(2),
-			lib.NValue(3),
+			lib.NValues(3),
 			lib.NValue(4),
+			lib.NValue(5),
 		),
-		lib.AnyArray{authorID, mEmail, authorID, mEmail}...,
+		lib.AnyArray{authorID, mEmail, 1, authorID, mEmail}...,
 	)
 	// Committer email
 	if committerEmail != authorEmail {
 		mEmail = maybeHide(lib.TruncToBytes(committerEmail, 120))
-		lib.ExecSQLTxWithErr(
+		execAffsUpsert(
 			tx,
 			ctx,
-			//lib.InsertIgnore("into gha_actors_emails(actor_id, email) "+lib.NValues(2)),
 			fmt.Sprintf(
-				"insert into gha_actors_emails(actor_id, email) %s on conflict(actor_id, email) "+
+				"insert into gha_actors_emails(actor_id, email, origin) %s on conflict(actor_id, email) "+
 					"do update set origin = 1 where gha_actors_emails.actor_id = %s "+
 					"and gha_actors_emails.email = %s",
-				lib.NValues(2),
-				lib.NValue(3),
+				lib.NValues(3),
 				lib.NValue(4),
+				lib.NValue(5),
 			),
-			lib.AnyArray{committerID, mEmail, committerID, mEmail}...,
+			lib.AnyArray{committerID, mEmail, 1, committerID, mEmail}...,
 		)
 	}
 	// Author name
 	mName := maybeHide(lib.TruncToBytes(authorName, 120))
-	lib.ExecSQLTxWithErr(
+	execAffsUpsert(
 		tx,
 		ctx,
-		//lib.InsertIgnore("into gha_actors_names(actor_id, name) "+lib.NValues(2)),
 		fmt.Sprintf(
-			"insert into gha_actors_names(actor_id, name) %s on conflict(actor_id, name) "+
+			"insert into gha_actors_names(actor_id, name, origin) %s on conflict(actor_id, name) "+
 				"do update set origin = 1 where gha_actors_names.actor_id = %s "+
 				"and gha_actors_names.name = %s",
-			lib.NValues(2),
-			lib.NValue(3),
+			lib.NValues(3),
 			lib.NValue(4),
+			lib.NValue(5),
 		),
-		lib.AnyArray{authorID, mName, authorID, mName}...,
+		lib.AnyArray{authorID, mName, 1, authorID, mName}...,
 	)
 	// Committer name
 	if committerName != authorName {
 		mName = maybeHide(lib.TruncToBytes(committerName, 120))
-		lib.ExecSQLTxWithErr(
+		execAffsUpsert(
 			tx,
 			ctx,
-			//lib.InsertIgnore("into gha_actors_names(actor_id, name) "+lib.NValues(2)),
 			fmt.Sprintf(
-				"insert into gha_actors_names(actor_id, name) %s on conflict(actor_id, name) "+
+				"insert into gha_actors_names(actor_id, name, origin) %s on conflict(actor_id, name) "+
 					"do update set origin = 1 where gha_actors_names.actor_id = %s "+
 					"and gha_actors_names.name = %s",
-				lib.NValues(2),
-				lib.NValue(3),
+				lib.NValues(3),
 				lib.NValue(4),
+				lib.NValue(5),
 			),
-			lib.AnyArray{committerID, mName, committerID, mName}...,
+			lib.AnyArray{committerID, mName, 1, committerID, mName}...,
 		)
 	}
 
@@ -1533,6 +1543,11 @@ func main() {
 	var ctx lib.Ctx
 	ctx.Init()
 	lib.SetupTimeoutSignal(&ctx)
+	if ctx.AffiliationsDB != "" {
+		gSharedAffsCtx = ctx.CopyContext()
+		gSharedAffsDB = lib.PgConnDB(gSharedAffsCtx, ctx.AffiliationsDB)
+		defer func() { lib.FatalOnError(gSharedAffsDB.Close()) }()
+	}
 	debug.SetGCPercent(25)
 	// Heartbeat returning freed memory to the OS, restore passes can hold multi-GB maps.
 	go func() {

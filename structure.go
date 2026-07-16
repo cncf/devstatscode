@@ -57,7 +57,7 @@ func Structure(ctx *Ctx) {
 	// {"id"=>8, "login"=>34, "display_login"=>34, "gravatar_id"=>0, "url"=>63,
 	// "avatar_url"=>49}
 	// const
-	if ctx.Table {
+	if ctx.Table && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "drop table if exists gha_actors")
 		ExecSQLWithErr(
 			c,
@@ -79,7 +79,7 @@ func Structure(ctx *Ctx) {
 			),
 		)
 	}
-	if ctx.Index {
+	if ctx.Index && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "create index if not exists actors_id_idx on gha_actors(id)")
 		ExecSQLWithErr(c, ctx, "create index if not exists actors_login_idx on gha_actors(login)")
 		ExecSQLWithErr(c, ctx, "create index if not exists actors_lower_login_idx on gha_actors(lower(login))")
@@ -94,7 +94,7 @@ func Structure(ctx *Ctx) {
 	}
 
 	// gha_actors_emails: this is filled by `import_affs` tool, that uses cncf/gitdm:github_users.json
-	if ctx.Table {
+	if ctx.Table && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "drop table if exists gha_actors_emails")
 		ExecSQLWithErr(
 			c,
@@ -109,13 +109,13 @@ func Structure(ctx *Ctx) {
 			),
 		)
 	}
-	if ctx.Index {
+	if ctx.Index && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "create index if not exists actors_emails_actor_id_idx on gha_actors_emails(actor_id)")
 		ExecSQLWithErr(c, ctx, "create index if not exists actors_emails_email_idx on gha_actors_emails(email)")
 	}
 
 	// gha_actors_names: this is filled by `ghapi2db` tool
-	if ctx.Table {
+	if ctx.Table && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "drop table if exists gha_actors_names")
 		ExecSQLWithErr(
 			c,
@@ -130,13 +130,13 @@ func Structure(ctx *Ctx) {
 			),
 		)
 	}
-	if ctx.Index {
+	if ctx.Index && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "create index if not exists actors_names_actor_id_idx on gha_actors_names(actor_id)")
 		ExecSQLWithErr(c, ctx, "create index if not exists actors_names_name_idx on gha_actors_names(name)")
 	}
 
 	// gha_companies: this is filled by `import_affs` tool, that uses cncf/gitdm:github_users.json
-	if ctx.Table {
+	if ctx.Table && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "drop table if exists gha_companies")
 		ExecSQLWithErr(
 			c,
@@ -152,7 +152,7 @@ func Structure(ctx *Ctx) {
 
 	// gha_actors_affiliations: this is filled by `import_affs` tool, that uses cncf/gitdm:github_users.json
 	// users `github_users.json` and `companies.yaml` fiel to map company acquisitions.
-	if ctx.Table {
+	if ctx.Table && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "drop table if exists gha_actors_affiliations")
 		ExecSQLWithErr(
 			c,
@@ -170,7 +170,7 @@ func Structure(ctx *Ctx) {
 			),
 		)
 	}
-	if ctx.Index {
+	if ctx.Index && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "create index if not exists actors_affiliations_actor_id_idx on gha_actors_affiliations(actor_id)")
 		ExecSQLWithErr(c, ctx, "create index if not exists actors_affiliations_company_name_idx on gha_actors_affiliations(company_name)")
 		ExecSQLWithErr(c, ctx, "create index if not exists actors_affiliations_original_company_name_idx on gha_actors_affiliations(original_company_name)")
@@ -1307,7 +1307,7 @@ func Structure(ctx *Ctx) {
 
 	// gha_countries
 	// counst, external
-	if ctx.Table {
+	if ctx.Table && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "drop table if exists gha_countries")
 		ExecSQLWithErr(
 			c,
@@ -1321,7 +1321,7 @@ func Structure(ctx *Ctx) {
 			),
 		)
 	}
-	if ctx.Index {
+	if ctx.Index && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "create index if not exists countries_name_idx on gha_countries(name)")
 	}
 
@@ -1519,7 +1519,7 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index if not exists parsed_dt_idx on gha_parsed(dt)")
 	}
 	// This is to determine if a given JSON was imported or not
-	if ctx.Table {
+	if ctx.Table && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "drop table if exists gha_imported_shas")
 		ExecSQLWithErr(
 			c,
@@ -1534,7 +1534,7 @@ func Structure(ctx *Ctx) {
 		)
 	}
 	// Bot logins table
-	if ctx.Table {
+	if ctx.Table && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "drop table if exists gha_bot_logins")
 		ExecSQLWithErr(
 			c,
@@ -1546,7 +1546,7 @@ func Structure(ctx *Ctx) {
 			),
 		)
 	}
-	if ctx.Index {
+	if ctx.Index && ctx.AffiliationsDB == "" {
 		ExecSQLWithErr(c, ctx, "create index if not exists gha_bot_logins_pattern_idx on gha_bot_logins(pattern)")
 	}
 	// Foreign keys are not needed - they slow down processing a lot
@@ -1591,6 +1591,9 @@ func Structure(ctx *Ctx) {
 			for rows.Next() {
 				dtStart := time.Now()
 				FatalOnError(rows.Scan(&script))
+				if ctx.AffiliationsDB != "" && script == "util_sql/postprocess_commits.sql" {
+					script = "util_sql/postprocess_commits_shared.sql"
+				}
 				bytes, err := ReadFile(ctx, dataPrefix+script)
 				FatalOnError(err)
 				sql := string(bytes)
@@ -1602,34 +1605,42 @@ func Structure(ctx *Ctx) {
 			}
 			FatalOnError(rows.Err())
 			dtStart := time.Now()
-			script = "util_sql/country_codes.sql"
-			bytes, err := ReadFile(ctx, dataPrefix+script)
-			FatalOnError(err)
-			sql := string(bytes)
-			ExecSQLWithErr(c, ctx, sql)
-			if ctx.Debug > 0 {
-				dtEnd := time.Now()
-				Printf("Executed countries script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+			bytes := []byte{}
+			sql := ""
+			if ctx.AffiliationsDB == "" {
+				script = "util_sql/country_codes.sql"
+				bytes, err = ReadFile(ctx, dataPrefix+script)
+				FatalOnError(err)
+				sql = string(bytes)
+				ExecSQLWithErr(c, ctx, sql)
+				if ctx.Debug > 0 {
+					dtEnd := time.Now()
+					Printf("Executed countries script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+				}
 			}
-			dtStart = time.Now()
-			script = "util_sql/exclude_bots_table_insert.sql"
-			bytes, err = ReadFile(ctx, dataPrefix+script)
-			FatalOnError(err)
-			sql = string(bytes)
-			ExecSQLWithErr(c, ctx, sql)
-			if ctx.Debug > 0 {
-				dtEnd := time.Now()
-				Printf("Executed bot logins table insert script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+			if ctx.AffiliationsDB == "" {
+				dtStart = time.Now()
+				script = "util_sql/exclude_bots_table_insert.sql"
+				bytes, err = ReadFile(ctx, dataPrefix+script)
+				FatalOnError(err)
+				sql = string(bytes)
+				ExecSQLWithErr(c, ctx, sql)
+				if ctx.Debug > 0 {
+					dtEnd := time.Now()
+					Printf("Executed bot logins table insert script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+				}
 			}
-			dtStart = time.Now()
-			script = "util_sql/update_affiliations.sql"
-			bytes, err = ReadFile(ctx, dataPrefix+script)
-			FatalOnError(err)
-			sql = string(bytes)
-			ExecSQLWithErr(c, ctx, sql)
-			if ctx.Debug > 0 {
-				dtEnd := time.Now()
-				Printf("Updated missing affiliations for multiple ID actors script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+			if ctx.AffiliationsDB == "" {
+				dtStart = time.Now()
+				script = "util_sql/update_affiliations.sql"
+				bytes, err = ReadFile(ctx, dataPrefix+script)
+				FatalOnError(err)
+				sql = string(bytes)
+				ExecSQLWithErr(c, ctx, sql)
+				if ctx.Debug > 0 {
+					dtEnd := time.Now()
+					Printf("Updated missing affiliations for multiple ID actors script: %s: took %v\n", script, dtEnd.Sub(dtStart))
+				}
 			}
 		}
 	}

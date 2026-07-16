@@ -395,7 +395,6 @@ func mergePDBs() {
 	// Some tables are commented out because we're going to
 	// run other tools on merged database to fill them
 	tableData := [][]string{
-		{"gha_actors", "id > 0", "id <= 0"},
 		//{"gha_actors_affiliations", "", "-"},
 		//{"gha_actors_emails", "", "-"},
 		//{"gha_actors_names", "", "-"},
@@ -437,6 +436,9 @@ func mergePDBs() {
 		{"gha_texts", "", "-"},
 		// {"gha_parsed", "", "-"},
 		// {"gha_last_computed", "", "-"},
+	}
+	if ctx.AffiliationsDB == "" {
+		tableData = append([][]string{{"gha_actors", "id > 0", "id <= 0"}}, tableData...)
 	}
 
 	onlyTables := parseTableList("ONLY_TABLES")
