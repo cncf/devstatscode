@@ -163,11 +163,12 @@ func lookupActorTx(con *sql.Tx, ctx *lib.Ctx, login string, maybeHide func(strin
 
 // Inserts single GHA Actor
 func insertActorTx(con *sql.Tx, ctx *lib.Ctx, aid int64, login, name string, maybeHide func(string) string) {
-	lib.ExecSQLTxWithErr(
+	lib.InsertActorTx(
 		con,
 		ctx,
-		lib.InsertIgnore("into gha_actors(id, login, name) "+lib.NValues(3)),
-		lib.AnyArray{aid, maybeHide(login), maybeHide(lib.TruncToBytes(name, 120))}...,
+		aid,
+		maybeHide(login),
+		maybeHide(lib.TruncToBytes(name, 120)),
 	)
 }
 
@@ -1546,6 +1547,7 @@ func main() {
 	if ctx.AffiliationsDB != "" {
 		gSharedAffsCtx = ctx.CopyContext()
 		gSharedAffsDB = lib.PgConnDB(gSharedAffsCtx, ctx.AffiliationsDB)
+		lib.SetSharedAffiliationsDB(gSharedAffsDB, gSharedAffsCtx)
 		defer func() { lib.FatalOnError(gSharedAffsDB.Close()) }()
 	}
 	debug.SetGCPercent(25)

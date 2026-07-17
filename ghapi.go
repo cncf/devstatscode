@@ -336,12 +336,7 @@ func ghActor(con *sql.Tx, ctx *Ctx, actor *github.User, maybeHide func(string) s
 	if actor == nil || actor.Login == nil {
 		return
 	}
-	ExecSQLTxWithErr(
-		con,
-		ctx,
-		InsertIgnore("into gha_actors(id, login, name) "+NValues(3)),
-		AnyArray{actor.ID, maybeHide(*actor.Login), ""}...,
-	)
+	InsertActorTx(con, ctx, actor.ID, maybeHide(*actor.Login), "")
 }
 
 // Insert single GitHub milestone

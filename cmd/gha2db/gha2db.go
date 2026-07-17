@@ -41,12 +41,7 @@ func ghaActor(con *sql.Tx, ctx *lib.Ctx, actor *lib.Actor, maybeHide func(string
 	// {"id:Fixnum"=>48592, "login:String"=>48592, "display_login:String"=>48592,
 	// "gravatar_id:String"=>48592, "url:String"=>48592, "avatar_url:String"=>48592}
 	// {"id"=>8, "login"=>34, "display_login"=>34, "gravatar_id"=>0, "url"=>63, "avatar_url"=>49}
-	lib.ExecSQLTxWithErr(
-		con,
-		ctx,
-		lib.InsertIgnore("into gha_actors(id, login, name) "+lib.NValues(3)),
-		lib.AnyArray{actor.ID, maybeHide(actor.Login), ""}...,
-	)
+	lib.InsertActorTx(con, ctx, actor.ID, maybeHide(actor.Login), "")
 }
 
 // Inserts single GHA Repo

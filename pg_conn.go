@@ -2,6 +2,7 @@ package devstatscode
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -12,6 +13,12 @@ import (
 	"time"
 
 	"github.com/lib/pq" // As suggested by lib/pq driver
+)
+
+var (
+	sharedAffiliationsMtx sync.RWMutex
+	sharedAffiliationsDB  *sql.DB
+	sharedAffiliationsCtx *Ctx
 )
 
 // HandleRowIsTooBig - handle possible error like: Error: 'pq: row is too big: size 8744, maximum size 8160'
@@ -903,6 +910,31 @@ func PgConnDB(ctx *Ctx, dbName string) *sql.DB {
 	return con
 }
 
+// SetSharedAffiliationsDB sets a process-wide direct connection used for shared actor inserts.
+func SetSharedAffiliationsDB(con *sql.DB, ctx *Ctx) {
+	sharedAffiliationsMtx.Lock()
+	sharedAffiliationsDB = con
+	sharedAffiliationsCtx = ctx
+	sharedAffiliationsMtx.Unlock()
+}
+
+func getSharedAffiliationsDB(ctx *Ctx) (*sql.DB, *Ctx) {
+	sharedAffiliationsMtx.RLock()
+	con, actx := sharedAffiliationsDB, sharedAffiliationsCtx
+	sharedAffiliationsMtx.RUnlock()
+	if con != nil {
+		return con, actx
+	}
+
+	sharedAffiliationsMtx.Lock()
+	defer sharedAffiliationsMtx.Unlock()
+	if sharedAffiliationsDB == nil {
+		sharedAffiliationsCtx = ctx.CopyContext()
+		sharedAffiliationsDB = PgConnDB(sharedAffiliationsCtx, ctx.AffiliationsDB)
+	}
+	return sharedAffiliationsDB, sharedAffiliationsCtx
+}
+
 // CreateTable is used to replace DB specific parts of Create Table SQL statement
 func CreateTable(tdef string) string {
 	tdef = strings.Replace(tdef, "{{ts}}", "timestamp", -1)
@@ -1169,6 +1201,59 @@ func ExecSQLTxWithErr(con *sql.Tx, ctx *Ctx, query string, args ...interface{}) 
 		Fatalf("too many attempts, tried %d times", len(ctx.Trials))
 	}
 	return res
+}
+
+func execSQLAutocommitTransactionRetry(con *sql.DB, ctx *Ctx, query string, args ...interface{}) sql.Result {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		res, err := ExecSQL(con, ctx, query, args...)
+		if err == nil {
+			return res
+		}
+		lastErr = err
+
+		var pqErr *pq.Error
+		retryTransaction := errors.As(err, &pqErr) && (pqErr.Code == "40001" || pqErr.Code == "40P01")
+		if retryTransaction {
+			fmt.Fprintf(
+				os.Stderr,
+				"PqError: code=%s, name=%s, detail=%s; retrying complete autocommit transaction\n",
+				pqErr.Code,
+				pqErr.Code.Name(),
+				pqErr.Detail,
+			)
+		} else {
+			queryOut(query, args...)
+			status := FatalOnError(err)
+			if status != Retry && status != Reconnect {
+				Fatalf("unexpected shared actor insert status %q: %v", status, err)
+			}
+		}
+
+		if attempt >= len(ctx.Trials) {
+			break
+		}
+		delay := ctx.Trials[attempt]
+		fmt.Fprintf(os.Stderr, "Will retry shared actor insert after %d seconds...\n", delay)
+		time.Sleep(time.Duration(delay) * time.Second)
+	}
+
+	fmt.Printf("Failed sql: ")
+	queryOut(query, args...)
+	Fatalf("shared actor insert failed after %d attempts: %v", len(ctx.Trials)+1, lastErr)
+	return nil
+}
+
+// InsertActorTx inserts an actor in the current transaction in legacy mode and directly
+// into the shared affiliations database as a retryable autocommit statement in shared mode.
+func InsertActorTx(con *sql.Tx, ctx *Ctx, id interface{}, login, name string) sql.Result {
+	query := InsertIgnore("into gha_actors(id, login, name) " + NValues(3))
+	args := AnyArray{id, login, name}
+	if ctx.AffiliationsDB == "" {
+		return ExecSQLTxWithErr(con, ctx, query, args...)
+	}
+	sharedDB, sharedCtx := getSharedAffiliationsDB(ctx)
+	return execSQLAutocommitTransactionRetry(sharedDB, sharedCtx, query, args...)
 }
 
 // NValues will return values($1, $2, .., $n)
