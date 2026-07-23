@@ -3470,6 +3470,19 @@ projects:
     annotation_regexp: '^v\d+\.\d+\.0$'
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
     shared_db: allprj
+  curvine:
+    order: 254
+    name: Curvine
+    status: Sandbox
+    command_line:
+      - CurvineIO
+    start_date: 2025-05-27T00:00:00Z
+    join_date: 2026-07-17T00:00:00Z
+    psql_db: curvine
+    main_repo: CurvineIO/curvine
+    annotation_regexp: '^v\d+\.\d+\.\d+(-alpha)?$'
+    files_skip_pattern: ''
+    shared_db: allprj
   opencontainers:
     order: 1200
     name: OCI
@@ -3692,7 +3705,7 @@ projects:
          open-cluster-management-io,vscode-kubernetes-tools,kubearmor,cncf-tags,meshery,\
          meshery-extensions,knative,knative-sandbox,project-stacker,kserve,oauth2-proxy,\
          confidential-containers,cncf/tag-app-delivery,knative-extensions,OpenFunction,clusterpedia-io,\
-         Kuadrant,aeraki-mesh,open-feature,kubewarden,kubevela,openGemini,konveyor,\
+         Kuadrant,aeraki-mesh,open-feature,kubewarden,kubevela,openGemini,konveyor,CurvineIO,\
          armadaproject,external-secrets,Serverless-Devs,devspace-sh,ContainerSSH,openfga,kubereboot,\
          lima-vm,istio,carvel-dev,opencost,devspace-cloud,project-zot,paralus,carina-io,ko-build,\
          opcr-io,werf,getsops,pipe-cd,slimtoolkit,projectcapsule,sustainable-computing-io,kptdev,\
