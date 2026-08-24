@@ -12,10 +12,11 @@
 # DAILY_PROJECTS='kubernetes,all,jenkins,opentelemetry,allcdf,istio' (default; '-' = none):
 #   projects too big to sync every SYNC_HOURS - excluded from the sync window split (like non-project DBs),
 #   scheduled once/day instead, spread (weighted) after the affiliations import cron, with
-#   GHA2DB_RECENT_RANGE/GHA2DB_ORPHAN_COMMITS_RANGE patched to DAILY_RANGE (also saved as
-#   recentRange/orphanCommitsRange in the output values yaml).
+#   GHA2DB_RECENT_RANGE/GHA2DB_ORPHAN_COMMITS_RANGE patched to DAILY_RANGE and GHA2DB_RECENT_REPOS_RANGE to
+#   DAILY_REPOS_RANGE (also saved as recentRange/orphanCommitsRange/recentReposRange in the output values yaml).
 #   Affiliations crons of daily projects stay in the regular weighted affs spread (affs space is not saturated).
 # DAILY_RANGE='26 hours' (default: 24h daily cadence + 2h overlap; used for daily projects' lookback ranges).
+# DAILY_REPOS_RANGE='2 days' (default: ghapi2db recently-modified-repos window for daily projects; the code default '1 day' has no margin at 24h cadence).
 # CTX_TEST=test, CTX_PROD=prod (new algorithm: kubectl contexts for test/prod envs; use '-' for current context;
 #   defaults 'test'/'prod' match in-cluster kubeconfigs; from outside use e.g. CTX_TEST=linode-test CTX_PROD=prod).
 # MONTHLY=1 (use 4-weeks - 28 days schedule instead of weekly one).
@@ -29,7 +30,7 @@
 # ONLY_ENV=1 (only patch CJs env variables)
 # SKIP_AFFS_ENV=1 (skip patching env for affiliations cron jobs)
 # SKIP_SYNC_ENV=1 (skip patching env for affiliations cron jobs)
-# PATCH_ENV='AffSkipTemp,MaxHist,SkipAffsLock,AffsLockDB,NoDurable,DurablePQ,MaxRunDuration,SkipGHAPI,SkipGetRepos,NCPUs,RecentRange,OrphanCommitsRange'
+# PATCH_ENV='AffSkipTemp,MaxHist,SkipAffsLock,AffsLockDB,NoDurable,DurablePQ,MaxRunDuration,SkipGHAPI,SkipGetRepos,NCPUs,RecentRange,OrphanCommitsRange,RecentReposRange'
 # ONLY_SUSPEND=1 (only process suspend data)
 # SUSPEND_ALL=1 (suspend all cronjobs)
 # NO_SUSPEND_H=1 (do not process (un)suspend for hourly sync crons

@@ -46,6 +46,7 @@ type devstatsProject struct {
 	// Daily sync projects (too big to sync every SYNC_HOURS) get wider ghapi2db/orphan-commits ranges (cadence + overlap)
 	RecentRange        string `yaml:"recentRange,omitempty"`        // '26 hours'
 	OrphanCommitsRange string `yaml:"orphanCommitsRange,omitempty"` // '26 hours'
+	RecentReposRange   string `yaml:"recentReposRange,omitempty"`   // '2 days'
 }
 
 type devstatsValues struct {
@@ -86,6 +87,7 @@ var (
 	gSplitAlgo    string
 	gDailyProjs   map[string]bool
 	gDailyRange   string
+	gDailyRepos   string
 	gPatchEnv     map[string]struct{}
 	gName2Env     map[string]string
 )
@@ -341,7 +343,7 @@ func considerPatchEnv(namespace, cronjob string, project *devstatsProject, nCPUs
 		if gSkipSyncEnv {
 			return
 		}
-		envs = []string{"MaxHist", "NoDurable", "DurablePQ", "MaxRunDuration", "NCPUs", "RecentRange", "OrphanCommitsRange"}
+		envs = []string{"MaxHist", "NoDurable", "DurablePQ", "MaxRunDuration", "NCPUs", "RecentRange", "OrphanCommitsRange", "RecentReposRange"}
 	}
 	for _, env := range envs {
 		_, use := gPatchEnv[env]
@@ -384,6 +386,8 @@ func considerPatchEnv(namespace, cronjob string, project *devstatsProject, nCPUs
 			patch = project.RecentRange
 		case "OrphanCommitsRange":
 			patch = project.OrphanCommitsRange
+		case "RecentReposRange":
+			patch = project.RecentReposRange
 		case "SkipGHAPI":
 			patch = strconv.Itoa(project.SkipGHAPI)
 			if patch == "0" {
@@ -567,20 +571,22 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 		cronA := posToCronAffs(affsPos[e.idx])
 		fmt.Printf("  %-24s db=%-16s size=%9.2fGb weight=%9.1f share=%5.1f%% sync='%s' %s affs='%s' gap=%.1fh\n", e.proj, e.db, e.sizeGb, e.weight, (e.weight/totalWeight)*100.0, cronS, gapS, cronA, float64(affsGap[e.idx])/60.0)
 		if isDaily {
-			// widen ghapi2db/orphan-commits lookbacks to cover the 24h cadence (+overlap)
-			if values.Projects[e.idx].RecentRange != gDailyRange || values.Projects[e.idx].OrphanCommitsRange != gDailyRange {
+			// widen ghapi2db/orphan-commits/recent-repos lookbacks to cover the 24h cadence (+overlap)
+			if values.Projects[e.idx].RecentRange != gDailyRange || values.Projects[e.idx].OrphanCommitsRange != gDailyRange || values.Projects[e.idx].RecentReposRange != gDailyRepos {
 				values.Projects[e.idx].RecentRange = gDailyRange
 				values.Projects[e.idx].OrphanCommitsRange = gDailyRange
+				values.Projects[e.idx].RecentReposRange = gDailyRepos
 			}
 			if !gNever && e.syncAlive {
-				patchEnv(namespace, "devstats-"+e.proj, []string{"GHA2DB_RECENT_RANGE", "GHA2DB_ORPHAN_COMMITS_RANGE"}, []string{gDailyRange, gDailyRange})
+				patchEnv(namespace, "devstats-"+e.proj, []string{"GHA2DB_RECENT_RANGE", "GHA2DB_ORPHAN_COMMITS_RANGE", "GHA2DB_RECENT_REPOS_RANGE"}, []string{gDailyRange, gDailyRange, gDailyRepos})
 			}
-		} else if values.Projects[e.idx].RecentRange != "" || values.Projects[e.idx].OrphanCommitsRange != "" {
+		} else if values.Projects[e.idx].RecentRange != "" || values.Projects[e.idx].OrphanCommitsRange != "" || values.Projects[e.idx].RecentReposRange != "" {
 			// project left the daily list - restore default lookback ranges
 			values.Projects[e.idx].RecentRange = ""
 			values.Projects[e.idx].OrphanCommitsRange = ""
+			values.Projects[e.idx].RecentReposRange = ""
 			if !gNever && e.syncAlive {
-				patchEnv(namespace, "devstats-"+e.proj, []string{"GHA2DB_RECENT_RANGE", "GHA2DB_ORPHAN_COMMITS_RANGE"}, []string{"", ""})
+				patchEnv(namespace, "devstats-"+e.proj, []string{"GHA2DB_RECENT_RANGE", "GHA2DB_ORPHAN_COMMITS_RANGE", "GHA2DB_RECENT_REPOS_RANGE"}, []string{"", "", ""})
 			}
 		}
 		if test {
@@ -835,6 +841,7 @@ func setPatchEnvMap() {
 		"MaxRunDuration":     "GHA2DB_MAX_RUN_DURATION",
 		"RecentRange":        "GHA2DB_RECENT_RANGE",
 		"OrphanCommitsRange": "GHA2DB_ORPHAN_COMMITS_RANGE",
+		"RecentReposRange":   "GHA2DB_RECENT_REPOS_RANGE",
 		"SkipGHAPI":          "GHA2DB_GHAPISKIP",
 		"SkipGetRepos":       "GHA2DB_GETREPOSSKIP",
 		"NCPUs":              "GHA2DB_NCPUS",
@@ -963,6 +970,10 @@ func generateCronValues(inFile, outFile string) {
 	gDailyRange = os.Getenv("DAILY_RANGE")
 	if gDailyRange == "" {
 		gDailyRange = "26 hours"
+	}
+	gDailyRepos = os.Getenv("DAILY_REPOS_RANGE")
+	if gDailyRepos == "" {
+		gDailyRepos = "2 days"
 	}
 	dailyList := os.Getenv("DAILY_PROJECTS")
 	if dailyList == "" {
