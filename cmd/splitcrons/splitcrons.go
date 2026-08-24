@@ -43,12 +43,17 @@ type devstatsProject struct {
 	SkipUpdAffs     int    `yaml:"skipUpdAffs,omitempty"`     // skipUpdAffs:100 (percent)
 	SkipImpAffs     int    `yaml:"skipImpAffs,omitempty"`     // skipImpAffs:100 (percent)
 	Archived        bool   `yaml:"archived,omitempty"`        // false/true
+	// Daily sync projects (too big to sync every SYNC_HOURS) get wider ghapi2db/orphan-commits ranges (cadence + overlap)
+	RecentRange        string `yaml:"recentRange,omitempty"`        // '26 hours'
+	OrphanCommitsRange string `yaml:"orphanCommitsRange,omitempty"` // '26 hours'
 }
 
 type devstatsValues struct {
-	SyncCPUs int               `yaml:"nSyncCPUs"`
-	AffsCPUs int               `yaml:"nAffsCPUs"`
-	Projects []devstatsProject `yaml:"projects"`
+	SyncCPUs       int               `yaml:"nSyncCPUs"`
+	AffsCPUs       int               `yaml:"nAffsCPUs"`
+	ImportCron     string            `yaml:"affiliationsImportCron,omitempty"`     // '10 2 * * *'
+	ImportCronTest string            `yaml:"affiliationsImportCronTest,omitempty"` // '10 1 * * *'
+	Projects       []devstatsProject `yaml:"projects"`
 }
 
 const (
@@ -77,6 +82,10 @@ var (
 	gOnlyTest     bool
 	gOldAlgorithm bool
 	gNoDBSizes    bool
+	gWeightPower  float64
+	gSplitAlgo    string
+	gDailyProjs   map[string]bool
+	gDailyRange   string
 	gPatchEnv     map[string]struct{}
 	gName2Env     map[string]string
 )
@@ -187,8 +196,11 @@ func getDBSizes(namespace string) map[string]float64 {
 	return sizes
 }
 
-// projWeight returns the scheduling weight of a project: sqrt of its DB size, so if project A's DB
-// is R times bigger than project B's, A gets sqrt(R) times more time (geometric mean damping).
+// projWeight returns the scheduling weight of a project: its DB size raised to gWeightPower:
+// SPLIT_ALGO=geom (default, power 0.5): size ratio R -> time ratio sqrt(R) (geometric mean damping),
+// SPLIT_ALGO=prop (power 1.0): time strictly proportional to DB size (favors big projects when space is scarce),
+// SPLIT_ALGO=invgeom (power 1.5): amplifies big projects even more: R -> R*sqrt(R),
+// WEIGHT_POWER=x: any custom exponent.
 // Unknown DBs get the smallest known size, and when no sizes are available all weights are 1.0 (even split).
 func projWeight(sizes map[string]float64, db string) float64 {
 	if sizes == nil {
@@ -207,7 +219,7 @@ func projWeight(sizes map[string]float64, db string) float64 {
 		}
 		size = smallest
 	}
-	return math.Sqrt(size)
+	return math.Pow(size, gWeightPower)
 }
 
 // ctxArgsForNamespace returns kubectl '--context' args for a given namespace.
@@ -329,7 +341,7 @@ func considerPatchEnv(namespace, cronjob string, project *devstatsProject, nCPUs
 		if gSkipSyncEnv {
 			return
 		}
-		envs = []string{"MaxHist", "NoDurable", "DurablePQ", "MaxRunDuration", "NCPUs"}
+		envs = []string{"MaxHist", "NoDurable", "DurablePQ", "MaxRunDuration", "NCPUs", "RecentRange", "OrphanCommitsRange"}
 	}
 	for _, env := range envs {
 		_, use := gPatchEnv[env]
@@ -368,6 +380,10 @@ func considerPatchEnv(namespace, cronjob string, project *devstatsProject, nCPUs
 			}
 		case "MaxRunDuration":
 			patch = project.MaxRunDuration
+		case "RecentRange":
+			patch = project.RecentRange
+		case "OrphanCommitsRange":
+			patch = project.OrphanCommitsRange
 		case "SkipGHAPI":
 			patch = strconv.Itoa(project.SkipGHAPI)
 			if patch == "0" {
@@ -398,11 +414,13 @@ func considerPatchEnv(namespace, cronjob string, project *devstatsProject, nCPUs
 
 // weightedEntry - a single alive project entry in the weighted scheduler
 type weightedEntry struct {
-	idx    int     // index in values.Projects
-	proj   string  // project name
-	db     string  // project DB name
-	weight float64 // sqrt(DB size)
-	sizeGb float64 // DB size in Gb (for reporting)
+	idx       int     // index in values.Projects
+	proj      string  // project name
+	db        string  // project DB name
+	weight    float64 // sqrt(DB size)
+	sizeGb    float64 // DB size in Gb (for reporting)
+	syncAlive bool    // hourly sync cronjob exists in the cluster
+	affsAlive bool    // affiliations cronjob exists in the cluster
 }
 
 // generateWeightedCronEntries computes and applies schedules for one env (test or prod) using the new algorithm:
@@ -430,6 +448,28 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 		fmt.Printf("%s: no alive projects to schedule\n", env)
 		return
 	}
+	// daily projects (DAILY_PROJECTS) sync once per day after the affiliations import instead of every syncHours
+	daily := []weightedEntry{}
+	regular := []weightedEntry{}
+	for _, e := range entries {
+		if gDailyProjs[e.proj] {
+			daily = append(daily, e)
+		} else {
+			regular = append(regular, e)
+		}
+	}
+	importCron := values.ImportCron
+	if test {
+		importCron = values.ImportCronTest
+	}
+	importHour := 2
+	if ary := strings.Fields(importCron); len(ary) >= 2 {
+		if h, err := strconv.Atoi(ary[1]); err == nil {
+			importHour = h
+		}
+	}
+	dailyStartHour := importHour + 1
+	dailySpace := (24 - dailyStartHour) * almostHour
 	// linear position -> sync cron: 'M h0,h0+syncHours,... * * *', minute M in [ghaOffset, 60)
 	posToCronSync := func(pos int) string {
 		hourS := pos / almostHour
@@ -447,6 +487,12 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 		hoursS = hoursS[:len(hoursS)-1]
 		return fmt.Sprintf("%d %s * * *", minuteS, hoursS)
 	}
+	// linear position -> daily sync cron: 'M H * * *', H in [dailyStartHour, 24), minute M in [ghaOffset, 60)
+	posToCronDaily := func(pos int) string {
+		hourD := dailyStartHour + pos/almostHour
+		minuteD := (pos % almostHour) + int(ghaOffset)
+		return fmt.Sprintf("%d %d * * *", minuteD, hourD)
+	}
 	// linear position -> affs cron: weekly 'M H * * D' or monthly 'M H D * *', minute M in [ghaOffset, 60)
 	posToCronAffs := func(pos int) string {
 		minuteA := (pos % almostHour) + int(ghaOffset)
@@ -458,12 +504,19 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 		return fmt.Sprintf("%d %d * * %d", minuteA, hourA, dayA)
 	}
 	// distribute cumulative weighted positions, bump on collisions
-	positions := func(space int) map[int]int {
+	positions := func(list []weightedEntry, space int) map[int]int {
+		total := 0.0
+		for _, e := range list {
+			total += e.weight
+		}
 		out := make(map[int]int)
+		if total <= 0.0 {
+			return out
+		}
 		used := make(map[int]bool)
 		cum := 0.0
-		for _, e := range entries {
-			pos := int((cum / totalWeight) * float64(space))
+		for _, e := range list {
+			pos := int((cum / total) * float64(space))
 			if pos >= space {
 				pos = space - 1
 			}
@@ -476,8 +529,9 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 		}
 		return out
 	}
-	syncPos := positions(syncSpace)
-	affsPos := positions(affsSpace)
+	syncPos := positions(regular, syncSpace)
+	dailyPos := positions(daily, dailySpace)
+	affsPos := positions(entries, affsSpace)
 	// gap = distance from a project's position to the next scheduled one (wraps around the space)
 	gaps := func(pos map[int]int, space int) map[int]int {
 		type pi struct{ pos, idx int }
@@ -497,42 +551,72 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 		return out
 	}
 	syncGap := gaps(syncPos, syncSpace)
+	dailyGap := gaps(dailyPos, dailySpace)
 	affsGap := gaps(affsPos, affsSpace)
-	fmt.Printf("%s: %d alive projects, weight = sqrt(DB size), sync space %d minutes (every %.0fh), affs space %d minutes (%d days):\n", env, len(entries), syncSpace, syncHours, affsSpace, periodDays)
+	fmt.Printf("%s: %d alive projects (%d daily), algo %s, sync space %d minutes (every %.0fh), daily space %d minutes (import at %s, dailies from %d:%02d), affs space %d minutes (%d days):\n", env, len(entries), len(daily), gSplitAlgo, syncSpace, syncHours, dailySpace, importCron, dailyStartHour, int(ghaOffset), affsSpace, periodDays)
 	for _, e := range entries {
-		cronS := posToCronSync(syncPos[e.idx])
+		isDaily := gDailyProjs[e.proj]
+		var cronS, gapS string
+		if isDaily {
+			cronS = posToCronDaily(dailyPos[e.idx])
+			gapS = fmt.Sprintf("DAILY gap=%.1fh ranges='%s'", float64(dailyGap[e.idx])/60.0, gDailyRange)
+		} else {
+			cronS = posToCronSync(syncPos[e.idx])
+			gapS = fmt.Sprintf("gap=%dm", syncGap[e.idx])
+		}
 		cronA := posToCronAffs(affsPos[e.idx])
-		fmt.Printf("  %-24s db=%-16s size=%9.2fGb weight=%9.1f share=%5.1f%% sync='%s' gap=%dm affs='%s' gap=%.1fh\n", e.proj, e.db, e.sizeGb, e.weight, (e.weight/totalWeight)*100.0, cronS, syncGap[e.idx], cronA, float64(affsGap[e.idx])/60.0)
+		fmt.Printf("  %-24s db=%-16s size=%9.2fGb weight=%9.1f share=%5.1f%% sync='%s' %s affs='%s' gap=%.1fh\n", e.proj, e.db, e.sizeGb, e.weight, (e.weight/totalWeight)*100.0, cronS, gapS, cronA, float64(affsGap[e.idx])/60.0)
+		if isDaily {
+			// widen ghapi2db/orphan-commits lookbacks to cover the 24h cadence (+overlap)
+			if values.Projects[e.idx].RecentRange != gDailyRange || values.Projects[e.idx].OrphanCommitsRange != gDailyRange {
+				values.Projects[e.idx].RecentRange = gDailyRange
+				values.Projects[e.idx].OrphanCommitsRange = gDailyRange
+			}
+			if !gNever && e.syncAlive {
+				patchEnv(namespace, "devstats-"+e.proj, []string{"GHA2DB_RECENT_RANGE", "GHA2DB_ORPHAN_COMMITS_RANGE"}, []string{gDailyRange, gDailyRange})
+			}
+		} else if values.Projects[e.idx].RecentRange != "" || values.Projects[e.idx].OrphanCommitsRange != "" {
+			// project left the daily list - restore default lookback ranges
+			values.Projects[e.idx].RecentRange = ""
+			values.Projects[e.idx].OrphanCommitsRange = ""
+			if !gNever && e.syncAlive {
+				patchEnv(namespace, "devstats-"+e.proj, []string{"GHA2DB_RECENT_RANGE", "GHA2DB_ORPHAN_COMMITS_RANGE"}, []string{"", ""})
+			}
+		}
 		if test {
 			if gAlways || values.Projects[e.idx].AffCronTest != cronA {
 				values.Projects[e.idx].AffCronTest = cronA
-				if !gNever {
+				if !gNever && e.affsAlive {
 					patch(namespace, "devstats-affiliations-"+e.proj, "schedule", `"`+cronA+`"`)
 				}
 			}
 			if gAlways || values.Projects[e.idx].CronTest != cronS {
 				values.Projects[e.idx].CronTest = cronS
-				if !gNever {
+				if !gNever && e.syncAlive {
 					patch(namespace, "devstats-"+e.proj, "schedule", `"`+cronS+`"`)
 				}
 			}
 		} else {
 			if gAlways || values.Projects[e.idx].AffCronProd != cronA {
 				values.Projects[e.idx].AffCronProd = cronA
-				if !gNever {
+				if !gNever && e.affsAlive {
 					patch(namespace, "devstats-affiliations-"+e.proj, "schedule", `"`+cronA+`"`)
 				}
 			}
 			if gAlways || values.Projects[e.idx].CronProd != cronS {
 				values.Projects[e.idx].CronProd = cronS
-				if !gNever {
+				if !gNever && e.syncAlive {
 					patch(namespace, "devstats-"+e.proj, "schedule", `"`+cronS+`"`)
 				}
 			}
 		}
 		if !gNever {
-			considerPatchEnv(namespace, "devstats-"+e.proj, &values.Projects[e.idx], values.SyncCPUs, false)
-			considerPatchEnv(namespace, "devstats-affiliations-"+e.proj, &values.Projects[e.idx], values.AffsCPUs, true)
+			if e.syncAlive {
+				considerPatchEnv(namespace, "devstats-"+e.proj, &values.Projects[e.idx], values.SyncCPUs, false)
+			}
+			if e.affsAlive {
+				considerPatchEnv(namespace, "devstats-affiliations-"+e.proj, &values.Projects[e.idx], values.AffsCPUs, true)
+			}
 		}
 	}
 }
@@ -548,6 +632,19 @@ func newAlgorithmForEnv(values *devstatsValues, test bool) []weightedEntry {
 	}
 	aliveSync, aliveAffs := getAliveCronjobs(namespace)
 	sizes := getDBSizes(namespace)
+	if sizes != nil {
+		// drop non-project databases (devstats, postgres, ...) so they never influence weights
+		// (unknown-DB fallback uses the smallest known project DB size)
+		projDBs := make(map[string]bool)
+		for _, p := range values.Projects {
+			projDBs[p.DB] = true
+		}
+		for db := range sizes {
+			if !projDBs[db] {
+				delete(sizes, db)
+			}
+		}
+	}
 	entries := []weightedEntry{}
 	for i, project := range values.Projects {
 		domainOK, suspended := false, false
@@ -561,7 +658,7 @@ func newAlgorithmForEnv(values *devstatsValues, test bool) []weightedEntry {
 		}
 		syncAlive := aliveSync == nil || aliveSync[project.Proj]
 		affsAlive := aliveAffs == nil || aliveAffs[project.Proj]
-		if !gNever && !gOnlySuspend {
+		if !gNever {
 			suspend := fmt.Sprintf("%v", suspended)
 			if gSuspendAll {
 				suspend = "true"
@@ -580,7 +677,7 @@ func newAlgorithmForEnv(values *devstatsValues, test bool) []weightedEntry {
 		if sizes != nil {
 			sizeGb = sizes[project.DB] / (1024.0 * 1024.0 * 1024.0)
 		}
-		entries = append(entries, weightedEntry{idx: i, proj: project.Proj, db: project.DB, weight: projWeight(sizes, project.DB), sizeGb: sizeGb})
+		entries = append(entries, weightedEntry{idx: i, proj: project.Proj, db: project.DB, weight: projWeight(sizes, project.DB), sizeGb: sizeGb, syncAlive: syncAlive, affsAlive: affsAlive})
 	}
 	return entries
 }
@@ -729,18 +826,20 @@ func setPatchEnvMap() {
 		gPatchEnv[strings.TrimSpace(env)] = struct{}{}
 	}
 	gName2Env = map[string]string{
-		"AffSkipTemp":    "SKIPTEMP",
-		"MaxHist":        "GHA2DB_MAX_HIST",
-		"SkipAffsLock":   "SKIP_AFFS_LOCK",
-		"AffsLockDB":     "AFFS_LOCK_DB",
-		"NoDurable":      "NO_DURABLE",
-		"DurablePQ":      "DURABLE_PQ",
-		"MaxRunDuration": "GHA2DB_MAX_RUN_DURATION",
-		"SkipGHAPI":      "GHA2DB_GHAPISKIP",
-		"SkipGetRepos":   "GHA2DB_GETREPOSSKIP",
-		"NCPUs":          "GHA2DB_NCPUS",
-		"SkipImpAffs":    "SKIP_IMP_AFFS",
-		"SkipUpdAffs":    "SKIP_UPD_AFFS",
+		"AffSkipTemp":        "SKIPTEMP",
+		"MaxHist":            "GHA2DB_MAX_HIST",
+		"SkipAffsLock":       "SKIP_AFFS_LOCK",
+		"AffsLockDB":         "AFFS_LOCK_DB",
+		"NoDurable":          "NO_DURABLE",
+		"DurablePQ":          "DURABLE_PQ",
+		"MaxRunDuration":     "GHA2DB_MAX_RUN_DURATION",
+		"RecentRange":        "GHA2DB_RECENT_RANGE",
+		"OrphanCommitsRange": "GHA2DB_ORPHAN_COMMITS_RANGE",
+		"SkipGHAPI":          "GHA2DB_GHAPISKIP",
+		"SkipGetRepos":       "GHA2DB_GETREPOSSKIP",
+		"NCPUs":              "GHA2DB_NCPUS",
+		"SkipImpAffs":        "SKIP_IMP_AFFS",
+		"SkipUpdAffs":        "SKIP_UPD_AFFS",
 	}
 }
 
@@ -838,12 +937,53 @@ func generateCronValues(inFile, outFile string) {
 	gOnlyTest = os.Getenv("ONLY_TEST") != ""
 	gOldAlgorithm = os.Getenv("OLD_ALGORITHM") != ""
 	gNoDBSizes = os.Getenv("NO_DB_SIZES") != ""
+	gSplitAlgo = os.Getenv("SPLIT_ALGO")
+	if gSplitAlgo == "" {
+		gSplitAlgo = "geom"
+	}
+	switch gSplitAlgo {
+	case "geom":
+		gWeightPower = 0.5
+	case "prop":
+		gWeightPower = 1.0
+	case "invgeom":
+		gWeightPower = 1.5
+	default:
+		lib.Fatalf("SPLIT_ALGO must be one of: geom (sqrt(size), default), prop (size), invgeom (size^1.5)")
+	}
+	if os.Getenv("WEIGHT_POWER") != "" {
+		var err error
+		gWeightPower, err = strconv.ParseFloat(os.Getenv("WEIGHT_POWER"), 64)
+		lib.FatalOnError(err)
+		if gWeightPower < 0.0 || gWeightPower > 4.0 {
+			lib.Fatalf("WEIGHT_POWER must be from 0.0 to 4.0")
+		}
+		gSplitAlgo = fmt.Sprintf("power=%g", gWeightPower)
+	}
+	gDailyRange = os.Getenv("DAILY_RANGE")
+	if gDailyRange == "" {
+		gDailyRange = "26 hours"
+	}
+	dailyList := os.Getenv("DAILY_PROJECTS")
+	if dailyList == "" {
+		dailyList = "kubernetes,all,jenkins,opentelemetry,allcdf,istio"
+	}
+	gDailyProjs = make(map[string]bool)
+	if dailyList != "-" {
+		for _, proj := range strings.Split(dailyList, ",") {
+			proj = strings.TrimSpace(proj)
+			if proj != "" {
+				gDailyProjs[proj] = true
+			}
+		}
+	}
 	setPatchEnvMap()
 	// New (default) algorithm: schedule only projects actually alive in each env's cluster,
-	// give each time proportional to sqrt(its DB size), spread evenly over the whole period.
+	// give each time proportional to size^power (SPLIT_ALGO), spread evenly over the whole period.
 	// OLD_ALGORITHM=1 switches back to the legacy values.yaml based static split below.
 	if !gOldAlgorithm {
 		fmt.Printf("new algorithm: probing alive cronjobs & DB sizes (OLD_ALGORITHM=1 for legacy mode, NO_DB_SIZES=1 for even weights)\n")
+		fmt.Printf("weights: SPLIT_ALGO=%s, weight = size^%g\n", gSplitAlgo, gWeightPower)
 		fmt.Printf("sync happens from HH:%02.0f, every %.0f hours; affs spread over %s\n", ghaOffset, syncHours, map[bool]string{true: "28 days", false: "7 days"}[gMonthly])
 		if !gOnlyProd {
 			entries := newAlgorithmForEnv(&values, true)
