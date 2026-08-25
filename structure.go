@@ -195,7 +195,7 @@ func Structure(ctx *Ctx) {
 					"name varchar(160) not null, "+
 					"org_id bigint, "+
 					"org_login varchar(100), "+
-					"repo_group varchar(80), "+
+					"repo_group varchar(160), "+
 					"alias varchar(160), "+
 					"license_key varchar(30), "+
 					"license_name varchar(160), "+
@@ -231,7 +231,7 @@ func Structure(ctx *Ctx) {
 				"gha_repo_groups("+
 					"id bigint not null, "+
 					"name varchar(160) not null, "+
-					"repo_group varchar(80), "+
+					"repo_group varchar(160), "+
 					"org_id bigint, "+
 					"org_login varchar(100), "+
 					"alias varchar(160), "+
@@ -1243,7 +1243,7 @@ func Structure(ctx *Ctx) {
 					"path text not null, "+
 					"size bigint not null, "+
 					"dt {{ts}} not null, "+
-					"repo_group varchar(80), "+
+					"repo_group varchar(160), "+
 					"dup_repo_id bigint not null, "+
 					"dup_repo_name varchar(160) not null, "+
 					// "dup_type varchar(40) not null, "+
