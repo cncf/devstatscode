@@ -88,6 +88,8 @@ var (
 	gDailyProjs   map[string]bool
 	gDailyRange   string
 	gDailyRepos   string
+	gAffsAnchor   bool
+	gDailyAffsOff int
 	gPatchEnv     map[string]struct{}
 	gName2Env     map[string]string
 )
@@ -497,11 +499,52 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 		minuteD := (pos % almostHour) + int(ghaOffset)
 		return fmt.Sprintf("%d %d * * *", minuteD, hourD)
 	}
-	// linear position -> affs cron: weekly 'M H * * D' or monthly 'M H D * *', minute M in [ghaOffset, 60)
-	posToCronAffs := func(pos int) string {
-		minuteA := (pos % almostHour) + int(ghaOffset)
-		hourA := (pos / almostHour) % 24
+	// affs anchoring (default): place each project's affs cron relative to its OWN sync cron so affs never
+	// starts close to any of the project's sync slots (close pairs caused monthly provision-guard sync skips
+	// and affs imports racing a running sync):
+	// - regular projects: affs starts exactly mid-gap between two consecutive sync slots (sync slot +syncHours/2);
+	//   the slot is the one keeping the affs hour closest to the weighted spread target (even hourly affs load),
+	// - daily projects: affs starts DAILY_AFFS_OFFSET_HOURS (default 8) after the daily sync: the day splits
+	//   into max 8h for the daily sync run + max 16h for the (longer) affiliations run,
+	// - the affs day (of week/month) always comes from the weighted spread position.
+	// NO_AFFS_ANCHOR=1 restores the legacy fully independent affs placement (ignores own sync distance).
+	minutesInDay := 24 * 60
+	affsTimeOf := func(pos, syncPosV, dailyPosV int, isDaily bool) int {
 		dayA := (pos / (almostHour * 24)) % periodDays
+		if !gAffsAnchor {
+			return dayA*minutesInDay + ((pos/almostHour)%24)*60 + (pos % almostHour) + int(ghaOffset)
+		}
+		affsMinOfDay := 0
+		if isDaily {
+			syncMinOfDay := (dailyStartHour+dailyPosV/almostHour)*60 + (dailyPosV % almostHour) + int(ghaOffset)
+			affsMinOfDay = (syncMinOfDay + gDailyAffsOff*60) % minutesInDay
+		} else {
+			syncMinOfDay := (syncPosV/almostHour)*60 + (syncPosV % almostHour) + int(ghaOffset)
+			base := syncMinOfDay + int(syncHours)*30
+			target := ((pos/almostHour)%24)*60 + (pos % almostHour) + int(ghaOffset)
+			slots := 24 / int(syncHours)
+			if slots < 1 {
+				slots = 1
+			}
+			bestDist := minutesInDay
+			for j := 0; j < slots; j++ {
+				cand := (base + j*int(syncHours)*60) % minutesInDay
+				dist := (cand - target + minutesInDay) % minutesInDay
+				if dist > minutesInDay/2 {
+					dist = minutesInDay - dist
+				}
+				if dist < bestDist {
+					affsMinOfDay, bestDist = cand, dist
+				}
+			}
+		}
+		return dayA*minutesInDay + affsMinOfDay
+	}
+	// absolute affs minute within the period -> affs cron: weekly 'M H * * D' or monthly 'M H D * *'
+	timeToCronAffs := func(t int) string {
+		minuteA := t % 60
+		hourA := (t / 60) % 24
+		dayA := t / minutesInDay
 		if gMonthly {
 			return fmt.Sprintf("%d %d %d * *", minuteA, hourA, dayA+1)
 		}
@@ -536,6 +579,11 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 	syncPos := positions(regular, syncSpace)
 	dailyPos := positions(daily, dailySpace)
 	affsPos := positions(entries, affsSpace)
+	// final affs times: weighted day + (anchored or legacy) time of day
+	affsTime := make(map[int]int)
+	for _, e := range entries {
+		affsTime[e.idx] = affsTimeOf(affsPos[e.idx], syncPos[e.idx], dailyPos[e.idx], gDailyProjs[e.proj])
+	}
 	// gap = distance from a project's position to the next scheduled one (wraps around the space)
 	gaps := func(pos map[int]int, space int) map[int]int {
 		type pi struct{ pos, idx int }
@@ -556,8 +604,11 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 	}
 	syncGap := gaps(syncPos, syncSpace)
 	dailyGap := gaps(dailyPos, dailySpace)
-	affsGap := gaps(affsPos, affsSpace)
+	affsGap := gaps(affsTime, periodDays*minutesInDay)
 	fmt.Printf("%s: %d alive projects (%d daily), algo %s, sync space %d minutes (every %.0fh), daily space %d minutes (import at %s, dailies from %d:%02d), affs space %d minutes (%d days):\n", env, len(entries), len(daily), gSplitAlgo, syncSpace, syncHours, dailySpace, importCron, dailyStartHour, int(ghaOffset), affsSpace, periodDays)
+	if gAffsAnchor {
+		fmt.Printf("%s: affs anchored to own sync: regular projects mid-gap (sync slot +%dm), daily projects sync +%dh (NO_AFFS_ANCHOR=1 for legacy independent placement)\n", env, int(syncHours)*30, gDailyAffsOff)
+	}
 	for _, e := range entries {
 		isDaily := gDailyProjs[e.proj]
 		var cronS, gapS string
@@ -568,7 +619,7 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 			cronS = posToCronSync(syncPos[e.idx])
 			gapS = fmt.Sprintf("gap=%dm", syncGap[e.idx])
 		}
-		cronA := posToCronAffs(affsPos[e.idx])
+		cronA := timeToCronAffs(affsTime[e.idx])
 		fmt.Printf("  %-24s db=%-16s size=%9.2fGb weight=%9.1f share=%5.1f%% sync='%s' %s affs='%s' gap=%.1fh\n", e.proj, e.db, e.sizeGb, e.weight, (e.weight/totalWeight)*100.0, cronS, gapS, cronA, float64(affsGap[e.idx])/60.0)
 		if isDaily {
 			// widen ghapi2db/orphan-commits/recent-repos lookbacks to cover the 24h cadence (+overlap)
@@ -628,9 +679,11 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 }
 
 // newAlgorithmForEnv probes alive cronjobs and DB sizes for one env and builds its weighted entries list.
-// Eligibility: values.yaml flags (suspend + domains) AND actual cronjob existence in the cluster
+// Eligibility: values.yaml flags (suspend + domains + not archived) AND actual cronjob existence in the cluster
 // (when the alive probe fails, values.yaml eligibility alone decides - with even weights on size probe failure).
-// It also pushes values.yaml suspend states (or SUSPEND_ALL) to all alive cronjobs of eligible-domain projects.
+// It also pushes values.yaml suspend states (or SUSPEND_ALL) to all alive cronjobs of eligible-domain projects;
+// archived projects count as suspended: they are never scheduled (freeing their split space) and their alive
+// cronjobs (if any remain) get suspend=true pushed.
 func newAlgorithmForEnv(values *devstatsValues, test bool) []weightedEntry {
 	namespace := "devstats-prod"
 	if test {
@@ -661,6 +714,10 @@ func newAlgorithmForEnv(values *devstatsValues, test bool) []weightedEntry {
 		}
 		if !domainOK {
 			continue
+		}
+		if project.Archived {
+			// archived projects don't count: suspend leftover cronjobs, never schedule
+			suspended = true
 		}
 		syncAlive := aliveSync == nil || aliveSync[project.Proj]
 		affsAlive := aliveAffs == nil || aliveAffs[project.Proj]
@@ -979,6 +1036,17 @@ func generateCronValues(inFile, outFile string) {
 	if dailyList == "" {
 		dailyList = "kubernetes,all,jenkins,opentelemetry,allcdf,istio"
 	}
+	gAffsAnchor = os.Getenv("NO_AFFS_ANCHOR") == ""
+	gDailyAffsOff = 8
+	str = os.Getenv("DAILY_AFFS_OFFSET_HOURS")
+	if str != "" {
+		var err error
+		gDailyAffsOff, err = strconv.Atoi(str)
+		lib.FatalOnError(err)
+		if gDailyAffsOff < 1 || gDailyAffsOff > 23 {
+			lib.Fatalf("DAILY_AFFS_OFFSET_HOURS must be from [1,23]")
+		}
+	}
 	gDailyProjs = make(map[string]bool)
 	if dailyList != "-" {
 		for _, proj := range strings.Split(dailyList, ",") {
@@ -1033,10 +1101,10 @@ func generateCronValues(inFile, outFile string) {
 			allIdx = i
 			continue
 		}
-		if !project.SuspendCronTest && project.Domains[0] != 0 {
+		if !project.SuspendCronTest && !project.Archived && project.Domains[0] != 0 {
 			kt++
 		}
-		if !project.SuspendCronProd && (project.Domains[1] != 0 || project.Domains[2] != 0 || project.Domains[3] != 0) {
+		if !project.SuspendCronProd && !project.Archived && (project.Domains[1] != 0 || project.Domains[2] != 0 || project.Domains[3] != 0) {
 			kp++
 		}
 	}
@@ -1053,8 +1121,8 @@ func generateCronValues(inFile, outFile string) {
 		suspend = "true"
 	}
 	for i, project := range values.Projects {
-		t := !project.SuspendCronTest && project.Domains[0] != 0
-		p := !project.SuspendCronProd && (project.Domains[1] != 0 || project.Domains[2] != 0 || project.Domains[3] != 0)
+		t := !project.SuspendCronTest && !project.Archived && project.Domains[0] != 0
+		p := !project.SuspendCronProd && !project.Archived && (project.Domains[1] != 0 || project.Domains[2] != 0 || project.Domains[3] != 0)
 		if gOnlyProd {
 			t = false
 		}

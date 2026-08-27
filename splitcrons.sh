@@ -17,6 +17,17 @@
 #   Affiliations crons of daily projects stay in the regular weighted affs spread (affs space is not saturated).
 # DAILY_RANGE='26 hours' (default: 24h daily cadence + 2h overlap; used for daily projects' lookback ranges).
 # DAILY_REPOS_RANGE='2 days' (default: ghapi2db recently-modified-repos window for daily projects; the code default '1 day' has no margin at 24h cadence).
+# NO_AFFS_ANCHOR=1 (disable the default per-project affs anchoring and return to fully independent affs placement).
+#   By default each project's affs cron is anchored to its OWN sync cron so they can never start close to each
+#   other (close pairs caused monthly provision-guard sync skips and affs imports racing a running sync):
+#   - regular (6-hourly) projects: affs starts exactly mid-gap between two consecutive sync slots (slot +SYNC_HOURS/2,
+#     so +3h for 6-hourly syncs; the slot is chosen to keep the affs hour closest to the weighted spread target),
+#   - daily projects: affs starts DAILY_AFFS_OFFSET_HOURS after the daily sync,
+#   - the affs day of week/month still comes from the weighted spread (even affs load across the period).
+# DAILY_AFFS_OFFSET_HOURS=8 (default: daily projects' 24h day splits into max 8h for the daily sync run,
+#   then the affs run starts, having max 16h before the next daily sync; affs take longer than syncs) [1,23].
+# ARCHIVED projects (archived: true in values.yaml) never count: they are excluded from all splits (freeing
+#   schedule space) and their leftover cronjobs (if any) get suspend=true pushed.
 # CTX_TEST=test, CTX_PROD=prod (new algorithm: kubectl contexts for test/prod envs; use '-' for current context;
 #   defaults 'test'/'prod' match in-cluster kubeconfigs; from outside use e.g. CTX_TEST=linode-test CTX_PROD=prod).
 # MONTHLY=1 (use 4-weeks - 28 days schedule instead of weekly one).
