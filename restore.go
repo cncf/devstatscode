@@ -3,6 +3,8 @@ package devstatscode
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/go-github/v38/github"
@@ -240,18 +242,18 @@ func restoreEventPayload(tc *sql.Tx, ctx *Ctx, eid int64, eType string, actor *g
 }
 
 // RestoreIssueComment - restores a comment missed by GH Archive: artificial IssueCommentEvent + gha_comments row
-func RestoreIssueComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, issueNumber int, cmt *github.IssueComment, maybeHide func(string) string) bool {
+func RestoreIssueComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, issueNumber int, cmt *github.IssueComment, maybeHide func(string) string) (eventID int64, restored bool) {
 	if ctx.SkipPDB {
-		return false
+		return 0, false
 	}
 	if cmt == nil || cmt.ID == nil || cmt.User == nil || cmt.User.Login == nil || cmt.CreatedAt == nil {
 		Printf("RestoreIssueComment: %s: skipping comment with missing id/user/created_at\n", repo)
-		return false
+		return 0, false
 	}
 	cid := *cmt.ID
 	eid := ArtificialCommentIDBase + cid
 	if !artificialIDOK(eid, "RestoreIssueComment", repo) {
-		return false
+		return 0, false
 	}
 	createdAt := *cmt.CreatedAt
 	eType := "IssueCommentEvent"
@@ -293,22 +295,22 @@ func RestoreIssueComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID i
 	)
 	FatalOnError(tc.Commit())
 	n, _ := res.RowsAffected()
-	return n > 0
+	return eid, n > 0
 }
 
 // RestoreReviewComment - restores a PR review comment missed by GH Archive: artificial PullRequestReviewCommentEvent + gha_comments row
-func RestoreReviewComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, prNumber int, cmt *github.PullRequestComment, maybeHide func(string) string) bool {
+func RestoreReviewComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, prNumber int, cmt *github.PullRequestComment, maybeHide func(string) string) (eventID int64, restored bool) {
 	if ctx.SkipPDB {
-		return false
+		return 0, false
 	}
 	if cmt == nil || cmt.ID == nil || cmt.User == nil || cmt.User.Login == nil || cmt.CreatedAt == nil {
 		Printf("RestoreReviewComment: %s: skipping comment with missing id/user/created_at\n", repo)
-		return false
+		return 0, false
 	}
 	cid := *cmt.ID
 	eid := ArtificialReviewCommentIDBase + cid
 	if !artificialIDOK(eid, "RestoreReviewComment", repo) {
-		return false
+		return 0, false
 	}
 	createdAt := *cmt.CreatedAt
 	eType := "PullRequestReviewCommentEvent"
@@ -361,21 +363,21 @@ func RestoreReviewComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID 
 	)
 	FatalOnError(tc.Commit())
 	n, _ := res.RowsAffected()
-	return n > 0
+	return eid, n > 0
 }
 
 // RestoreReview - restores a PR review missed by GH Archive: artificial PullRequestReviewEvent + gha_reviews row
-func RestoreReview(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, prNumber int, rev *github.PullRequestReview, maybeHide func(string) string) bool {
+func RestoreReview(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, prNumber int, rev *github.PullRequestReview, maybeHide func(string) string) (eventID int64, restored bool) {
 	if ctx.SkipPDB {
-		return false
+		return 0, false
 	}
 	if rev == nil || rev.ID == nil || rev.User == nil || rev.User.Login == nil || rev.SubmittedAt == nil {
-		return false
+		return 0, false
 	}
 	rid := *rev.ID
 	eid := ArtificialReviewIDBase + rid
 	if !artificialIDOK(eid, "RestoreReview", repo) {
-		return false
+		return 0, false
 	}
 	createdAt := *rev.SubmittedAt
 	eType := "PullRequestReviewEvent"
@@ -419,21 +421,21 @@ func RestoreReview(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interfa
 	)
 	FatalOnError(tc.Commit())
 	n, _ := res.RowsAffected()
-	return n > 0
+	return eid, n > 0
 }
 
 // RestoreFork - restores a fork missed by GH Archive: artificial ForkEvent + gha_forkees row
-func RestoreFork(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, fork *github.Repository, maybeHide func(string) string) bool {
+func RestoreFork(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, fork *github.Repository, maybeHide func(string) string) (eventID int64, restored bool) {
 	if ctx.SkipPDB {
-		return false
+		return 0, false
 	}
 	if fork == nil || fork.ID == nil || fork.Owner == nil || fork.Owner.Login == nil || fork.CreatedAt == nil {
-		return false
+		return 0, false
 	}
 	fid := *fork.ID
 	eid := ArtificialForkIDBase + fid
 	if !artificialIDOK(eid, "RestoreFork", repo) {
-		return false
+		return 0, false
 	}
 	createdAt := fork.CreatedAt.Time
 	eType := "ForkEvent"
@@ -507,21 +509,21 @@ func RestoreFork(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface
 	)
 	FatalOnError(tc.Commit())
 	n, _ := res.RowsAffected()
-	return n > 0
+	return eid, n > 0
 }
 
 // RestoreRelease - restores a release missed by GH Archive: artificial ReleaseEvent + gha_releases (+assets) rows
-func RestoreRelease(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, rel *github.RepositoryRelease, maybeHide func(string) string) bool {
+func RestoreRelease(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, rel *github.RepositoryRelease, maybeHide func(string) string) (eventID int64, restored bool) {
 	if ctx.SkipPDB {
-		return false
+		return 0, false
 	}
 	if rel == nil || rel.ID == nil || rel.Author == nil || rel.Author.Login == nil || rel.CreatedAt == nil {
-		return false
+		return 0, false
 	}
 	rid := *rel.ID
 	eid := ArtificialReleaseIDBase + rid
 	if !artificialIDOK(eid, "RestoreRelease", repo) {
-		return false
+		return 0, false
 	}
 	createdAt := tsOr(rel.PublishedAt, rel.CreatedAt.Time)
 	eType := "ReleaseEvent"
@@ -619,22 +621,22 @@ func RestoreRelease(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interf
 	}
 	FatalOnError(tc.Commit())
 	n, _ := res.RowsAffected()
-	return n > 0
+	return eid, n > 0
 }
 
 // RestoreCommitComment - restores a commit comment missed by GH Archive: artificial CommitCommentEvent + gha_comments row
-func RestoreCommitComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, cmt *github.RepositoryComment, maybeHide func(string) string) bool {
+func RestoreCommitComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, cmt *github.RepositoryComment, maybeHide func(string) string) (eventID int64, restored bool) {
 	if ctx.SkipPDB {
-		return false
+		return 0, false
 	}
 	if cmt == nil || cmt.ID == nil || cmt.User == nil || cmt.User.Login == nil || cmt.CreatedAt == nil {
 		Printf("RestoreCommitComment: %s: skipping comment with missing id/user/created_at\n", repo)
-		return false
+		return 0, false
 	}
 	cid := *cmt.ID
 	eid := ArtificialCommitCommentIDBase + cid
 	if !artificialIDOK(eid, "RestoreCommitComment", repo) {
-		return false
+		return 0, false
 	}
 	createdAt := *cmt.CreatedAt
 	eType := "CommitCommentEvent"
@@ -678,38 +680,39 @@ func RestoreCommitComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID 
 	)
 	FatalOnError(tc.Commit())
 	n, _ := res.RowsAffected()
-	return n > 0
+	return eid, n > 0
 }
 
 // RestoreStar - restores a star missed by GH Archive as an artificial WatchEvent (hash-based negative id, like pre-2015 events)
-func RestoreStar(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, star *github.Stargazer, maybeHide func(string) string) bool {
+func RestoreStar(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interface{}, star *github.Stargazer, maybeHide func(string) string) (eventID int64, restored bool) {
 	if ctx.SkipPDB {
-		return false
+		return 0, false
 	}
 	if star == nil || star.User == nil || star.User.Login == nil || star.StarredAt == nil {
-		return false
+		return 0, false
 	}
 	createdAt := star.StarredAt.Time
 	eType := "WatchEvent"
 	if star.User.ID == nil {
-		return false
+		return 0, false
 	}
 	eid := NegativeArtificialID([]string{eType, fmt.Sprint(*star.User.ID), repo, ToYMDHMSDate(createdAt)})
 	tc, err := c.Begin()
 	FatalOnError(err)
 	if hashIDConflict(tc, ctx, eid, eType, repo, *star.User.ID, createdAt) {
 		FatalOnError(tc.Rollback())
-		return false
+		return 0, false
 	}
 	ghActor(tc, ctx, star.User, maybeHide)
 	res := restoreEventPayload(tc, ctx, eid, eType, star.User, repo, repoID, orgID, createdAt, "started", nil, nil, nil, nil, nil, nil, nil, maybeHide)
 	FatalOnError(tc.Commit())
 	n, _ := res.RowsAffected()
-	return n > 0
+	return eid, n > 0
 }
 
 // RunRangePostprocess - runs the bounded *_range.sql postprocess scripts for [from, to),
-// used after API restores that insert rows older than the hourly postprocess window
+// for manual/env-driven historical backfills; automatic post-restore postprocessing uses
+// RunEventIDsPostprocess (exact event id set) instead, which costs O(restored) not O(window)
 func RunRangePostprocess(ctx *Ctx, from, to time.Time) {
 	RunRangePostprocessDB(ctx, "", from, to)
 }
@@ -738,14 +741,17 @@ func RunRangePostprocessDB(ctx *Ctx, db string, from, to time.Time) {
 		Printf("bounded postprocess skipped: gha_texts is empty, full structure rebuild pending\n")
 		return
 	}
+	spanDays := to.Sub(from).Hours() / 24.0
+	if spanDays > 62.0 {
+		Printf("WARNING: bounded postprocess window [%s, %s) spans %.1f days - this rebuilds every row in the window and can take hours on big databases, consider the targeted event-ids mode or a full truncate+structure rebuild instead\n", ToYMDHMSDate(from), ToYMDHMSDate(to), spanDays)
+	}
 	dataPrefix := ctx.DataDir
 	if ctx.Local {
 		dataPrefix = "./"
 	}
-	tc, err := c.Begin()
-	FatalOnError(err)
-	ExecSQLTxWithErr(tc, ctx, "select set_config('devstats.postprocess_from', "+NValue(1)+", true)", ToYMDHMSDate(from))
-	ExecSQLTxWithErr(tc, ctx, "select set_config('devstats.postprocess_to', "+NValue(1)+", true)", ToYMDHMSDate(to))
+	// each script is one delete+reinsert of a single table: run each in its own transaction
+	// (set_config with is_local=true is transaction-scoped, so the window is set per script) -
+	// a months-wide window otherwise holds one giant transaction for hours, blocking vacuum
 	for _, script := range []string{
 		"util_sql/postprocess_texts_range.sql",
 		"util_sql/postprocess_labels_range.sql",
@@ -753,8 +759,83 @@ func RunRangePostprocessDB(ctx *Ctx, db string, from, to time.Time) {
 	} {
 		bytes, err := ReadFile(ctx, dataPrefix+script)
 		FatalOnError(err)
+		tc, err := c.Begin()
+		FatalOnError(err)
+		ExecSQLTxWithErr(tc, ctx, "select set_config('devstats.postprocess_from', "+NValue(1)+", true)", ToYMDHMSDate(from))
+		ExecSQLTxWithErr(tc, ctx, "select set_config('devstats.postprocess_to', "+NValue(1)+", true)", ToYMDHMSDate(to))
+		ExecSQLTxWithErr(tc, ctx, string(bytes))
+		FatalOnError(tc.Commit())
+	}
+	Printf("bounded postprocess executed for [%s, %s)\n", ToYMDHMSDate(from), ToYMDHMSDate(to))
+}
+
+// RunEventIDsPostprocess - runs the targeted *_ids.sql postprocess scripts for an exact set of
+// restored event ids. Preferred over RunRangePostprocess after API restores: cost is O(len(eids))
+// instead of O(window) - a single restored months-old row no longer triggers a months-wide rebuild
+// of gha_texts/gha_issues_events_labels/gha_issues_pull_requests.
+func RunEventIDsPostprocess(ctx *Ctx, eids []int64) {
+	RunEventIDsPostprocessDB(ctx, "", eids)
+}
+
+// RunEventIDsPostprocessDB - RunEventIDsPostprocess against an explicit database (empty db = ctx.PgDB)
+func RunEventIDsPostprocessDB(ctx *Ctx, db string, eids []int64) {
+	if ctx.SkipPDB || len(eids) == 0 {
+		return
+	}
+	c := PgConn(ctx)
+	if db != "" {
+		FatalOnError(c.Close())
+		c = PgConnDB(ctx, db)
+	}
+	defer func() { FatalOnError(c.Close()) }()
+	// empty (truncated) target: skip - the same cycle's structure run performs the full rebuild,
+	// and inserting the targeted rows here first would lock its 1 month window to a partial table
+	rows := QuerySQLWithErr(c, ctx, "select 1 from gha_texts limit 1")
+	empty := true
+	for rows.Next() {
+		empty = false
+	}
+	FatalOnError(rows.Err())
+	FatalOnError(rows.Close())
+	if empty {
+		Printf("targeted postprocess skipped: gha_texts is empty, full structure rebuild pending\n")
+		return
+	}
+	dataPrefix := ctx.DataDir
+	if ctx.Local {
+		dataPrefix = "./"
+	}
+	tc, err := c.Begin()
+	FatalOnError(err)
+	ExecSQLTxWithErr(tc, ctx, "create temp table pp_event_ids(event_id bigint not null) on commit drop")
+	batch := 10000
+	for i := 0; i < len(eids); i += batch {
+		j := i + batch
+		if j > len(eids) {
+			j = len(eids)
+		}
+		var sb strings.Builder
+		sb.WriteString("insert into pp_event_ids(event_id) values ")
+		for k, eid := range eids[i:j] {
+			if k > 0 {
+				sb.WriteString(",")
+			}
+			sb.WriteString("(")
+			sb.WriteString(strconv.FormatInt(eid, 10))
+			sb.WriteString(")")
+		}
+		ExecSQLTxWithErr(tc, ctx, sb.String())
+	}
+	ExecSQLTxWithErr(tc, ctx, "analyze pp_event_ids")
+	for _, script := range []string{
+		"util_sql/postprocess_texts_ids.sql",
+		"util_sql/postprocess_labels_ids.sql",
+		"util_sql/postprocess_issues_prs_ids.sql",
+	} {
+		bytes, err := ReadFile(ctx, dataPrefix+script)
+		FatalOnError(err)
 		ExecSQLTxWithErr(tc, ctx, string(bytes))
 	}
 	FatalOnError(tc.Commit())
-	Printf("bounded postprocess executed for [%s, %s)\n", ToYMDHMSDate(from), ToYMDHMSDate(to))
+	Printf("targeted postprocess executed for %d restored event id(s)\n", len(eids))
 }

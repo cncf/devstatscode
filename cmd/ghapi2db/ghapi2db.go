@@ -1589,8 +1589,8 @@ func main() {
 		if !ctx.SkipAPIStars {
 			restored.merge(syncStars(&ctx))
 		}
-		if restored.restored > 0 && !restored.minDt.IsZero() {
-			lib.RunRangePostprocess(&ctx, restored.minDt, restored.maxDt.Add(time.Second))
+		if len(restored.eids) > 0 {
+			lib.RunEventIDsPostprocess(&ctx, restored.eids)
 		}
 	}
 	dtEnd := time.Now()

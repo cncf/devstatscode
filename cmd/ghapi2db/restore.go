@@ -26,6 +26,10 @@ type restoreStats struct {
 	pages    int
 	minDt    time.Time
 	maxDt    time.Time
+	// event ids of restored rows that produce postprocessed data (comments/reviews - text
+	// sources); forks/releases/stars restores add no gha_texts/labels/issue-PR-link rows,
+	// so they are counted but never collected here (they must not trigger a postprocess)
+	eids []int64
 }
 
 func (st *restoreStats) mark(dt time.Time) {
@@ -47,6 +51,7 @@ func (st *restoreStats) merge(o restoreStats) {
 	if !o.maxDt.IsZero() {
 		st.mark(o.maxDt)
 	}
+	st.eids = append(st.eids, o.eids...)
 }
 
 type restoreRepoFunc func(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats)
@@ -290,9 +295,10 @@ func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 				if idPresent(c, ctx, "gha_comments", "IssueCommentEvent", *cmt.ID) {
 					continue
 				}
-				if lib.RestoreIssueComment(c, ctx, orgRepo, repoID, orgID, numberFromURL(cmt.IssueURL), cmt, maybeHide) {
+				if eid, ok := lib.RestoreIssueComment(c, ctx, orgRepo, repoID, orgID, numberFromURL(cmt.IssueURL), cmt, maybeHide); ok {
 					stats.restored++
 					stats.mark(*cmt.CreatedAt)
+					stats.eids = append(stats.eids, eid)
 				}
 
 			}
@@ -320,9 +326,10 @@ func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 				if idPresent(c, ctx, "gha_comments", "PullRequestReviewCommentEvent", *cmt.ID) {
 					continue
 				}
-				if lib.RestoreReviewComment(c, ctx, orgRepo, repoID, orgID, numberFromURL(cmt.PullRequestURL), cmt, maybeHide) {
+				if eid, ok := lib.RestoreReviewComment(c, ctx, orgRepo, repoID, orgID, numberFromURL(cmt.PullRequestURL), cmt, maybeHide); ok {
 					stats.restored++
 					stats.mark(*cmt.CreatedAt)
+					stats.eids = append(stats.eids, eid)
 				}
 
 			}
@@ -363,9 +370,10 @@ func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 				if idPresent(c, ctx, "gha_comments", "CommitCommentEvent", *cmt.ID) {
 					continue
 				}
-				if lib.RestoreCommitComment(c, ctx, orgRepo, repoID, orgID, cmt, maybeHide) {
+				if eid, ok := lib.RestoreCommitComment(c, ctx, orgRepo, repoID, orgID, cmt, maybeHide); ok {
 					stats.restored++
 					stats.mark(*cmt.CreatedAt)
+					stats.eids = append(stats.eids, eid)
 				}
 
 			}
@@ -531,7 +539,7 @@ func restoreStarsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *l
 			}
 			id, login, dt := g.id, g.login, g.starredAt
 			star := &github.Stargazer{StarredAt: &github.Timestamp{Time: dt}, User: &github.User{ID: &id, Login: &login}}
-			if lib.RestoreStar(c, ctx, orgRepo, repoID, orgID, star, maybeHide) {
+			if _, ok := lib.RestoreStar(c, ctx, orgRepo, repoID, orgID, star, maybeHide); ok {
 				stats.restored++
 				stats.mark(dt)
 			}
@@ -589,9 +597,10 @@ func restoreReviewsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx 
 					if idPresent(c, ctx, "gha_reviews", "PullRequestReviewEvent", *rev.ID) {
 						continue
 					}
-					if lib.RestoreReview(c, ctx, orgRepo, repoID, orgID, number, rev, maybeHide) {
+					if eid, ok := lib.RestoreReview(c, ctx, orgRepo, repoID, orgID, number, rev, maybeHide); ok {
 						stats.restored++
 						stats.mark(*rev.SubmittedAt)
+						stats.eids = append(stats.eids, eid)
 					}
 
 				}
@@ -629,7 +638,7 @@ func restoreForksRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *l
 				if forkPresent(c, ctx, *fork.ID) {
 					continue
 				}
-				if lib.RestoreFork(c, ctx, orgRepo, repoID, orgID, fork, maybeHide) {
+				if _, ok := lib.RestoreFork(c, ctx, orgRepo, repoID, orgID, fork, maybeHide); ok {
 					stats.restored++
 					stats.mark(fork.CreatedAt.Time)
 				}
@@ -670,7 +679,7 @@ func restoreReleasesRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 				if idPresent(c, ctx, "gha_releases", "ReleaseEvent", *rel.ID) {
 					continue
 				}
-				if lib.RestoreRelease(c, ctx, orgRepo, repoID, orgID, rel, maybeHide) {
+				if _, ok := lib.RestoreRelease(c, ctx, orgRepo, repoID, orgID, rel, maybeHide); ok {
 					stats.restored++
 					stats.mark(relDt)
 				}
