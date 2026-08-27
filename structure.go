@@ -748,6 +748,7 @@ func Structure(ctx *Ctx) {
 		ExecSQLWithErr(c, ctx, "create index if not exists labels_name_idx on gha_labels(name)")
 
 		// gha_issues_labels
+		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_event_id_idx on gha_issues_labels(event_id)")
 		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_dup_actor_id_idx on gha_issues_labels(dup_actor_id)")
 		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_dup_actor_login_idx on gha_issues_labels(dup_actor_login)")
 		ExecSQLWithErr(c, ctx, "create index if not exists issues_labels_dup_repo_id_idx on gha_issues_labels(dup_repo_id)")
