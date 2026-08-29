@@ -195,3 +195,9 @@ const Month string = "month"
 
 // Year - common constant string
 const Year string = "year"
+
+// GhostActorID - ID of the 'ghost' placeholder actor GitHub uses for deleted accounts
+const GhostActorID int64 = 10137
+
+// GhostActorLogin - login of the 'ghost' placeholder actor GitHub uses for deleted accounts
+const GhostActorLogin string = "ghost"

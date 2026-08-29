@@ -104,7 +104,7 @@ type Ctx struct {
 	SkipAPIEvents            bool                         // From GHA2DB_GHAPISKIPEVENTS, ghapi2db tool, if set then tool is skipping GH API events sync
 	SkipAPIIssues            bool                         // From GHA2DB_GHAPISKIPISSUES, ghapi2db tool, if set then tool is skipping GH API issues sync
 	SkipAPIPRs               bool                         // From GHA2DB_GHAPISKIPPRS, ghapi2db tool, if set then tool is skipping GH API PRs sync
-	AllowGHAPIInsertFail     bool                         // From GHA2DB_GHAPIALLOWINSERTFAIL, ghapi2db tool, if set then an artificial event DB insert error is not fatal - the whole event is rolled back, reported and skipped (handles bad GH API data, like events without an actor)
+	AllowGHAPIInsertFail     bool                         // From GHA2DB_GHAPIALLOWINSERTFAIL, ghapi2db tool, if set then artificial events with no actor (deleted GitHub accounts) are reported and skipped, otherwise (default) they are reassigned to the 'ghost' placeholder actor
 	PostprocessFrom          string                       // From GHA2DB_POSTPROCESS_FROM, structure tool: when set together with PostprocessTo, generated tables (gha_texts, gha_issues_events_labels, gha_issues_pull_requests) are rebuilt for rows in [from, to) instead of the default max(event_id) incremental append - makes historical backfills correct
 	PostprocessTo            string                       // From GHA2DB_POSTPROCESS_TO, structure tool: exclusive upper bound of the postprocess rebuild range, see PostprocessFrom
 	SkipAPICommits           bool                         // From GHA2DB_GHAPISKIPCOMMITS, ghapi2db tool, if set then tool is skipping GH API commits enrichment

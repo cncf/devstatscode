@@ -331,6 +331,28 @@ func ghMilestoneIDOrNil(milPtr *github.Milestone) interface{} {
 	return milPtr.ID
 }
 
+// ghEnsureEventActor - GitHub API can return an issue event without an actor (or with an
+// actor missing id/login) when the account that performed the event was deleted.
+// Such events cannot be stored (actor related columns are NOT NULL), so reassign them
+// to the canonical GitHub placeholder actor 'ghost' (id 10137) - just like GitHub does.
+func ghEnsureEventActor(cfg *IssueConfig) {
+	event := cfg.GhEvent
+	if event == nil {
+		return
+	}
+	actor := event.Actor
+	if actor != nil && actor.ID != nil && actor.Login != nil {
+		return
+	}
+	ghostID := GhostActorID
+	ghostLogin := GhostActorLogin
+	Printf(
+		"Warning: event %d for %s #%d (%s, %v) has no actor (deleted account?), reassigning to '%s' (id %d)\n",
+		cfg.EventID, cfg.Repo, cfg.Number, cfg.EventType, ToYMDHMSDate(cfg.CreatedAt), ghostLogin, ghostID,
+	)
+	event.Actor = &github.User{ID: &ghostID, Login: &ghostLogin}
+}
+
 // Inserts single GitHub User
 func ghActor(con *sql.Tx, ctx *Ctx, actor *github.User, maybeHide func(string) string) {
 	if actor == nil || actor.Login == nil {
@@ -342,6 +364,10 @@ func ghActor(con *sql.Tx, ctx *Ctx, actor *github.User, maybeHide func(string) s
 // Insert single GitHub milestone
 func ghMilestone(con *sql.Tx, ctx *Ctx, eid int64, ic *IssueConfig, maybeHide func(string) string) {
 	milestone := ic.GhIssue.Milestone
+	// Defensive no-op for current callers: ArtificialEvent/ArtificialPREvent already skipped
+	// (GHA2DB_GHAPIALLOWINSERTFAIL) or ghost-reassigned actor-less events before calling here.
+	// Kept because the code below dereferences ev.Actor directly - protects any future caller.
+	ghEnsureEventActor(ic)
 	ev := ic.GhEvent
 	// gha_milestones
 	ExecSQLTxWithErr(
@@ -477,20 +503,22 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 	event := cfg.GhEvent
 	issue := cfg.GhIssue
 	iid := *issue.ID
-	actor := event.Actor
-
-	// Bad GH API data: an event without an actor cannot be inserted (NOT NULL actor columns)
-	// When GHA2DB_GHAPIALLOWINSERTFAIL is set, report and skip such an event instead of aborting
-	if ctx.AllowGHAPIInsertFail && (actor == nil || actor.Login == nil) {
+	// Bad GH API data: events performed by deleted GitHub accounts can have no actor.
+	// When GHA2DB_GHAPIALLOWINSERTFAIL is set: report and skip such events.
+	// Otherwise (default): reassign them to the 'ghost' placeholder actor instead of failing NOT NULL inserts.
+	if ctx.AllowGHAPIInsertFail && (event.Actor == nil || event.Actor.ID == nil || event.Actor.Login == nil) {
 		Printf("Warning: GHA2DB_GHAPIALLOWINSERTFAIL: skipped artificial PR event for %s %d (%s, %v): event has no actor\n", cfg.Repo, cfg.Number, cfg.EventType, ToYMDHMSDate(cfg.CreatedAt))
 		return nil
 	}
+	ghEnsureEventActor(cfg)
+	actor := event.Actor
 
 	// Start transaction
 	tc, err := c.Begin()
 	FatalOnError(err)
 
-	// User
+	// Event actor & user
+	ghActor(tc, ctx, actor, maybeHide)
 	ghActor(tc, ctx, pr.User, maybeHide)
 
 	baseSHA := ""
@@ -813,18 +841,21 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 	// To handle GDPR
 	maybeHide := MaybeHideFunc(GetHidden(ctx, HideCfgFile))
 
-	// Bad GH API data: an event without an actor cannot be inserted (NOT NULL actor columns)
-	// When GHA2DB_GHAPIALLOWINSERTFAIL is set, report and skip such an event instead of aborting
-	if ctx.AllowGHAPIInsertFail && (event.Actor == nil || event.Actor.Login == nil) {
+	// Bad GH API data: events performed by deleted GitHub accounts can have no actor.
+	// When GHA2DB_GHAPIALLOWINSERTFAIL is set: report and skip such events.
+	// Otherwise (default): reassign them to the 'ghost' placeholder actor instead of failing NOT NULL inserts.
+	if ctx.AllowGHAPIInsertFail && (event.Actor == nil || event.Actor.ID == nil || event.Actor.Login == nil) {
 		Printf("Warning: GHA2DB_GHAPIALLOWINSERTFAIL: skipped artificial event for %s %d (%s, %v): event has no actor\n", cfg.Repo, cfg.Number, cfg.EventType, ToYMDHMSDate(cfg.CreatedAt))
 		return nil
 	}
+	ghEnsureEventActor(cfg)
 
 	// Start transaction
 	tc, err := c.Begin()
 	FatalOnError(err)
 
 	// Actors
+	ghActor(tc, ctx, event.Actor, maybeHide)
 	ghActor(tc, ctx, issue.Assignee, maybeHide)
 	ghActor(tc, ctx, issue.User, maybeHide)
 	for _, assignee := range issue.Assignees {
