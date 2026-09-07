@@ -908,6 +908,10 @@ func syncEvents(ctx *lib.Ctx) {
 						lib.Printf("Warning: Skipping event without type\n")
 						continue
 					}
+					if event.Issue == nil {
+						lib.Printf("Warning: Skipping event without issue\n")
+						continue
+					}
 					eventType := *event.Event
 					// TODO: Non specified in GH API but happenning
 					// select distinct substring(msg for 56) from gha_logs where substring(msg for 28) = 'Warning: skipping event type' order by 1;
