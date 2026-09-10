@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "devstatscode",
+    "compat",
+    "cmd/tsplit",
+    "cmd/replacer",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/cncf/devstatscode"
+rust-version = "1.85"
+
+[workspace.dependencies]
+devstatscode = { path = "devstatscode" }
+devstats-compat = { path = "compat" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+regex = "1"
+memchr = "2"
+tempfile = "3"
+
+# Release binaries: small, stripped, single codegen unit — mirrors the Go
+# Makefile's `-ldflags "-s -w"` intent.
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = 3

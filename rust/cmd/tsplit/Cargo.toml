@@ -1,0 +1,17 @@
+[package]
+name = "tsplit"
+description = "Split CNCF projects HTML table (links + logos rows) into sections of SIZE items — Rust port of cmd/tsplit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tsplit"
+path = "src/main.rs"
+
+[dependencies]
+
+[dev-dependencies]
+devstats-compat = { workspace = true }

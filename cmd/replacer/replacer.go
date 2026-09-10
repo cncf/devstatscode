@@ -48,7 +48,7 @@ func replacer(from, to, fn, mode string) {
 		}
 		l := len(contents)
 		if replaceFrom >= l {
-			lib.Fatalf("REPLACEFROM must be less than filename length %d", l)
+			lib.Fatalf("REPLACEFROM must be less than file length %d", l)
 		}
 	}
 	var newContents string

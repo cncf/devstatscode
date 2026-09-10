@@ -75,3 +75,13 @@ sqlite/*.sql
 *.g
 env.env
 src.txt
+copilot-session-*.md
+
+# Rust port (rust/): keep sources, Cargo.toml/Cargo.lock, Makefile, README, tests, fixtures;
+# ignore cargo build output (debug/release binaries, deps, incremental, Go reference binaries in target/go-bin/)
+/rust/**/target/
+/rust/**/*.rs.bk
+/rust/**/*.pdb
+/rust/**/*.profraw
+/rust/**/*.profdata
+/rust/.cargo/

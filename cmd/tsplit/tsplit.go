@@ -10,7 +10,7 @@ import (
 
 // You should use files like 'graduated.secret' - they start from first graduated '    <tr>' line
 // and end on last line before first inclubating line '    <tr>'
-func tsplit(size int, kind, in string, dbg bool) (out string) {
+func tsplit(size int, kind, in string, dbg bool) (out string, err error) {
 	ary := strings.Split(in, "\n")
 	lines := []string{}
 	for _, item := range ary {
@@ -59,6 +59,10 @@ func tsplit(size int, kind, in string, dbg bool) (out string) {
 		imageLines[i] = imageReplacer.Replace(line)
 	}
 	nItems := len(imageLines)
+	if len(linkLines) != nItems {
+		err = fmt.Errorf("number of link lines (%d) differs from number of image lines (%d)", len(linkLines), nItems)
+		return
+	}
 	nSections := nItems / size
 	if nItems%size != 0 {
 		nSections++
@@ -124,23 +128,32 @@ func tsplit(size int, kind, in string, dbg bool) (out string) {
 func main() {
 	kind := os.Getenv("KIND")
 	if kind == "" {
-		fmt.Printf("You need to specify kind via KIND=Graduated|Incubating|Sandbox\n")
-		return
+		fmt.Fprintf(os.Stderr, "You need to specify kind via KIND=Graduated|Incubating|Sandbox\n")
+		os.Exit(1)
 	}
 	ssize := os.Getenv("SIZE")
 	if ssize == "" {
-		fmt.Printf("You need to specify size via SIZE=n (usually 9, 10, 11, 12)\n")
-		return
+		fmt.Fprintf(os.Stderr, "You need to specify size via SIZE=n (usually 9, 10, 11, 12)\n")
+		os.Exit(1)
 	}
 	size, err := strconv.Atoi(ssize)
 	if err != nil {
-		fmt.Printf("error: %+v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "error: %+v\n", err)
+		os.Exit(1)
+	}
+	if size < 1 {
+		fmt.Fprintf(os.Stderr, "error: SIZE must be positive, got %d\n", size)
+		os.Exit(1)
 	}
 	data, err := ioutil.ReadAll(os.Stdin)
 	if err != nil {
-		fmt.Printf("error: %+v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "error: %+v\n", err)
+		os.Exit(1)
 	}
-	fmt.Printf("%s\n", tsplit(size, kind, string(data), os.Getenv("DEBUG") != ""))
+	out, err := tsplit(size, kind, string(data), os.Getenv("DEBUG") != "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %+v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("%s\n", out)
 }
