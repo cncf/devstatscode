@@ -21,12 +21,19 @@ Shared library code goes to the `devstatscode` crate (currently: fatal error
 handling à la `lib.FatalOnError`/`lib.Fatalf`, and the `goregex` Go→Rust regexp
 adapter).
 
+Supported platforms: **Linux and FreeBSD** (the checkout is shared between an
+Ubuntu bhyve VM and its FreeBSD host, so every OS builds into its own
+`target/<os>/` directory — see `env.sh`).
+
 ## Layout
 
 ```
 rust/
 ├── Cargo.toml          workspace (all crates below)
-├── Makefile            build / test / check / install
+├── compile.sh          build all binaries (release) -> target/<os>/release/<name>
+├── test.sh             fmt + clippy + unit + Go⇄Rust compatibility tests
+├── env.sh              shared helpers for the scripts (per-OS target dir, toolchain PATH)
+├── Makefile            thin portable (bmake/gmake) wrapper around the two scripts
 ├── devstatscode/       shared library crate (port of the root Go package)
 │   └── src/{error,goregex}.rs
 ├── cmd/<name>/         one binary crate per Go program
@@ -40,8 +47,9 @@ rust/
 
 ```sh
 cd rust
-make            # release build, stripped: target/release/{tsplit,replacer}
-make install    # copies them to $GOPATH/bin (override with BINDIR=/path)
+./compile.sh                 # release build, stripped: target/<os>/release/{tsplit,replacer}
+BINDIR=$GOPATH/bin ./compile.sh   # ... and copy them there (same as `make install`)
+make / make install          # equivalents via the Makefile
 ```
 
 Requires a stable Rust toolchain (`rust-version` in `Cargo.toml`); no C
@@ -50,9 +58,11 @@ dependencies, no network access at run time.
 ## Test
 
 ```sh
-make test               # unit tests + compatibility tests against Go
-make test-rust-only     # same, but skips building/comparing the Go binaries
-make check              # rustfmt --check + clippy -D warnings
+./test.sh                # rustfmt --check, clippy -D warnings, unit + Go⇄Rust compat tests
+./test.sh --skip-go      # same without building/comparing the Go binaries
+./test.sh --lint-only    # only rustfmt/clippy
+./test.sh -- -p replacer # extra args go to `cargo test`
+make test / make check   # equivalents via the Makefile
 ```
 
 The compatibility tests (`cmd/<name>/tests/compat.rs`) build the Go program

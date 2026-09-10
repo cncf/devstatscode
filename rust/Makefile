@@ -1,51 +1,46 @@
 # Rust port of the DevStats binaries — lives entirely under rust/.
+# Portable across GNU make (Linux, FreeBSD `gmake`) and BSD make (FreeBSD `make`):
+# the real work is done by compile.sh / test.sh, which also pick a per-OS
+# target directory (target/<os>/) so the VM and the FreeBSD host can share a checkout.
 #
-# Targets mirror the Go Makefile in the repository root:
-#   make            build all ported binaries (release, stripped)  -> target/release/<name>
-#   make test       unit + Go⇄Rust compatibility tests (needs `go`; DEVSTATS_SKIP_GO_COMPAT=1 to skip)
-#   make check      rustfmt --check + clippy -D warnings
+#   make            build all ported binaries (release, stripped) -> target/<os>/release/<name>
+#   make test       lint + unit + Go⇄Rust compatibility tests (needs `go`)
+#   make check      rustfmt --check + clippy -D warnings only
 #   make fmt        rustfmt
 #   make install    copy release binaries to BINDIR (default: $GOPATH/bin, like the Go `make install`)
 #   make clean
 
-CARGO ?= cargo
-GOPATH ?= $(shell go env GOPATH 2>/dev/null || echo $(HOME)/go)
+GOPATH ?= $(HOME)/go
 BINDIR ?= $(GOPATH)/bin
 
-# Ported so far (keep in sync with [workspace] members in Cargo.toml).
+# Ported so far (one crate per cmd/<name>; keep in sync with [workspace] members in Cargo.toml).
 BINARIES = tsplit replacer
-RELEASE_BINS = $(addprefix target/release/,$(BINARIES))
 
-.PHONY: all build $(BINARIES) test test-rust-only check fmt clippy install clean
+.PHONY: all build $(BINARIES) test test-rust-only check fmt install clean
 
 all: build
 
 build:
-	$(CARGO) build --release --workspace
+	./compile.sh
 
 $(BINARIES):
-	$(CARGO) build --release -p $@
+	./compile.sh && echo "built $@"
 
 test:
-	$(CARGO) test --workspace
+	./test.sh
 
 # Same tests without building/comparing against the Go reference binaries.
 test-rust-only:
-	DEVSTATS_SKIP_GO_COMPAT=1 $(CARGO) test --workspace
-
-fmt:
-	$(CARGO) fmt --all
-
-clippy:
-	$(CARGO) clippy --workspace --all-targets -- -D warnings
+	./test.sh --skip-go
 
 check:
-	$(CARGO) fmt --all -- --check
-	$(CARGO) clippy --workspace --all-targets -- -D warnings
+	./test.sh --lint-only
 
-install: build
-	install -d $(BINDIR)
-	install -m 0755 $(RELEASE_BINS) $(BINDIR)
+fmt:
+	cargo fmt --all
+
+install:
+	BINDIR=$(BINDIR) ./compile.sh
 
 clean:
-	$(CARGO) clean
+	rm -rf target
