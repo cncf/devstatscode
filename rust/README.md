@@ -1448,6 +1448,14 @@ resulting files where that is part of the contract). Set
   share `http.DefaultTransport`'s HTTP/2 connection). All clients and
   `raw_post` now share one process-wide pool (100 idle connections, 60 s
   idle age).
+* Stale keep-alive connections (item 53, Rust only, follow-up of item 52 seen
+  live as `GetRateLimit(21): Get "…/rate_limit": peer disconnected`): a pooled
+  connection the server closed in the meantime made the next call fail
+  immediately; Go's `http.Transport` replays such a request transparently
+  (`shouldRetryRequest`: GET/HEAD/OPTIONS/TRACE always, a re-sendable body only
+  when nothing was written yet). `github.rs` now does the same
+  (`run_replaying`, two retries) and reports the exhausted case with Go's
+  `EOF` wording instead of ureq's `peer disconnected`.
 * `import_affs` (bug 51, both sides): `gha_actors.name` is stored as
   `maybeHide(TruncToBytes(name, 120))` but a re-import compared the raw name
   with it, so the 9 live actors with names longer than 120 bytes (and any

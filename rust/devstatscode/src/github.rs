@@ -1038,6 +1038,59 @@ fn shared_agent() -> &'static ureq::Agent {
     })
 }
 
+/// Whether `e` is the failure of a keep-alive connection the server closed
+/// underneath us: the request went out on a pooled connection (or could not
+/// even be written to it) and no response ever arrived.
+fn is_stale_connection(e: &ureq::Error) -> bool {
+    matches!(
+        e,
+        ureq::Error::Io(io) if matches!(
+            io.kind(),
+            std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+        )
+    )
+}
+
+/// Go's `http.Transport` replays a request whose (reused) connection turns
+/// out to be closed by the server before a response arrived, as long as the
+/// request is replayable: GET/HEAD/OPTIONS/TRACE, or any method with a
+/// re-sendable body when nothing was written yet (`nothingWrittenError`,
+/// `errServerClosedIdle`, `transportReadFromServerError` in
+/// `shouldRetryRequest`). ureq never retries by itself, so do it here for
+/// the requests going through the shared pool - a stale keep-alive
+/// connection must not surface as a spurious API failure.
+fn run_replaying(
+    agent: &ureq::Agent,
+    request: ureq::http::Request<Vec<u8>>,
+    replayable: bool,
+) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    // Go keeps retrying while it keeps getting stale idle connections; two
+    // extra attempts are plenty for a pool that drops idle connections
+    // after a minute.
+    let mut attempts = 0;
+    loop {
+        let attempt = request.clone();
+        match agent.run(attempt) {
+            Err(e) if attempts < 2 && is_stale_connection(&e) => {
+                let written = matches!(
+                    &e,
+                    ureq::Error::Io(io) if io.kind() == std::io::ErrorKind::UnexpectedEof
+                );
+                // A non-replayable method is only re-sent when the
+                // request could not be written at all.
+                if !replayable && written {
+                    return Err(e);
+                }
+                attempts += 1;
+            }
+            other => return other,
+        }
+    }
+}
+
 impl Client {
     /// Go `github.NewClient(nil)` / `github.NewClient(oauth2.NewClient(...))`
     /// with the default (or `GHA2DB_GITHUB_API_URL`) endpoint.
@@ -1288,7 +1341,8 @@ impl Client {
                     )
                 }
             };
-            let resp = match self.agent.run(request) {
+            let replayable = matches!(cur_method.as_str(), "GET" | "HEAD" | "OPTIONS" | "TRACE");
+            let resp = match run_replaying(&self.agent, request, replayable) {
                 Ok(r) => r,
                 Err(e) => {
                     return (
@@ -1873,8 +1927,9 @@ pub fn raw_post(
         .accept(ureq::config::AutoHeaderValue::None)
         .user_agent("Go-http-client/1.1")
         .build();
-    let mut resp = agent
-        .run(request)
+    // Go builds this request from a `bytes.Reader` (so `GetBody` is set):
+    // it is re-sent only when nothing could be written to the connection.
+    let mut resp = run_replaying(agent, request, false)
         .map_err(|e| format!("Post {:?}: {}", url, go_transport_error(&e, url)))?;
     let status = resp.status().as_u16();
     let hdrs: Vec<(String, String)> = resp
@@ -1915,6 +1970,9 @@ fn go_transport_error(e: &ureq::Error, url: &str) -> String {
                 std::io::ErrorKind::ConnectionRefused
                 | std::io::ErrorKind::ConnectionReset
                 | std::io::ErrorKind::TimedOut => format!("dial tcp {host_port}: connect: {s}"),
+                // The server closed the connection before answering
+                // (ureq: "Peer disconnected"); Go's transport reports `EOF`.
+                std::io::ErrorKind::UnexpectedEof => "EOF".to_string(),
                 _ => s,
             }
         }
@@ -1949,6 +2007,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::net::TcpListener;
+    use std::sync::Arc;
 
     fn serve_once(status: &str, headers: &str, body: &str) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2157,5 +2216,65 @@ mod tests {
             "http://h:1/repos/o/r/pulls/7"
         );
         assert_eq!(resolve_location("http://h", "x/"), "http://h/x/");
+    }
+
+    /// A server that reads each request and, for the first `hangups`
+    /// connections, closes without answering; later connections get `body`.
+    fn serve_hanging_up(hangups: usize, body: &str) -> (String, Arc<Mutex<usize>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connections = Arc::new(Mutex::new(0usize));
+        let seen = connections.clone();
+        let body = body.to_string();
+        std::thread::spawn(move || {
+            let mut n = 0;
+            loop {
+                let (mut s, _) = listener.accept().unwrap();
+                *seen.lock().unwrap() += 1;
+                let mut buf = [0u8; 8192];
+                let _ = s.read(&mut buf);
+                n += 1;
+                if n <= hangups {
+                    drop(s);
+                    continue;
+                }
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        (format!("http://{addr}/"), connections)
+    }
+
+    #[test]
+    fn stale_connections_are_replayed_like_go() {
+        // GET: Go's transport re-sends a replayable request whose connection
+        // died without a response (up to two retries here).
+        let (base, conns) = serve_hanging_up(2, r#"{"id": 5, "number": 1}"#);
+        let (issue, _) = client_for(&base).issues_get("o", "r", 1).unwrap();
+        assert_eq!(issue.id, Some(5));
+        assert_eq!(*conns.lock().unwrap(), 3);
+
+        // Three consecutive hang-ups exhaust the retries: Go's `EOF`.
+        let (base, conns) = serve_hanging_up(3, "{}");
+        let err = client_for(&base).issues_get("o", "r", 1).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("Get \"{base}repos/o/r/issues/1\": EOF")
+        );
+        assert_eq!(*conns.lock().unwrap(), 3);
+
+        // POST (GraphQL): once the request was written Go does not replay
+        // a non-idempotent method - the failure is reported as is.
+        let (base, conns) = serve_hanging_up(1, "{}");
+        let err = raw_post(&base, &[], b"{}", Duration::from_secs(5)).unwrap_err();
+        assert_eq!(err, format!("Post \"{base}\": EOF"));
+        assert_eq!(*conns.lock().unwrap(), 1);
+        let ok = raw_post(&base, &[], b"{}", Duration::from_secs(5)).unwrap();
+        assert_eq!(ok.status, 200);
     }
 }
