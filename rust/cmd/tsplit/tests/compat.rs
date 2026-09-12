@@ -190,3 +190,43 @@ fn indentation_and_crlf_are_preserved() {
     let out = same(base("Graduated", "9", crlf.into_bytes()), Compare::All);
     assert_eq!(out.code(), 0);
 }
+
+/// `tsplit … | head -1` after `head` exited: Go's `fmt.Printf` dies from
+/// `SIGPIPE` (`os.epipecheck`), printing nothing — so must the Rust binary
+/// (which would otherwise report `error: writing stdout: Broken pipe`).
+#[test]
+fn closed_stdout_pipe_dies_from_sigpipe_like_go() {
+    let input = fixture_bytes("tsplit/graduated.html");
+    let out = same(base("Graduated", "10", input).closed_stdout(), Compare::All);
+    assert_eq!(out.code, None);
+    assert_eq!(out.signal, Some(devstats_compat::SIGPIPE));
+    assert!(out.stderr.is_empty(), "{}", out.stderr_str());
+}
+
+/// Same for diagnostics on a closed stderr (`fmt.Fprintf(os.Stderr, …)`): the
+/// usage error and the `DEBUG` section dump both die silently from `SIGPIPE`.
+#[test]
+fn closed_stderr_pipe_dies_from_sigpipe_like_go() {
+    let out = same(
+        base("Graduated", "0", b"".to_vec()).closed_stderr(),
+        Compare::All,
+    );
+    assert_eq!(
+        (out.code, out.signal),
+        (None, Some(devstats_compat::SIGPIPE))
+    );
+    assert!(out.stdout.is_empty());
+
+    let input = fixture_bytes("tsplit/graduated.html");
+    let out = same(
+        base("Graduated", "10", input)
+            .env("DEBUG", "1")
+            .closed_stderr(),
+        Compare::All,
+    );
+    assert_eq!(
+        (out.code, out.signal),
+        (None, Some(devstats_compat::SIGPIPE))
+    );
+    assert!(out.stdout.is_empty(), "died before the table was printed");
+}

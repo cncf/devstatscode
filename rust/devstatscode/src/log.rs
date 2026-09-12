@@ -129,10 +129,14 @@ fn write_stdout(s: &str) {
     write_stdout_bytes(s.as_bytes());
 }
 
+/// `fmt.Printf` to stdout: a write to a closed pipe kills the process with
+/// `SIGPIPE` like Go's `os.epipecheck`, other write errors are ignored (Go's
+/// `Printf` returns them and every caller drops the result).
 fn write_stdout_bytes(s: &[u8]) {
     let mut out = std::io::stdout().lock();
-    let _ = out.write_all(s);
-    let _ = out.flush();
+    if let Err(e) = out.write_all(s).and_then(|()| out.flush()) {
+        crate::error::die_on_stdio_epipe(&e);
+    }
 }
 
 /// [`printf`] for a message that may not be valid UTF-8 (a Go string built

@@ -19,11 +19,14 @@
 //! those rules with `serde_yaml_ng`, and decode with [`unmarshal`], which also
 //! mirrors `yaml.Unmarshal` on an empty document (zero value, no error).
 //!
+//! Duplicate mapping keys (yaml.v2: the last value wins) and multi-document
+//! streams (yaml.v2: first document only) are handled like yaml.v2 does, see
+//! [`super::dedup`] — `devstats-helm/projects.yaml` really shipped a repeated
+//! `annotation_regexp` key once.
+//!
 //! Known, deliberate differences to yaml.v2 (all on malformed / exotic input):
-//! duplicate keys are an error (yaml.v2: last one wins), quoted numerics /
-//! booleans in `int` / `bool` fields are accepted (yaml.v2 rejects them),
-//! a multi-document stream is rejected (yaml.v2 silently takes the first
-//! document); error texts follow serde, not yaml.v2.
+//! quoted numerics / booleans in `int` / `bool` fields are accepted (yaml.v2
+//! rejects them); error texts follow serde, not yaml.v2.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -946,16 +949,28 @@ pub fn is_utc(t: &DateTime<FixedOffset>) -> bool {
 /// `yaml.Unmarshal(data, &out)` — decode a YAML document into a struct made of
 /// the wrappers above (`#[derive(Deserialize, Default)] #[serde(default)]`).
 /// An empty document yields the zero value like yaml.v2 does; the error text
-/// is prefixed with `yaml: ` like yaml.v2's errors.
+/// is prefixed with `yaml: ` like yaml.v2's errors. Duplicate keys and
+/// multi-document input are decoded the yaml.v2 way (last value wins, first
+/// document only) via [`super::dedup::normalize`].
 pub fn unmarshal<T>(data: &[u8]) -> Result<T, String>
 where
     T: for<'de> Deserialize<'de> + Default,
 {
-    match serde_yaml_ng::from_slice::<Option<T>>(data) {
-        Ok(Some(v)) => Ok(v),
-        Ok(None) => Ok(T::default()),
-        Err(e) => Err(format!("yaml: {e}")),
+    let err = match serde_yaml_ng::from_slice::<Option<T>>(data) {
+        Ok(Some(v)) => return Ok(v),
+        Ok(None) => return Ok(T::default()),
+        Err(e) => format!("yaml: {e}"),
+    };
+    if super::dedup::applies(&err) {
+        if let Ok(normalized) = super::dedup::normalize(data) {
+            match serde_yaml_ng::from_str::<Option<T>>(&normalized) {
+                Ok(Some(v)) => return Ok(v),
+                Ok(None) => return Ok(T::default()),
+                Err(_) => {}
+            }
+        }
     }
+    Err(err)
 }
 
 #[cfg(test)]
@@ -986,6 +1001,67 @@ mod tests {
         #[serde(deserialize_with = "str_array_map::<_, 2>")]
         other: std::collections::BTreeMap<String, [String; 2]>,
         pair: StrArray<2>,
+    }
+
+    // Verified against gopkg.in/yaml.v2 v2.4.0 (2026-09-12): duplicate keys are
+    // no error, the last value wins (a repeated mapping replaces the earlier one
+    // wholesale); of a multi-document stream only the first document is decoded.
+    #[test]
+    fn duplicate_keys_last_wins_like_yaml_v2() {
+        #[derive(Debug, Default, Deserialize, PartialEq)]
+        #[serde(default)]
+        struct P {
+            name: Str,
+            annotation_regexp: Str,
+            order: Int,
+            env: BTreeMap<String, String>,
+        }
+        #[derive(Debug, Default, Deserialize, PartialEq)]
+        #[serde(default)]
+        struct All {
+            projects: BTreeMap<String, P>,
+        }
+        let all: All = unmarshal(
+            b"projects:\n  kpt:\n    order: 1\n    name: a\n    annotation_regexp: first\n    annotation_regexp: second\n    order: 2\n    env:\n      A: x\n      A: y\n  other:\n    name: o\n",
+        )
+        .unwrap();
+        let kpt = &all.projects["kpt"];
+        assert_eq!(kpt.annotation_regexp.0, "second");
+        assert_eq!(kpt.order.0, 2);
+        assert_eq!(kpt.env["A"], "y");
+        assert_eq!(all.projects["other"].name.0, "o");
+        // repeated project mapping: replaced, not merged (Go: Name:b, Order:0)
+        let all: All = unmarshal(
+            b"projects:\n  kpt:\n    order: 1\n    name: a\n    annotation_regexp: r\n  kpt:\n    name: b\n",
+        )
+        .unwrap();
+        let kpt = &all.projects["kpt"];
+        assert_eq!(
+            (
+                kpt.name.0.as_str(),
+                kpt.order.0,
+                kpt.annotation_regexp.0.as_str()
+            ),
+            ("b", 0, "")
+        );
+        // duplicates inside sequences of structs
+        let s: S = unmarshal(b"list:\n- x: 1\n  x: 2\n- x: 3\ns: a\ns: b\n").unwrap();
+        assert_eq!(s.list, Some(vec![Inner { x: Int(2) }, Inner { x: Int(3) }]));
+        assert_eq!(s.s.0, "b");
+        // yaml.v2 still reports a type error for a shadowed bad value (it decodes
+        // every occurrence in turn): "line 1: cannot unmarshal !!str `notanint` into int"
+        assert!(unmarshal::<S>(b"i: 1\ni: notanint\n").is_err());
+        assert!(unmarshal::<S>(b"i: notanint\ni: 1\n").is_err());
+    }
+
+    #[test]
+    fn first_document_only_like_yaml_v2() {
+        let s: S = unmarshal(b"s: one\n---\ns: two\n").unwrap();
+        assert_eq!(s.s.0, "one");
+        let s: S = unmarshal(b"---\ns: one\n...\n---\nnot: [valid\n").unwrap();
+        assert_eq!(s.s.0, "one", "yaml.v2 never parses the second document");
+        let s: S = unmarshal(b"---\n---\ns: two\n").unwrap();
+        assert_eq!(s, S::default(), "empty first document = zero value");
     }
 
     #[test]

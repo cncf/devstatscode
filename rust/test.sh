@@ -14,7 +14,9 @@
 #   --no-lint    skip rustfmt/clippy
 #   --lint-only  run only rustfmt/clippy
 #   --release    run tests with the release profile
-#   --           everything after is passed to `cargo test` (e.g. `-- -p replacer compat`)
+#   --           everything after is passed to `cargo test` (e.g. `-- -p replacer compat`);
+#                when it selects packages (`-p`/`--package`) only those are tested,
+#                otherwise the whole workspace
 # Env:
 #   DEVSTATS_GO  path to the go tool if it is not on PATH
 #   PG_HOST/PG_PORT/PG_USER/PG_PASS
@@ -94,8 +96,15 @@ setup_pg() {
 if [ "$tests" = 1 ]; then
   devstats_ensure_go
   setup_pg
-  step "cargo test --workspace ${release[*]:-} ${extra[*]:-} (os: $DEVSTATS_OS, target: $CARGO_TARGET_DIR)"
-  cargo test --workspace "${release[@]}" "${extra[@]}"
+  # cargo treats `--workspace -p x` as "all members" — drop --workspace when packages are selected
+  scope=(--workspace)
+  for a in "${extra[@]}"; do
+    case "$a" in
+      -p|--package|-p?*|--package=*) scope=() ;;
+    esac
+  done
+  step "cargo test ${scope[*]:-} ${release[*]:-} ${extra[*]:-} (os: $DEVSTATS_OS, target: $CARGO_TARGET_DIR)"
+  cargo test "${scope[@]}" "${release[@]}" "${extra[@]}"
 fi
 
 step "OK — all checks passed"

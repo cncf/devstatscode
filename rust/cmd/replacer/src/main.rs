@@ -183,6 +183,7 @@ fn replacer(from: &str, to: &str, fname: &str, mode: &str) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    devstatscode::error::exit_on_panic();
     let from = env::var("FROM").unwrap_or_default();
     if from.is_empty() {
         println!("You need to set 'FROM' env variable");

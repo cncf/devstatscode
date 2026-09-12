@@ -323,6 +323,7 @@ fn serve_api() {
 }
 
 fn main() {
+    devstatscode::error::sigpipe_like_go();
     gofmt::mark_process_start();
     serve_api();
     fatalf!("serveAPI exited without error, returning error state anyway");

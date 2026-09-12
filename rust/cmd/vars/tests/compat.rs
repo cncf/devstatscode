@@ -749,6 +749,23 @@ fn empty_and_var_less_yamls_do_nothing() {
 }
 
 #[test]
+fn duplicate_keys_and_extra_documents_decode_like_yaml_v2() {
+    // yaml.v2: the last value of a repeated key wins (a repeated `vars:` list
+    // replaces the first one), only the first document of a stream is decoded.
+    let side = both(&Case::new("dup_keys").yaml("dup_keys.yaml")).unwrap();
+    assert_eq!(side.out().code(), 0);
+    let vars = vars_of(&side);
+    assert_eq!(vars["dup_scalar"], s("last value wins"));
+    assert_eq!(vars["dup_bool"], s("written"));
+    assert_eq!(vars["dup_type"], row("42", "", "<nil>", ""));
+    assert_eq!(vars["dup_second_vars_key"], s("from the second vars key"));
+    assert!(!vars.contains_key("dup_disabled"), "{vars:?}");
+    assert!(!vars.contains_key("dup_top_vars_first_list"), "{vars:?}");
+    assert!(!vars.contains_key("second_document"), "{vars:?}");
+    assert_eq!(vars.len(), 3 + 4);
+}
+
+#[test]
 fn malformed_yaml_is_fatal() {
     // the error text comes from the yaml library (differs by design)
     for (name, yaml) in [

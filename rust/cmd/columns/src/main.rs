@@ -119,7 +119,7 @@ fn ensure_column_config(
         con,
         ctx,
         &format!(
-            "select tablename from pg_catalog.pg_tables where schemaname = 'public' and tablename ~ {}",
+            "select tablename from pg_catalog.pg_tables where schemaname = 'public' and tablename ~ {} order by tablename",
             pg::api::n_value(1)
         ),
         &[pg::SqlArg::from(col.table_regexp.as_str())],

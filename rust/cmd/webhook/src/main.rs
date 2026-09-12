@@ -500,6 +500,7 @@ fn deploy(ctx: &mut Ctx, payload: &Payload, dt_start: Instant) -> Response {
 }
 
 fn main() {
+    devstatscode::error::sigpipe_like_go();
     gofmt::mark_process_start();
     let mut ctx = Ctx::default();
     ctx.init();

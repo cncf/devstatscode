@@ -14,6 +14,8 @@ struct Case<'a> {
     name: &'a str,
     content: &'a [u8],
     env: Vec<(&'a str, &'a str)>,
+    /// stdout is a pipe whose reader already exited (`replacer f | head -0`)
+    closed_stdout: bool,
 }
 
 struct Result_ {
@@ -43,6 +45,9 @@ fn run_case(bin: &Path, case: &Case<'_>, file_arg: Option<&str>) -> Result_ {
     } else {
         inv = inv.arg(case.name);
     }
+    if case.closed_stdout {
+        inv = inv.closed_stdout();
+    }
     let out = run(bin, &inv);
     let file = fs::read(&path).unwrap();
     Result_ { out, file }
@@ -66,6 +71,7 @@ fn both(case: &Case<'_>) -> Result_ {
             rust.out.stderr_str()
         );
         assert_eq!(go.out.code, rust.out.code, "exit code{ctx}");
+        assert_eq!(go.out.signal, rust.out.signal, "signal{ctx}");
         assert_eq!(go.out.stdout_str(), rust.out.stdout_str(), "stdout{ctx}");
         assert!(go.file == rust.file, "resulting file differs{ctx}");
     }
@@ -77,6 +83,7 @@ fn case<'a>(name: &'a str, content: &'a [u8], env: &[(&'a str, &'a str)]) -> Cas
         name,
         content,
         env: env.to_vec(),
+        closed_stdout: false,
     }
 }
 
@@ -691,4 +698,35 @@ fn fatal_errors_wait_unless_no_fatal_delay() {
         child.kill().unwrap();
         child.wait().unwrap();
     }
+}
+
+/// `replacer f | head -0`: the `Hits:` line goes to a closed pipe — Go dies from
+/// `SIGPIPE` before writing the file (`fmt.Printf` precedes `WriteFile`), so
+/// the file must stay untouched and nothing may be printed on either side.
+#[test]
+fn closed_stdout_pipe_dies_from_sigpipe_before_writing_the_file() {
+    let sql = b"select '{{org_repo}}';\n";
+    let mut c = case(
+        "repo_data.sql",
+        sql,
+        &[
+            ("MODE", "ss"),
+            ("FROM", "{{org_repo}}"),
+            ("TO", "kubernetes/kubernetes"),
+        ],
+    );
+    c.closed_stdout = true;
+    let r = both(&c);
+    assert_eq!(r.out.code, None);
+    assert_eq!(r.out.signal, Some(devstats_compat::SIGPIPE));
+    assert!(r.out.stderr.is_empty(), "{}", r.out.stderr_str());
+    assert_eq!(r.file, sql, "file must not be modified");
+
+    // the usage message is printed on stdout too
+    c.env = vec![("MODE", "ss"), ("TO", "x")];
+    let r = both(&c);
+    assert_eq!(
+        (r.out.code, r.out.signal),
+        (None, Some(devstats_compat::SIGPIPE))
+    );
 }

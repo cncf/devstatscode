@@ -28,11 +28,13 @@
 //! [`MapBuilder`] helper mirrors struct marshalling with `omitempty`.
 //!
 //! The matching **decoder** side (yaml.v2 `Unmarshal` scalar coercions for
-//! serde structs) lives in [`de`].
+//! serde structs) lives in [`de`]; [`dedup`] adds yaml.v2's tolerance of
+//! duplicate keys and multi-document input to it.
 
 use crate::gofmt;
 
 pub mod de;
+pub mod dedup;
 
 /// A YAML value in yaml.v2 terms.
 #[derive(Debug, Clone, PartialEq)]

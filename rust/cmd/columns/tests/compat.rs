@@ -1126,7 +1126,7 @@ fn qout_echoes_every_statement() {
     let out = stdout_of(&side);
     for sql in [
         "select \"sig_mentions_labels_value\" from \"tsig_mentions_labels\" order by time asc\n",
-        "select tablename from pg_catalog.pg_tables where schemaname = 'public' and tablename ~ $1\n[1:^s(commits|event_types)$ ]\n",
+        "select tablename from pg_catalog.pg_tables where schemaname = 'public' and tablename ~ $1 order by tablename\n[1:^s(commits|event_types)$ ]\n",
         "select column_name from information_schema.columns where table_schema = 'public' and table_name = $1\n[1:scommits ]\n",
         "alter table \"scommits\" add column if not exists \"sig_api_machinery\" double precision\nAdded column \"sig_api_machinery\" to 'scommits' table\n",
         "alter table \"sevent_types\" add column if not exists \"sig_node\" double precision\nAdded column \"sig_node\" to 'sevent_types' table\n",

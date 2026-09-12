@@ -168,17 +168,73 @@ pub fn fatal_no_log<E: Display>(err: E) -> ! {
     process::exit(FATAL_EXIT_CODE)
 }
 
+/// Die from `SIGPIPE` the way a Go program does when a write to stdout or
+/// stderr hits a closed pipe (`os.epipecheck` → `runtime.sigpipe` →
+/// `dieFromSignal`): nothing is printed, no deferred functions run and the
+/// parent sees the process killed by signal 13 (`141` in a shell). Rust
+/// ignores `SIGPIPE` at start-up (so writes return `EPIPE` instead), hence the
+/// explicit reset + raise. Falls back to exit status [`FATAL_EXIT_CODE`] like
+/// Go if the signal does not terminate the process.
+pub fn die_from_sigpipe() -> ! {
+    // SAFETY: plain libc calls with constant arguments; resetting the
+    // disposition and raising the signal has no memory-safety implications.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        libc::raise(libc::SIGPIPE);
+    }
+    process::exit(FATAL_EXIT_CODE)
+}
+
+/// Port of Go's `os.epipecheck` for a failed write to **stdout or stderr**: an
+/// `EPIPE` error kills the process with `SIGPIPE` ([`die_from_sigpipe`]), any
+/// other error is left to the caller (Go returns it from `Write`).
+pub fn die_on_stdio_epipe(err: &std::io::Error) {
+    if err.kind() == std::io::ErrorKind::BrokenPipe {
+        die_from_sigpipe();
+    }
+}
+
+/// Is this the panic `print!`/`println!`/`eprint!`/`eprintln!` raise when
+/// stdout/stderr is a closed pipe (`failed printing to stdout: Broken pipe (os
+/// error 32)`)? Go's `fmt.Printf` dies from `SIGPIPE` in that situation.
+pub fn is_stdio_broken_pipe_panic(info: &std::panic::PanicHookInfo<'_>) -> bool {
+    let msg = panic_message(info);
+    (msg.starts_with("failed printing to stdout") || msg.starts_with("failed printing to stderr"))
+        && msg.contains("Broken pipe")
+}
+
+fn panic_message(info: &std::panic::PanicHookInfo<'_>) -> String {
+    info.payload()
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| info.payload().downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string())
+}
+
+/// For binaries that keep Rust's default panic behaviour (the `api`/`webhook`
+/// servers keep serving after a handler thread panics, like `net/http`
+/// recovering a handler): only the closed-stdout/stderr case is turned into
+/// the Go `SIGPIPE` death, every other panic goes to the previous hook.
+pub fn sigpipe_like_go() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if is_stdio_broken_pipe_panic(info) {
+            die_from_sigpipe();
+        }
+        previous(info);
+    }));
+}
+
 /// Make an unexpected Rust panic terminate the process like a Go runtime panic:
 /// `panic: <message>` on stderr and exit status [`FATAL_EXIT_CODE`] (2) instead
-/// of Rust's default 101. Call once at the top of `main`.
+/// of Rust's default 101 — and a `print!` to a closed stdout/stderr pipe dies
+/// from `SIGPIPE` like `fmt.Printf` does. Call once at the top of `main`.
 pub fn exit_on_panic() {
     std::panic::set_hook(Box::new(|info| {
-        let msg = info
-            .payload()
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "unknown panic".to_string());
+        if is_stdio_broken_pipe_panic(info) {
+            die_from_sigpipe();
+        }
+        let msg = panic_message(info);
         match info.location() {
             Some(loc) => eprintln!("panic: {msg} [{}:{}]", loc.file(), loc.line()),
             None => eprintln!("panic: {msg}"),

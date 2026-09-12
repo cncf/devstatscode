@@ -185,10 +185,55 @@ fn run() -> Result<(), String> {
     stdout
         .write_all(out.as_bytes())
         .and_then(|_| stdout.write_all(b"\n"))
-        .map_err(|e| format!("error: writing stdout: {e}"))
+        .and_then(|_| stdout.flush())
+        .map_err(|e| {
+            die_on_stdio_epipe(&e);
+            format!("error: writing stdout: {e}")
+        })
+}
+
+/// Go dies from `SIGPIPE` when `fmt.Printf`/`fmt.Fprintf(os.Stderr, …)` hits a
+/// closed pipe (`os.epipecheck`): nothing printed, killed by signal 13. Rust
+/// ignores `SIGPIPE`, so the write fails with `EPIPE` instead — reproduce the
+/// Go behaviour for stdout/stderr writes.
+fn die_on_stdio_epipe(err: &io::Error) {
+    if err.kind() == io::ErrorKind::BrokenPipe {
+        // SAFETY: plain libc calls with constant arguments.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            libc::raise(libc::SIGPIPE);
+        }
+        std::process::exit(2);
+    }
+}
+
+/// `eprintln!` to a closed stderr pipe panics (`failed printing to stderr:
+/// Broken pipe`) where Go dies from `SIGPIPE`; every other panic terminates
+/// like a Go runtime panic (`panic: <message>`, exit status 2).
+fn exit_on_panic() {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+        if (msg.starts_with("failed printing to stdout")
+            || msg.starts_with("failed printing to stderr"))
+            && msg.contains("Broken pipe")
+        {
+            die_on_stdio_epipe(&io::Error::from(io::ErrorKind::BrokenPipe));
+        }
+        match info.location() {
+            Some(loc) => eprintln!("panic: {msg} [{}:{}]", loc.file(), loc.line()),
+            None => eprintln!("panic: {msg}"),
+        }
+        std::process::exit(2);
+    }));
 }
 
 fn main() -> ExitCode {
+    exit_on_panic();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {

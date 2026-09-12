@@ -12,6 +12,7 @@ name = "tsplit"
 path = "src/main.rs"
 
 [dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 devstats-compat = { workspace = true }

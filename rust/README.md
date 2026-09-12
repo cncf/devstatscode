@@ -144,15 +144,25 @@ resulting files where that is part of the contract). Set
   map keys in random order and float64-rounded integers).
 * A Rust panic (Go: runtime panic with a goroutine dump) prints
   `panic: <message> [file:line]` to stderr and exits with code 2, like Go.
+* A write to a closed stdout/stderr pipe (`prog | head -1` after `head` has
+  exited) kills the process with `SIGPIPE` exactly like Go's `os.epipecheck`
+  (nothing printed, shell status 141) — `devstatscode::error::die_on_stdio_epipe`
+  / the panic hooks; Rust's default would be a `Broken pipe` panic or, for the
+  `lib.Printf` port, silently continuing.
 * `splitcrons`:
   * `values.yaml` is decoded with yaml.v2 rules (`devstatscode::yamlv2::de`:
     raw scalar text into string fields, YAML 1.1 ints/bools, `[3]int` length
     checks) and re-encoded **byte-for-byte** like `yaml.Marshal` (field order,
     `omitempty`, quoting, flow style `[]`); 249 Go-generated encoder vectors +
     the real `../devstats-helm/devstats-helm/values.yaml` (when present) are
-    compared. Deliberate decoder differences on malformed input only: duplicate
-    keys are an error (yaml.v2: last wins), quoted numbers are accepted in int
-    fields, multi-document files are rejected, error wording follows serde.
+    compared. Duplicate keys (last value wins, a repeated whole mapping
+    replaces the earlier one) and multi-document streams (first document only)
+    are decoded like yaml.v2 — `devstatscode::yamlv2::dedup` re-parses such
+    input with `saphyr-parser` and re-emits it canonically before the serde
+    decode (the live `devstats-helm/projects.yaml` once shipped a repeated
+    `annotation_regexp`, which the Go binaries silently accepted). Deliberate
+    decoder differences on malformed input only: quoted numbers are accepted
+    in int fields, error wording follows serde.
   * The scheduling weights (`size^WEIGHT_POWER`, `SPLIT_ALGO=geom|invgeom|…`)
     are printed, so `math.Pow` is reproduced bit-exactly (`devstatscode::gomath`
     ports Go's `pow.go`, `exp_amd64.s`, `log_amd64.s`; the `Exp` code path —

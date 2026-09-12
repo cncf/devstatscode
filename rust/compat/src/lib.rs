@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
+use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -80,7 +82,10 @@ pub const LIB_ENV_PREFIX: &str = "GHA2DB_";
 /// Result of running one binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
+    /// Exit code; `None` when the process was killed by a signal (see `signal`).
     pub code: Option<i32>,
+    /// The signal that killed the process (`Some(13)` = `SIGPIPE`), if any.
+    pub signal: Option<i32>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
 }
@@ -93,9 +98,14 @@ impl Outcome {
         String::from_utf8_lossy(&self.stderr).into_owned()
     }
     pub fn code(&self) -> i32 {
-        self.code.expect("process terminated by a signal")
+        self.code
+            .unwrap_or_else(|| panic!("process terminated by signal {:?}", self.signal))
     }
 }
+
+/// `SIGPIPE` — the signal Go programs die from when they write to a closed
+/// stdout/stderr pipe (13 on Linux and FreeBSD).
+pub const SIGPIPE: i32 = libc::SIGPIPE;
 
 /// Root of the `cncf/devstatscode` checkout (parent of `rust/`).
 pub fn repo_root() -> PathBuf {
@@ -254,6 +264,11 @@ pub struct Invocation<'a> {
     pub args: Vec<String>,
     pub stdin: Vec<u8>,
     pub cwd: Option<PathBuf>,
+    /// Connect stdout to a pipe whose reader is already gone (`prog | head -1`
+    /// after `head` exited): every write fails with `EPIPE`.
+    pub closed_stdout: bool,
+    /// Same for stderr.
+    pub closed_stderr: bool,
 }
 
 impl<'a> Invocation<'a> {
@@ -275,6 +290,28 @@ impl<'a> Invocation<'a> {
     pub fn cwd(mut self, dir: impl Into<PathBuf>) -> Self {
         self.cwd = Some(dir.into());
         self
+    }
+    pub fn closed_stdout(mut self) -> Self {
+        self.closed_stdout = true;
+        self
+    }
+    pub fn closed_stderr(mut self) -> Self {
+        self.closed_stderr = true;
+        self
+    }
+}
+
+/// The write end of a pipe whose read end is already closed — what a consumer
+/// that exited early leaves behind; every write to it fails with `EPIPE`.
+fn closed_pipe_writer() -> Stdio {
+    let mut fds = [0 as libc::c_int; 2];
+    // SAFETY: `pipe(2)` fills the two-element array; the read end is closed
+    // right away and the write end is owned by the returned `Stdio` (closed
+    // exactly once when the child has been spawned).
+    unsafe {
+        assert_eq!(libc::pipe(fds.as_mut_ptr()), 0, "pipe(2) failed");
+        libc::close(fds[0]);
+        Stdio::from(OwnedFd::from_raw_fd(fds[1]))
     }
 }
 
@@ -302,8 +339,16 @@ pub fn run(bin: &Path, inv: &Invocation<'_>) -> Outcome {
         cmd.current_dir(d);
     }
     cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(if inv.closed_stdout {
+            closed_pipe_writer()
+        } else {
+            Stdio::piped()
+        })
+        .stderr(if inv.closed_stderr {
+            closed_pipe_writer()
+        } else {
+            Stdio::piped()
+        });
     let mut child = cmd
         .spawn()
         .unwrap_or_else(|e| panic!("cannot spawn {}: {e}", bin.display()));
@@ -315,6 +360,7 @@ pub fn run(bin: &Path, inv: &Invocation<'_>) -> Outcome {
     let out = child.wait_with_output().expect("wait for child");
     Outcome {
         code: out.status.code(),
+        signal: out.status.signal(),
         stdout: out.stdout,
         stderr: out.stderr,
     }
@@ -353,19 +399,27 @@ pub fn run_both(
     let go = run(go_bin, inv);
     let ctx = || {
         format!(
-            "\n--- invocation ---\nenv: {:?}\nargs: {:?}\nstdin: {} bytes\n--- go (code {:?}) stdout ---\n{}\n--- go stderr ---\n{}\n--- rust (code {:?}) stdout ---\n{}\n--- rust stderr ---\n{}\n",
+            "\n--- invocation ---\nenv: {:?}\nargs: {:?}\nstdin: {} bytes\n--- go (code {:?}, signal {:?}) stdout ---\n{}\n--- go stderr ---\n{}\n--- rust (code {:?}, signal {:?}) stdout ---\n{}\n--- rust stderr ---\n{}\n",
             inv.env,
             inv.args,
             inv.stdin.len(),
             go.code,
+            go.signal,
             go.stdout_str(),
             go.stderr_str(),
             rust.code,
+            rust.signal,
             rust.stdout_str(),
             rust.stderr_str()
         )
     };
     assert_eq!(go.code, rust.code, "exit code differs{}", ctx());
+    assert_eq!(
+        go.signal,
+        rust.signal,
+        "terminating signal differs{}",
+        ctx()
+    );
     if matches!(what, Compare::All | Compare::CodeAndStdout) {
         assert!(go.stdout == rust.stdout, "stdout differs{}", ctx());
     }

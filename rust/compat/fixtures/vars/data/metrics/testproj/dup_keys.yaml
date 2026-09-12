@@ -1,0 +1,53 @@
+---
+# Duplicate keys and a second document: gopkg.in/yaml.v2 keeps the LAST value
+# of a repeated key (no error) and decodes the FIRST document only.
+# (devstats-helm/projects.yaml once shipped a repeated `annotation_regexp`.)
+vars:
+  - name: dup_scalar
+    type: s
+    value: first value (shadowed)
+    value: last value wins
+  - name: dup_bool
+    type: s
+    value: written
+    no_write: true
+    no_write: false
+  - name: dup_type
+    type: s
+    type: i
+    value: 42
+  - name: dup_disabled
+    type: s
+    value: never written
+    disabled: false
+    disabled: true
+  - name: dup_top_vars_first_list
+    type: s
+    value: this whole list is replaced by the second `vars:` key
+vars:
+  - name: dup_scalar
+    type: s
+    value: first value (shadowed)
+    value: last value wins
+  - name: dup_bool
+    type: s
+    value: written
+    no_write: true
+    no_write: false
+  - name: dup_type
+    type: s
+    type: i
+    value: 42
+  - name: dup_disabled
+    type: s
+    value: never written
+    disabled: false
+    disabled: true
+  - name: dup_second_vars_key
+    type: s
+    value: from the second vars key
+---
+vars:
+  - name: second_document
+    type: s
+    value: yaml.v2 ignores the second document
