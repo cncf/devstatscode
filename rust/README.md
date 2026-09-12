@@ -34,7 +34,7 @@ the difference.
 | `annotations` | `cmd/annotations` | `cmd/annotations` | 5 / 73 (PostgreSQL + git) |
 | `get_repos`  | `cmd/get_repos`   | `cmd/get_repos`   | 3 / 117 (PostgreSQL + git) |
 | `sync_issues` | `cmd/sync_issues` | `cmd/sync_issues` | 10 / 53 (PostgreSQL + fake GitHub API) |
-| `ghapi2db`   | `cmd/ghapi2db`    | `cmd/ghapi2db`    | 73 (PostgreSQL + fake GitHub REST/GraphQL API) |
+| `ghapi2db`   | `cmd/ghapi2db`    | `cmd/ghapi2db`    | 78 (PostgreSQL + fake GitHub REST/GraphQL API) |
 | `gha2db`     | `cmd/gha2db`      | `cmd/gha2db`      | 5 (+9 lib) / 60 (PostgreSQL + fake GH Archive) |
 | `api`        | `cmd/api`         | `cmd/api`         | 10 / 17 scenarios ≈ 330 requests (HTTP servers + PostgreSQL) |
 
@@ -1044,8 +1044,9 @@ resulting files where that is part of the contract). Set
     stored state differs, printing the `Issues to process:`/`Issues:`/`PRs:`
     info blocks and the `Manually processed …` summaries. Knobs:
     `GHA2DB_GITHUB_OAUTH` (token list, `-` or a file), `GHA2DB_MIN_GHAPI_POINTS`,
-    `GHA2DB_MAX_GHAPI_WAIT`, `GHA2DB_MAX_GHAPI_RETRY`, `GHA2DB_GITHUB_DEBUG`,
-    `GHA2DB_SKIPPDB`, `GHA2DB_ST`/`GHA2DB_NCPUS`, `GHA2DB_DEBUG`, `hide/hide.csv`.
+    `GHA2DB_MAX_GHAPI_WAIT`, `GHA2DB_MAX_GHAPI_RETRY`, `GHA2DB_GHAPI_RATE_LIMITS_CACHE`
+    (see `ghapi2db` below), `GHA2DB_GITHUB_DEBUG`, `GHA2DB_SKIPPDB`,
+    `GHA2DB_ST`/`GHA2DB_NCPUS`, `GHA2DB_DEBUG`, `hide/hide.csv`.
   * `GHA2DB_GITHUB_API_URL` (new, in Go and Rust): overrides the API base URL
     (`https://api.github.com/` by default) — GitHub Enterprise or a test
     server; unset → unchanged behaviour.
@@ -1120,11 +1121,28 @@ resulting files where that is part of the contract). Set
     …, skipping`, `status 500, skipping`, `giving up after N retries`, `error:
     …, skipping`). Knobs: `GHA2DB_RECENT_RANGE`, `GHA2DB_RECENT_REPOS_RANGE`,
     `GHA2DB_MIN_GHAPI_POINTS`, `GHA2DB_MAX_GHAPI_WAIT`, `GHA2DB_MAX_GHAPI_RETRY`,
-    `GHA2DB_NO_AUTOFETCHCOMMITS`, `GHA2DB_SKIPPDB`, `GHA2DB_ST`/`GHA2DB_NCPUS`,
-    `GHA2DB_DEBUG`, `GHA2DB_GITHUB_DEBUG`, `GHA2DB_GITHUB_OAUTH`,
-    `GHA2DB_GITHUB_API_URL`, `GHA2DB_AFFILIATIONS_DB`, `GHA2DB_LOCAL`,
-    `hide/hide.csv`.
-  * Go⇄Rust tests: `cmd/ghapi2db/tests/compat.rs` — 72 scenarios, each side on
+    `GHA2DB_GHAPI_RATE_LIMITS_CACHE`, `GHA2DB_NO_AUTOFETCHCOMMITS`,
+    `GHA2DB_SKIPPDB`, `GHA2DB_ST`/`GHA2DB_NCPUS`, `GHA2DB_DEBUG`,
+    `GHA2DB_GITHUB_DEBUG`, `GHA2DB_GITHUB_OAUTH`, `GHA2DB_GITHUB_API_URL`,
+    `GHA2DB_AFFILIATIONS_DB`, `GHA2DB_LOCAL`, `hide/hide.csv`.
+  * `GHA2DB_GHAPI_RATE_LIMITS_CACHE` (new, in Go and Rust, default `5`, `0`
+    disables): `GetRateLimits`/`get_rate_limits` polls all tokens
+    **concurrently** (was: one sequential `/rate_limit` round trip per token
+    before *every* API call — ~5 s per call with the 49 production tokens, bug
+    54) and caches the answer for that many seconds; each served call
+    decrements the hinted token's cached points by one (that is what the
+    caller is about to spend), cached durations shrink by the elapsed time,
+    and the cache is bypassed (GitHub polled again) when it says the best
+    token has `GHA2DB_MIN_GHAPI_POINTS` or fewer points left, when its reset
+    already passed, when the token count changed, and right after a rate
+    limit/abuse error (`HandlePossibleError` drops it). Durations are computed
+    against one common "now" after the poll, so equally loaded tokens tie
+    exactly and the first one wins the hint (before, the last polled token
+    won ties by a few microseconds). The compat harnesses of `ghapi2db` and
+    `sync_issues` run with the cache disabled (so the asserted `/rate_limit`
+    request counts stay deterministic) plus five `rate_limits_cache_*`
+    scenarios with it enabled.
+  * Go⇄Rust tests: `cmd/ghapi2db/tests/compat.rs` — 78 scenarios, each side on
     a scratch database (`full_structure.sql` + seeded events/repos/actors)
     against its own scripted fake GitHub REST + GraphQL server: skip-all;
     licenses (found / not found / already set / force / debug `Stringify`
@@ -1136,7 +1154,11 @@ resulting files where that is part of the contract). Set
     pages, empty page, date ranges, single issue / milestone / repo filters,
     skip issues or PRs, 404 repo, abuse then ok, server errors exhausting
     retries / fatal, unknown error exit 0, low points wait then abort, PR fetch
-    errors, GitHub debug output, MT with many repos); commits (autofetch range,
+    errors, GitHub debug output, MT with many repos); rate limits cache (one
+    poll per token with the hinted token serving every call, token switching
+    driven by the decremented cached points incl. the tie → shorter reset rule,
+    re-poll after the reset wait, abuse invalidation, disabled → poll before
+    every call); commits (autofetch range,
     no `gha_commits`, no autofetch, `DTFROM`/`DTTO`, author name mismatch and
     missing users, shared affiliations DB, hidden actors, paging and progress,
     error paths, MT); restores (all three comment kinds, targeted postprocess,
@@ -1497,3 +1519,13 @@ resulting files where that is part of the contract). Set
   channel and the receiver returned on the first error, leaking the remaining
   goroutines and their connections on every failed request (buffered channel
   now; Rust uses an mpsc channel).
+* `GetRateLimits` (bug 54, both sides, found 2026-09-12 while explaining the
+  multi-hour `kubeflow` syncs): the rate limits of **all** configured tokens
+  were polled sequentially (one HTTPS `/rate_limit` round trip each) before
+  **every** GitHub API call of `ghapi2db`/`sync_issues`. With the 49
+  production tokens that is ~105 ms × 49 ≈ 5.25 s of pure overhead per API
+  call (measured from a prod pod), so a repo with thousands of PR events took
+  hours (kubeflow: 15 min syncs until 2026-09-09, 2.5–4.5 h afterwards under
+  Go and Rust alike; the `API points: [...]` progress lines showed ~5000 unused
+  points the whole time). Now polled concurrently and cached
+  (`GHA2DB_GHAPI_RATE_LIMITS_CACHE`, see the `ghapi2db` notes above).

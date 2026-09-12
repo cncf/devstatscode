@@ -2592,7 +2592,7 @@ fn rate_limits_cache_switches_tokens_as_points_are_used() {
         let reqs = s.requests();
         assert!(
             reqs.contains(&format!(
-                "GET {} accept={V3_ACCEPT} auth=tok1",
+                "GET {}?per_page=100 accept={V3_ACCEPT} auth=tok1",
                 events_path(REPO)
             )),
             "{reqs:#?}"
