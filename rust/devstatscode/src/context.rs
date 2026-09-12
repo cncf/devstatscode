@@ -358,6 +358,10 @@ pub struct Ctx {
     pub max_ghapi_wait_seconds: i64,
     /// From GHA2DB_MAX_GHAPI_RETRY, ghapi2db tool, maximum wait retries
     pub max_ghapi_retry: i64,
+    /// From GHA2DB_GHAPI_RATE_LIMITS_CACHE, ghapi2db/sync_issues tools, for how many seconds
+    /// `get_rate_limits` results (one `/rate_limit` call per token) are cached, 0 disables
+    /// caching (poll before every API call), default 5
+    pub ghapi_rate_limits_cache: i64,
     /// From GHA2DB_GHAPI_ERROR_FATAL, ghapi2db tool, make any GH API error fatal, default false
     pub ghapi_error_is_fatal: bool,
     /// From GHA2DB_GHAPISKIP, ghapi2db tool, if set then tool is skipping GH API calls (all: events (artificial events to make sure we are in sync with GH) and commits (enriches obfuscated GHA commits data)
@@ -566,6 +570,12 @@ impl Ctx {
         if let Some(tr) = env_int("GHA2DB_MAX_GHAPI_RETRY") {
             if tr >= 1 {
                 self.max_ghapi_retry = tr;
+            }
+        }
+        self.ghapi_rate_limits_cache = 5;
+        if let Some(secs) = env_int("GHA2DB_GHAPI_RATE_LIMITS_CACHE") {
+            if secs >= 0 {
+                self.ghapi_rate_limits_cache = secs;
             }
         }
 
@@ -1165,6 +1175,10 @@ impl Ctx {
                 self.max_ghapi_wait_seconds.to_string(),
             ),
             ("MaxGHAPIRetry", self.max_ghapi_retry.to_string()),
+            (
+                "GHAPIRateLimitsCache",
+                self.ghapi_rate_limits_cache.to_string(),
+            ),
             ("GHAPIErrorIsFatal", self.ghapi_error_is_fatal.to_string()),
             ("SkipGHAPI", self.skip_ghapi.to_string()),
             ("SkipAPIEvents", self.skip_api_events.to_string()),
@@ -1349,6 +1363,7 @@ mod tests {
             min_ghapi_points: 1,
             max_ghapi_wait_seconds: 10,
             max_ghapi_retry: 6,
+            ghapi_rate_limits_cache: 5,
             json_out: false,
             db_out: true,
             dry_run: false,
@@ -1568,6 +1583,27 @@ mod tests {
             env: &[("GHA2DB_MAX_GHAPI_RETRY", "15")],
             set: |c| {
                 c.max_ghapi_retry = 15;
+            },
+        },
+        Case {
+            name: "Setting GitHub API rate limits cache 0 (disabled)",
+            env: &[("GHA2DB_GHAPI_RATE_LIMITS_CACHE", "0")],
+            set: |c| {
+                c.ghapi_rate_limits_cache = 0;
+            },
+        },
+        Case {
+            name: "Setting GitHub API rate limits cache 30",
+            env: &[("GHA2DB_GHAPI_RATE_LIMITS_CACHE", "30")],
+            set: |c| {
+                c.ghapi_rate_limits_cache = 30;
+            },
+        },
+        Case {
+            name: "Setting GitHub API rate limits cache -1 (ignored)",
+            env: &[("GHA2DB_GHAPI_RATE_LIMITS_CACHE", "-1")],
+            set: |c| {
+                c.ghapi_rate_limits_cache = 5;
             },
         },
         Case {
@@ -2399,7 +2435,7 @@ mod tests {
             },
         },
         ];
-        assert_eq!(cases.len(), 122);
+        assert_eq!(cases.len(), 125);
         let default = default_context();
         for (index, case) in cases.iter().enumerate() {
             let mut expected = default.copy_context();

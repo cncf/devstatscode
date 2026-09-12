@@ -103,6 +103,7 @@ type Ctx struct {
 	MinGHAPIPoints           int                          // From GHA2DB_MIN_GHAPI_POINTS, ghapi2db tool, minimum GitHub API points, before waiting for reset.
 	MaxGHAPIWaitSeconds      int                          // From GHA2DB_MAX_GHAPI_WAIT, ghapi2db tool, maximum wait time for GitHub API points reset (in seconds).
 	MaxGHAPIRetry            int                          // From GHA2DB_MAX_GHAPI_RETRY, ghapi2db tool, maximum wait retries
+	GHAPIRateLimitsCache     int                          // From GHA2DB_GHAPI_RATE_LIMITS_CACHE, ghapi2db/sync_issues tools, for how many seconds GetRateLimits results (one /rate_limit call per token) are cached, 0 disables caching (poll before every API call), default 5
 	GHAPIErrorIsFatal        bool                         // From GHA2DB_GHAPI_ERROR_FATAL, ghapi2db tool, make any GH API error fatal, default false
 	SkipGHAPI                bool                         // From GHA2DB_GHAPISKIP, ghapi2db tool, if set then tool is skipping GH API calls (all: events (artificial events to make sure we are in sync with GH) and commits (enriches obfuscated GHA commits data)
 	SkipAPIEvents            bool                         // From GHA2DB_GHAPISKIPEVENTS, ghapi2db tool, if set then tool is skipping GH API events sync
@@ -252,6 +253,14 @@ func (ctx *Ctx) Init() {
 		FatalNoLog(err)
 		if tr >= 1 {
 			ctx.MaxGHAPIRetry = tr
+		}
+	}
+	ctx.GHAPIRateLimitsCache = 5
+	if os.Getenv("GHA2DB_GHAPI_RATE_LIMITS_CACHE") != "" {
+		secs, err := strconv.Atoi(os.Getenv("GHA2DB_GHAPI_RATE_LIMITS_CACHE"))
+		FatalNoLog(err)
+		if secs >= 0 {
+			ctx.GHAPIRateLimitsCache = secs
 		}
 	}
 
@@ -978,6 +987,7 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		MinGHAPIPoints:           ctx.MinGHAPIPoints,
 		MaxGHAPIWaitSeconds:      ctx.MaxGHAPIWaitSeconds,
 		MaxGHAPIRetry:            ctx.MaxGHAPIRetry,
+		GHAPIRateLimitsCache:     ctx.GHAPIRateLimitsCache,
 		JSONOut:                  ctx.JSONOut,
 		DBOut:                    ctx.DBOut,
 		DryRun:                   ctx.DryRun,

@@ -664,7 +664,15 @@ impl Case {
         Case {
             name,
             sql: Some(format!("select '{REPO}', 1")),
-            env: vec![("GHA2DB_ST".to_string(), "1".to_string())],
+            env: vec![
+                ("GHA2DB_ST".to_string(), "1".to_string()),
+                // poll `/rate_limit` before every API call (no caching), so
+                // the request counts asserted below are deterministic
+                (
+                    "GHA2DB_GHAPI_RATE_LIMITS_CACHE".to_string(),
+                    "0".to_string(),
+                ),
+            ],
             oauth: Some("tok1".to_string()),
             seed: base_seed(),
             setup: Box::new(|_| {}),

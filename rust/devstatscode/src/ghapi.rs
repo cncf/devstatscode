@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::mpsc;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, FixedOffset, Utc};
 
@@ -314,59 +314,40 @@ fn add_info(infos: &Mutex<BTreeMap<String, Vec<String>>>, why: &str, what: Strin
 // Rate limits, clients, errors
 // ---------------------------------------------------------------------------
 
-/// Go `GetRateLimits`: the limits of every client (core or search) and the
-/// index of the best one to use (most remaining points, then the shortest
-/// wait). A client whose probe fails contributes `-1, -1` and either the
-/// wait parsed from the error message or 5 s.
-pub fn get_rate_limits(
-    ctx: &Ctx,
-    gcs: &[Client],
-    core: bool,
-) -> (usize, Vec<i64>, Vec<i64>, Vec<GoDuration>) {
-    let mut limits: Vec<i64> = Vec::new();
-    let mut remainings: Vec<i64> = Vec::new();
-    let mut durations: Vec<GoDuration> = Vec::new();
-    for (idx, gc) in gcs.iter().enumerate() {
-        let rl = match gc.rate_limits() {
-            Ok((rl, _)) => rl,
-            Err(err) => {
-                if let Some(rem) = period_parse(&err.to_string()) {
-                    let rem = GoDuration(rem.as_nanos() as i64);
-                    printf(&format!("Parsed wait time from error message: {rem}\n"));
-                    limits.push(-1);
-                    remainings.push(-1);
-                    durations.push(rem);
-                    continue;
-                }
-                printf(&format!("GetRateLimit({idx}): {err}\n"));
-                None
-            }
-        };
-        let rl = match rl {
-            Some(rl) => rl,
-            None => {
-                limits.push(-1);
-                remainings.push(-1);
-                durations.push(GoDuration::from_secs(5));
-                continue;
-            }
-        };
-        // Go dereferences `rl.Core`/`rl.Search`; a missing resource reads as zero.
-        let rate = if core { rl.core } else { rl.search }.unwrap_or_default();
-        limits.push(rate.limit);
-        remainings.push(rate.remaining);
-        let until = rate.reset_time().signed_duration_since(Utc::now());
-        durations.push(GoDuration(
-            until
-                .num_nanoseconds()
-                .unwrap_or(i64::MAX)
-                .saturating_add(1_000_000_000),
-        ));
-    }
+/// `get_rate_limits` result cached for `GHA2DB_GHAPI_RATE_LIMITS_CACHE` seconds.
+struct RateLimitsCacheEntry {
+    at: Instant,
+    n_clients: usize,
+    limits: Vec<i64>,
+    remainings: Vec<i64>,
+    durations: Vec<GoDuration>,
+}
+
+/// Cached `get_rate_limits` results, index 0: Search limits, 1: Core limits.
+/// The lock is held while polling GitHub too, so concurrent callers wait for
+/// one poll instead of all polling at once.
+static RATE_LIMITS_CACHE: Mutex<[Option<RateLimitsCacheEntry>; 2]> = Mutex::new([None, None]);
+
+fn lock_rate_limits_cache() -> std::sync::MutexGuard<'static, [Option<RateLimitsCacheEntry>; 2]> {
+    RATE_LIMITS_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Go `InvalidateRateLimitsCache`: drops cached `get_rate_limits` results, so
+/// the next call polls GitHub again (called when a rate limit/abuse error is
+/// detected, so exhausted tokens are re-checked immediately).
+pub fn invalidate_rate_limits_cache() {
+    let mut cache = lock_rate_limits_cache();
+    cache[0] = None;
+    cache[1] = None;
+}
+
+/// Index of the client with most remaining API points; ties are won by the
+/// client whose limit resets sooner.
+fn rate_limits_hint(remainings: &[i64], durations: &[GoDuration]) -> usize {
     let mut hint = 0usize;
-    for idx in 0..limits.len() {
-        // More points left wins; ties go to the client whose limit resets
-        // sooner.
+    for idx in 0..remainings.len() {
         let better = remainings[idx] > remainings[hint]
             || (idx != hint
                 && remainings[idx] == remainings[hint]
@@ -375,6 +356,150 @@ pub fn get_rate_limits(
             hint = idx;
         }
     }
+    hint
+}
+
+/// One client's `/rate_limit` answer: `Ok(reset time)` or a ready
+/// `(limit, remaining, duration)` for failed probes.
+type RatePoll = Result<DateTime<Utc>, (i64, i64, GoDuration)>;
+
+/// Asks all clients for their rate limits (concurrently, one `/rate_limit`
+/// call per client); error messages are printed in clients order after all
+/// calls finish and all durations are computed against the same "now", so
+/// equally loaded clients tie exactly (and the first one wins the hint).
+fn poll_rate_limits(gcs: &[Client], core: bool) -> (Vec<i64>, Vec<i64>, Vec<GoDuration>) {
+    let results: Vec<(i64, i64, RatePoll, Option<String>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = gcs
+            .iter()
+            .enumerate()
+            .map(|(idx, gc)| {
+                scope.spawn(move || {
+                    let mut msg = None;
+                    let rl = match gc.rate_limits() {
+                        Ok((rl, _)) => rl,
+                        Err(err) => {
+                            if let Some(rem) = period_parse(&err.to_string()) {
+                                let rem = GoDuration(rem.as_nanos() as i64);
+                                return (
+                                    -1,
+                                    -1,
+                                    Err((-1, -1, rem)),
+                                    Some(format!("Parsed wait time from error message: {rem}\n")),
+                                );
+                            }
+                            msg = Some(format!("GetRateLimit({idx}): {err}\n"));
+                            None
+                        }
+                    };
+                    let rl = match rl {
+                        Some(rl) => rl,
+                        None => return (-1, -1, Err((-1, -1, GoDuration::from_secs(5))), msg),
+                    };
+                    // Go dereferences `rl.Core`/`rl.Search`; a missing resource reads as zero.
+                    let rate = if core { rl.core } else { rl.search }.unwrap_or_default();
+                    (rate.limit, rate.remaining, Ok(rate.reset_time()), msg)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("rate limits poll thread panicked"))
+            .collect()
+    });
+    let now = Utc::now();
+    let mut limits = Vec::with_capacity(results.len());
+    let mut remainings = Vec::with_capacity(results.len());
+    let mut durations = Vec::with_capacity(results.len());
+    for (limit, remaining, poll, msg) in results {
+        if let Some(msg) = msg {
+            printf(&msg);
+        }
+        let (limit, remaining, duration) = match poll {
+            Ok(reset) => {
+                let until = reset.signed_duration_since(now);
+                (
+                    limit,
+                    remaining,
+                    GoDuration(
+                        until
+                            .num_nanoseconds()
+                            .unwrap_or(i64::MAX)
+                            .saturating_add(1_000_000_000),
+                    ),
+                )
+            }
+            Err(failed) => failed,
+        };
+        limits.push(limit);
+        remainings.push(remaining);
+        durations.push(duration);
+    }
+    (limits, remainings, durations)
+}
+
+/// Go `GetRateLimits`: `(hint, limits, remainings, durations)` of all clients
+/// (`core`: Core limits, otherwise Search limits).
+///
+/// Results are cached for `ctx.ghapi_rate_limits_cache` seconds
+/// (`GHA2DB_GHAPI_RATE_LIMITS_CACHE`, 0 disables the cache): every call is
+/// assumed to be followed by one API call using the hinted client, so cached
+/// remaining points of that client are decreased by one and cached durations
+/// are shortened by the elapsed time. The cache is not used (GitHub is polled)
+/// when it says that the best client has `ctx.min_ghapi_points` or less points
+/// left or that its limit was already reset, so waiting for the reset/aborting
+/// is always decided using fresh data.
+pub fn get_rate_limits(
+    ctx: &Ctx,
+    gcs: &[Client],
+    core: bool,
+) -> (usize, Vec<i64>, Vec<i64>, Vec<GoDuration>) {
+    let (limits, remainings, durations) = if ctx.ghapi_rate_limits_cache > 0 {
+        let ttl = Duration::from_secs(ctx.ghapi_rate_limits_cache as u64);
+        let mut cache = lock_rate_limits_cache();
+        let slot = &mut cache[usize::from(core)];
+        let mut served = None;
+        if let Some(entry) = slot.as_mut() {
+            if entry.n_clients == gcs.len() && !gcs.is_empty() {
+                let elapsed = entry.at.elapsed();
+                let elapsed_go = GoDuration(elapsed.as_nanos().min(i64::MAX as u128) as i64);
+                let hint = rate_limits_hint(&entry.remainings, &entry.durations);
+                if elapsed < ttl
+                    && entry.remainings[hint] > ctx.min_ghapi_points
+                    && entry.durations[hint] > elapsed_go
+                {
+                    let durations: Vec<GoDuration> = entry
+                        .durations
+                        .iter()
+                        .map(|d| GoDuration(d.0.saturating_sub(elapsed_go.0)))
+                        .collect();
+                    served = Some((entry.limits.clone(), entry.remainings.clone(), durations));
+                    entry.remainings[hint] -= 1;
+                }
+            }
+        }
+        match served {
+            Some(res) => res,
+            None => {
+                let (limits, remainings, durations) = poll_rate_limits(gcs, core);
+                let mut entry = RateLimitsCacheEntry {
+                    at: Instant::now(),
+                    n_clients: gcs.len(),
+                    limits: limits.clone(),
+                    remainings: remainings.clone(),
+                    durations: durations.clone(),
+                };
+                if !gcs.is_empty() {
+                    // This call is followed by an API call using the hinted client too
+                    entry.remainings[rate_limits_hint(&remainings, &durations)] -= 1;
+                }
+                *slot = Some(entry);
+                (limits, remainings, durations)
+            }
+        }
+    } else {
+        poll_rate_limits(gcs, core)
+    };
+    let hint = rate_limits_hint(&remainings, &durations);
     if ctx.github_debug > 0 {
         printf(&format!(
             "GetRateLimits: hint: {}, limits: {}, remaining: {}, reset: {}\n",
@@ -412,11 +537,13 @@ pub fn handle_possible_error(err: Option<&github::Error>, cfg: &str, info: &str)
         None => return String::new(),
         Some(e) => e,
     };
-    if err.is_rate_limit() {
-        printf(&format!("Rate limit ({info}) for {cfg}\n"));
-        return "rate".to_string();
-    }
-    if err.is_abuse() {
+    if err.is_rate_limit() || err.is_abuse() {
+        // Cached rate limits are stale now, re-poll GitHub before the next API call
+        invalidate_rate_limits_cache();
+        if err.is_rate_limit() {
+            printf(&format!("Rate limit ({info}) for {cfg}\n"));
+            return "rate".to_string();
+        }
         printf(&format!("Abuse detected ({info}) for {cfg}\n"));
         return ABUSE.to_string();
     }

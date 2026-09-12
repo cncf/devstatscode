@@ -189,51 +189,151 @@ func (ic IssueConfigAry) Less(i, j int) bool {
 	return ic[i].EventID < ic[j].EventID
 }
 
-// GetRateLimits - returns all and remaining API points and duration to wait for reset
-// when core=true - returns Core limits, when core=false returns Search limits
-func GetRateLimits(gctx context.Context, ctx *Ctx, gcs []*github.Client, core bool) (int, []int, []int, []time.Duration) {
-	var (
-		limits     []int
-		remainings []int
-		durations  []time.Duration
-	)
-	for idx, gc := range gcs {
-		rl, _, err := gc.RateLimits(gctx)
-		if err != nil {
-			rem, ok := PeriodParse(err.Error())
-			if ok {
-				Printf("Parsed wait time from error message: %v\n", rem)
-				limits = append(limits, -1)
-				remainings = append(remainings, -1)
-				durations = append(durations, rem)
-				continue
-			}
-			Printf("GetRateLimit(%d): %v\n", idx, err)
-		}
-		if rl == nil {
-			limits = append(limits, -1)
-			remainings = append(remainings, -1)
-			durations = append(durations, time.Duration(5)*time.Second)
-			continue
-		}
-		if core {
-			limits = append(limits, rl.Core.Limit)
-			remainings = append(remainings, rl.Core.Remaining)
-			durations = append(durations, rl.Core.Reset.Time.Sub(time.Now())+time.Duration(1)*time.Second)
-			continue
-		}
-		limits = append(limits, rl.Search.Limit)
-		remainings = append(remainings, rl.Search.Remaining)
-		durations = append(durations, rl.Search.Reset.Time.Sub(time.Now())+time.Duration(1)*time.Second)
-	}
+// rateLimitsCacheEntry - GetRateLimits result cached for `GHA2DB_GHAPI_RATE_LIMITS_CACHE` seconds
+type rateLimitsCacheEntry struct {
+	at         time.Time
+	nClients   int
+	limits     []int
+	remainings []int
+	durations  []time.Duration
+}
+
+var (
+	// rateLimitsCache - cached GetRateLimits results, key: core flag (true: Core limits, false: Search limits)
+	rateLimitsCache = map[bool]*rateLimitsCacheEntry{}
+	// rateLimitsCacheMutex - protects rateLimitsCache, it is held while polling GitHub too, so concurrent
+	// callers wait for one poll instead of all polling at once
+	rateLimitsCacheMutex = &sync.Mutex{}
+)
+
+// InvalidateRateLimitsCache - drops cached GetRateLimits results, so the next call polls GitHub again
+// called when a rate limit/abuse error is detected, so exhausted tokens are re-checked immediately
+func InvalidateRateLimitsCache() {
+	rateLimitsCacheMutex.Lock()
+	rateLimitsCache = map[bool]*rateLimitsCacheEntry{}
+	rateLimitsCacheMutex.Unlock()
+}
+
+// rateLimitsHint - returns index of the client with most remaining API points
+// ties are won by the client whose limit resets sooner
+func rateLimitsHint(remainings []int, durations []time.Duration) int {
 	hint := 0
-	for idx := range limits {
+	for idx := range remainings {
 		if remainings[idx] > remainings[hint] {
 			hint = idx
 		} else if idx != hint && remainings[idx] == remainings[hint] && durations[idx] < durations[hint] {
 			hint = idx
 		}
 	}
+	return hint
+}
+
+// pollRateLimits - asks all clients for their rate limits (concurrently, one /rate_limit call per client)
+// error messages are printed in clients order after all calls finish, all durations are computed
+// against the same "now", so equally loaded clients tie exactly (and the first one wins the hint)
+func pollRateLimits(gctx context.Context, gcs []*github.Client, core bool) (limits, remainings []int, durations []time.Duration) {
+	n := len(gcs)
+	limits = make([]int, n)
+	remainings = make([]int, n)
+	durations = make([]time.Duration, n)
+	msgs := make([]string, n)
+	resets := make([]*time.Time, n)
+	wg := &sync.WaitGroup{}
+	for idx, gc := range gcs {
+		wg.Add(1)
+		go func(idx int, gc *github.Client) {
+			defer wg.Done()
+			rl, _, err := gc.RateLimits(gctx)
+			if err != nil {
+				rem, ok := PeriodParse(err.Error())
+				if ok {
+					msgs[idx] = fmt.Sprintf("Parsed wait time from error message: %v\n", rem)
+					limits[idx], remainings[idx], durations[idx] = -1, -1, rem
+					return
+				}
+				msgs[idx] = fmt.Sprintf("GetRateLimit(%d): %v\n", idx, err)
+			}
+			if rl == nil {
+				limits[idx], remainings[idx], durations[idx] = -1, -1, time.Duration(5)*time.Second
+				return
+			}
+			rate := rl.Core
+			if !core {
+				rate = rl.Search
+			}
+			limits[idx] = rate.Limit
+			remainings[idx] = rate.Remaining
+			reset := rate.Reset.Time
+			resets[idx] = &reset
+		}(idx, gc)
+	}
+	wg.Wait()
+	now := time.Now()
+	for idx, reset := range resets {
+		if reset != nil {
+			durations[idx] = reset.Sub(now) + time.Duration(1)*time.Second
+		}
+	}
+	for _, msg := range msgs {
+		if msg != "" {
+			Printf("%s", msg)
+		}
+	}
+	return
+}
+
+// GetRateLimits - returns all and remaining API points and duration to wait for reset
+// when core=true - returns Core limits, when core=false returns Search limits
+// Results are cached for ctx.GHAPIRateLimitsCache seconds (GHA2DB_GHAPI_RATE_LIMITS_CACHE, 0 disables the cache):
+// every call is assumed to be followed by one API call using the hinted client, so cached remaining points
+// of that client are decreased by one, cached durations are shortened by the elapsed time.
+// Cache is not used (GitHub is polled) when it says that the best client has ctx.MinGHAPIPoints or less
+// points left or that its limit was already reset, so waiting for the reset/aborting is always decided
+// using fresh data.
+func GetRateLimits(gctx context.Context, ctx *Ctx, gcs []*github.Client, core bool) (int, []int, []int, []time.Duration) {
+	var (
+		limits     []int
+		remainings []int
+		durations  []time.Duration
+	)
+	ttl := time.Duration(ctx.GHAPIRateLimitsCache) * time.Second
+	if ttl > 0 {
+		rateLimitsCacheMutex.Lock()
+		defer rateLimitsCacheMutex.Unlock()
+		cached := false
+		entry, ok := rateLimitsCache[core]
+		if ok && entry.nClients == len(gcs) && len(gcs) > 0 {
+			elapsed := time.Since(entry.at)
+			hint := rateLimitsHint(entry.remainings, entry.durations)
+			if elapsed < ttl && entry.remainings[hint] > ctx.MinGHAPIPoints && entry.durations[hint] > elapsed {
+				limits = append(limits, entry.limits...)
+				remainings = append(remainings, entry.remainings...)
+				for _, d := range entry.durations {
+					durations = append(durations, d-elapsed)
+				}
+				entry.remainings[hint]--
+				cached = true
+			}
+		}
+		if !cached {
+			limits, remainings, durations = pollRateLimits(gctx, gcs, core)
+			entry := &rateLimitsCacheEntry{
+				at:         time.Now(),
+				nClients:   len(gcs),
+				limits:     append([]int{}, limits...),
+				remainings: append([]int{}, remainings...),
+				durations:  append([]time.Duration{}, durations...),
+			}
+			if len(gcs) > 0 {
+				// This call is followed by an API call using the hinted client too
+				entry.remainings[rateLimitsHint(remainings, durations)]--
+			}
+			rateLimitsCache[core] = entry
+		}
+	} else {
+		limits, remainings, durations = pollRateLimits(gctx, gcs, core)
+	}
+	hint := rateLimitsHint(remainings, durations)
 	if ctx.GitHubDebug > 0 {
 		Printf("GetRateLimits: hint: %d, limits: %+v, remaining: %+v, reset: %+v\n", hint, limits, remainings, durations)
 	}
@@ -283,6 +383,8 @@ func HandlePossibleError(err error, cfg, info string) string {
 		_, rate := err.(*github.RateLimitError)
 		_, abuse := err.(*github.AbuseRateLimitError)
 		if abuse || rate {
+			// Cached rate limits are stale now, re-poll GitHub before the next API call
+			InvalidateRateLimitsCache()
 			if rate {
 				Printf("Rate limit (%s) for %v\n", info, cfg)
 				return "rate"

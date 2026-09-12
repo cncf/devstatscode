@@ -161,6 +161,7 @@ func TestInit(t *testing.T) {
 		MinGHAPIPoints:           1,
 		MaxGHAPIWaitSeconds:      10,
 		MaxGHAPIRetry:            6,
+		GHAPIRateLimitsCache:     5,
 		JSONOut:                  false,
 		DBOut:                    true,
 		DryRun:                   false,
@@ -463,6 +464,33 @@ func TestInit(t *testing.T) {
 				t,
 				defaultContext.CopyContext(),
 				map[string]interface{}{"MaxGHAPIRetry": 15},
+			),
+		},
+		{
+			"Setting GitHub API rate limits cache 0 (disabled)",
+			map[string]string{"GHA2DB_GHAPI_RATE_LIMITS_CACHE": "0"},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{"GHAPIRateLimitsCache": 0},
+			),
+		},
+		{
+			"Setting GitHub API rate limits cache 30",
+			map[string]string{"GHA2DB_GHAPI_RATE_LIMITS_CACHE": "30"},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{"GHAPIRateLimitsCache": 30},
+			),
+		},
+		{
+			"Setting GitHub API rate limits cache -1 (ignored)",
+			map[string]string{"GHA2DB_GHAPI_RATE_LIMITS_CACHE": "-1"},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{"GHAPIRateLimitsCache": 5},
 			),
 		},
 		{

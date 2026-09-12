@@ -835,6 +835,13 @@ impl Case {
                 "10 years".to_string(),
             ),
             ("GHA2DB_MAX_GHAPI_RETRY".to_string(), "2".to_string()),
+            // poll `/rate_limit` before every API call (no caching), so the
+            // request counts asserted below are deterministic; the cache has
+            // its own `rate_limits_cache_*` tests
+            (
+                "GHA2DB_GHAPI_RATE_LIMITS_CACHE".to_string(),
+                "0".to_string(),
+            ),
         ];
         if pass == Pass::None {
             env.push(("GHA2DB_GHAPISKIP".to_string(), "1".to_string()));
@@ -2485,6 +2492,229 @@ fn events_low_points_wait_then_abort() {
         );
         s.expect_line(0, "Error: API limit reached while getting issues events data, aborting, don't want to wait <dur>");
         s.expect_line(0, "GH Repo Events/PRs API calls: 0");
+    });
+}
+
+/// Events of one issue and one PR (the PR is fetched with `PullRequests.Get`).
+fn rate_limits_cache_events(gh: &FakeGitHub) {
+    let issue = IssueSpec::new(7001, 1);
+    let pr = IssueSpec::new(7002, 2).pr().state("closed");
+    gh.get_ok(
+        &events_path(REPO),
+        &json!([
+            issue_event(
+                5001,
+                Some("closed"),
+                (11, "alice"),
+                "2020-05-01T10:00:00Z",
+                Some(&issue)
+            ),
+            issue_event(
+                5002,
+                Some("closed"),
+                (12, "bob"),
+                "2020-05-02T11:00:00Z",
+                Some(&pr)
+            ),
+        ]),
+    );
+    gh.get_ok(&pr_path(REPO, 2), &pr_json(&pr));
+}
+
+fn rate_limit_requests(s: &Side, token: &str) -> usize {
+    s.requests()
+        .iter()
+        .filter(|r| r == &&format!("GET /rate_limit accept={V3_ACCEPT} auth={token}"))
+        .count()
+}
+
+#[test]
+fn rate_limits_cache_polls_every_token_once() {
+    // Without the cache every API call is preceded by one `/rate_limit` call
+    // per token; with it the tokens are polled once (concurrently) and the
+    // cached points (minus one per served call) drive the token choice.
+    let sides = check(
+        Case::new("rlc_once", Pass::Events)
+            .env("GHA2DB_GHAPI_RATE_LIMITS_CACHE", "3600")
+            .env("GHA2DB_GITHUB_DEBUG", "1")
+            .oauth(Some("tok1,tok2"))
+            .setup(|gh| {
+                gh.set_rate(Some("tok1"), 5000, 4000, 3600);
+                gh.set_rate(Some("tok2"), 5000, 4500, 1800);
+                rate_limits_cache_events(gh);
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "GH Repo Events/PRs API calls: 2");
+        assert_eq!(rate_limit_requests(s, "tok1"), 1, "{:#?}", s.requests());
+        assert_eq!(rate_limit_requests(s, "tok2"), 1, "{:#?}", s.requests());
+        // the token with more points serves both API calls
+        let api: Vec<String> = s
+            .requests()
+            .into_iter()
+            .filter(|r| !r.starts_with("GET /rate_limit "))
+            .collect();
+        assert_eq!(api.len(), 2, "{api:#?}");
+        assert!(api.iter().all(|r| r.ends_with(" auth=tok2")), "{api:#?}");
+        // cached serves see one point less for the hinted token each time
+        s.expect_prefix(
+            0,
+            "GetRateLimits: hint: 1, limits: [5000 5000], remaining: [4000 4500], reset: ",
+        );
+        s.expect_prefix(
+            0,
+            "GetRateLimits: hint: 1, limits: [5000 5000], remaining: [4000 4499], reset: ",
+        );
+        assert_eq!(s.count("select count(*) from gha_issues"), 2);
+    });
+}
+
+#[test]
+fn rate_limits_cache_switches_tokens_as_points_are_used() {
+    // tok1: 3 points, tok2: 2 points (resets sooner): the first call takes
+    // tok1 (3 → 2), the second one is a tie decided by the shorter reset
+    // (tok2, 2 → 1), the third one takes tok1 again (2 → 1) and a cache that
+    // says the best token has `GHA2DB_MIN_GHAPI_POINTS` (1) points left is
+    // not used - GitHub is polled again.
+    let sides = check(
+        Case::new("rlc_switch", Pass::Events)
+            .env("GHA2DB_GHAPI_RATE_LIMITS_CACHE", "3600")
+            .env("GHA2DB_GITHUB_DEBUG", "1")
+            .oauth(Some("tok1,tok2"))
+            .setup(|gh| {
+                gh.set_rate(Some("tok1"), 5000, 3, 3600);
+                gh.set_rate(Some("tok2"), 5000, 2, 1800);
+                rate_limits_cache_events(gh);
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "GH Repo Events/PRs API calls: 2");
+        let reqs = s.requests();
+        assert!(
+            reqs.contains(&format!(
+                "GET {} accept={V3_ACCEPT} auth=tok1",
+                events_path(REPO)
+            )),
+            "{reqs:#?}"
+        );
+        assert!(
+            reqs.contains(&format!(
+                "GET {} accept={V3_ACCEPT} auth=tok2",
+                pr_path(REPO, 2)
+            )),
+            "{reqs:#?}"
+        );
+        s.expect_prefix(
+            0,
+            "GetRateLimits: hint: 0, limits: [5000 5000], remaining: [3 2], reset: ",
+        );
+        s.expect_prefix(
+            0,
+            "GetRateLimits: hint: 1, limits: [5000 5000], remaining: [2 2], reset: ",
+        );
+        s.expect_prefix(
+            0,
+            "GetRateLimits: hint: 0, limits: [5000 5000], remaining: [2 1], reset: ",
+        );
+        // the 4th call finds `[1 1]` in the cache → polled again (tokens are static in the fake)
+        assert_eq!(rate_limit_requests(s, "tok1"), 2, "{reqs:#?}");
+        assert_eq!(rate_limit_requests(s, "tok2"), 2, "{reqs:#?}");
+    });
+}
+
+#[test]
+fn rate_limits_cache_repolls_after_waiting_for_the_reset() {
+    // Exhausted points are never served from the cache: the reset wait is
+    // followed by a fresh poll, then the healthy result is cached.
+    let sides = check(
+        Case::new("rlc_wait", Pass::Events)
+            .env("GHA2DB_GHAPI_RATE_LIMITS_CACHE", "3600")
+            .env("GHA2DB_GITHUB_DEBUG", "1")
+            .setup(|gh| {
+                gh.get(
+                    "/rate_limit",
+                    vec![
+                        Scripted::ok(&rate_json(5000, 1, 1)),
+                        Scripted::ok(&rate_json(5000, 4000, 3600)),
+                    ],
+                );
+                rate_limits_cache_events(gh);
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "API limit reached while getting events data, waiting <dur> (0)",
+        );
+        s.expect_line(0, "GH Repo Events/PRs API calls: 2");
+        s.expect_prefix(
+            0,
+            "GetRateLimits: hint: 0, limits: [5000], remaining: [1], reset: ",
+        );
+        s.expect_prefix(
+            0,
+            "GetRateLimits: hint: 0, limits: [5000], remaining: [4000], reset: ",
+        );
+        s.expect_prefix(
+            0,
+            "GetRateLimits: hint: 0, limits: [5000], remaining: [3999], reset: ",
+        );
+        assert_eq!(rate_limit_requests(s, "tok1"), 2, "{:#?}", s.requests());
+        assert_eq!(s.count("select count(*) from gha_issues"), 2);
+    });
+}
+
+#[test]
+fn rate_limits_cache_invalidated_on_abuse() {
+    // An abuse/rate limit error drops the cache, so the retry polls GitHub
+    // instead of trusting the (now stale) cached points.
+    let issue = IssueSpec::new(7001, 1);
+    let sides = check(
+        Case::new("rlc_abuse", Pass::Events)
+            .env("GHA2DB_GHAPI_RATE_LIMITS_CACHE", "3600")
+            .setup(move |gh| {
+                gh.get(
+                    &events_path(REPO),
+                    vec![
+                        Scripted::abuse(Some(1)),
+                        Scripted::ok(&json!([issue_event(
+                            5001,
+                            Some("closed"),
+                            (11, "alice"),
+                            "2020-05-01T10:00:00Z",
+                            Some(&issue)
+                        )])),
+                    ],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_prefix(0, "Abuse detected (Issues.ListRepositoryEvents) for ");
+        s.expect_line(0, "GH Repo Events/PRs API calls: 2");
+        assert_eq!(rate_limit_requests(s, "tok1"), 2, "{:#?}", s.requests());
+        assert_eq!(s.count("select count(*) from gha_issues"), 1);
+    });
+}
+
+#[test]
+fn rate_limits_cache_disabled_polls_before_every_call() {
+    // `GHA2DB_GHAPI_RATE_LIMITS_CACHE=0` (the harness default) keeps the
+    // original behaviour: one `/rate_limit` call per token before every API
+    // call (2 API calls + the closing summary).
+    let sides = check(
+        Case::new("rlc_off", Pass::Events)
+            .oauth(Some("tok1,tok2"))
+            .setup(rate_limits_cache_events),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "GH Repo Events/PRs API calls: 2");
+        assert!(rate_limit_requests(s, "tok1") >= 3, "{:#?}", s.requests());
+        assert_eq!(
+            rate_limit_requests(s, "tok1"),
+            rate_limit_requests(s, "tok2"),
+            "{:#?}",
+            s.requests()
+        );
     });
 }
 
