@@ -1,0 +1,8 @@
+---
+# Used when GHA2DB_PROJECT is empty: metrics/tags.yaml + metrics/<sql>.sql
+tags:
+  - name: Organizations
+    sql: orgs
+    series_name: orgs
+    name_tag: org_name
+    value_tag: org_value

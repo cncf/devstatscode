@@ -1,0 +1,21 @@
+[package]
+name = "get_repos"
+description = "Clone/pull all DevStats repositories, map commits to files and LOC stats, backfill PushEvent commits and restore orphan commits from git — Rust port of cmd/get_repos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "get_repos"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+devstats-compat = { workspace = true }
+tempfile = { workspace = true }

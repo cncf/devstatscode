@@ -1,0 +1,6 @@
+---
+# Used when GHA2DB_PROJECT is empty (`metrics/vars.yaml`).
+vars:
+  - name: no_project
+    type: s
+    value: project-less run

@@ -1,0 +1,10 @@
+---
+columns:
+  - table_regexp: '^shll$'
+    tag: trepo_groups
+    column: repo_group_name
+    hll: true
+  - table_regexp: '^sother$'
+    tag: trepo_groups
+    column: repo_group_name
+    hll: true

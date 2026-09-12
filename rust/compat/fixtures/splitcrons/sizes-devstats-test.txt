@@ -1,0 +1,18 @@
+postgres 8123456
+devstats 40000000
+gha 123456789012
+allprj 987654321098
+prometheus 5000000000
+istio 12000000000
+envoy 2500000000
+nats 0
+tikv 1
+cncf 3300000000
+containerd 4100000000
+helm 1900000000
+spiffe 777777777
+opentelemetry 9999999999
+rkt 123
+broken
+gha2 abc
+unknowndb 555555555

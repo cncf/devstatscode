@@ -1,0 +1,12 @@
+---
+vars:
+  - name: first
+    type: s
+    command: [echo, 'x']
+    queries:
+      - [q, "select 1 as a", a]
+  - name: second
+    type: s
+    command: [echo, 'y']
+    queries:
+      - [q, "select 2 as a", a]

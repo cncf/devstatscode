@@ -1,0 +1,24 @@
+[package]
+name = "api"
+description = "DevStats JSON API server — Rust port of cmd/api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "api"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+chrono = { workspace = true }
+signal-hook = { workspace = true }
+
+[dev-dependencies]
+devstats-compat = { workspace = true }
+tempfile = { workspace = true }

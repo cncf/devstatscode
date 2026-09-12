@@ -1,0 +1,32 @@
+---
+# Test project: every phase-1 path on the seed tables.
+columns:
+  # stale column dropped, protected all/None kept, existing Kubernetes kept,
+  # one empty table, one plain table
+  - table_regexp: '^s(act|commits|grp_pr_merg)$'
+    tag: trepo_groups
+    column: repo_group_name
+  # explicit hll: false
+  - table_regexp: '^scompany_activity$'
+    tag: tcompanies
+    column: companies_name
+    hll: false
+  # tag without values: warning, table untouched
+  - table_regexp: '^suser_activity$'
+    tag: tusers
+    column: users_name
+  # the same tag table used with its other column, prefix regexp
+  - table_regexp: '^spr_appr'
+    tag: tall_repo_groups
+    column: all_repo_group_value
+  - table_regexp: '^siopened$'
+    tag: tall_repo_groups
+    column: all_repo_group_name
+  # regexp hitting no table
+  - table_regexp: '^snothing_here$'
+    tag: tcountries
+    column: country_name
+  # unicode and quote-in-name values
+  - table_regexp: '^scountries$'
+    tag: tcountries
+    column: country_name

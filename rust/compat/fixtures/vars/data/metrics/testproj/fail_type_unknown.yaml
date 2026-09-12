@@ -1,0 +1,5 @@
+---
+vars:
+  - name: unknown_type
+    type: x
+    value: abc

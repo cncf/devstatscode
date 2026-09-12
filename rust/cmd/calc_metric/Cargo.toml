@@ -1,0 +1,20 @@
+[package]
+name = "calc_metric"
+description = "Compute one DevStats metric (time series or histogram) from a metric SQL file into the s<series>/t<series> tables — Rust port of cmd/calc_metric"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "calc_metric"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+
+[dev-dependencies]
+devstats-compat = { workspace = true }
+regex = { workspace = true }
+tempfile = { workspace = true }

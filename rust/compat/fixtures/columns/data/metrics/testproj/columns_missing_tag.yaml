@@ -1,0 +1,5 @@
+---
+columns:
+  - table_regexp: '^sact$'
+    tag: tnonexistent
+    column: nonexistent_name

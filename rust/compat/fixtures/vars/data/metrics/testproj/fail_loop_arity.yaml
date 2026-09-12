@@ -1,0 +1,8 @@
+---
+vars:
+  - name: bad_loop_def
+    type: s
+    command: [echo, 'loop:0:start x loop:0:end']
+    loops_before: true
+    loops:
+      - [0, 0, 3]

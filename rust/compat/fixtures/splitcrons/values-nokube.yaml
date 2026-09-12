@@ -1,0 +1,86 @@
+affiliationsImportCron: '30 5 * * *'
+affiliationsImportCronTest: 'garbage'
+nAffsCPUs: 4
+nSyncCPUs: 4
+projects:
+- proj: alpha
+  url: alpha
+  db: alpha
+  icon: alpha
+  org: Alpha
+  repo: alpha/alpha
+  cronTest: 4 3,9,15,21 * * *
+  cronProd: 4 * * * *
+  affCronTest: 0 20 14 * *
+  affCronProd: 4 11 * * 1
+  affSkipTemp: "1"
+  disk: 5Gi
+  domains: [1, 1, 0, 0]
+  ga: ""
+  i: 0
+  certNum: 0
+- proj: beta
+  url: beta
+  db: beta
+  icon: beta
+  org: Beta
+  repo: beta/beta
+  cronTest: ""
+  cronProd: ""
+  affCronTest: ""
+  affCronProd: ""
+  affSkipTemp: ""
+  disk: 5Gi
+  domains: [1, 0, 1, 0]
+  ga: ""
+  i: 1
+  certNum: 0
+  maxHist: 3
+- proj: gamma
+  url: gamma
+  db: gamma
+  icon: gamma
+  org: Gamma
+  repo: gamma/gamma
+  cronTest: 4 3,9,15,21 * * *
+  cronProd: 4 * * * *
+  affCronTest: 0 20 14 * *
+  affCronProd: 4 11 * * 1
+  affSkipTemp: "1"
+  disk: 5Gi
+  domains: [0, 1, 0, 0]
+  ga: ""
+  i: 2
+  certNum: 0
+- proj: istio
+  url: istio
+  db: istio
+  icon: istio
+  org: Istio
+  repo: istio/istio
+  cronTest: 4 3,9,15,21 * * *
+  cronProd: 4 * * * *
+  affCronTest: 0 20 14 * *
+  affCronProd: 4 11 * * 1
+  affSkipTemp: "1"
+  disk: 5Gi
+  domains: [1, 1, 0, 0]
+  ga: ""
+  i: 3
+  certNum: 0
+- proj: delta
+  url: delta
+  db: delta
+  icon: delta
+  org: Delta
+  repo: delta/delta
+  cronTest: 4 3,9,15,21 * * *
+  cronProd: 4 * * * *
+  affCronTest: 0 20 14 * *
+  affCronProd: 4 11 * * 1
+  affSkipTemp: "1"
+  disk: 5Gi
+  domains: [1, 1, 0, 0]
+  ga: ""
+  i: 4
+  certNum: 0

@@ -1,0 +1,167 @@
+---
+# Test project exercising every `vars.yaml` feature on a deterministic dataset
+# (`compat/fixtures/vars/seed.sql`): literal values of every type, commands,
+# `{{datadir}}`/`{{project}}`, trimming, replacements (variables, `$ENV`,
+# `:literal`, non-template `:from`, chains), skipped/disabled/incomplete
+# definitions, `no_write`, queries and loops (before and after), upserts.
+vars:
+  - name: os_hostname
+    type: s
+    command: [hostname]
+    no_write: true
+  - name: full_name
+    type: s
+    value: Test Project
+  - name: lower_name
+    type: s
+    value: testproj
+  - name: int_var
+    type: i
+    value: 42
+  - name: negative_int
+    type: i
+    value: -17
+  - name: float_var
+    type: f
+    value: 3.5
+  - name: float_exp
+    type: f
+    value: 1e-3
+  - name: dt_var
+    type: dt
+    value: 2020-02-29 12:34:56
+  - name: dt_iso
+    type: dt
+    value: 2021-12-31T23:59:59Z
+  - name: quoted_number
+    type: s
+    value: 007
+  - name: yaml_bool_as_string
+    type: s
+    value: yes
+  - name: disabled_var
+    type: s
+    value: never written
+    disabled: true
+  - name: disabled_with_command
+    type: s
+    command: [no-such-binary-must-not-run]
+    disabled: yes
+  # incomplete definitions: skipped with a message
+  - name: no_type
+    value: x
+  - type: s
+    value: no name
+  - name: no_value_no_command
+    type: s
+  - name: empty_value
+    type: s
+    value: ''
+  - name: from_env
+    type: s
+    command: [echo, 'project=[[proj]] home=[[home]] eq=[[eq]]']
+    replaces:
+      - [proj, $GHA2DB_PROJECT]
+      - [home, $VARS_TEST_HOME]
+      - [eq, $VARS_TEST_EQUALS]
+  - name: literal_replaces
+    type: s
+    command: [echo, 'x=[[a]] y=[[b]] z=:lit: w=[[full_name]] c=[[a]]']
+    replaces:
+      - [a, ':literal a']
+      - [b, full_name]
+      - [':z=:lit:', ':z=<literal>']
+      - [full_name, full_name]
+      - [':', ':colon']
+  - name: chain
+    type: s
+    command: [echo, '[[a]]-[[b]]-[[from_env]]-[[literal_replaces]]']
+    replaces:
+      - [a, a]
+      - [b, b]
+      - [from_env, from_env]
+      - [literal_replaces, literal_replaces]
+  - name: trimmed
+    type: s
+    command: [printf, '  \n\t hello world \n\n ']
+  - name: empty_output_keeps_value
+    type: s
+    value: default kept
+    command: [true]
+  - name: whitespace_output_keeps_value
+    type: s
+    value: default kept too
+    command: [printf, ' \n\t ']
+  - name: empty_output_no_value
+    type: s
+    command: [true]
+  - name: multiline
+    type: s
+    command: [printf, 'line1\nline2\n\nline4']
+  - name: unicode
+    type: s
+    command: [echo, 'Zażółć gęślą jaźń 日本語 😀 [[full_name]]']
+    replaces:
+      - [full_name, full_name]
+  - name: with_project_and_datadir
+    type: s
+    command: [echo, 'project={{project}} datadir={{datadir}} again={{project}}{{datadir}}']
+  - name: command_arg0_template
+    type: s
+    command: ['{{datadir}}templates/{{project}}_script.sh', 'arg one', 'arg two']
+  - name: stderr_merged
+    type: s
+    command: [sh, -c, 'echo out; echo err 1>&2; echo out2']
+  - name: percent_and_quotes
+    type: s
+    command: [echo, '100% "quoted" ''single'' $HOME `tick` \backslash']
+  - name: sql_injection_attempt
+    type: s
+    value: "'; drop table gha_vars; --"
+  - name: from_sql_query
+    type: s
+    command: [cat, '{{datadir}}templates/query.txt']
+    queries_after: true
+    queries:
+      - [data, "select id, grp, label, amount, ts, flag from vars_test_data order by id", grp, id]
+      - [health, "select series, name, str from sprojects_health where period = 'd' and series in ('phealthkubernetes', 'phealthhelm') order by name asc", series]
+      - [empty, "select id, grp from vars_test_data where id > 1000", grp]
+  - name: loops_before_queries_before
+    type: s
+    command: [cat, '{{datadir}}templates/loops.txt']
+    loops_before: true
+    loops:
+      - [0, 0, 3, 1]
+      - [1, 1, 10, 4]
+      - [2, 5, 5, 1]
+      - [3, 10, 0, 1]
+    queries_before: true
+    queries:
+      - [again, "select id, grp from vars_test_data where grp is not null order by id", grp]
+  - name: loops_after_replaces
+    type: s
+    command: [cat, '{{datadir}}templates/loops_after.txt']
+    replaces:
+      - [count, ':3']
+      - [':loop:9:', ':loop:0:']
+    loops_after: true
+    loops:
+      - [0, 0, 3, 1]
+  - name: no_loops_no_queries_flags
+    type: s
+    command: [cat, '{{datadir}}templates/loops.txt']
+    loops:
+      - [0, 0, 3, 1]
+    queries:
+      - [unused, "select 1 as one", one]
+  - name: upsert_existing_type_s
+    type: s
+    value: replaced
+  - name: os_hostname_written
+    type: s
+    command: [hostname]
+  - name: write_after_no_write
+    type: s
+    command: [echo, 'host=[[hostname]]']
+    replaces:
+      - [hostname, os_hostname]

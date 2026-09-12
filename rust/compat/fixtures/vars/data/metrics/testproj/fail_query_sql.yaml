@@ -1,0 +1,7 @@
+---
+vars:
+  - name: bad_sql
+    type: s
+    command: [echo, 'x']
+    queries:
+      - [q, "selectx 1 as a", a]

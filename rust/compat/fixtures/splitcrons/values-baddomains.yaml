@@ -1,0 +1,4 @@
+projects:
+- proj: a
+  db: a
+  domains: [1, 0, 0]

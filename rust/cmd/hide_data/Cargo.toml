@@ -1,0 +1,19 @@
+[package]
+name = "hide_data"
+description = "Anonymize actors listed in hide/hide.csv in all project databases, or add SHA1s to that file — Rust port of cmd/hide_data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hide_data"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+
+[dev-dependencies]
+devstats-compat = { workspace = true }
+tempfile = { workspace = true }

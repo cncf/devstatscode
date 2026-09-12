@@ -1,0 +1,19 @@
+[package]
+name = "tags"
+description = "Compute TSDB tag series from tags.yaml — Rust port of cmd/tags"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tags"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+
+[dev-dependencies]
+devstats-compat = { workspace = true }
+tempfile = { workspace = true }

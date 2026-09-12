@@ -1,0 +1,8 @@
+---
+vars:
+  - name: dup
+    type: s
+    command: [echo, 'x']
+    queries:
+      - [q, "select 1 as a", a]
+      - [q, "select 2 as a", a]

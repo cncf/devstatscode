@@ -1,0 +1,2 @@
+count=[[count]]
+loop:9:start[loop:9:i]loop:9:end

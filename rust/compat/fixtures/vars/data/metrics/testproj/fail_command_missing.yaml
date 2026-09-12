@@ -1,0 +1,5 @@
+---
+vars:
+  - name: missing_command
+    type: s
+    command: [no-such-binary-xyz, '{{datadir}}', '{{project}}']

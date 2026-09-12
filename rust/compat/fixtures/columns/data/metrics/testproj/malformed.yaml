@@ -1,0 +1,4 @@
+---
+columns:
+  - table_regexp: [unterminated
+    tag: x

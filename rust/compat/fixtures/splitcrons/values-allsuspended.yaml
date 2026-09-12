@@ -1,0 +1,70 @@
+nAffsCPUs: 2
+nSyncCPUs: 2
+projects:
+- proj: kubernetes
+  url: k8s
+  db: gha
+  icon: k8s
+  org: Kubernetes
+  repo: kubernetes/kubernetes
+  cronTest: 4 3,9,15,21 * * *
+  cronProd: 4 3 * * *
+  affCronTest: 0 20 14 * *
+  affCronProd: 4 11 1 * *
+  affSkipTemp: "1"
+  disk: 52Gi
+  domains: [1, 1, 0, 0]
+  ga: ""
+  i: 0
+  certNum: 0
+- proj: all
+  url: all
+  db: allprj
+  icon: cncf
+  org: All CNCF
+  repo: '-'
+  cronTest: 4 0,6,12,18 * * *
+  cronProd: 58 9 * * *
+  affCronTest: 0 8 13 * *
+  affCronProd: 58 17 7 * *
+  affSkipTemp: "1"
+  disk: 1051Gi
+  domains: [1, 1, 0, 0]
+  ga: ""
+  i: 1
+  certNum: 0
+- proj: rkt
+  url: rkt
+  db: rkt
+  icon: rkt
+  org: rkt
+  repo: rkt/rkt
+  cronTest: 13 3,9,15,21 * * *
+  cronProd: 11 * * * *
+  affCronTest: 40 0 17 * *
+  affCronProd: 15 2 * * 1
+  suspendCronTest: true
+  suspendCronProd: true
+  affSkipTemp: "1"
+  disk: 3Gi
+  domains: [1, 1, 0, 0]
+  ga: ""
+  i: 2
+  certNum: 0
+- proj: opentracing
+  url: opentracing
+  db: opentracing
+  icon: opentracing
+  org: OpenTracing
+  repo: opentracing/opentracing-go
+  cronTest: 8 3,9,15,21 * * *
+  cronProd: 8 * * * *
+  affCronTest: 20 22 15 * *
+  affCronProd: 0 3 * * 1
+  affSkipTemp: "1"
+  disk: 3Gi
+  domains: [1, 1, 0, 0]
+  ga: ""
+  i: 3
+  certNum: 0
+  archived: true

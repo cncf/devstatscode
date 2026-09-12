@@ -1,0 +1,12 @@
+<table>
+loop:0:start
+  <tr><td>row loop:0:i</td><td>again:grp:a:loop:0:i:0</td><td>again:grp:b:loop:0:i:1</td></tr>
+loop:0:end
+</table>
+odd: loop:1:start[loop:1:i]loop:1:end
+empty range: loop:2:start<never loop:2:i>loop:2:end.
+reversed range: loop:3:start<never loop:3:i>loop:3:end.
+missing end: loop:4:start<kept>
+missing start: <kept>loop:4:end
+second block: loop:0:start(loop:0:i)loop:0:end
+unknown: again:grp:zzz:0:0 again:grp:a:9:0

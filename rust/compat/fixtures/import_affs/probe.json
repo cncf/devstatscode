@@ -1,0 +1,2 @@
+[{"login":"Alice","email":"alice!example.com","affiliation":"Kismatic < 2018-01-01, ACME","source":"user","name":"Alice A","country_id":"pl","sex":"f","sex_prob":0.9,"tz":"Europe/Warsaw","age":30},
+ {"login":"bob","email":"","affiliation":"NotFound","source":"notfound","name":"","country_id":null,"sex":null,"sex_prob":null,"tz":null,"age":null}]

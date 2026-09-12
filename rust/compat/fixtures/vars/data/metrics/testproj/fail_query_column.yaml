@@ -1,0 +1,7 @@
+---
+vars:
+  - name: bad_column
+    type: s
+    command: [echo, 'x']
+    queries:
+      - [q, "select 1 as a, 'x' as b", a, c]

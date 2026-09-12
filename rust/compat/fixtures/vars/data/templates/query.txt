@@ -1,0 +1,11 @@
+a0: data:grp:a:0:0|data:grp:a:0:1|data:grp:a:0:2|data:grp:a:0:3|data:grp:a:0:4|data:grp:a:0:5
+a1: data:grp:a:1:0|data:grp:a:1:1|data:grp:a:1:2|data:grp:a:1:3|data:grp:a:1:4|data:grp:a:1:5
+b0: data:grp:b:0:0|data:grp:b:0:1|data:grp:b:0:2|data:grp:b:0:3|data:grp:b:0:4|data:grp:b:0:5
+b1: data:grp:b:1:0|data:grp:b:1:1|data:grp:b:1:2|data:grp:b:1:3|data:grp:b:1:4|data:grp:b:1:5
+null grp: data:grp::0:0|data:grp::0:2
+unicode grp: data:grp:ż:0:2|data:grp:ż:0:3
+by id: data:id:1:0:2|data:id:6:0:2|data:id:3:0:1|data:id:4:0:2
+out of range: data:grp:a:2:0|data:grp:a:0:6|data:grp:c:0:0
+health: health:series:phealthkubernetes:0:1=health:series:phealthkubernetes:0:2 health:series:phealthhelm:75:1=health:series:phealthhelm:75:2 health:series:phealthhelm:76:2
+empty: empty:grp:a:0:0
+prefix: data:grp:a:0:10 data:grp:a:0:1x

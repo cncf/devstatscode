@@ -1,0 +1,7 @@
+---
+vars:
+  - name: bad_query_def
+    type: s
+    command: [echo, 'x']
+    queries:
+      - [only_name]

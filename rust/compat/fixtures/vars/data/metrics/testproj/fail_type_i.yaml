@@ -1,0 +1,5 @@
+---
+vars:
+  - name: not_an_int
+    type: i
+    value: abc

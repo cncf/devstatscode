@@ -1,0 +1,53 @@
+affiliationsImportCron: '0 22 * * *'
+affiliationsImportCronTest: '15 x * * *'
+nAffsCPUs: 1
+nSyncCPUs: 1
+projects:
+- proj: kubernetes
+  url: k8s
+  db: gha
+  icon: k8s
+  org: Kubernetes
+  repo: kubernetes/kubernetes
+  cronTest: 4 3,9,15,21 * * *
+  cronProd: 4 3 * * *
+  affCronTest: 0 20 14 * *
+  affCronProd: 4 11 1 * *
+  affSkipTemp: "1"
+  disk: 52Gi
+  domains: [1, 1, 0, 0]
+  ga: ""
+  i: 0
+  certNum: 0
+- proj: prometheus
+  url: prometheus
+  db: prometheus
+  icon: prometheus
+  org: Prometheus
+  repo: prometheus/prometheus
+  cronTest: 4 3,9,15,21 * * *
+  cronProd: 4 0,6,12,18 * * *
+  affCronTest: 0 8 16 * *
+  affCronProd: 4 21 1 * *
+  affSkipTemp: "1"
+  disk: 3Gi
+  domains: [1, 1, 0, 0]
+  ga: ""
+  i: 1
+  certNum: 0
+- proj: envoy
+  url: envoy
+  db: envoy
+  icon: envoy
+  org: Envoy
+  repo: envoyproxy/envoy
+  cronTest: 29 3,9,15,21 * * *
+  cronProd: 27 * * * *
+  affCronTest: 0 18 19 * *
+  affCronProd: 45 6 * * 2
+  affSkipTemp: "1"
+  disk: 16Gi
+  domains: [1, 1, 0, 0]
+  ga: ""
+  i: 2
+  certNum: 0

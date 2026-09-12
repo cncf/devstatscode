@@ -1,0 +1,5 @@
+---
+columns:
+  - table_regexp: '^sact$'
+    tag: trepo_groups
+    column: no_such_column

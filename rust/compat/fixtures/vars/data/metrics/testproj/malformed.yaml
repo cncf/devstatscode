@@ -1,0 +1,6 @@
+---
+vars:
+  - name: a
+    type: s
+   value: bad indentation
+  - [unclosed

@@ -1,0 +1,22 @@
+[package]
+name = "sync_issues"
+description = "Sync the state of issues/PRs listed by a SQL query from the GitHub API — Rust port of cmd/sync_issues"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "sync_issues"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+devstats-compat = { workspace = true }
+regex = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }

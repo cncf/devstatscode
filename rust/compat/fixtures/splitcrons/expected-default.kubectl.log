@@ -1,0 +1,69 @@
+getcronjob--contexttest-ndevstats-test-ojsonpath={range .items[*]}{.metadata.name}{"\n"}{end}
+exec--contexttest-ndevstats-testdevstats-postgres-0--psql-Upostgres-At-F -cselect datname, pg_database_size(datname) from pg_database where not datistemplate
+patchcronjob--contexttest-ndevstats-testdevstats-cncf-p{"spec":{"suspend":false}}
+patchcronjob--contexttest-ndevstats-testdevstats-affiliations-cncf-p{"spec":{"suspend":false}}
+patchcronjob--contexttest-ndevstats-testdevstats-envoy-p{"spec":{"suspend":false}}
+patchcronjob--contexttest-ndevstats-testdevstats-affiliations-envoy-p{"spec":{"suspend":false}}
+patchcronjob--contexttest-ndevstats-testdevstats-tikv-p{"spec":{"suspend":false}}
+patchcronjob--contexttest-ndevstats-testdevstats-affiliations-tikv-p{"spec":{"suspend":false}}
+patchcronjob--contexttest-ndevstats-testdevstats-containerd-p{"spec":{"suspend":true}}
+patchcronjob--contexttest-ndevstats-testdevstats-affiliations-containerd-p{"spec":{"suspend":true}}
+patchcronjob--contexttest-ndevstats-testdevstats-nats-p{"spec":{"suspend":false}}
+patchcronjob--contexttest-ndevstats-testdevstats-affiliations-nats-p{"spec":{"suspend":false}}
+patchcronjob--contexttest-ndevstats-testdevstats-affiliations-cncf-p{"spec":{"schedule":"4 3 * * 0"}}
+patchcronjob--contexttest-ndevstats-testdevstats-affiliations-envoy-p{"spec":{"schedule":"15 18 * * 3"}}
+patchcronjob--contexttest-ndevstats-testdevstats-envoy-p{"spec":{"schedule":"15 3,9,15,21 * * *"}}
+patchcronjob--contexttest-ndevstats-testdevstats-affiliations-tikv-p{"spec":{"schedule":"59 20 * * 6"}}
+patchcronjob--contexttest-ndevstats-testdevstats-tikv-p{"spec":{"schedule":"59 5,11,17,23 * * *"}}
+patchcronjob--contexttest-ndevstats-testdevstats-affiliations-nats-p{"spec":{"schedule":"5 21 * * 6"}}
+patchcronjob--contexttest-ndevstats-testdevstats-nats-p{"spec":{"schedule":"5 0,6,12,18 * * *"}}
+getcronjob--contextprod-ndevstats-prod-ojsonpath={range .items[*]}{.metadata.name}{"\n"}{end}
+exec--contextprod-ndevstats-proddevstats-postgres-0--psql-Upostgres-At-F -cselect datname, pg_database_size(datname) from pg_database where not datistemplate
+patchcronjob--contextprod-ndevstats-proddevstats-kubernetes-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-kubernetes-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-prometheus-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-prometheus-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-all-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-all-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-istio-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-istio-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-jenkins-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-jenkins-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-allcdf-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-allcdf-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-envoy-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-helm-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-tikv-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-tikv-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-spiffe-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-spiffe-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-opentelemetry-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-opentelemetry-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-nats-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-nats-p{"spec":{"suspend":false}}
+patchcronjob--contextprod-ndevstats-proddevstats-kubernetes-p{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[{"name":"devstats-kubernetes","env":[{"name":"GHA2DB_RECENT_RANGE","value":"26 hours"},{"name":"GHA2DB_ORPHAN_COMMITS_RANGE","value":"26 hours"},{"name":"GHA2DB_RECENT_REPOS_RANGE","value":"2 days"}]}]}}}}}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-kubernetes-p{"spec":{"schedule":"4 11 * * 0"}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-prometheus-p{"spec":{"schedule":"4 3 * * 2"}}
+patchcronjob--contextprod-ndevstats-proddevstats-all-p{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[{"name":"devstats-all","env":[{"name":"GHA2DB_RECENT_RANGE","value":"26 hours"},{"name":"GHA2DB_ORPHAN_COMMITS_RANGE","value":"26 hours"},{"name":"GHA2DB_RECENT_REPOS_RANGE","value":"2 days"}]}]}}}}}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-all-p{"spec":{"schedule":"46 17 * * 2"}}
+patchcronjob--contextprod-ndevstats-proddevstats-all-p{"spec":{"schedule":"46 9 * * *"}}
+patchcronjob--contextprod-ndevstats-proddevstats-istio-p{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[{"name":"devstats-istio","env":[{"name":"GHA2DB_RECENT_RANGE","value":"26 hours"},{"name":"GHA2DB_ORPHAN_COMMITS_RANGE","value":"26 hours"},{"name":"GHA2DB_RECENT_REPOS_RANGE","value":"2 days"}]}]}}}}}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-istio-p{"spec":{"schedule":"40 3 * * 5"}}
+patchcronjob--contextprod-ndevstats-proddevstats-istio-p{"spec":{"schedule":"40 19 * * *"}}
+patchcronjob--contextprod-ndevstats-proddevstats-jenkins-p{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[{"name":"devstats-jenkins","env":[{"name":"GHA2DB_RECENT_RANGE","value":"26 hours"},{"name":"GHA2DB_ORPHAN_COMMITS_RANGE","value":"26 hours"},{"name":"GHA2DB_RECENT_REPOS_RANGE","value":"2 days"}]}]}}}}}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-jenkins-p{"spec":{"schedule":"43 4 * * 5"}}
+patchcronjob--contextprod-ndevstats-proddevstats-jenkins-p{"spec":{"schedule":"43 20 * * *"}}
+patchcronjob--contextprod-ndevstats-proddevstats-allcdf-p{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[{"name":"devstats-allcdf","env":[{"name":"GHA2DB_RECENT_RANGE","value":"26 hours"},{"name":"GHA2DB_ORPHAN_COMMITS_RANGE","value":"26 hours"},{"name":"GHA2DB_RECENT_REPOS_RANGE","value":"2 days"}]}]}}}}}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-allcdf-p{"spec":{"schedule":"19 5 * * 5"}}
+patchcronjob--contextprod-ndevstats-proddevstats-allcdf-p{"spec":{"schedule":"19 21 * * *"}}
+patchcronjob--contextprod-ndevstats-proddevstats-envoy-p{"spec":{"schedule":"11 2,8,14,20 * * *"}}
+patchcronjob--contextprod-ndevstats-proddevstats-helm-p{"spec":{"schedule":"13 3,9,15,21 * * *"}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-tikv-p{"spec":{"schedule":"10 13 * * 6"}}
+patchcronjob--contextprod-ndevstats-proddevstats-tikv-p{"spec":{"schedule":"10 4,10,16,22 * * *"}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-spiffe-p{"spec":{"schedule":"30 14 * * 6"}}
+patchcronjob--contextprod-ndevstats-proddevstats-spiffe-p{"spec":{"schedule":"30 5,11,17,23 * * *"}}
+patchcronjob--contextprod-ndevstats-proddevstats-opentelemetry-p{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[{"name":"devstats-opentelemetry","env":[{"name":"GHA2DB_RECENT_RANGE","value":"26 hours"},{"name":"GHA2DB_ORPHAN_COMMITS_RANGE","value":"26 hours"},{"name":"GHA2DB_RECENT_REPOS_RANGE","value":"2 days"}]}]}}}}}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-opentelemetry-p{"spec":{"schedule":"4 7 * * 6"}}
+patchcronjob--contextprod-ndevstats-proddevstats-opentelemetry-p{"spec":{"schedule":"4 23 * * *"}}
+patchcronjob--contextprod-ndevstats-proddevstats-affiliations-nats-p{"spec":{"schedule":"59 20 * * 6"}}
+patchcronjob--contextprod-ndevstats-proddevstats-nats-p{"spec":{"schedule":"59 5,11,17,23 * * *"}}

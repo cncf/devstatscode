@@ -1,0 +1,5 @@
+---
+columns:
+  - table_regexp: '^s(act'
+    tag: trepo_groups
+    column: repo_group_name

@@ -1,0 +1,6 @@
+---
+tags:
+  - name: Bad SQL
+    sql: bad_sql
+    series_name: bad_sql
+    name_tag: x

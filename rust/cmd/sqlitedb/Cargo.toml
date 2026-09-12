@@ -1,0 +1,21 @@
+[package]
+name = "sqlitedb"
+description = "Export/import Grafana dashboards (JSON) to/from Grafana's SQLite database, delete dashboards by uid — Rust port of cmd/sqlitedb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "sqlitedb"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+devstats-compat = { workspace = true }
+tempfile = { workspace = true }

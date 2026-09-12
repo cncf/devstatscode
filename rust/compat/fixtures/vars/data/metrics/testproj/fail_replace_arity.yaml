@@ -1,0 +1,10 @@
+---
+vars:
+  - name: ok_first
+    type: s
+    value: written before the failure
+  - name: bad_replaces
+    type: s
+    command: [echo, 'x']
+    replaces:
+      - [a, b, c]

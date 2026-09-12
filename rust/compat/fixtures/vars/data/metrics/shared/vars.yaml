@@ -1,0 +1,7 @@
+---
+# Fallback used when `metrics/<project>/vars.yaml` does not exist (ReadFile's
+# `/shared/` fallback).
+vars:
+  - name: shared_fallback
+    type: s
+    value: from metrics/shared/vars.yaml

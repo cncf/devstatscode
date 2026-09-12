@@ -1,0 +1,76 @@
+---
+# Tag definitions for the `tags` compatibility tests (project "testproj").
+# Every SQL here has a total ORDER BY, so the rows — and therefore the hourly
+# `time` values assigned to them — are deterministic and the complete series
+# tables can be compared row by row.
+tags:
+  # name tag only; metrics/testproj/repos_tags.sql shadows the shared file
+  - name: Repositories
+    sql: repos_tags
+    series_name: repos
+    name_tag: repo_name
+  # name + normalized value + other tags (with and without normalization)
+  - name: Companies
+    sql: companies_values
+    series_name: companies
+    name_tag: companies_name
+    value_tag: companies_value
+    other_tags:
+      company_lower: [lname, ""]
+      company_len: [len, 1]
+      company_upper: [uname, Y]
+      company_first: [first, no]
+  # NULL columns scan as empty strings
+  - name: Repo aliases and licenses
+    sql: nulls
+    series_name: aliases
+    name_tag: alias_name
+    value_tag: alias_value
+    other_tags:
+      license: [license_name, t]
+      probability: [license_prob, y]
+  # explicit limit
+  - name: Event types (limited)
+    sql: limited
+    series_name: event_types_top
+    name_tag: event_type_name
+    value_tag: event_type_value
+    limit: 3
+  # default limit ({{lim}} → 127)
+  - name: Event types (all)
+    sql: limited
+    series_name: event_types_all
+    name_tag: event_type_name
+  # {{exclude_bots}}
+  - name: Humans
+    sql: bots
+    series_name: humans
+    name_tag: human_name
+    value_tag: human_value
+  # no rows → "have no values" warning (%+v of the whole Tag)
+  - name: Nothing
+    sql: empty
+    series_name: nothing
+    name_tag: nothing_name
+    value_tag: nothing_value
+    other_tags:
+      z_last: [name, "1"]
+      a_first: [name, ""]
+    limit: 5
+  # disabled: never processed (its SQL file does not exist)
+  - name: Disabled
+    sql: does_not_exist
+    series_name: disabled
+    name_tag: disabled_name
+    disabled: true
+  # SQL only in metrics/shared/ → ReadFile falls back to it
+  - name: Cumulative periods
+    sql: cumulative_periods
+    series_name: cumperiods
+    name_tag: cumperiod_name
+  # duplicate values: two actors from Poland → two rows with the same tag
+  - name: Countries
+    sql: countries
+    series_name: countries
+    name_tag: country_name
+    value_tag: country_value

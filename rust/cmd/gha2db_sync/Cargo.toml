@@ -1,0 +1,20 @@
+[package]
+name = "gha2db_sync"
+description = "Hourly sync of one project: gha2db, get_repos, ghapi2db, structure, tags, columns, annotations, calc_metric per metrics.yaml, vars — Rust port of cmd/gha2db_sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "gha2db_sync"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+devstats-compat = { workspace = true }
+tempfile = { workspace = true }

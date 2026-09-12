@@ -1,0 +1,5 @@
+---
+vars:
+  - name: missing_command_path
+    type: s
+    command: ['{{datadir}}templates/no_such_script.sh']

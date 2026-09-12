@@ -1,0 +1,20 @@
+[package]
+name = "splitcrons"
+description = "Spread DevStats sync/affiliations cronjob schedules in devstats-helm values.yaml and patch the live cronjobs — Rust port of cmd/splitcrons"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "splitcrons"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+devstats-compat = { workspace = true }
+tempfile = { workspace = true }

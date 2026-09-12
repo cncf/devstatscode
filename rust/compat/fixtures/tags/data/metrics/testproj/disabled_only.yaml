@@ -1,0 +1,12 @@
+---
+tags:
+  - name: Disabled one
+    sql: repos_tags
+    series_name: disabled_one
+    name_tag: repo_name
+    disabled: true
+  - name: Disabled two
+    sql: does_not_exist
+    series_name: disabled_two
+    name_tag: repo_name
+    disabled: yes

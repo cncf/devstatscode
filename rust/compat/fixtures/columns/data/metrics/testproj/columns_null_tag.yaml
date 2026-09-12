@@ -1,0 +1,5 @@
+---
+columns:
+  - table_regexp: '^snulls$'
+    tag: tnulls
+    column: nulls_name

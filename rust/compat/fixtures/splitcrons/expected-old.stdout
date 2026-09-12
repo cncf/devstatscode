@@ -1,0 +1,6 @@
+read values.yaml
+sync happens from HH:04, every 6 hours, which gives 336min for hourly syncs, middle of weekend offset is -4h
+test: Kubernetes(#0) needs 24h, All(#5) needs 20h, 4 others all have 124h, intervals are 1860.0min, 5040.0s
+prod: Kubernetes(#0) needs 24h, All(#5) needs 20h, 10 others all have 124h, intervals are 744.0min, 2016.0s
+patched 63/63 cronjobs
+written new-values.yaml

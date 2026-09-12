@@ -1,0 +1,4 @@
+nSyncCPUs: 3
+nAffsCPUs: 5
+affiliationsImportCron: "1 2 3 4 5"
+projects:

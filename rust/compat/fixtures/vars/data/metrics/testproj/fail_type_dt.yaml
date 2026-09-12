@@ -1,0 +1,5 @@
+---
+vars:
+  - name: not_a_date
+    type: dt
+    value: yesterday-ish

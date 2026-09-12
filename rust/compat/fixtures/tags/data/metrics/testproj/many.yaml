@@ -1,0 +1,23 @@
+---
+# 20 tags → more tags than worker threads (GHA2DB_NCPUS=4)
+tags:
+  - {name: T01, sql: repos_tags, series_name: many01, name_tag: n}
+  - {name: T02, sql: repos_tags, series_name: many02, name_tag: n}
+  - {name: T03, sql: repos_tags, series_name: many03, name_tag: n}
+  - {name: T04, sql: repos_tags, series_name: many04, name_tag: n}
+  - {name: T05, sql: repos_tags, series_name: many05, name_tag: n}
+  - {name: T06, sql: repos_tags, series_name: many06, name_tag: n}
+  - {name: T07, sql: repos_tags, series_name: many07, name_tag: n}
+  - {name: T08, sql: repos_tags, series_name: many08, name_tag: n}
+  - {name: T09, sql: repos_tags, series_name: many09, name_tag: n}
+  - {name: T10, sql: repos_tags, series_name: many10, name_tag: n}
+  - {name: T11, sql: countries, series_name: many11, name_tag: n, value_tag: v}
+  - {name: T12, sql: countries, series_name: many12, name_tag: n, value_tag: v}
+  - {name: T13, sql: countries, series_name: many13, name_tag: n, value_tag: v}
+  - {name: T14, sql: countries, series_name: many14, name_tag: n, value_tag: v}
+  - {name: T15, sql: countries, series_name: many15, name_tag: n, value_tag: v}
+  - {name: T16, sql: empty, series_name: many16, name_tag: n}
+  - {name: T17, sql: empty, series_name: many17, name_tag: n}
+  - {name: T18, sql: limited, series_name: many18, name_tag: n, limit: 2}
+  - {name: T19, sql: limited, series_name: many19, name_tag: n, limit: 4}
+  - {name: T20, sql: cumulative_periods, series_name: many20, name_tag: n}

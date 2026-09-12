@@ -1,0 +1,12 @@
+---
+# "row is too big" handling (see compat/fixtures/columns/seed.sql)
+columns:
+  - table_regexp: '^swide$'
+    tag: twide
+    column: wide_name
+  - table_regexp: '^sgiveup$'
+    tag: twide
+    column: wide_name
+  - table_regexp: '^snarrow$'
+    tag: tnarrow
+    column: narrow_name

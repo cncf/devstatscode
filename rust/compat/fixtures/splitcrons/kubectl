@@ -1,0 +1,73 @@
+#!/bin/sh
+# Fake `kubectl` for the splitcrons Go⇄Rust compatibility tests (POSIX sh: Linux + FreeBSD).
+#
+# Data directory: $SPLITCRONS_FAKE_DIR (falls back to the parent of this script's directory).
+# Every invocation is appended to $dir/kubectl.log as its arguments joined by
+# \037 (ASCII unit separator) + newline, so the tests can compare the exact
+# kubectl calls made by the Go and the Rust binary.
+#
+#   kubectl get cronjob [--context C] -n NS -o jsonpath=...
+#       prints $dir/cronjobs-NS.txt; fails (exit 1) when the file is missing or
+#       $dir/fail-get exists
+#   kubectl exec [--context C] -n NS POD -- psql ...
+#       prints $dir/sizes-NS.txt; fails when missing or $dir/fail-exec exists
+#   kubectl patch cronjob [--context C] -n NS NAME -p SPEC
+#       prints "cronjob.batch/NAME patched"; fails when $dir/fail-patch or
+#       $dir/fail-patch-NAME exists
+dir="${SPLITCRONS_FAKE_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+
+{
+  first=1
+  for a in "$@"; do
+    if [ "$first" = 1 ]; then
+      first=0
+    else
+      printf '\037'
+    fi
+    printf '%s' "$a"
+  done
+  printf '\n'
+} >>"$dir/kubectl.log"
+
+verb="$1"
+ns=""
+name=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-n" ]; then
+    ns="$a"
+  fi
+  if [ "$a" = "-p" ] && [ "$verb" = "patch" ]; then
+    name="$prev"
+  fi
+  prev="$a"
+done
+
+case "$verb" in
+  get)
+    if [ -f "$dir/fail-get" ] || [ ! -f "$dir/cronjobs-$ns.txt" ]; then
+      echo "error: You must be logged in to the server (Unauthorized)" >&2
+      exit 1
+    fi
+    cat "$dir/cronjobs-$ns.txt"
+    ;;
+  exec)
+    if [ -f "$dir/fail-exec" ] || [ ! -f "$dir/sizes-$ns.txt" ]; then
+      echo "some partial output" # stdout is reported too on failure
+      echo "Error from server (NotFound): pods \"devstats-postgres-0\" not found" >&2
+      exit 1
+    fi
+    cat "$dir/sizes-$ns.txt"
+    ;;
+  patch)
+    if [ -f "$dir/fail-patch" ] || [ -f "$dir/fail-patch-$name" ]; then
+      echo "Error from server (NotFound): cronjobs.batch \"$name\" not found" >&2
+      exit 1
+    fi
+    echo "cronjob.batch/$name patched"
+    ;;
+  *)
+    echo "error: unknown command \"$verb\"" >&2
+    exit 1
+    ;;
+esac

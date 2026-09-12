@@ -1,0 +1,5 @@
+---
+vars:
+  - name: other_yaml
+    type: s
+    value: loaded via GHA2DB_VARS_YAML

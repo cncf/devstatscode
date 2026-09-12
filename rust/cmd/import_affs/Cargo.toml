@@ -1,0 +1,23 @@
+[package]
+name = "import_affs"
+description = "Import cncf/gitdm developer affiliations (github_users.json + companies.yaml) into a DevStats database — Rust port of cmd/import_affs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "import_affs"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+devstats-compat = { workspace = true }
+tempfile = { workspace = true }

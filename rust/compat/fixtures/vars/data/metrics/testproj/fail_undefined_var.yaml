@@ -1,0 +1,7 @@
+---
+vars:
+  - name: bad_ref
+    type: s
+    command: [echo, '[[x]]']
+    replaces:
+      - [x, no_such_variable]

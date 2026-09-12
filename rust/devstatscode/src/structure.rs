@@ -1,0 +1,2486 @@
+//! Port of `structure.go`: creates the full database structure — tables,
+//! indexes and the "tools" (postprocess scripts, country codes, bot logins,
+//! affiliations) — exactly as the Go `lib.Structure` does.
+//!
+//! The DDL part is a statement-for-statement transcription of the Go source
+//! (same statements, same order, same `ctx.table` / `ctx.index` /
+//! `ctx.affiliations_db` guards), so that the resulting schema is identical.
+
+use std::time::Instant;
+
+use crate::pg::{self, PgConn, SqlArg};
+use crate::time::format_go_duration;
+use crate::{fatal_on_error, pg_scan, printf, Ctx};
+
+fn exec(c: &PgConn, ctx: &Ctx, sql: &str) {
+    pg::exec_sql_with_err(c, ctx, sql, &[]);
+}
+
+/// Read `path` (fatal on error) and execute it as one statement batch
+/// (`ReadFile` + `ExecSQLWithErr` in Go), returning the SQL text.
+fn exec_script(c: &PgConn, ctx: &Ctx, path: &str, prefix: &str) {
+    let bytes = match crate::io::read_file(ctx, path) {
+        Ok(b) => b,
+        Err(e) => fatal_on_error(e),
+    };
+    let sql = format!("{prefix}{}", String::from_utf8_lossy(&bytes));
+    exec(c, ctx, &sql);
+}
+
+/// Go `Structure`: creates full database structure, indexes, views/summary
+/// tables etc.
+pub fn structure(ctx: &Ctx) {
+    // Connect to Postgres DB
+    let c = pg::pg_conn(ctx);
+
+    // gha_events
+    // {"id:String"=>48592, "type:String"=>48592, "actor:Hash"=>48592, "repo:Hash"=>48592,
+    // "payload:Hash"=>48592, "public:TrueClass"=>48592, "created_at:String"=>48592, "org:Hash"=>19451}
+    // {"id"=>10, "type"=>29, "actor"=>278, "repo"=>290, "payload"=>216017, "public"=>4,
+    // "created_at"=>20, "org"=>230}
+    // const
+    // dup columns: dup_actor_login, dup_repo_name
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_events");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_events(",
+                "id bigint not null primary key, ",
+                "type varchar(40) not null, ",
+                "actor_id bigint not null, ",
+                "repo_id bigint not null, ",
+                // "public boolean not null, ",
+                "created_at {{ts}} not null, ",
+                "org_id bigint, ",
+                // "forkee_id bigint, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_name varchar(160) not null",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists events_type_idx on gha_events(type)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists events_actor_id_idx on gha_events(actor_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists events_repo_id_idx on gha_events(repo_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists events_org_id_idx on gha_events(org_id)",
+        );
+        // ExecSQLWithErr(c, ctx, "create index if not exists events_forkee_id_idx on gha_events(forkee_id)")
+        exec(
+            &c,
+            ctx,
+            "create index if not exists events_created_at_idx on gha_events(created_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists events_dup_actor_login_idx on gha_events(dup_actor_login)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists events_dup_repo_name_idx on gha_events(dup_repo_name)",
+        );
+        exec(&c, ctx, "create index if not exists events_lower_dup_actor_login_idx on gha_events(lower(dup_actor_login))");
+        exec(&c, ctx, "create index if not exists events_repo_name_created_at_idx on gha_events(repo_id, dup_repo_name, created_at)");
+    }
+
+    // gha_actors
+    // {"id:Fixnum"=>48592, "login:String"=>48592, "display_login:String"=>48592,
+    // "gravatar_id:String"=>48592, "url:String"=>48592, "avatar_url:String"=>48592}
+    // {"id"=>8, "login"=>34, "display_login"=>34, "gravatar_id"=>0, "url"=>63,
+    // "avatar_url"=>49}
+    // const
+    if ctx.table && ctx.affiliations_db.is_empty() {
+        exec(&c, ctx, "drop table if exists gha_actors");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_actors(",
+                "id bigint not null, ",
+                "login varchar(120) not null, ",
+                "name varchar(120),",
+                "country_id varchar(2),",
+                "sex varchar(1),",
+                "sex_prob double precision,",
+                "tz varchar(40),",
+                "tz_offset int,",
+                "country_name text,",
+                "age int,",
+                "primary key(id, login)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index && ctx.affiliations_db.is_empty() {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_id_idx on gha_actors(id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_login_idx on gha_actors(login)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_lower_login_idx on gha_actors(lower(login))",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_name_idx on gha_actors(name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_country_id_idx on gha_actors(country_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_sex_idx on gha_actors(sex)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_sex_prob_idx on gha_actors(sex_prob)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_tz_idx on gha_actors(tz)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_tz_offset on gha_actors(tz_offset)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_country_name_idx on gha_actors(country_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_age_idx on gha_actors(age)",
+        );
+    }
+
+    // gha_actors_emails: this is filled by `import_affs` tool, that uses cncf/gitdm:github_users.json
+    if ctx.table && ctx.affiliations_db.is_empty() {
+        exec(&c, ctx, "drop table if exists gha_actors_emails");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_actors_emails(",
+                "actor_id bigint not null, ",
+                "email varchar(120) not null, ",
+                "origin smallint not null default 0, ",
+                "primary key(actor_id, email)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index && ctx.affiliations_db.is_empty() {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_emails_actor_id_idx on gha_actors_emails(actor_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_emails_email_idx on gha_actors_emails(email)",
+        );
+    }
+
+    // gha_actors_names: this is filled by `ghapi2db` tool
+    if ctx.table && ctx.affiliations_db.is_empty() {
+        exec(&c, ctx, "drop table if exists gha_actors_names");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_actors_names(",
+                "actor_id bigint not null, ",
+                "name varchar(120) not null, ",
+                "origin smallint not null default 0, ",
+                "primary key(actor_id, name)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index && ctx.affiliations_db.is_empty() {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_names_actor_id_idx on gha_actors_names(actor_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists actors_names_name_idx on gha_actors_names(name)",
+        );
+    }
+
+    // gha_companies: this is filled by `import_affs` tool, that uses cncf/gitdm:github_users.json
+    if ctx.table && ctx.affiliations_db.is_empty() {
+        exec(&c, ctx, "drop table if exists gha_companies");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_companies(",
+                "name varchar(160) not null, ",
+                "primary key(name)",
+                ")",
+            )),
+        );
+    }
+
+    // gha_actors_affiliations: this is filled by `import_affs` tool, that uses cncf/gitdm:github_users.json
+    // users `github_users.json` and `companies.yaml` fiel to map company acquisitions.
+    if ctx.table && ctx.affiliations_db.is_empty() {
+        exec(&c, ctx, "drop table if exists gha_actors_affiliations");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_actors_affiliations(",
+                "actor_id bigint not null, ",
+                "company_name varchar(160) not null, ",
+                "original_company_name varchar(160) not null, ",
+                "dt_from {{ts}} not null, ",
+                "dt_to {{ts}} not null, ",
+                "source varchar(30) not null default '', ",
+                "primary key(actor_id, company_name, dt_from, dt_to)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index && ctx.affiliations_db.is_empty() {
+        exec(&c, ctx, "create index if not exists actors_affiliations_actor_id_idx on gha_actors_affiliations(actor_id)");
+        exec(&c, ctx, "create index if not exists actors_affiliations_company_name_idx on gha_actors_affiliations(company_name)");
+        exec(&c, ctx, "create index if not exists actors_affiliations_original_company_name_idx on gha_actors_affiliations(original_company_name)");
+        exec(&c, ctx, "create index if not exists actors_affiliations_dt_from_idx on gha_actors_affiliations(dt_from)");
+        exec(&c, ctx, "create index if not exists actors_affiliations_dt_to_idx on gha_actors_affiliations(dt_to)");
+        exec(&c, ctx, "create index if not exists actors_affiliations_source_idx on gha_actors_affiliations(source)");
+        exec(&c, ctx, "create index if not exists actors_affiliations_actor_from_to_idx on gha_actors_affiliations(actor_id, dt_from, dt_to)");
+    }
+
+    // gha_repos
+    // {"id:Fixnum"=>48592, "name:String"=>48592, "url:String"=>48592}
+    // {"id"=>8, "name"=>111, "url"=>140}
+    // const
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_repos");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_repos(",
+                "id bigint not null, ",
+                "name varchar(160) not null, ",
+                "org_id bigint, ",
+                "org_login varchar(100), ",
+                "repo_group varchar(160), ",
+                "alias varchar(160), ",
+                "license_key varchar(30), ",
+                "license_name varchar(160), ",
+                "license_prob double precision, ",
+                "created_at {{tsnow}}, ",
+                "updated_at {{tsnow}}, ",
+                "primary key(id, name))",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_id_idx on gha_repos(id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_name_idx on gha_repos(name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_org_id_idx on gha_repos(org_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_org_login_idx on gha_repos(org_login)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_repo_group_idx on gha_repos(repo_group)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_alias_idx on gha_repos(alias)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_license_key_idx on gha_repos(license_key)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_license_name_idx on gha_repos(license_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_license_prob_idx on gha_repos(license_prob)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_created_at_idx on gha_repos(created_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_updated_at_idx on gha_repos(updated_at)",
+        );
+    }
+
+    // gha_repo_groups
+    // const
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_repo_groups");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_repo_groups(",
+                "id bigint not null, ",
+                "name varchar(160) not null, ",
+                "repo_group varchar(160), ",
+                "org_id bigint, ",
+                "org_login varchar(100), ",
+                "alias varchar(160), ",
+                "primary key(id, name, repo_group))",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repo_groups_id_idx on gha_repo_groups(id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repo_groups_name_idx on gha_repo_groups(name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repo_groups_repo_group_idx on gha_repo_groups(repo_group)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repo_groups_org_id_idx on gha_repo_groups(org_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repo_groups_org_login_idx on gha_repo_groups(org_login)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repo_groups_alias_idx on gha_repo_groups(alias)",
+        );
+    }
+
+    // gha_repos_langs
+    // const
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_repos_langs");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_repos_langs(",
+                "repo_name varchar(160) not null, ",
+                "lang_name varchar(60) not null, ",
+                "lang_loc bigint not null,",
+                "lang_perc double precision not null,",
+                "dt {{tsnow}}, ",
+                "primary key(repo_name, lang_name))",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_langs_narepo_me_idx on gha_repos_langs(repo_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_langs_lang_name_idx on gha_repos_langs(lang_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_langs_lang_loc_idx on gha_repos_langs(lang_loc)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists repos_langs_lang_perc_idx on gha_repos_langs(lang_perc)",
+        );
+    }
+
+    // gha_orgs
+    // {"id:Fixnum"=>18494, "login:String"=>18494, "gravatar_id:String"=>18494,
+    // "url:String"=>18494, "avatar_url:String"=>18494}
+    // {"id"=>8, "login"=>38, "gravatar_id"=>0, "url"=>66, "avatar_url"=>49}
+    // const
+    // FIXME: probably orgs can also change name keeping the same ID, just like repos
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_orgs");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_orgs(",
+                "id bigint not null primary key, ",
+                "login varchar(100) not null",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists orgs_login_idx on gha_orgs(login)",
+        );
+    }
+
+    // gha_payloads
+    // {"push_id:Fixnum"=>24636, "size:Fixnum"=>24636, "distinct_size:Fixnum"=>24636,
+    // "ref:String"=>30522, "head:String"=>24636, "before:String"=>24636, "commits:Array"=>24636,
+    // "action:String"=>14317, "issue:Hash"=>6446, "comment:Hash"=>6055, "ref_type:String"=>8010,
+    // "master_branch:String"=>6724, "description:String"=>3701, "pusher_type:String"=>8010,
+    // "pull_request:Hash"=>4475, "ref:NilClass"=>2124, "description:NilClass"=>3023,
+    // "number:Fixnum"=>2992, "forkee:Hash"=>1211, "pages:Array"=>370,
+    // "release:Hash"=>156, "member:Hash"=>219}
+    // {"push_id"=>10, "size"=>4, "distinct_size"=>4, "ref"=>110, "head"=>40, "before"=>40,
+    // "commits"=>33215, "action"=>9, "issue"=>87776, "comment"=>177917, "ref_type"=>10,
+    // "master_branch"=>34, "description"=>3222, "pusher_type"=>4, "pull_request"=>70565,
+    // "number"=>5, "forkee"=>6880, "pages"=>855, "release"=>31206, "member"=>1040}
+    // 48746
+    // const
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_payloads");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_payloads(",
+                "event_id bigint not null primary key, ",
+                "push_id bigint, ",
+                "size int, ",
+                "ref varchar(200), ",
+                "head varchar(40), ",
+                "befor varchar(40), ",
+                "action varchar(40), ",
+                "issue_id bigint, ",
+                "pull_request_id bigint, ",
+                "comment_id bigint, ",
+                // "ref_type varchar(20), ",
+                // "master_branch varchar(200), ",
+                // "description text, ",
+                "number int, ",
+                "forkee_id bigint, ",
+                "release_id bigint, ",
+                "member_id bigint, ",
+                "commit varchar(40), ",
+                // "dup_actor_id bigint not null, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists payloads_action_idx on gha_payloads(action)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists payloads_head_idx on gha_payloads(head)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists payloads_issue_id_idx on gha_payloads(issue_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists payloads_pull_request_id_idx on gha_payloads(issue_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists payloads_comment_id_idx on gha_payloads(comment_id)",
+        );
+        // ExecSQLWithErr(c, ctx, "create index if not exists payloads_ref_type_idx on gha_payloads(ref_type)")
+        exec(
+            &c,
+            ctx,
+            "create index if not exists payloads_forkee_id_idx on gha_payloads(forkee_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists payloads_release_id_idx on gha_payloads(release_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists payloads_member_id_idx on gha_payloads(member_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists payloads_commit_idx on gha_payloads(commit)",
+        );
+        // ExecSQLWithErr(c, ctx, "create index if not exists payloads_dup_actor_id_idx on gha_payloads(dup_actor_id)")
+        exec(&c, ctx, "create index if not exists payloads_dup_actor_login_idx on gha_payloads(dup_actor_login)");
+        exec(
+            &c,
+            ctx,
+            "create index if not exists payloads_dup_repo_id_idx on gha_payloads(dup_repo_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists payloads_dup_repo_name_idx on gha_payloads(dup_repo_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists payloads_dup_type_idx on gha_payloads(dup_type)",
+        );
+        exec(&c, ctx, "create index if not exists payloads_dup_created_at_idx on gha_payloads(dup_created_at)");
+    }
+
+    // gha_commits
+    // {"sha:String"=>23265, "author:Hash"=>23265, "message:String"=>23265,
+    // "distinct:TrueClass"=>21789, "url:String"=>23265, "distinct:FalseClass"=>1476}
+    // {"sha"=>40, "author"=>177, "message"=>19005, "distinct"=>5, "url"=>191}
+    // author: {"name:String"=>23265, "email:String"=>23265} (only git username/email)
+    // author: {"name"=>96, "email"=>95}
+    // 23265
+    // variable (per event)
+    // origin: 0-gha2db, 1-get_repos/fetch_commits, 2-get_repos/restore_orphan_commits
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_commits");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_commits(",
+                "sha varchar(40) not null, ",
+                "event_id bigint not null, ",
+                "author_name varchar(160) not null, ",
+                "message text not null, ",
+                "is_distinct boolean not null, ",
+                "dup_actor_id bigint not null, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                // "encrypted_email varchar(160) not null, ",
+                "author_email varchar(160) not null default '', ",
+                "committer_name varchar(160) not null default '', ",
+                "committer_email varchar(160) not null default '', ",
+                "author_id bigint, ",
+                "committer_id bigint, ",
+                "dup_author_login varchar(120) not null default '', ",
+                "dup_committer_login varchar(120) not null default '', ",
+                "loc_added int, ",
+                "loc_removed int, ",
+                "files_changed int, ",
+                "origin smallint not null default 0, ",
+                "inserted_at {{tsnow}}, ",
+                "primary key(sha, event_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_event_id_idx on gha_commits(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_sha_idx on gha_commits(sha)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_loc_added_idx on gha_commits(loc_added)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_loc_removed_idx on gha_commits(loc_removed)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_files_changed_idx on gha_commits(files_changed)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_author_name_idx on gha_commits(author_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_author_email_idx on gha_commits(author_email)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_committers_name_idx on gha_commits(committer_name)",
+        );
+        exec(&c, ctx, "create index if not exists commits_committers_email_idx on gha_commits(committer_email)");
+        // ExecSQLWithErr(c, ctx, "create index if not exists commits_encrypted_email_idx on gha_commits(encrypted_email)")
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_dup_actor_id_idx on gha_commits(dup_actor_id)",
+        );
+        exec(&c, ctx, "create index if not exists commits_dup_actor_login_idx on gha_commits(dup_actor_login)");
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_dup_repo_id_idx on gha_commits(dup_repo_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_dup_repo_name_idx on gha_commits(dup_repo_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_dup_type_idx on gha_commits(dup_type)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_dup_created_at_idx on gha_commits(dup_created_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_author_id_idx on gha_commits(author_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_committer_id_idx on gha_commits(committer_id)",
+        );
+        exec(&c, ctx, "create index if not exists commits_dup_author_login_idx on gha_commits(dup_author_login)");
+        exec(&c, ctx, "create index if not exists commits_dup_committer_login_idx on gha_commits(dup_committer_login)");
+        exec(&c, ctx, "create index if not exists commits_lower_dup_actor_login_idx on gha_commits(lower(dup_actor_login))");
+        exec(&c, ctx, "create index if not exists commits_lower_dup_author_login_idx on gha_commits(lower(dup_author_login))");
+        exec(&c, ctx, "create index if not exists commits_lower_dup_committer_login_idx on gha_commits(lower(dup_committer_login))");
+        exec(&c, ctx, "create index if not exists commits_repo_name_created_at_idx on gha_commits(dup_repo_id, dup_repo_name, dup_created_at)");
+    }
+
+    // gha_commits_roles - artificial table, created from commit trailers
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_commits_roles");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_commits_roles(",
+                "sha varchar(40) not null, ",
+                "event_id bigint not null, ",
+                "role varchar(120) not null, ",
+                "actor_id bigint, ",
+                "actor_login varchar(120) not null default '', ",
+                "actor_name varchar(160) not null default '', ",
+                "actor_email varchar(160) not null default '', ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                "primary key(sha, event_id, role, actor_email)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_roles_sha_idx on gha_commits_roles(sha)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_roles_event_id_idx on gha_commits_roles(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_roles_role_idx on gha_commits_roles(role)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_roles_actor_id_idx on gha_commits_roles(actor_id)",
+        );
+        exec(&c, ctx, "create index if not exists commits_roles_actor_login_idx on gha_commits_roles(actor_login)");
+        exec(&c, ctx, "create index if not exists commits_roles_actor_name_idx on gha_commits_roles(actor_name)");
+        exec(&c, ctx, "create index if not exists commits_roles_actor_email_idx on gha_commits_roles(actor_email)");
+        exec(&c, ctx, "create index if not exists commits_roles_dup_repo_id_idx on gha_commits_roles(dup_repo_id)");
+        exec(&c, ctx, "create index if not exists commits_roles_dup_repo_name_idx on gha_commits_roles(dup_repo_name)");
+        exec(&c, ctx, "create index if not exists commits_roles_dup_created_at_idx on gha_commits_roles(dup_created_at)");
+    }
+
+    // gha_pages
+    // {"page_name:String"=>370, "title:String"=>370, "summary:NilClass"=>370,
+    // "action:String"=>370, "sha:String"=>370, "html_url:String"=>370}
+    // {"page_name"=>65, "title"=>65, "summary"=>0, "action"=>7, "sha"=>40, "html_url"=>130}
+    // 370
+    // variable
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_pages");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_pages(",
+                "sha varchar(40) not null, ",
+                "event_id bigint not null, ",
+                "action varchar(40) not null, ",
+                "title varchar(300) not null, ",
+                "dup_actor_id bigint not null, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                "primary key(sha, event_id, action, title)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pages_event_id_idx on gha_pages(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pages_action_idx on gha_pages(action)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pages_dup_actor_id_idx on gha_pages(dup_actor_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pages_dup_actor_login_idx on gha_pages(dup_actor_login)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pages_dup_repo_id_idx on gha_pages(dup_repo_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pages_dup_repo_name_idx on gha_pages(dup_repo_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pages_dup_type_idx on gha_pages(dup_type)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pages_dup_created_at_idx on gha_pages(dup_created_at)",
+        );
+    }
+
+    // gha_comments
+    // Table details and analysis in `analysis/analysis.txt` and `analysis/comment_*.json`
+    // Keys: user_id, commit_id, original_commit_id, pull_request_review_id
+    // variable
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_comments");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_comments(",
+                "id bigint not null, ",
+                "event_id bigint not null, ",
+                "body text not null, ",
+                "created_at {{ts}} not null, ",
+                "updated_at {{ts}} not null, ",
+                "user_id bigint not null, ",
+                "commit_id varchar(40), ",
+                "original_commit_id varchar(40), ",
+                // "diff_hunk text, ",
+                "position int, ",
+                "original_position int, ",
+                "path text, ",
+                "pull_request_review_id bigint, ",
+                "line int, ",
+                "dup_actor_id bigint not null, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                "dup_user_login varchar(120) not null, ",
+                "primary key(id, event_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists comments_id_idx on gha_comments(id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists comments_event_id_idx on gha_comments(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists comments_created_at_idx on gha_comments(created_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists comments_updated_at_idx on gha_comments(updated_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists comments_user_id_idx on gha_comments(user_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists comments_commit_id_idx on gha_comments(commit_id)",
+        );
+        exec(&c, ctx, "create index if not exists comments_pull_request_review_id_idx on gha_comments(pull_request_review_id)");
+        exec(
+            &c,
+            ctx,
+            "create index if not exists comments_dup_actor_id_idx on gha_comments(dup_actor_id)",
+        );
+        exec(&c, ctx, "create index if not exists comments_dup_actor_login_idx on gha_comments(dup_actor_login)");
+        exec(
+            &c,
+            ctx,
+            "create index if not exists comments_dup_repo_id_idx on gha_comments(dup_repo_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists comments_dup_repo_name_idx on gha_comments(dup_repo_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists comments_dup_type_idx on gha_comments(dup_type)",
+        );
+        exec(&c, ctx, "create index if not exists comments_dup_created_at_idx on gha_comments(dup_created_at)");
+        exec(&c, ctx, "create index if not exists comments_dup_user_login_idx on gha_comments(dup_user_login)");
+        exec(&c, ctx, "create index if not exists comments_lower_dup_actor_login_idx on gha_comments(lower(dup_actor_login))");
+        exec(&c, ctx, "create index if not exists comments_lower_dup_user_login_idx on gha_comments(lower(dup_user_login))");
+        exec(&c, ctx, "create index if not exists comments_repo_name_created_at_idx on gha_comments(dup_repo_id, dup_repo_name, created_at)");
+    }
+
+    // gha_issues
+    // Table details and analysis in `analysis/analysis.txt` and `analysis/issue_*.json`
+    // Arrays: assignees, labels
+    // Keys: assignee_id, milestone_id, user_id
+    // variable
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_issues");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_issues(",
+                "id bigint not null, ",
+                "event_id bigint not null, ",
+                "assignee_id bigint, ",
+                "body text, ",
+                "closed_at {{ts}}, ",
+                "comments int not null, ",
+                "created_at {{ts}} not null, ",
+                "locked boolean not null, ",
+                "milestone_id bigint, ",
+                "number int not null, ",
+                "state varchar(20) not null, ",
+                "title text not null, ",
+                "updated_at {{ts}} not null, ",
+                "user_id bigint not null, ",
+                "is_pull_request boolean not null, ",
+                "dup_actor_id bigint not null, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                // "dupn_assignee_login varchar(120), ",
+                "dup_user_login varchar(120) not null, ",
+                "primary key(id, event_id)",
+                ")",
+            )),
+        );
+        // variable
+        exec(&c, ctx, "drop table if exists gha_issues_assignees");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_issues_assignees(",
+                "issue_id bigint not null, ",
+                "event_id bigint not null, ",
+                "assignee_id bigint not null, ",
+                "primary key(issue_id, event_id, assignee_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_id_idx on gha_issues(id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_event_id_idx on gha_issues(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_assignee_id_idx on gha_issues(assignee_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_created_at_idx on gha_issues(created_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_updated_at_idx on gha_issues(updated_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_closed_at_idx on gha_issues(closed_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_milestone_id_idx on gha_issues(milestone_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_state_idx on gha_issues(state)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_number_idx on gha_issues(number)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_user_id_idx on gha_issues(user_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_is_pull_request_idx on gha_issues(is_pull_request)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_dup_actor_id_idx on gha_issues(dup_actor_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_dup_actor_login_idx on gha_issues(dup_actor_login)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_dup_repo_id_idx on gha_issues(dup_repo_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_dup_repo_name_idx on gha_issues(dup_repo_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_dup_type_idx on gha_issues(dup_type)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_dup_created_at_idx on gha_issues(dup_created_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_dup_user_login_idx on gha_issues(dup_user_login)",
+        );
+        // ExecSQLWithErr(c, ctx, "create index if not exists issues_dupn_assignee_login_idx on gha_issues(dupn_assignee_login)")
+        exec(&c, ctx, "create index if not exists issues_lower_dup_actor_login_idx on gha_issues(lower(dup_actor_login))");
+        exec(&c, ctx, "create index if not exists issues_lower_dup_user_login_idx on gha_issues(lower(dup_user_login))");
+        exec(&c, ctx, "create index if not exists issues_repo_created_at_issues_idx on gha_issues(dup_repo_id, dup_repo_name, created_at) where is_pull_request = false");
+        exec(&c, ctx, "create index if not exists issues_repo_created_at_prs_idx on gha_issues(dup_repo_id, dup_repo_name, created_at) where is_pull_request = true");
+    }
+
+    // gha_milestones
+    // Table details and analysis in `analysis/analysis.txt` and `analysis/milestone_*.json`
+    // Keys: creator_id
+    // variable
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_milestones");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_milestones(",
+                "id bigint not null, ",
+                "event_id bigint not null, ",
+                "closed_at {{ts}}, ",
+                "closed_issues int not null, ",
+                "created_at {{ts}} not null, ",
+                "creator_id bigint, ",
+                "description text, ",
+                "due_on {{ts}}, ",
+                "number int not null, ",
+                "open_issues int not null, ",
+                "state varchar(20) not null, ",
+                "title varchar(200) not null, ",
+                "updated_at {{ts}} not null, ",
+                "dup_actor_id bigint not null, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                "dupn_creator_login varchar(120), ",
+                "primary key(id, event_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists milestones_id_idx on gha_milestones(id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists milestones_event_id_idx on gha_milestones(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists milestones_created_at_idx on gha_milestones(created_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists milestones_updated_at_idx on gha_milestones(updated_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists milestones_creator_id_idx on gha_milestones(creator_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists milestones_state_idx on gha_milestones(state)",
+        );
+        exec(&c, ctx, "create index if not exists milestones_dup_actor_id_idx on gha_milestones(dup_actor_id)");
+        exec(&c, ctx, "create index if not exists milestones_dup_actor_login_idx on gha_milestones(dup_actor_login)");
+        exec(
+            &c,
+            ctx,
+            "create index if not exists milestones_dup_repo_id_idx on gha_milestones(dup_repo_id)",
+        );
+        exec(&c, ctx, "create index if not exists milestones_dup_repo_name_idx on gha_milestones(dup_repo_name)");
+        exec(
+            &c,
+            ctx,
+            "create index if not exists milestones_dup_type_idx on gha_milestones(dup_type)",
+        );
+        exec(&c, ctx, "create index if not exists milestones_dup_created_at_idx on gha_milestones(dup_created_at)");
+        exec(&c, ctx, "create index if not exists milestones_dupn_creator_login_idx on gha_milestones(dupn_creator_login)");
+    }
+
+    // gha_labels
+    // Table details and analysis in `analysis/analysis.txt` and `analysis/label_*.json`
+    // const
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_labels");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_labels(",
+                "id bigint not null primary key, ",
+                "name varchar(160) not null, ",
+                "color varchar(8) not null, ",
+                "is_default boolean",
+                ")",
+            )),
+        );
+        // variable
+        exec(&c, ctx, "drop table if exists gha_issues_labels");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_issues_labels(",
+                "issue_id bigint not null, ",
+                "event_id bigint not null, ",
+                "label_id bigint not null, ",
+                "dup_actor_id bigint not null, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                "dup_issue_number int not null, ",
+                "dup_label_name varchar(160) not null, ",
+                "primary key(issue_id, event_id, label_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists labels_name_idx on gha_labels(name)",
+        );
+
+        // gha_issues_labels
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_labels_event_id_idx on gha_issues_labels(event_id)",
+        );
+        exec(&c, ctx, "create index if not exists issues_labels_dup_actor_id_idx on gha_issues_labels(dup_actor_id)");
+        exec(&c, ctx, "create index if not exists issues_labels_dup_actor_login_idx on gha_issues_labels(dup_actor_login)");
+        exec(&c, ctx, "create index if not exists issues_labels_dup_repo_id_idx on gha_issues_labels(dup_repo_id)");
+        exec(&c, ctx, "create index if not exists issues_labels_dup_repo_name_idx on gha_issues_labels(dup_repo_name)");
+        exec(
+            &c,
+            ctx,
+            "create index if not exists issues_labels_dup_type_idx on gha_issues_labels(dup_type)",
+        );
+        exec(&c, ctx, "create index if not exists issues_labels_dup_created_at_idx on gha_issues_labels(dup_created_at)");
+        exec(&c, ctx, "create index if not exists issues_labels_dup_issue_number_idx on gha_issues_labels(dup_issue_number)");
+        exec(&c, ctx, "create index if not exists issues_labels_dup_label_name_idx on gha_issues_labels(dup_label_name)");
+        exec(&c, ctx, "create index if not exists issues_labels_lower_dup_actor_login_idx on gha_issues_labels(lower(dup_actor_login))");
+    }
+
+    // gha_forkees
+    // Table details and analysis in `analysis/analysis.txt` and `analysis/forkee_*.json`
+    // variable
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_forkees");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_forkees(",
+                "id bigint not null, ",
+                "event_id bigint not null, ",
+                "name varchar(80) not null, ",
+                "full_name varchar(200) not null, ",
+                "owner_id bigint not null, ",
+                // "description text, ",
+                // "fork boolean not null, ",
+                // "created_at {{ts}} not null, ",
+                "updated_at {{ts}} not null, ",
+                // "pushed_at {{ts}}, ",
+                // "homepage text, ",
+                // "size int not null, ",
+                "stargazers_count int not null, ",
+                // "has_issues boolean not null, ",
+                // "has_projects boolean, ",
+                // "has_downloads boolean not null, ",
+                // "has_wiki boolean not null, ",
+                // "has_pages boolean, ",
+                "forks int not null, ",
+                "open_issues int not null, ",
+                "watchers int not null, ",
+                // "default_branch varchar(200) not null, ",
+                // "public boolean, ",
+                // "language varchar(80), ",
+                // "organization varchar(100), ",
+                "dup_actor_id bigint not null, ",
+                // "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                // "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                // "dup_owner_login varchar(120) not null, ",
+                "primary key(id, event_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists forkees_event_id_idx on gha_forkees(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists forkees_owner_id_idx on gha_forkees(owner_id)",
+        );
+        // ExecSQLWithErr(c, ctx, "create index if not exists forkees_created_at_idx on gha_forkees(created_at)")
+        exec(
+            &c,
+            ctx,
+            "create index if not exists forkees_updated_at_idx on gha_forkees(updated_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists forkees_dup_actor_id_idx on gha_forkees(dup_actor_id)",
+        );
+        // ExecSQLWithErr(c, ctx, "create index if not exists forkees_dup_actor_login_idx on gha_forkees(dup_actor_login)")
+        exec(
+            &c,
+            ctx,
+            "create index if not exists forkees_dup_repo_id_idx on gha_forkees(dup_repo_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists forkees_dup_repo_name_idx on gha_forkees(dup_repo_name)",
+        );
+        // ExecSQLWithErr(c, ctx, "create index if not exists forkees_dup_type_idx on gha_forkees(dup_type)")
+        exec(
+            &c,
+            ctx,
+            "create index if not exists forkees_dup_created_at_idx on gha_forkees(dup_created_at)",
+        );
+        // ExecSQLWithErr(c, ctx, "create index if not exists forkees_dup_owner_login_idx on gha_forkees(dup_owner_login)")
+        // ExecSQLWithErr(c, ctx, "create index if not exists forkees_language_idx on gha_forkees(language)")
+        // ExecSQLWithErr(c, ctx, "create index if not exists forkees_organization_idx on gha_forkees(organization)")
+    }
+
+    // gha_releases
+    // Table details and analysis in `analysis/analysis.txt` and `analysis/release_*.json`
+    // Key: author_id
+    // Array: assets
+    // variable
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_releases");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_releases(",
+                "id bigint not null, ",
+                "event_id bigint not null, ",
+                "tag_name varchar(200) not null, ",
+                "target_commitish varchar(200) not null, ",
+                "name varchar(200), ",
+                "draft boolean not null, ",
+                "author_id bigint not null, ",
+                "prerelease boolean not null, ",
+                "created_at {{ts}} not null, ",
+                "published_at {{ts}}, ",
+                "body text, ",
+                "dup_actor_id bigint not null, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                "dup_author_login varchar(120) not null, ",
+                "primary key(id, event_id)",
+                ")",
+            )),
+        );
+        // variable
+        exec(&c, ctx, "drop table if exists gha_releases_assets");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_releases_assets(",
+                "release_id bigint not null, ",
+                "event_id bigint not null, ",
+                "asset_id bigint not null, ",
+                "primary key(release_id, event_id, asset_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists releases_event_id_idx on gha_releases(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists releases_author_id_idx on gha_releases(author_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists releases_created_at_idx on gha_releases(created_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists releases_dup_actor_id_idx on gha_releases(dup_actor_id)",
+        );
+        exec(&c, ctx, "create index if not exists releases_dup_actor_login_idx on gha_releases(dup_actor_login)");
+        exec(
+            &c,
+            ctx,
+            "create index if not exists releases_dup_repo_id_idx on gha_releases(dup_repo_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists releases_dup_repo_name_idx on gha_releases(dup_repo_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists releases_dup_type_idx on gha_releases(dup_type)",
+        );
+        exec(&c, ctx, "create index if not exists releases_dup_created_at_idx on gha_releases(dup_created_at)");
+        exec(&c, ctx, "create index if not exists releases_dup_author_login_idx on gha_releases(dup_author_login)");
+    }
+
+    // gha_assets
+    // Table details and analysis in `analysis/analysis.txt` and `analysis/asset_*.json`
+    // Key: uploader_id
+    // variable
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_assets");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_assets(",
+                "id bigint not null, ",
+                "event_id bigint not null, ",
+                "name varchar(200) not null, ",
+                "label varchar(120), ",
+                "uploader_id bigint not null, ",
+                "content_type varchar(80) not null, ",
+                "state varchar(20) not null, ",
+                "size int not null, ",
+                "download_count int not null, ",
+                "created_at {{ts}} not null, ",
+                "updated_at {{ts}} not null, ",
+                "dup_actor_id bigint not null, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                "dup_uploader_login varchar(120) not null, ",
+                "primary key(id, event_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists assets_event_id_idx on gha_assets(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists assets_uploader_id_idx on gha_assets(uploader_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists assets_content_type_idx on gha_assets(content_type)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists assets_state_idx on gha_assets(state)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists assets_created_at_idx on gha_assets(created_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists assets_updated_at_idx on gha_assets(updated_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists assets_dup_actor_id_idx on gha_assets(dup_actor_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists assets_dup_actor_login_idx on gha_assets(dup_actor_login)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists assets_dup_repo_id_idx on gha_assets(dup_repo_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists assets_dup_repo_name_idx on gha_assets(dup_repo_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists assets_dup_type_idx on gha_assets(dup_type)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists assets_dup_created_at_idx on gha_assets(dup_created_at)",
+        );
+        exec(&c, ctx, "create index if not exists assets_dup_uploader_login_idx on gha_assets(dup_uploader_login)");
+    }
+
+    // gha_pull_requests
+    // Table details and analysis in `analysis/analysis.txt` and `analysis/pull_request_*.json`
+    // Keys: actor: user_id, branch: base_sha, head_sha
+    // Nullable keys: actor: merged_by_id, assignee_id, milestone: milestone_id
+    // Arrays: actors: assignees, requested_reviewers
+    // variable
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_pull_requests");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_pull_requests(",
+                "id bigint not null, ",
+                "event_id bigint not null, ",
+                "user_id bigint not null, ",
+                "base_sha varchar(40) not null, ",
+                "head_sha varchar(40) not null, ",
+                "merged_by_id bigint, ",
+                "assignee_id bigint, ",
+                "milestone_id bigint, ",
+                "number int not null, ",
+                "state varchar(20) not null, ",
+                "locked boolean, ",
+                "title text not null, ",
+                "body text, ",
+                "created_at {{ts}} not null, ",
+                "updated_at {{ts}} not null, ",
+                "closed_at {{ts}}, ",
+                "merged_at {{ts}}, ",
+                "merge_commit_sha varchar(40), ",
+                "merged boolean, ",
+                "mergeable boolean, ",
+                "rebaseable boolean, ",
+                "mergeable_state varchar(20), ",
+                "comments int, ",
+                "review_comments int, ",
+                "maintainer_can_modify boolean, ",
+                "commits int, ",
+                "additions int, ",
+                "deletions int, ",
+                "changed_files int, ",
+                "dup_actor_id bigint not null, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                "dup_user_login varchar(120) not null, ",
+                // "dupn_assignee_login varchar(120), ",
+                "dupn_merged_by_login varchar(120), ",
+                "primary key(id, event_id)",
+                ")",
+            )),
+        );
+        // variable
+        exec(&c, ctx, "drop table if exists gha_pull_requests_assignees");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_pull_requests_assignees(",
+                "pull_request_id bigint not null, ",
+                "event_id bigint not null, ",
+                "assignee_id bigint not null, ",
+                "primary key(pull_request_id, event_id, assignee_id)",
+                ")",
+            )),
+        );
+        // variable
+        exec(
+            &c,
+            ctx,
+            "drop table if exists gha_pull_requests_requested_reviewers",
+        );
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_pull_requests_requested_reviewers(",
+                "pull_request_id bigint not null, ",
+                "event_id bigint not null, ",
+                "requested_reviewer_id bigint not null, ",
+                "primary key(pull_request_id, event_id, requested_reviewer_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pull_requests_event_id_idx on gha_pull_requests(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pull_requests_id_idx on gha_pull_requests(id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pull_requests_user_id_idx on gha_pull_requests(user_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pull_requests_base_sha_idx on gha_pull_requests(base_sha)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pull_requests_head_sha_idx on gha_pull_requests(head_sha)",
+        );
+        exec(&c, ctx, "create index if not exists pull_requests_merged_by_id_idx on gha_pull_requests(merged_by_id)");
+        exec(&c, ctx, "create index if not exists pull_requests_assignee_id_idx on gha_pull_requests(assignee_id)");
+        exec(&c, ctx, "create index if not exists pull_requests_milestone_id_idx on gha_pull_requests(milestone_id)");
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pull_requests_state_idx on gha_pull_requests(state)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pull_requests_number_idx on gha_pull_requests(number)",
+        );
+        exec(&c, ctx, "create index if not exists pull_requests_created_at_idx on gha_pull_requests(created_at)");
+        exec(&c, ctx, "create index if not exists pull_requests_updated_at_idx on gha_pull_requests(updated_at)");
+        exec(&c, ctx, "create index if not exists pull_requests_closed_at_idx on gha_pull_requests(closed_at)");
+        exec(&c, ctx, "create index if not exists pull_requests_merged_at_idx on gha_pull_requests(merged_at)");
+        exec(&c, ctx, "create index if not exists pull_requests_dup_actor_id_idx on gha_pull_requests(dup_actor_id)");
+        exec(&c, ctx, "create index if not exists pull_requests_dup_actor_login_idx on gha_pull_requests(dup_actor_login)");
+        exec(&c, ctx, "create index if not exists pull_requests_dup_repo_id_idx on gha_pull_requests(dup_repo_id)");
+        exec(&c, ctx, "create index if not exists pull_requests_dup_repo_name_idx on gha_pull_requests(dup_repo_name)");
+        exec(
+            &c,
+            ctx,
+            "create index if not exists pull_requests_dup_type_idx on gha_pull_requests(dup_type)",
+        );
+        exec(&c, ctx, "create index if not exists pull_requests_dup_created_at_idx on gha_pull_requests(dup_created_at)");
+        exec(&c, ctx, "create index if not exists pull_requests_dup_user_login_idx on gha_pull_requests(dup_user_login)");
+        // ExecSQLWithErr(c, ctx, "create index if not exists pull_requests_dupn_assignee_login_idx on gha_pull_requests(dupn_assignee_login)")
+        exec(&c, ctx, "create index if not exists pull_requests_dupn_merged_by_login_idx on gha_pull_requests(dupn_merged_by_login)");
+        exec(&c, ctx, "create index if not exists pull_requests_lower_dup_actor_login_idx on gha_pull_requests(lower(dup_actor_login))");
+        exec(&c, ctx, "create index if not exists pull_requests_lower_dup_user_login_idx on gha_pull_requests(lower(dup_user_login))");
+        exec(&c, ctx, "create index if not exists pull_requests_lower_dupn_merged_by_login_idx on gha_pull_requests(lower(dupn_merged_by_login))");
+        exec(&c, ctx, "create index if not exists pull_requests_repo_merged_at_idx on gha_pull_requests(dup_repo_id, dup_repo_name, merged_at) where merged_at is not null");
+    }
+
+    // gha_branches
+    // Table details and analysis in `analysis/analysis.txt` and `analysis/branch_*.json`
+    // Nullable keys: forkee: repo_id, actor: user_id
+    // variable
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_branches");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_branches(",
+                "sha varchar(40) not null, ",
+                "event_id bigint not null, ",
+                "user_id bigint, ",
+                "repo_id bigint, ",
+                // "label varchar(200) not null, ",
+                // "ref varchar(200) not null, ",
+                // "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                // "dupn_forkee_name varchar(160), ",
+                // "dupn_user_login varchar(120), ",
+                "primary key(sha, event_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists branches_event_id_idx on gha_branches(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists branches_user_id_idx on gha_branches(user_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists branches_repo_id_idx on gha_branches(repo_id)",
+        );
+        // ExecSQLWithErr(c, ctx, "create index if not exists branches_dupn_user_login_idx on gha_branches(dupn_user_login)")
+        // ExecSQLWithErr(c, ctx, "create index if not exists branches_dupn_forkee_name_idx on gha_branches(dupn_forkee_name)")
+        // ExecSQLWithErr(c, ctx, "create index if not exists branches_dup_type_idx on gha_branches(dup_type)")
+        exec(&c, ctx, "create index if not exists branches_dup_created_at_idx on gha_branches(dup_created_at)");
+    }
+
+    // gha_teams
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_teams");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_teams(",
+                "id bigint not null, ",
+                "event_id bigint not null, ",
+                "name varchar(120) not null, ",
+                "slug varchar(100) not null, ",
+                "permission varchar(20) not null, ",
+                "dup_actor_id bigint not null, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                "primary key(id, event_id)",
+                ")",
+            )),
+        );
+        // variable
+        exec(&c, ctx, "drop table if exists gha_teams_repositories");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_teams_repositories(",
+                "team_id bigint not null, ",
+                "event_id bigint not null, ",
+                "repository_id bigint not null, ",
+                "primary key(team_id, event_id, repository_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists teams_event_id_idx on gha_teams(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists teams_name_idx on gha_teams(name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists teams_slug_idx on gha_teams(slug)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists teams_permission_idx on gha_teams(permission)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists teams_dup_actor_id_idx on gha_teams(dup_actor_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists teams_dup_actor_login_idx on gha_teams(dup_actor_login)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists teams_dup_repo_id_idx on gha_teams(dup_repo_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists teams_dup_repo_name_idx on gha_teams(dup_repo_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists teams_dup_type_idx on gha_teams(dup_type)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists teams_dup_created_at_idx on gha_teams(dup_created_at)",
+        );
+    }
+
+    // gha_reviews
+    // Table details and analysis in `analysis/analysis.txt` and `analysis/*review*.json`
+    // "{_links:,author_association:,body:,commit_id:,html_url:,id:,node_id:,pull_request_url:,state:,submitted_at:,user:}"
+    // {"_links:Hash"=>15120, "body:String"=>8585, "commit_id:String"=>15120, "state:String"=>15120, "html_url:String"=>15120,
+    // "author_association:String"=>15120, "id:Integer"=>15120, "node_id:String"=>15120, "user:Hash"=>15120,
+    // "submitted_at:String"=>15120, "pull_request_url:String"=>15120, "body:NilClass"=>6535}
+    // {"_links"=>299, "body"=>9970, "commit_id"=>40, "state"=>17, "html_url"=>132, "author_association"=>12, "id"=>9,
+    // "node_id"=>40, "user"=>1221, "submitted_at"=>20, "pull_request_url"=>115}
+    // Keys: user_id, commit_id
+    // variable
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_reviews");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_reviews(",
+                "id bigint not null, ",
+                "user_id bigint not null, ",
+                "commit_id varchar(40) not null, ",
+                "submitted_at {{ts}} not null, ",
+                "author_association text not null, ",
+                "state text not null, ",
+                "body text, ",
+                "event_id bigint not null, ",
+                "dup_actor_id bigint not null, ",
+                "dup_actor_login varchar(120) not null, ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                "dup_type varchar(40) not null, ",
+                "dup_created_at {{ts}} not null, ",
+                "dup_user_login varchar(120) not null, ",
+                "primary key(id, event_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists reviews_event_id_idx on gha_reviews(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists reviews_submitted_at_idx on gha_reviews(submitted_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists reviews_user_id_idx on gha_reviews(user_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists reviews_commit_id_idx on gha_reviews(commit_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists reviews_dup_actor_id_idx on gha_reviews(dup_actor_id)",
+        );
+        exec(&c, ctx, "create index if not exists reviews_dup_actor_login_idx on gha_reviews(dup_actor_login)");
+        exec(
+            &c,
+            ctx,
+            "create index if not exists reviews_dup_repo_id_idx on gha_reviews(dup_repo_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists reviews_dup_repo_name_idx on gha_reviews(dup_repo_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists reviews_dup_type_idx on gha_reviews(dup_type)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists reviews_dup_user_login_idx on gha_reviews(dup_user_login)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists reviews_dup_created_at_idx on gha_reviews(dup_created_at)",
+        );
+        exec(&c, ctx, "create index if not exists reviews_lower_dup_actor_login_idx on gha_reviews(lower(dup_actor_login))");
+        exec(&c, ctx, "create index if not exists reviews_lower_dup_user_login_idx on gha_reviews(lower(dup_user_login))");
+    }
+
+    // Logs table (recently this table moved to separate database `devstats` to separate logs
+    // But all gha databases still do have this table
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_logs");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_logs(",
+                "id {{pkauto}}, ",
+                "dt {{tsnow}}, ",
+                "prog varchar(32) not null, ",
+                "proj varchar(32) not null, ",
+                "run_dt {{ts}} not null, ",
+                "msg text",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists logs_id_idx on gha_logs(id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists logs_dt_idx on gha_logs(dt)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists logs_prog_idx on gha_logs(prog)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists logs_proj_idx on gha_logs(proj)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists logs_run_dt_idx on gha_logs(run_dt)",
+        );
+    }
+
+    // `Commit - file list it refers to` mapping table, used by `get_repos` tool
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_commits_files");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_commits_files(",
+                "sha varchar(40) not null, ",
+                "path text not null, ",
+                "size bigint not null, ",
+                "dt {{ts}} not null, ",
+                "ext text not null default '', ",
+                "primary key(sha, path)",
+                ")",
+            )),
+        );
+        exec(&c, ctx, "drop table if exists gha_events_commits_files");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_events_commits_files(",
+                "sha varchar(40) not null, ",
+                "event_id bigint not null, ",
+                "path text not null, ",
+                "size bigint not null, ",
+                "dt {{ts}} not null, ",
+                "repo_group varchar(160), ",
+                "dup_repo_id bigint not null, ",
+                "dup_repo_name varchar(160) not null, ",
+                // "dup_type varchar(40) not null, ",
+                // "dup_created_at {{ts}} not null, ",
+                "ext text not null default '', ",
+                "primary key(sha, event_id, path)",
+                ")",
+            )),
+        );
+        exec(&c, ctx, "drop table if exists gha_skip_commits");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_skip_commits(",
+                "sha varchar(40) not null, ",
+                "dt {{ts}} not null, ",
+                "reason int, ",
+                "primary key(sha, reason)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_files_sha_idx on gha_commits_files(sha)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_files_path_idx on gha_commits_files(path)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_files_ext_idx on gha_commits_files(ext)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_files_size_idx on gha_commits_files(size)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists commits_files_dt_idx on gha_commits_files(dt)",
+        );
+        exec(&c, ctx, "create index if not exists events_commits_files_sha_idx on gha_events_commits_files(sha)");
+        exec(&c, ctx, "create index if not exists events_commits_files_event_id_idx on gha_events_commits_files(event_id)");
+        exec(&c, ctx, "create index if not exists events_commits_files_path_idx on gha_events_commits_files(path)");
+        exec(&c, ctx, "create index if not exists events_commits_files_ext_idx on gha_events_commits_files(ext)");
+        exec(&c, ctx, "create index if not exists events_commits_files_size_idx on gha_events_commits_files(size)");
+        exec(&c, ctx, "create index if not exists events_commits_files_dt_idx on gha_events_commits_files(dt)");
+        exec(&c, ctx, "create index if not exists events_commits_files_repo_group_idx on gha_events_commits_files(repo_group)");
+        exec(&c, ctx, "create index if not exists events_commits_files_dup_repo_id_idx on gha_events_commits_files(dup_repo_id)");
+        exec(&c, ctx, "create index if not exists events_commits_files_dup_repo_name_idx on gha_events_commits_files(dup_repo_name)");
+        // ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_dup_type_idx on gha_events_commits_files(dup_type)")
+        // ExecSQLWithErr(c, ctx, "create index if not exists events_commits_files_dup_created_at_idx on gha_events_commits_files(dup_created_at)")
+        exec(
+            &c,
+            ctx,
+            "create index if not exists skip_commits_sha_idx on gha_skip_commits(sha)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists skip_commits_dt_idx on gha_skip_commits(dt)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists skip_commits_reason_idx on gha_skip_commits(reason)",
+        );
+    }
+
+    // Scripts to run on a given database
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_postprocess_scripts");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_postprocess_scripts(",
+                "ord int not null, ",
+                "path text not null, ",
+                "primary key(ord, path)",
+                ")",
+            )),
+        );
+    }
+
+    // gha_countries
+    // counst, external
+    if ctx.table && ctx.affiliations_db.is_empty() {
+        exec(&c, ctx, "drop table if exists gha_countries");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_countries(",
+                "code varchar(2) not null, ",
+                "name text not null, ",
+                "primary key(code)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index && ctx.affiliations_db.is_empty() {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists countries_name_idx on gha_countries(name)",
+        );
+    }
+
+    // This table is a kind of `materialized view` of all texts
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_texts");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_texts(",
+                "event_id bigint, ",
+                "body text, ",
+                "created_at {{ts}} not null, ",
+                "actor_id bigint not null, ",
+                "actor_login varchar(120) not null, ",
+                "repo_id bigint not null, ",
+                "repo_name varchar(160) not null, ",
+                "type varchar(40) not null",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists texts_event_id_idx on gha_texts(event_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists texts_created_at_idx on gha_texts(created_at)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists texts_actor_id_idx on gha_texts(actor_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists texts_actor_login_idx on gha_texts(actor_login)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists texts_repo_id_idx on gha_texts(repo_id)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists texts_repo_name_idx on gha_texts(repo_name)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists texts_type_idx on gha_texts(type)",
+        );
+        exec(&c, ctx, "create index if not exists texts_lower_actor_login_idx on gha_texts(lower(actor_login))");
+    }
+
+    // This table is a kind of `materialized view` of issue event labels
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_issues_events_labels");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_issues_events_labels(",
+                "issue_id bigint not null, ",
+                "event_id bigint not null, ",
+                "label_id bigint not null, ",
+                "label_name varchar(160) not null, ",
+                "created_at {{ts}} not null, ",
+                "actor_id bigint not null, ",
+                "actor_login varchar(120) not null, ",
+                "repo_id bigint not null, ",
+                "repo_name varchar(160) not null, ",
+                "type varchar(40) not null, ",
+                // "issue_number int not null, ",
+                "primary key(issue_id, event_id, label_id)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(&c, ctx, "create index if not exists issues_events_labels_issue_id_idx on gha_issues_events_labels(issue_id)");
+        exec(&c, ctx, "create index if not exists issues_events_labels_event_id_idx on gha_issues_events_labels(event_id)");
+        exec(&c, ctx, "create index if not exists issues_events_labels_label_id_idx on gha_issues_events_labels(label_id)");
+        exec(&c, ctx, "create index if not exists issues_events_labels_label_name_idx on gha_issues_events_labels(label_name)");
+        exec(&c, ctx, "create index if not exists issues_events_labels_created_at_idx on gha_issues_events_labels(created_at)");
+        exec(&c, ctx, "create index if not exists issues_events_labels_actor_id_idx on gha_issues_events_labels(actor_id)");
+        exec(&c, ctx, "create index if not exists issues_events_labels_actor_login_idx on gha_issues_events_labels(actor_login)");
+        exec(&c, ctx, "create index if not exists issues_events_labels_repo_id_idx on gha_issues_events_labels(repo_id)");
+        exec(&c, ctx, "create index if not exists issues_events_labels_repo_name_idx on gha_issues_events_labels(repo_name)");
+        exec(&c, ctx, "create index if not exists issues_events_labels_type_idx on gha_issues_events_labels(type)");
+        // ExecSQLWithErr(c, ctx, "create index if not exists issues_events_labels_issue_number_idx on gha_issues_events_labels(issue_number)")
+        exec(&c, ctx, "create index if not exists issues_events_labels_lower_actor_login_idx on gha_issues_events_labels(lower(actor_login))");
+    }
+
+    // This table is a kind of `materialized view` of issues - PRs connections
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_issues_pull_requests");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_issues_pull_requests(",
+                "issue_id bigint not null, ",
+                "pull_request_id bigint not null, ",
+                "number int not null, ",
+                "repo_id bigint not null, ",
+                "repo_name varchar(160) not null, ",
+                "created_at {{ts}} not null",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(&c, ctx, "create index if not exists issues_pull_requests_issue_id_idx on gha_issues_pull_requests(issue_id)");
+        exec(&c, ctx, "create index if not exists issues_pull_requests_pull_request_id_idx on gha_issues_pull_requests(pull_request_id)");
+        exec(&c, ctx, "create index if not exists issues_pull_requests_number_idx on gha_issues_pull_requests(number)");
+        exec(&c, ctx, "create index if not exists issues_pull_requests_repo_id_idx on gha_issues_pull_requests(repo_id)");
+        exec(&c, ctx, "create index if not exists issues_pull_requests_repo_name_idx on gha_issues_pull_requests(repo_name)");
+        exec(&c, ctx, "create index if not exists issues_pull_requests_created_at_idx on gha_issues_pull_requests(created_at)");
+    }
+
+    // This table holds Postgres variables defined by `vars` tool.
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_vars");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_vars(",
+                "name varchar(100), ",
+                "value_i bigint, ",
+                "value_f double precision, ",
+                "value_s text, ",
+                "value_dt {{ts}}, ",
+                "primary key(name)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists vars_name_idx on gha_vars(name)",
+        );
+    }
+    // This is to determine if a given metric is computed for some period or not
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_computed");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_computed(",
+                "metric text not null, ",
+                "dt {{ts}} not null, ",
+                "primary key(metric, dt)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists computed_metric_idx on gha_computed(metric)",
+        );
+        exec(
+            &c,
+            ctx,
+            "create index if not exists computed_dt_idx on gha_computed(dt)",
+        );
+    }
+    // This is to determine when given metric was last calculated
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_last_computed");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_last_computed(",
+                "metric text not null, ",
+                "dt {{ts}} not null, ",
+                "start_dt {{ts}}, ",
+                "took bigint, ",
+                "took_as_str text, ",
+                "command text, ",
+                "primary key(metric)",
+                ")",
+            )),
+        );
+    }
+    // This table is to determine if given GHA hour was already parsed or not
+    if ctx.table {
+        exec(&c, ctx, "drop table if exists gha_parsed");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_parsed(",
+                "dt {{ts}} not null, ",
+                "primary key(dt)",
+                ")",
+            )),
+        );
+    }
+    if ctx.index {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists parsed_dt_idx on gha_parsed(dt)",
+        );
+    }
+    // This is to determine if a given JSON was imported or not
+    if ctx.table && ctx.affiliations_db.is_empty() {
+        exec(&c, ctx, "drop table if exists gha_imported_shas");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!(
+                "gha_imported_shas(",
+                "sha text not null, ",
+                "dt {{tsnow}} not null, ",
+                "primary key(sha)",
+                ")",
+            )),
+        );
+    }
+    // Bot logins table
+    if ctx.table && ctx.affiliations_db.is_empty() {
+        exec(&c, ctx, "drop table if exists gha_bot_logins");
+        exec(
+            &c,
+            ctx,
+            &pg::create_table(concat!("gha_bot_logins(", "pattern text primary key", ")",)),
+        );
+    }
+    if ctx.index && ctx.affiliations_db.is_empty() {
+        exec(
+            &c,
+            ctx,
+            "create index if not exists gha_bot_logins_pattern_idx on gha_bot_logins(pattern)",
+        );
+    }
+    // Foreign keys are not needed - they slow down processing a lot
+
+    // Tools (like views and functions needed for generating metrics)
+    if ctx.tools {
+        // Local or cron mode?
+        let data_prefix = if ctx.local {
+            "./".to_string()
+        } else {
+            ctx.data_dir.clone()
+        };
+        // Optional bounded rebuild of the generated tables (gha_texts, gha_issues_events_labels,
+        // gha_issues_pull_requests). When GHA2DB_POSTPROCESS_FROM/GHA2DB_POSTPROCESS_TO are set, run ONLY
+        // the dedicated *_range.sql rebuild scripts for [from, to) - a targeted backfill repair. This does
+        // NOT touch the normal max(event_id) hourly scripts (zero regression on the hot path) and skips the
+        // full Tools refresh (country codes, bot logins, affiliations). The range is passed via session
+        // settings prepended to the same Exec batch (one Exec = one pooled connection). Values are already
+        // canonicalized to 'YYYY-MM-DD HH:MM:SS' in Ctx.Init (validated, injection-safe).
+        if !ctx.postprocess_from.is_empty() && !ctx.postprocess_to.is_empty() {
+            let prefix = format!(
+                "select set_config('devstats.postprocess_from', '{}', false); select set_config('devstats.postprocess_to', '{}', false);\n",
+                ctx.postprocess_from, ctx.postprocess_to
+            );
+            printf!(
+                "Postprocess: bounded rebuild of generated tables for range [{}, {})\n",
+                ctx.postprocess_from,
+                ctx.postprocess_to
+            );
+            for script in [
+                "util_sql/postprocess_texts_range.sql",
+                "util_sql/postprocess_labels_range.sql",
+                "util_sql/postprocess_issues_prs_range.sql",
+            ] {
+                let dt_start = Instant::now();
+                exec_script(&c, ctx, &format!("{data_prefix}{script}"), &prefix);
+                if ctx.debug > 0 {
+                    printf!(
+                        "Executed range script: {}: took {}\n",
+                        script,
+                        format_go_duration(dt_start.elapsed())
+                    );
+                }
+            }
+        } else {
+            // Get list of script files
+            let mut rows = match c.query(
+                "select path from gha_postprocess_scripts order by ord",
+                &[] as &[SqlArg],
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    // Go: `FatalOnError(err)` exits for every non-retryable error;
+                    // for the retryable ones it returns and the program then
+                    // dereferences the nil `rows` — either way exit code 2.
+                    pg::fatal_on_pg_error(&e);
+                    panic!("runtime error: invalid memory address or nil pointer dereference");
+                }
+            };
+            let mut script = String::new();
+            while rows.next() {
+                let dt_start = Instant::now();
+                pg::fatal_on_pg_err(pg_scan!(rows, script));
+                if !ctx.affiliations_db.is_empty() && script == "util_sql/postprocess_commits.sql" {
+                    script = "util_sql/postprocess_commits_shared.sql".to_string();
+                }
+                exec_script(&c, ctx, &format!("{data_prefix}{script}"), "");
+                if ctx.debug > 0 {
+                    printf!(
+                        "Executed script: {}: took {}\n",
+                        script,
+                        format_go_duration(dt_start.elapsed())
+                    );
+                }
+            }
+            pg::fatal_on_pg_err(rows.err());
+            pg::fatal_on_pg_err(rows.close());
+            if ctx.affiliations_db.is_empty() {
+                let dt_start = Instant::now();
+                let script = "util_sql/country_codes.sql";
+                exec_script(&c, ctx, &format!("{data_prefix}{script}"), "");
+                if ctx.debug > 0 {
+                    printf!(
+                        "Executed countries script: {}: took {}\n",
+                        script,
+                        format_go_duration(dt_start.elapsed())
+                    );
+                }
+            }
+            if ctx.affiliations_db.is_empty() {
+                let dt_start = Instant::now();
+                let script = "util_sql/exclude_bots_table_insert.sql";
+                exec_script(&c, ctx, &format!("{data_prefix}{script}"), "");
+                if ctx.debug > 0 {
+                    printf!(
+                        "Executed bot logins table insert script: {}: took {}\n",
+                        script,
+                        format_go_duration(dt_start.elapsed())
+                    );
+                }
+            }
+            if ctx.affiliations_db.is_empty() {
+                let dt_start = Instant::now();
+                let script = "util_sql/update_affiliations.sql";
+                exec_script(&c, ctx, &format!("{data_prefix}{script}"), "");
+                if ctx.debug > 0 {
+                    printf!(
+                        "Updated missing affiliations for multiple ID actors script: {}: took {}\n",
+                        script,
+                        format_go_duration(dt_start.elapsed())
+                    );
+                }
+            }
+        }
+    }
+    c.close();
+}

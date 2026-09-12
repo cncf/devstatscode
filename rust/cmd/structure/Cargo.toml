@@ -1,0 +1,19 @@
+[package]
+name = "structure"
+description = "Create the DevStats PostgreSQL database structure (tables, indexes, tools) — Rust port of cmd/structure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "structure"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+
+[dev-dependencies]
+devstats-compat = { workspace = true }
+tempfile = { workspace = true }

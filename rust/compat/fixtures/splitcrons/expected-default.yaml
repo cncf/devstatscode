@@ -1,0 +1,353 @@
+nSyncCPUs: 12
+nAffsCPUs: 8
+affiliationsImportCron: 10 2 * * *
+affiliationsImportCronTest: 10 1 * * *
+projects:
+- proj: kubernetes
+  url: k8s
+  db: gha
+  icon: k8s
+  org: Kubernetes
+  repo: kubernetes/kubernetes
+  cronTest: 4 3,9,15,21 * * *
+  cronProd: 4 3 * * *
+  affCronTest: 0 20 14 * *
+  affCronProd: 4 11 * * 0
+  affSkipTemp: "1"
+  disk: 52Gi
+  domains: [0, 1, 0, 0]
+  ga: ""
+  i: 0
+  certNum: 0
+  maxHist: 2
+  affsLockDB: gha
+  durablePQ: 1
+  maxRunDuration: annotations:1h:102,calc_metric:48h:102,columns:2h:102,get_repos:24h:102,gha2db:120h:102,ghapi2db:36h:102,structure:4h:102,tags:1h:102
+  skipGHAPI: 1
+  skipGetRepos: 1
+  skipUpdAffs: 60
+  recentRange: 26 hours
+  orphanCommitsRange: 26 hours
+  recentReposRange: 2 days
+- proj: prometheus
+  url: prometheus
+  db: prometheus
+  icon: prometheus
+  org: Prometheus
+  repo: prometheus/prometheus
+  cronTest: 4 3,9,15,21 * * *
+  cronProd: 4 0,6,12,18 * * *
+  affCronTest: 0 8 16 * *
+  affCronProd: 4 3 * * 2
+  affSkipTemp: "1"
+  disk: 3Gi
+  domains: [0, 1, 0, 0]
+  ga: ""
+  i: 1
+  certNum: 0
+  maxHist: 8
+  durablePQ: 1
+  skipGHAPI: 1
+  skipGetRepos: 1
+- proj: opentracing
+  url: opentracing
+  db: opentracing
+  icon: opentracing
+  org: OpenTracing
+  repo: opentracing/opentracing-go
+  cronTest: 8 3,9,15,21 * * *
+  cronProd: 8 * * * *
+  affCronTest: 20 22 15 * *
+  affCronProd: 0 3 * * 1
+  affSkipTemp: "1"
+  disk: 3Gi
+  domains: [0, 0, 0, 0]
+  ga: ""
+  i: 2
+  certNum: 0
+  maxHist: 8
+  durablePQ: 1
+  skipGHAPI: 1
+  skipGetRepos: 1
+  archived: true
+- proj: rkt
+  url: rkt
+  db: rkt
+  icon: rkt
+  org: rkt
+  repo: rkt/rkt
+  cronTest: 13 3,9,15,21 * * *
+  cronProd: 11 * * * *
+  affCronTest: 40 0 17 * *
+  affCronProd: 15 2 * * 1
+  suspendCronProd: true
+  affSkipTemp: "1"
+  disk: 3Gi
+  domains: [0, 1, 0, 0]
+  ga: ""
+  i: 8
+  certNum: 0
+  maxHist: 8
+  durablePQ: 1
+  skipGHAPI: 1
+  skipGetRepos: 1
+  archived: true
+- proj: cncf
+  url: cncf
+  db: cncf
+  icon: cncf
+  org: CNCF
+  repo: cncf/landscapeapp
+  cronTest: 4 0,6,12,18 * * *
+  cronProd: 19 * * * *
+  affCronTest: 4 3 * * 0
+  affCronProd: 0 6 * * 6
+  suspendCronProd: true
+  affSkipTemp: "1"
+  disk: 44Gi
+  domains: [1, 0, 0, 0]
+  ga: ""
+  i: 49
+  certNum: 0
+  maxHist: 8
+  durablePQ: 1
+  skipGHAPI: 1
+  skipGetRepos: 1
+- proj: all
+  url: all
+  db: allprj
+  icon: cncf
+  org: All CNCF
+  repo: '-'
+  cronTest: 4 0,6,12,18 * * *
+  cronProd: 46 9 * * *
+  affCronTest: 0 8 13 * *
+  affCronProd: 46 17 * * 2
+  affSkipTemp: "1"
+  disk: 1051Gi
+  domains: [0, 1, 0, 0]
+  ga: ""
+  i: 38
+  certNum: 0
+  maxHist: 2
+  affsLockDB: allprj
+  durablePQ: 1
+  maxRunDuration: annotations:1h:102,calc_metric:48h:102,columns:2h:102,get_repos:24h:102,gha2db:120h:102,ghapi2db:48h:102,structure:3h:102,tags:1h:102
+  skipGHAPI: 1
+  skipGetRepos: 1
+  recentRange: 26 hours
+  orphanCommitsRange: 26 hours
+  recentReposRange: 2 days
+- proj: istio
+  url: istio
+  db: istio
+  icon: istio
+  org: Istio
+  repo: istio/istio
+  cronTest: 14 3,9,15,21 * * *
+  cronProd: 40 19 * * *
+  affCronTest: 0 8 18 * *
+  affCronProd: 40 3 * * 5
+  affSkipTemp: "1"
+  disk: 60Gi
+  domains: [0, 1, 0, 0]
+  ga: ""
+  i: 52
+  certNum: 0
+  maxHist: 8
+  durablePQ: 1
+  skipGHAPI: 1
+  skipGetRepos: 1
+  recentRange: 26 hours
+  orphanCommitsRange: 26 hours
+  recentReposRange: 2 days
+- proj: jenkins
+  url: jenkins
+  db: jenkins
+  icon: jenkins
+  org: Jenkins
+  repo: jenkinsci/jenkins
+  cronTest: 41 3,9,15,21 * * *
+  cronProd: 43 20 * * *
+  affCronTest: 0 3 20 * *
+  affCronProd: 43 4 * * 5
+  affSkipTemp: "1"
+  disk: 32Gi
+  domains: [0, 0, 1, 0]
+  ga: ""
+  i: 42
+  certNum: 1
+  maxHist: 8
+  durablePQ: 1
+  skipGHAPI: 1
+  skipGetRepos: 1
+  recentRange: 26 hours
+  orphanCommitsRange: 26 hours
+  recentReposRange: 2 days
+- proj: allcdf
+  url: allcdf
+  db: allcdf
+  icon: cdf
+  org: All CDF
+  repo: '-'
+  cronTest: 30 0,6,12,18 * * *
+  cronProd: 19 21 * * *
+  affCronTest: 0 8 21 * *
+  affCronProd: 19 5 * * 5
+  affSkipTemp: "1"
+  disk: 100Gi
+  domains: [0, 0, 1, 0]
+  ga: ""
+  i: 45
+  certNum: 1
+  maxHist: 2
+  affsLockDB: allcdf
+  durablePQ: 1
+  skipGHAPI: 1
+  skipGetRepos: 1
+  recentRange: 26 hours
+  orphanCommitsRange: 26 hours
+  recentReposRange: 2 days
+- proj: envoy
+  url: envoy
+  db: envoy
+  icon: envoy
+  org: Envoy
+  repo: envoyproxy/envoy
+  cronTest: 15 3,9,15,21 * * *
+  cronProd: 11 2,8,14,20 * * *
+  affCronTest: 15 18 * * 3
+  affCronProd: 11 5 * * 6
+  affSkipTemp: "1"
+  disk: 16Gi
+  domains: [1, 1, 0, 0]
+  ga: ""
+  i: 10
+  certNum: 0
+  maxHist: 8
+  durablePQ: 1
+  skipGHAPI: 1
+  skipGetRepos: 1
+- proj: helm
+  url: helm
+  db: helm
+  icon: helm
+  org: Helm
+  repo: helm/helm
+  cronTest: 33 3,9,15,21 * * *
+  cronProd: 13 3,9,15,21 * * *
+  affCronTest: 0 14 21 * *
+  affCronProd: 13 6 * * 6
+  suspendCronTest: true
+  affSkipTemp: "1"
+  disk: 5Gi
+  domains: [0, 0, 0, 1]
+  ga: ""
+  i: 22
+  certNum: 0
+  maxHist: 8
+  durablePQ: 1
+  skipGHAPI: 1
+  skipGetRepos: 1
+- proj: tikv
+  url: tikv
+  db: tikv
+  icon: tikv
+  org: TiKV
+  repo: tikv/tikv
+  cronTest: 59 5,11,17,23 * * *
+  cronProd: 10 4,10,16,22 * * *
+  affCronTest: 59 20 * * 6
+  affCronProd: 10 13 * * 6
+  affSkipTemp: ""
+  disk: 9Gi
+  domains: [1, 1, 1, 1]
+  ga: ""
+  i: 27
+  certNum: 0
+  maxHist: 8
+  skipAffsLock: 1
+  noDurable: 1
+  maxRunDuration: gha2db:12h:102
+  skipGHAPI: 1
+  skipGetRepos: 1
+  skipImpAffs: 1
+- proj: spiffe
+  url: ""
+  db: spiffe
+  icon: ""
+  org: ""
+  repo: ""
+  cronTest: ""
+  cronProd: 30 5,11,17,23 * * *
+  affCronTest: ""
+  affCronProd: 30 14 * * 6
+  affSkipTemp: ""
+  disk: ""
+  domains: [0, 1, 0, 0]
+  ga: ""
+  i: 18
+  certNum: 0
+- proj: opentelemetry
+  url: opentelemetry
+  db: opentelemetry
+  icon: opentelemetry
+  org: OpenTelemetry
+  repo: open-telemetry/opentelemetry-collector
+  cronTest: 50 3,9,15,21 * * *
+  cronProd: 4 23 * * *
+  affCronTest: 0 22 25 * *
+  affCronProd: 4 7 * * 6
+  affSkipTemp: "1"
+  disk: 20Gi
+  domains: [0, 1, 0, 0]
+  ga: ""
+  i: 55
+  certNum: 0
+  durablePQ: 1
+  skipGHAPI: 1
+  skipGetRepos: 1
+  recentRange: 26 hours
+  orphanCommitsRange: 26 hours
+  recentReposRange: 2 days
+- proj: containerd
+  url: containerd
+  db: containerd
+  icon: containerd
+  org: containerd
+  repo: containerd/containerd
+  cronTest: 23 3,9,15,21 * * *
+  cronProd: 21 * * * *
+  affCronTest: 20 10 17 * *
+  affCronProd: 30 4 * * 2
+  suspendCronTest: true
+  affSkipTemp: "1"
+  disk: 8Gi
+  domains: [1, 0, 0, 0]
+  ga: ""
+  i: 7
+  certNum: 0
+  maxHist: 8
+  durablePQ: 1
+  skipGHAPI: 1
+  skipGetRepos: 1
+- proj: nats
+  url: nats
+  db: nats
+  icon: nats
+  org: NATS
+  repo: nats-io/nats-server
+  cronTest: 5 0,6,12,18 * * *
+  cronProd: 59 5,11,17,23 * * *
+  affCronTest: 5 21 * * 6
+  affCronProd: 59 20 * * 6
+  affSkipTemp: "1"
+  disk: 3Gi
+  domains: [1, 1, 0, 0]
+  ga: ""
+  i: 16
+  certNum: 0
+  maxHist: 8
+  durablePQ: 1
+  skipGHAPI: 1
+  skipGetRepos: 1

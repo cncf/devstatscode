@@ -1,0 +1,6 @@
+---
+# two tables, two added columns each: the GHA2DB_QOUT echo case
+columns:
+  - table_regexp: '^s(commits|event_types)$'
+    tag: tsig_mentions_labels
+    column: sig_mentions_labels_value

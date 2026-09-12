@@ -1,0 +1,10 @@
+---
+vars:
+  - name: sync_only
+    type: s
+    value: loaded via GHA2DB_VARS_FN_YAML=sync_vars.yaml
+    no_write: false
+  - name: sync_not_written
+    type: s
+    value: no_write
+    no_write: true

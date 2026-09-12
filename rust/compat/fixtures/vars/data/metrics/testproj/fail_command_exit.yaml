@@ -1,0 +1,8 @@
+---
+vars:
+  - name: ok_first
+    type: s
+    value: written before the failure
+  - name: failing_command
+    type: s
+    command: [sh, -c, 'echo partial output; echo on stderr 1>&2; exit 3']

@@ -1,0 +1,8 @@
+---
+tags:
+  - name: Bad column
+    sql: repos_tags
+    series_name: bad_column
+    name_tag: repo_name
+    other_tags:
+      extra: [no_such_column, ""]

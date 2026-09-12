@@ -1,0 +1,6 @@
+---
+columns:
+  - table_regexp: 42
+    tag: 17
+    column: 1.5
+    hll: yes

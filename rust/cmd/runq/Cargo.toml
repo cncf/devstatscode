@@ -1,0 +1,19 @@
+[package]
+name = "runq"
+description = "Run an SQL file with {{param}} replacements and print the result table — Rust port of cmd/runq"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "runq"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+
+[dev-dependencies]
+devstats-compat = { workspace = true }
+tempfile = { workspace = true }

@@ -1,0 +1,6 @@
+---
+tags:
+  - name: Missing SQL
+    sql: no_such_file
+    series_name: missing_sql
+    name_tag: x
