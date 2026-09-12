@@ -379,7 +379,10 @@ resulting files where that is part of the contract). Set
     and data of every table.
   * Deviations: the second phase visits the tables, and lists the columns in
     its `update`/`alter table` statements, in sorted order (Go: map order) —
-    visible only in the `GHA2DB_QOUT` echo and the line order. `hll` columns
+    visible only in the `GHA2DB_QOUT` echo and the line order. The
+    `pg_catalog.pg_tables … ~ $1` lookup of the first phase has `order by
+    tablename` on both sides (bug 48: without it the table order followed the
+    catalog's physical row order, which differs between databases). `hll` columns
     need the `hll` extension installed in the server (not available as a
     FreeBSD package — built from `citusdata/postgresql-hll`); without it both
     implementations report `Error handle row is too big add column X/hll: pq:
