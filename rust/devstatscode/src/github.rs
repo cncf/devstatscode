@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset, TimeZone, Utc};
@@ -1016,6 +1016,28 @@ pub fn base_url() -> String {
     u
 }
 
+/// The process-wide HTTP connection pool behind every `Client` and
+/// `raw_post`. In Go all the per-token clients (and the ad-hoc
+/// `http.Client{Timeout: …}` of the GraphQL calls) sit on the shared
+/// `http.DefaultTransport`, whose single HTTP/2 connection multiplexes every
+/// concurrent GitHub call; ureq speaks HTTP/1.1, so instead keep enough
+/// keep-alive connections around (Go's `MaxIdleConns` = 100,
+/// `IdleConnTimeout` = 90 s) rather than paying a TLS handshake per call.
+fn shared_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .timeout_global(Some(Duration::from_secs(300)))
+            .max_idle_connections(100)
+            .max_idle_connections_per_host(100)
+            .max_idle_age(Duration::from_secs(60))
+            .build()
+            .into()
+    })
+}
+
 impl Client {
     /// Go `github.NewClient(nil)` / `github.NewClient(oauth2.NewClient(...))`
     /// with the default (or `GHA2DB_GITHUB_API_URL`) endpoint.
@@ -1026,11 +1048,6 @@ impl Client {
     /// A client for another endpoint (`client.BaseURL = …`); a trailing
     /// slash is appended when missing, an empty URL means the default.
     pub fn with_base_url(token: Option<&str>, base: &str) -> Client {
-        let config = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .max_redirects(0)
-            .timeout_global(Some(Duration::from_secs(300)))
-            .build();
         let mut base = base.to_string();
         if base.is_empty() {
             base = DEFAULT_BASE_URL.to_string();
@@ -1041,7 +1058,7 @@ impl Client {
         Client {
             base_url: base,
             token: token.map(|t| t.to_string()),
-            agent: config.into(),
+            agent: shared_agent().clone(),
             rate_limits: Mutex::new([Rate::default(); 2]),
         }
     }
@@ -1839,14 +1856,8 @@ pub fn raw_post(
     timeout: Duration,
 ) -> Result<RawResponse, String> {
     // Go's net/http adds no `Accept` header and identifies as
-    // `Go-http-client/1.1`; mirror both.
-    let config = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_global(Some(timeout))
-        .accept(ureq::config::AutoHeaderValue::None)
-        .user_agent("Go-http-client/1.1")
-        .build();
-    let agent: ureq::Agent = config.into();
+    // `Go-http-client/1.1`; mirror both (per request, on the shared pool).
+    let agent = shared_agent();
     let mut req = ureq::http::Request::builder().method("POST").uri(url);
     for (k, v) in headers {
         req = req.header(*k, *v);
@@ -1854,6 +1865,14 @@ pub fn raw_post(
     let request = req
         .body(body.to_vec())
         .map_err(|e| format!("Post {:?}: {}", url, e))?;
+    let request = agent
+        .configure_request(request)
+        .http_status_as_error(false)
+        .max_redirects(10)
+        .timeout_global(Some(timeout))
+        .accept(ureq::config::AutoHeaderValue::None)
+        .user_agent("Go-http-client/1.1")
+        .build();
     let mut resp = agent
         .run(request)
         .map_err(|e| format!("Post {:?}: {}", url, go_transport_error(&e, url)))?;

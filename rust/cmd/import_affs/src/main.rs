@@ -834,7 +834,11 @@ fn import_affs(json_fn: &str) -> i32 {
                 added.fetch_add(1, Ordering::SeqCst);
             }
             Some((actor, csd)) => {
-                if (found_name && name != actor.name) || !csd.same_as(cs_d) {
+                // Compare the name in its stored form (truncated to the 120-byte
+                // column, hidden if configured), otherwise names longer than
+                // 120 bytes would be "updated" (to the same value) on every import
+                let db_name = maybe_hide(&trunc_to_bytes(&name, 120));
+                if (found_name && db_name != actor.name) || !csd.same_as(cs_d) {
                     let lower_login = maybe_hide(login).to_lowercase();
                     if found_name {
                         // If actor found, but with different name (actually with name == "" after standard GHA import), update name
@@ -848,7 +852,7 @@ fn import_affs(json_fn: &str) -> i32 {
                                 n_value(1), n_value(2), n_value(3), n_value(4), n_value(5), n_value(6), n_value(7), n_value(8)
                             ),
                             &[
-                                SqlArg::from(maybe_hide(&trunc_to_bytes(&name, 120))),
+                                SqlArg::from(db_name),
                                 SqlArg::from(cs_d.country_id.as_deref()),
                                 SqlArg::from(cs_d.sex.as_deref()),
                                 SqlArg::from(cs_d.tz.as_deref()),

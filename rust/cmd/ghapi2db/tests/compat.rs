@@ -4373,6 +4373,95 @@ fn stars_restore_graphql_errors() {
     });
 }
 
+/// Bug 50: the live API answers an empty stargazers page with
+/// `"startCursor": null` (and `"data": null` next to top-level errors); Go's
+/// `encoding/json` leaves such fields at their zero value, Rust's serde
+/// rejected them (`invalid type: null, expected a string`) so every repo of
+/// the stars restore was skipped in production. Every field of the GraphQL
+/// response now tolerates `null` like Go.
+#[test]
+fn stars_restore_tolerates_graphql_nulls() {
+    let sides = check(Case::new("rs_nullcursor", Pass::Stars).setup(|gh| {
+        gql_route(
+            gh,
+            vec![Scripted::ok(&json!({
+                "data": {"repository": {"stargazers": {
+                    "pageInfo": {"hasPreviousPage": false, "startCursor": null},
+                    "edges": []
+                }}}
+            }))],
+        );
+    }));
+    both(&sides, |s| {
+        s.expect_no_prefix(0, "org/repo: stargazers graphql:");
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: processed 1 repos, 1 pages, checked 0, restored 0",
+        );
+        assert_eq!(s.graphql_bodies().len(), 1);
+    });
+    let sides = check(Case::new("rs_nulledges", Pass::Stars).setup(|gh| {
+        gql_route(
+            gh,
+            vec![Scripted::ok(&json!({
+                "data": {"repository": {"stargazers": {
+                    "pageInfo": null,
+                    "edges": [
+                        {"starredAt": null, "node": {"login": "nostar", "databaseId": 17}},
+                        {"starredAt": "2020-05-02T11:00:00Z", "node": null},
+                        {"starredAt": "2020-05-02T12:00:00Z", "node": {"login": null, "databaseId": 18}},
+                        {"starredAt": "2020-05-02T13:00:00Z", "node": {"login": "nullid", "databaseId": null}},
+                        {"starredAt": "2020-05-02T10:00:00Z", "node": {"login": "dave", "databaseId": 14}}
+                    ]
+                }}},
+                "errors": null
+            }))],
+        );
+    }));
+    both(&sides, |s| {
+        s.expect_no_prefix(0, "org/repo: stargazers graphql:");
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: processed 1 repos, 1 pages, checked 1, restored 1",
+        );
+        assert_eq!(
+            s.query("select dup_actor_login, created_at from gha_events where type = 'WatchEvent' order by created_at"),
+            vec![vec!["dave".to_string(), "2020-05-02T10:00:00Z".to_string()]]
+        );
+    });
+    let sides = check(Case::new("rs_nulldata", Pass::Stars).setup(|gh| {
+        gql_route(
+            gh,
+            vec![Scripted::ok(
+                &json!({"data": null, "errors": [{"message": "Bad credentials"}, {"message": null}]}),
+            )],
+        );
+    }));
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "org/repo: stargazers graphql: graphql (token 1/1): Bad credentials, skipping",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: processed 1 repos, 0 pages, checked 0, restored 0",
+        );
+    });
+    let sides = check(Case::new("rs_nullrepo", Pass::Stars).setup(|gh| {
+        gql_route(
+            gh,
+            vec![Scripted::ok(&json!({"data": {"repository": null}}))],
+        );
+    }));
+    both(&sides, |s| {
+        s.expect_no_prefix(0, "org/repo: stargazers graphql:");
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: processed 1 repos, 1 pages, checked 0, restored 0",
+        );
+    });
+}
+
 #[test]
 fn stars_restore_falls_back_to_the_next_token() {
     let sides = check(

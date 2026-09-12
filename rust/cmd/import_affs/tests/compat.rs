@@ -1647,6 +1647,55 @@ fn ties_are_broken_deterministically() {
 }
 
 /// Re-importing the same data is idempotent (`on conflict do nothing`).
+/// Bug 51: the stored name is `maybeHide(TruncToBytes(name, 120))`, but a
+/// re-import compared the raw name with it, so every actor whose name is
+/// longer than 120 bytes (9 in the live `github_users.json`) or hidden was
+/// "updated" to the very same value on every import.
+#[test]
+fn stored_name_form_is_compared_on_reimport() {
+    let long_name = format!("{}新疆改造", "A".repeat(115));
+    let json = format!(
+        r#"[{{"login":"longname","name":"{long_name}","source":"user","affiliation":"ACME"}},
+ {{"login":"carol","name":"bob","source":"user","affiliation":"ACME"}},
+ {{"login":"alice","name":"Alice","source":"user","affiliation":"Deis"}}]"#
+    );
+    let json: &'static str = Box::leak(json.into_boxed_str());
+    let case = Case::new("storedname")
+        .json(Json::Inline(json))
+        .hide(HIDE_BOB)
+        .steps(vec![Step::Run(Vec::new()), Step::Run(Vec::new())]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.outs[0].code(), 0);
+    rs.expect_line(
+        0,
+        "Added actors: 3, updated actors: 0, empty names: 0, non-unique names: 0, non-changed: 0",
+    );
+    // the name is cut at 120 bytes on a character boundary, the hidden name is anonymized
+    assert_eq!(
+        rs.query("select login, name, octet_length(name) from gha_actors order by login"),
+        vec![
+            vec!["alice".to_string(), "Alice".to_string(), "5".to_string()],
+            vec![
+                "carol".to_string(),
+                "anon-48181acd22b3edaebc8a447868a7df7ce629920a".to_string(),
+                "45".to_string()
+            ],
+            vec![
+                "longname".to_string(),
+                format!("{}新", "A".repeat(115)),
+                "118".to_string()
+            ],
+        ]
+    );
+    assert_eq!(rs.outs[1].code(), 0);
+    rs.expect_line(
+        1,
+        "Added actors: 0, updated actors: 0, empty names: 0, non-unique names: 0, non-changed: 3",
+    );
+}
+
 #[test]
 fn reimport_is_idempotent() {
     let case = Case::new("reimport")

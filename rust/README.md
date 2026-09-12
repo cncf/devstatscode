@@ -29,12 +29,12 @@ the difference.
 | `sqlitedb`   | `cmd/sqlitedb`    | `cmd/sqlitedb`    | 5 / 36 (SQLite)        |
 | `merge_dbs`  | `cmd/merge_dbs`   | `cmd/merge_dbs`   | 4 / 49 (PostgreSQL)    |
 | `gha2db_sync` | `cmd/gha2db_sync` | `cmd/gha2db_sync` | 7 / 71 (PostgreSQL)   |
-| `import_affs` | `cmd/import_affs` | `cmd/import_affs` | 6 / 46 (PostgreSQL)   |
+| `import_affs` | `cmd/import_affs` | `cmd/import_affs` | 6 / 47 (PostgreSQL)   |
 | `calc_metric` | `cmd/calc_metric` | `cmd/calc_metric` | 6 / 98 (PostgreSQL)   |
 | `annotations` | `cmd/annotations` | `cmd/annotations` | 5 / 73 (PostgreSQL + git) |
 | `get_repos`  | `cmd/get_repos`   | `cmd/get_repos`   | 3 / 117 (PostgreSQL + git) |
 | `sync_issues` | `cmd/sync_issues` | `cmd/sync_issues` | 10 / 53 (PostgreSQL + fake GitHub API) |
-| `ghapi2db`   | `cmd/ghapi2db`    | `cmd/ghapi2db`    | 72 (PostgreSQL + fake GitHub REST/GraphQL API) |
+| `ghapi2db`   | `cmd/ghapi2db`    | `cmd/ghapi2db`    | 73 (PostgreSQL + fake GitHub REST/GraphQL API) |
 | `gha2db`     | `cmd/gha2db`      | `cmd/gha2db`      | 5 (+9 lib) / 60 (PostgreSQL + fake GH Archive) |
 | `api`        | `cmd/api`         | `cmd/api`         | 10 / 17 scenarios ≈ 330 requests (HTTP servers + PostgreSQL) |
 
@@ -774,7 +774,8 @@ resulting files where that is part of the contract). Set
     the csv header), scoring, updates of existing actors, deep correlation
     chains, markers/quotes in affiliations, JSON key/null handling,
     idempotent re-imports, deterministic tie-breaking (several names /
-    equally long affiliation definitions for one login, imported twice).
+    equally long affiliation definitions for one login, imported twice),
+    names longer than the 120-byte column / hidden names re-imported.
     Compared: exit code, stdout (`Time:` masked; the per-company statistics
     and `gone too deep` lines as a multiset), the `Error:`/`PqError:` stderr
     lines and all six tables — byte for byte, including `gha_actors.name`.
@@ -786,7 +787,10 @@ resulting files where that is part of the contract). Set
     and 397 logins whose company (393 of them *different* companies, e.g.
     CloudBees vs Red Hat) changed on every daily import; both sides now take
     the smallest (byte order) candidate, and acquisition regexps are applied
-    in `companies.yaml` order (first match wins).
+    in `companies.yaml` order (first match wins). Bug 51 (both sides): the
+    re-import compared the raw name with the stored one (truncated to 120
+    bytes, hidden if configured), so such actors were "updated" to the same
+    value on every run.
 
 * `calc_metric`
   * `cmd/calc_metric/calc_metric.go` transcribed: `series_name_or_func sql_file
@@ -1132,7 +1136,8 @@ resulting files where that is part of the contract). Set
     / paging; releases with assets, uploader fallback, `published_at` fallback,
     prerelease; stars over GraphQL with two pages, skipped edges, no token,
     HTTP 500 / GraphQL errors / 429 Retry-After / 403 X-RateLimit-Reset,
-    next-token fallback, hash id conflict; all passes in order). Compared: exit
+    `null` page cursor / edges / node fields / `data`, next-token fallback,
+    hash id conflict; all passes in order). Compared: exit
     code, stdout (durations, now-derived ids and timestamps, API URL and binary
     path masked; multiset for MT and where Go's map order shows), `Error:`
     stderr lines, the full database contents and the API request log (method,
@@ -1430,6 +1435,24 @@ resulting files where that is part of the contract). Set
   The per-repo 403 retry is now bounded by `GHA2DB_MAX_GHAPI_RETRY`; then the
   repo is skipped with `Licenses abuse detected on o/r, giving up after N
   retries` (`Languages …`).
+* `ghapi2db` stars restore (bug 50, Rust only, found by the first Rust `cii`
+  sync on the test cluster): GitHub answers an empty stargazers page with
+  `"startCursor": null` (and `"data": null` next to top-level errors); Go's
+  `encoding/json` leaves such fields at their zero value, serde rejected them
+  (`invalid type: null, expected a string`) so every repository of the stars
+  restore was skipped. Every field of the GraphQL response is now
+  null-tolerant like Go.
+* Rust performance parity (item 52): every GitHub `Client` had its own small
+  HTTP/1.1 connection pool and each GraphQL POST opened a new TLS connection,
+  so the `ghapi2db` API phases ran 30–70 % slower than Go (whose clients all
+  share `http.DefaultTransport`'s HTTP/2 connection). All clients and
+  `raw_post` now share one process-wide pool (100 idle connections, 60 s
+  idle age).
+* `import_affs` (bug 51, both sides): `gha_actors.name` is stored as
+  `maybeHide(TruncToBytes(name, 120))` but a re-import compared the raw name
+  with it, so the 9 live actors with names longer than 120 bytes (and any
+  hidden name) were counted as `updated actors` and rewritten with the same
+  value on every daily import. The stored form is compared now.
 * `gha2db` `eventExistsCollision`: the existing event's `created_at` (a
   `timestamp` column without a zone) was compared with the new event's time as
   an instant (`eD.Equal(createdAt)`), so re-running old-format hours (2012–2014,

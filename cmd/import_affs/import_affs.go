@@ -660,7 +660,10 @@ func importAffs(jsonFN string) int {
 			added++
 			unlock()
 		} else {
-			if (foundName && name != actor.Name) || !lib.CompareStringPtr(csd.CountryID, csD.CountryID) ||
+			// Compare the name in its stored form (truncated to the 120-byte column, hidden if configured),
+			// otherwise names longer than 120 bytes would be "updated" (to the same value) on every import
+			dbName := maybeHide(lib.TruncToBytes(name, 120))
+			if (foundName && dbName != actor.Name) || !lib.CompareStringPtr(csd.CountryID, csD.CountryID) ||
 				!lib.CompareStringPtr(csd.Sex, csD.Sex) || !lib.CompareFloat64Ptr(csd.SexProb, csD.SexProb) ||
 				!lib.CompareStringPtr(csd.Tz, csD.Tz) || !lib.CompareIntPtr(csd.TzOffset, csD.TzOffset) ||
 				!lib.CompareIntPtr(csd.Age, csD.Age) {
@@ -679,7 +682,7 @@ func importAffs(jsonFN string) int {
 							", age="+lib.NValue(7)+
 							" where lower(login)="+lib.NValue(8),
 						lib.AnyArray{
-							maybeHide(lib.TruncToBytes(name, 120)),
+							dbName,
 							csD.CountryID,
 							csD.Sex,
 							csD.Tz,

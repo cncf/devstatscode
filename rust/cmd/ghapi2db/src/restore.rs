@@ -624,20 +624,33 @@ struct GqlStargazer {
     id: i64,
 }
 
+/// Go `encoding/json` semantics for the GraphQL response structs: a JSON
+/// `null` leaves the field at its zero value (the API sends
+/// `"startCursor": null` for an empty page and `"data": null` with
+/// top-level errors) instead of being a decoding error.
+fn nd<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct GqlPageInfo {
-    #[serde(rename = "hasPreviousPage")]
+    #[serde(rename = "hasPreviousPage", deserialize_with = "nd")]
     has_previous_page: bool,
-    #[serde(rename = "startCursor")]
+    #[serde(rename = "startCursor", deserialize_with = "nd")]
     start_cursor: String,
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct GqlNode {
+    #[serde(deserialize_with = "nd")]
     login: String,
-    #[serde(rename = "databaseId")]
+    #[serde(rename = "databaseId", deserialize_with = "nd")]
     database_id: i64,
 }
 
@@ -646,39 +659,46 @@ struct GqlNode {
 struct GqlEdge {
     #[serde(rename = "starredAt")]
     starred_at: Option<GoTime>,
+    #[serde(deserialize_with = "nd")]
     node: GqlNode,
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct GqlStargazers {
-    #[serde(rename = "pageInfo")]
+    #[serde(rename = "pageInfo", deserialize_with = "nd")]
     page_info: GqlPageInfo,
+    #[serde(deserialize_with = "nd")]
     edges: Vec<GqlEdge>,
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct GqlRepository {
+    #[serde(deserialize_with = "nd")]
     stargazers: GqlStargazers,
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct GqlData {
+    #[serde(deserialize_with = "nd")]
     repository: GqlRepository,
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct GqlError {
+    #[serde(deserialize_with = "nd")]
     message: String,
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct GqlOut {
+    #[serde(deserialize_with = "nd")]
     data: GqlData,
+    #[serde(deserialize_with = "nd")]
     errors: Vec<GqlError>,
 }
 
