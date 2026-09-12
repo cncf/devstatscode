@@ -40,6 +40,18 @@ the difference.
 
 All 23 binaries of `cmd/*` are ported.
 
+Beyond the test suites the Rust binaries were validated live in the
+`devstats-test` Kubernetes namespace (2026-09-12) side by side with the Go
+ones, using the `RUST=1` images of `../devstats-docker-images`: every project
+was synced with both image kinds, the shared affiliations import was alternated
+Go→Rust→Go, a per-project affiliations recompute (`riff`, 100 tables) was
+compared table by table between Go and Rust — 100 % content-identical (the
+only physical difference is the column order of the recreated `s*` tables:
+Go's random map iteration vs. Rust's sorted order, see the `WriteTSPoints`
+note below) — and backups, the API server, the static site and the reports
+image were exercised on both kinds. Items 46–53 of the bugs list were found by
+that validation.
+
 Shared library code lives in the `devstatscode` crate — the port of the root Go
 package (`lib`): `Ctx` (`context.go`, all `GHA2DB_*` knobs), logging, env
 syncing, signals, `ExecCommand`, string/time/hash/unicode helpers, the JSON and
