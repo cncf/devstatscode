@@ -261,12 +261,31 @@ func findActors(db *sql.DB, ctx *lib.Ctx, login string, maybeHide func(string) s
 	return
 }
 
-// returns first value from stringSet
+// returns the smallest value from stringSet ("" when empty)
+// Deterministic: ranging over a map picks a different key on every run, which made the imported
+// actor name (and the chosen affiliation definition) change randomly between imports
 func firstKey(strMap stringSet) string {
-	for key := range strMap {
-		return key
+	keys := sortedKeys(strMap)
+	if len(keys) == 0 {
+		return ""
 	}
-	return ""
+	return keys[0]
+}
+
+// returns all values from stringSet in ascending order
+func sortedKeys(strMap stringSet) []string {
+	keys := make([]string, 0, len(strMap))
+	for key := range strMap {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// acqRule: single company acquisition rule from companies.yaml: company names matching "re" map to "res"
+type acqRule struct {
+	re  *regexp.Regexp
+	res string
 }
 
 // Adds non-existing actor
@@ -283,10 +302,11 @@ func addActor(con *sql.DB, ctx *lib.Ctx, login, name string, countryID, sex, tz 
 
 // mapCompanyName: maps company name to possibly new company name (when one was acquired by the another)
 // If mapping happens, store it in the cache for speed
+// Rules are checked in companies.yaml order (first match wins) - a map iteration would be random
 // stat:
 // --- [no_regexp_match, cache] (unmapped)
 // Company_name [match_regexp, match_cache]
-func mapCompanyName(comMap map[string][2]string, acqMap map[*regexp.Regexp]string, stat map[string][2]int, company string) string {
+func mapCompanyName(comMap map[string][2]string, acqRules []acqRule, stat map[string][2]int, company string) string {
 	res, ok := comMap[company]
 	if ok {
 		if res[1] == "m" {
@@ -300,13 +320,13 @@ func mapCompanyName(comMap map[string][2]string, acqMap map[*regexp.Regexp]strin
 		}
 		return res[0]
 	}
-	for re, res := range acqMap {
-		if re.MatchString(company) {
-			comMap[company] = [2]string{res, "m"}
-			ary := stat[res]
+	for _, rule := range acqRules {
+		if rule.re.MatchString(company) {
+			comMap[company] = [2]string{rule.res, "m"}
+			ary := stat[rule.res]
 			ary[0]++
-			stat[res] = ary
-			return res
+			stat[rule.res] = ary
+			return rule.res
 		}
 	}
 	comMap[company] = [2]string{company, "u"}
@@ -423,7 +443,7 @@ func importAffs(jsonFN string) int {
 	// Maps must exist even in skip company acquisitions mode: mapCompanyName
 	// writes to comMap/stat for every company (nil map assignment would panic)
 	var acqs allAcquisitions
-	acqMap := make(map[*regexp.Regexp]string)
+	acqRules := []acqRule{}
 	comMap := make(map[string][2]string)
 	stat := make(map[string][2]int)
 	if !ctx.SkipCompanyAcq {
@@ -436,12 +456,10 @@ func importAffs(jsonFN string) int {
 				lib.Printf("Acquisitions: %+v\n", acqs)
 			}
 		}
-		var re *regexp.Regexp
 		srcMap := make(map[string]string)
 		resMap := make(map[string]struct{})
-		idxMap := make(map[*regexp.Regexp]int)
 		for idx, acq := range acqs.Acquisitions {
-			re = regexp.MustCompile(acq[0])
+			re := regexp.MustCompile(acq[0])
 			res, ok := srcMap[acq[0]]
 			if ok {
 				lib.Fatalf("Acquisition number %d '%+v' is already present in the mapping and maps into '%s'", idx, acq, res)
@@ -452,11 +470,10 @@ func importAffs(jsonFN string) int {
 				lib.Fatalf("Acquisition number %d '%+v': some other acquisition already maps into '%s', merge them", idx, acq, acq[1])
 			}
 			resMap[acq[1]] = struct{}{}
-			acqMap[re] = acq[1]
-			idxMap[re] = idx
+			acqRules = append(acqRules, acqRule{re: re, res: acq[1]})
 		}
-		for re, res := range acqMap {
-			i := idxMap[re]
+		for i, rule := range acqRules {
+			re, res := rule.re, rule.res
 			for idx, acq := range acqs.Acquisitions {
 				if re.MatchString(acq[1]) && i != idx {
 					lib.Fatalf("Acquisition's number %d '%s' result '%s' matches other acquisition number %d '%s' which maps to '%s', simplify it: '%v' -> '%s'", idx, acq[0], acq[1], i, re, res, acq[0], res)
@@ -1002,9 +1019,11 @@ func importAffs(jsonFN string) int {
 				}
 			}
 			// maxNum holds max number of companies listed in any of affiliations
-			for aff := range affs {
+			// Pick the first (smallest) affiliation definition that lists most companies
+			// Sorted: with a map range the pick was random, so ties (397 logins in the real
+			// github_users.json, e.g. 'CloudBees Inc.' vs 'Red Hat Inc.') changed on every import
+			for _, aff := range sortedKeys(affs) {
 				ary := strings.Split(aff, ",")
-				// Just pick first affiliation definition that lists most companies
 				if len(ary) == maxNum {
 					affsAry = ary
 					break
@@ -1087,7 +1106,7 @@ func importAffs(jsonFN string) int {
 			lib.AnyArray{maybeHide(lib.TruncToBytes(company, 160))}...,
 		)
 		lock()
-		mappedCompany := mapCompanyName(comMap, acqMap, stat, company)
+		mappedCompany := mapCompanyName(comMap, acqRules, stat, company)
 		unlock()
 		if mappedCompany != company {
 			lib.ExecSQLWithErr(con, &ctx,
@@ -1166,7 +1185,7 @@ func importAffs(jsonFN string) int {
 			return
 		}
 		lock()
-		mappedCompany := mapCompanyName(comMap, acqMap, stat, company)
+		mappedCompany := mapCompanyName(comMap, acqRules, stat, company)
 		unlock()
 		dtFrom := aff.From
 		dtTo := aff.To

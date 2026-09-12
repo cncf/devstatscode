@@ -16,16 +16,15 @@
 //! differs) and afterwards every table (`gha_imported_shas` without its
 //! `now()` column).
 //!
-//! Go picks the `gha_actors.name` of a login that has several names in the
-//! JSON at random (`firstKey` of a map); Rust takes the smallest. Those
-//! names — and the `updated actors` / `non-changed` counters that depend on
-//! whether the pick equals the name already in the database — are masked
-//! (see [`multi_name_logins`]).
+//! Logins with several names / several equally long affiliation
+//! definitions in the JSON get the smallest one on both sides (bug 49: Go
+//! used to pick a random map key, so names and affiliations changed on every
+//! import) — see [`ties_are_broken_deterministically`].
 //!
 //! The tests need a PostgreSQL server (`test.sh` finds one; skipped
 //! otherwise). The unit tests of the binary cover the pure helpers.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -212,41 +211,12 @@ impl Case {
     }
 }
 
-/// Lower-cased logins with more than one distinct non-empty name in a users
-/// JSON — Go picks their `gha_actors.name` at random. Empty when the JSON is
-/// not an array of objects (the malformed-input cases).
-fn multi_name_logins(json: &[u8]) -> BTreeSet<String> {
-    let Ok(serde_json::Value::Array(users)) = serde_json::from_slice::<serde_json::Value>(json)
-    else {
-        return BTreeSet::new();
-    };
-    let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for u in users {
-        let login = u
-            .get("login")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_lowercase();
-        let name = u.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        if !name.is_empty() {
-            names.entry(login).or_default().insert(name.to_string());
-        }
-    }
-    names
-        .into_iter()
-        .filter(|(_, s)| s.len() > 1)
-        .map(|(l, _)| l)
-        .collect()
-}
-
 struct Side {
     db: TestDb,
     _dir: TempDir,
     /// The scratch directory path (masked as `<dir>` in stdout).
     dir_str: String,
     outs: Vec<Outcome>,
-    /// Logins whose `gha_actors.name` is a random pick in Go.
-    multi: BTreeSet<String>,
 }
 
 /// Lines Go prints in map iteration order.
@@ -260,7 +230,7 @@ fn unordered_line(l: &str) -> bool {
 impl Side {
     /// stdout of run `i` split into the ordered lines and the sorted
     /// multiset of the order-free lines (all of them when `sorted`), with the
-    /// `Time:` value masked and the random-name counters merged.
+    /// `Time:` value masked.
     fn stdout(&self, i: usize, sorted: bool) -> (Vec<String>, Vec<String>) {
         let mut ordered = Vec::new();
         let mut unordered = Vec::new();
@@ -268,8 +238,6 @@ impl Side {
             let l = l.replace(&self.dir_str, "<dir>");
             let l = if l.starts_with("Time: ") {
                 "Time: <masked>".to_string()
-            } else if !self.multi.is_empty() && l.starts_with("Added actors: ") {
-                merge_update_counters(&l)
             } else {
                 l
             };
@@ -299,8 +267,7 @@ impl Side {
             "missing {line:?} in run #{i}: {lines:#?}"
         );
     }
-    /// Like [`Self::expect_line`] on the raw (unmasked) stdout — for the
-    /// counters the masking merges on this (deterministic) side.
+    /// Like [`Self::expect_line`] on the raw stdout (no `Time:` masking).
     fn expect_raw_line(&self, i: usize, line: &str) {
         let out = self.outs[i].stdout_str();
         let lines: Vec<&str> = out.lines().collect();
@@ -325,8 +292,8 @@ impl Side {
                 .map(str::to_string)
         })
     }
-    /// Every table (rows ordered by all columns), the random Go name picks
-    /// masked and `gha_imported_shas.dt` (`now()`) dropped.
+    /// Every table (rows ordered by all columns), `gha_imported_shas.dt`
+    /// (`now()`) dropped.
     fn data(&self) -> BTreeMap<String, Vec<Vec<String>>> {
         let con = self.db.conn();
         let mut res = BTreeMap::new();
@@ -336,26 +303,7 @@ impl Side {
             } else {
                 cpg::table_data(&con, t)
             };
-            let mut rows = snap.rows;
-            if t == "gha_actors" && !self.multi.is_empty() {
-                let id = snap.columns.iter().position(|c| c == "id").unwrap();
-                let login = snap.columns.iter().position(|c| c == "login").unwrap();
-                let name = snap.columns.iter().position(|c| c == "name").unwrap();
-                // Rows of the multi-name logins and rows sharing an id with
-                // them (the correlation SQL copies such rows under new logins)
-                let ids: BTreeSet<String> = rows
-                    .iter()
-                    .filter(|r| self.multi.contains(&r[login].to_lowercase()))
-                    .map(|r| r[id].clone())
-                    .collect();
-                for r in &mut rows {
-                    if self.multi.contains(&r[login].to_lowercase()) || ids.contains(&r[id]) {
-                        r[name] = "<one of several names>".to_string();
-                    }
-                }
-                rows.sort();
-            }
-            res.insert(t.to_string(), rows);
+            res.insert(t.to_string(), snap.rows);
         }
         con.close();
         res
@@ -387,31 +335,6 @@ impl Side {
     }
 }
 
-/// `Added actors: A, updated actors: U, empty names: E, non-unique names: M,
-/// non-changed: N` → the `U + N` sum (their split depends on Go's random
-/// name pick when a login already in the database has several names).
-fn merge_update_counters(line: &str) -> String {
-    let mut updated = None;
-    let mut non_changed = None;
-    let mut rest = Vec::new();
-    for part in line.split(", ") {
-        if let Some(v) = part.strip_prefix("updated actors: ") {
-            updated = Some(v.parse::<i64>().unwrap());
-        } else if let Some(v) = part.strip_prefix("non-changed: ") {
-            non_changed = Some(v.parse::<i64>().unwrap());
-        } else {
-            rest.push(part.to_string());
-        }
-    }
-    match (updated, non_changed) {
-        (Some(u), Some(n)) => {
-            rest.push(format!("updated+non-changed actors: {}", u + n));
-            rest.join(", ")
-        }
-        _ => line.to_string(),
-    }
-}
-
 fn write_json(dir: &Path, case: &Case, json: Json) -> Option<Vec<u8>> {
     let content = match json {
         Json::Fixture(name) => fs::read(fixture(&format!("import_affs/{name}"))).unwrap(),
@@ -433,10 +356,7 @@ fn run_side(bin: &Path, case: &Case, suffix: &str) -> Option<Side> {
         .tempdir()
         .unwrap();
     let dir_str = dir.path().to_str().unwrap().to_string();
-    let mut multi = BTreeSet::new();
-    if let Some(content) = write_json(dir.path(), case, case.json) {
-        multi.extend(multi_name_logins(&content));
-    }
+    write_json(dir.path(), case, case.json);
     match case.yaml {
         Yaml::Fixture => {
             fs::copy(
@@ -485,9 +405,7 @@ fn run_side(bin: &Path, case: &Case, suffix: &str) -> Option<Side> {
             }
             Step::Sql(sql) => db.exec(sql),
             Step::Json(content) => {
-                if let Some(content) = write_json(dir.path(), case, Json::Inline(content)) {
-                    multi.extend(multi_name_logins(&content));
-                }
+                write_json(dir.path(), case, Json::Inline(content));
             }
         }
     }
@@ -496,7 +414,6 @@ fn run_side(bin: &Path, case: &Case, suffix: &str) -> Option<Side> {
         _dir: dir,
         dir_str,
         outs,
-        multi,
     })
 }
 
@@ -684,13 +601,6 @@ fn test_affs_single_threaded() {
         return;
     };
     assert_eq!(rs.outs[0].code(), 0);
-    assert_eq!(
-        rs.multi,
-        ["aother", "aother2", "lgryglicki", "lukaszgryglicki"]
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-    );
     let expected = [
         "Processing 26 JSON entries",
         "Processing non-empty: 5 name lists, 3 email lists, 14 affiliations lists, 19 objects",
@@ -719,7 +629,7 @@ fn test_affs_single_threaded() {
         rs.query("select count(*) from gha_actors where login <> lower(login)"),
         vec![vec!["0"]]
     );
-    // The smallest of several names is the Rust pick
+    // The smallest of several names is the pick (both sides, bug 49)
     assert_eq!(
         rs.query("select name from gha_actors where login = 'lukaszgryglicki'"),
         vec![vec!["Lukasz Gryglicki"]]
@@ -1646,6 +1556,94 @@ fn emails_and_names_are_aggregated_per_login() {
     );
     assert_eq!(rs.count("gha_companies"), 0);
     assert_eq!(rs.count("gha_actors_affiliations"), 0);
+}
+
+/// Bug 49: a login with several names, or with several equally long
+/// affiliation definitions of the same source priority, gets the smallest
+/// one — Go used to pick a random map key (397 such affiliation ties and 215
+/// multi-name logins in the real `github_users.json`, so ~100 actor names
+/// and the company of e.g. `jstrachan` — CloudBees vs Red Hat — changed on
+/// every daily import). Runs twice: the second import must change nothing.
+#[test]
+fn ties_are_broken_deterministically() {
+    let json = r#"[{"login":"jstrachan","name":"James Strachan","source":"config","affiliation":"Red Hat Inc."},
+ {"login":"jstrachan","name":"James","source":"config","affiliation":"CloudBees Inc."},
+ {"login":"grobie","source":"user","affiliation":"groom gbr < 2016-07-01, SoundCloud Global Limited & Co. KG"},
+ {"login":"grobie","source":"user","affiliation":"groom gbr < 2012-07-01, SoundCloud Global Limited & Co. KG"},
+ {"login":"stanley","source":"manual","affiliation":"Independent < 2018-06-01, LSCM < 2018-09-01, Independent"},
+ {"login":"stanley","source":"manual","affiliation":"Independent < 2018-06-01, LSCM < 2018-09-01, Google LLC"},
+ {"login":"stanley","source":"domain","affiliation":"Zzz Corp, Yyy Corp, Xxx Corp, Www Corp"},
+ {"login":"longer","source":"config","affiliation":"Solo Inc."},
+ {"login":"longer","source":"config","affiliation":"Alpha < 2020-01-01, Solo Inc."}]"#;
+    let case = Case::new("ties")
+        .json(Json::Inline(json))
+        .steps(vec![Step::Run(Vec::new()), Step::Run(Vec::new())]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.outs[0].code(), 0);
+    rs.expect_line(
+        0,
+        "Added actors: 4, updated actors: 0, empty names: 3, non-unique names: 1, non-changed: 0",
+    );
+    rs.expect_line(
+        0,
+        "Affiliations unique: 0, non-unique: 4, with multiple priorities: 1, all user-company connections: 8",
+    );
+    // the smallest of the tied names/definitions wins; the top priority
+    // ('manual' over 'domain') and the longest definition still win first
+    assert_eq!(
+        rs.query("select name from gha_actors where login = 'jstrachan'"),
+        vec![vec!["James"]]
+    );
+    assert_eq!(
+        rs.query(
+            "select b.login, company_name, dt_from::date::text, dt_to::date::text, source \
+             from gha_actors_affiliations a, gha_actors b where a.actor_id = b.id order by 1, 3"
+        ),
+        vec![
+            vec!["grobie", "groom gbr", "1900-01-01", "2012-07-01", "user"],
+            vec![
+                "grobie",
+                "SoundCloud Global Limited & Co. KG",
+                "2012-07-01",
+                "2100-01-01",
+                "user"
+            ],
+            vec![
+                "jstrachan",
+                "CloudBees Inc.",
+                "1900-01-01",
+                "2100-01-01",
+                "config"
+            ],
+            vec!["longer", "Alpha", "1900-01-01", "2020-01-01", "config"],
+            vec!["longer", "Solo Inc.", "2020-01-01", "2100-01-01", "config"],
+            vec![
+                "stanley",
+                "Independent",
+                "1900-01-01",
+                "2018-06-01",
+                "manual"
+            ],
+            vec!["stanley", "LSCM", "2018-06-01", "2018-09-01", "manual"],
+            vec![
+                "stanley",
+                "Google LLC",
+                "2018-09-01",
+                "2100-01-01",
+                "manual"
+            ],
+        ]
+    );
+    assert_eq!(rs.count("gha_companies"), 8);
+    // second import: nothing changes
+    assert_eq!(rs.outs[1].code(), 0);
+    rs.expect_line(
+        1,
+        "Added actors: 0, updated actors: 0, empty names: 3, non-unique names: 1, non-changed: 4",
+    );
+    assert_eq!(rs.count("gha_actors_affiliations"), 8);
 }
 
 /// Re-importing the same data is idempotent (`on conflict do nothing`).

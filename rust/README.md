@@ -29,7 +29,7 @@ the difference.
 | `sqlitedb`   | `cmd/sqlitedb`    | `cmd/sqlitedb`    | 5 / 36 (SQLite)        |
 | `merge_dbs`  | `cmd/merge_dbs`   | `cmd/merge_dbs`   | 4 / 49 (PostgreSQL)    |
 | `gha2db_sync` | `cmd/gha2db_sync` | `cmd/gha2db_sync` | 7 / 71 (PostgreSQL)   |
-| `import_affs` | `cmd/import_affs` | `cmd/import_affs` | 6 / 45 (PostgreSQL)   |
+| `import_affs` | `cmd/import_affs` | `cmd/import_affs` | 6 / 46 (PostgreSQL)   |
 | `calc_metric` | `cmd/calc_metric` | `cmd/calc_metric` | 6 / 98 (PostgreSQL)   |
 | `annotations` | `cmd/annotations` | `cmd/annotations` | 5 / 73 (PostgreSQL + git) |
 | `get_repos`  | `cmd/get_repos`   | `cmd/get_repos`   | 3 / 117 (PostgreSQL + git) |
@@ -763,7 +763,7 @@ resulting files where that is part of the contract). Set
     (`processRoll`: `< date` markers, quoted names, `Unknown`/`NotFound`
     placeholders, `Affiliations added up to:`), `GHA2DB_ST` / `GHA2DB_NCPUS`
     (≤10 workers), `Time:`.
-  * Go⇄Rust tests: `cmd/import_affs/tests/compat.rs` — 45 scenarios on scratch
+  * Go⇄Rust tests: `cmd/import_affs/tests/compat.rs` — 46 scenarios on scratch
     databases (the six tables' DDL from `structure`), probe JSON, the real
     `util_json/test_affs.json` + `companies.yaml` (ST and MT), two-phase runs
     with a correlation SQL step in between (ST and MT), argv/env/`DATADIR`
@@ -773,18 +773,20 @@ resulting files where that is part of the contract). Set
     (check / only-check / new file), dry run, hidden logins (with and without
     the csv header), scoring, updates of existing actors, deep correlation
     chains, markers/quotes in affiliations, JSON key/null handling,
-    idempotent re-imports. Compared: exit code, stdout (`Time:` masked; the
-    per-company statistics and `gone too deep` lines as a multiset; the
-    `updated`/`non-changed` counters merged where Go's random name pick makes
-    them differ), the `Error:`/`PqError:` stderr lines and all six tables
-    (`gha_actors.name` masked for logins with several names — Go picks a
-    random map key — and for the rows the correlation SQL copied from them).
-  * Deviations: with several names for one login Go stores a random one
-    (Rust: the smallest), so the `updated actors`/`non-changed` split may
-    differ between runs on either side; jsoniter error wording (`Error: '…'`
-    line) for malformed JSON is not reproduced (exit code is); companies
-    matching several acquisition regexps are mapped in Go's random map order
-    (Rust: yaml order).
+    idempotent re-imports, deterministic tie-breaking (several names /
+    equally long affiliation definitions for one login, imported twice).
+    Compared: exit code, stdout (`Time:` masked; the per-company statistics
+    and `gone too deep` lines as a multiset), the `Error:`/`PqError:` stderr
+    lines and all six tables — byte for byte, including `gha_actors.name`.
+  * Deviations: jsoniter error wording (`Error: '…'` line) for malformed JSON
+    is not reproduced (exit code is). Bug 49 (fixed in Go, Rust already
+    behaved so): with several names for one login, or several equally long
+    affiliation definitions of the same source priority, Go stored a random
+    map key — in the real `github_users.json` that is 215 logins whose name
+    and 397 logins whose company (393 of them *different* companies, e.g.
+    CloudBees vs Red Hat) changed on every daily import; both sides now take
+    the smallest (byte order) candidate, and acquisition regexps are applied
+    in `companies.yaml` order (first match wins).
 
 * `calc_metric`
   * `cmd/calc_metric/calc_metric.go` transcribed: `series_name_or_func sql_file
@@ -1393,6 +1395,18 @@ resulting files where that is part of the contract). Set
   copied affiliations (and the resulting `gha_actors_affiliations` rows for
   correlated logins) differed between runs. Now a sorted snapshot is iterated
   until a fixpoint; Rust does the same.
+* `import_affs` (bug 49, found while running the shared affiliations import on
+  the test cluster with both binaries): `firstKey` returned a random map key,
+  and the "pick first affiliation definition that lists most companies" loop
+  ranged over a map — so for a login with several names, or several equally
+  long affiliation definitions of the same source priority, every import
+  stored a different choice (real `github_users.json`: 215 such names, 397
+  such affiliation ties, 393 of them between different companies; ~100
+  `gha_actors` rows and those companies flipped on every daily import). Both
+  picks are now the smallest candidate (byte order), and acquisition regexps
+  are tried in `companies.yaml` order (first match wins) instead of map
+  order; Rust already behaved like this, the compat tests now compare
+  `gha_actors.name` and the `updated actors` counters exactly.
 * `calc_metric` single-threaded path: `from` later than `to` produced an empty
   range and `dta[0]` panicked with `index out of range [0] with length 0`
   (exit 2, no `gha_last_computed`); now nothing is computed (`All done.`,
