@@ -37,6 +37,12 @@ type pvar struct {
 
 func processLoops(str string, loops [][]int) string {
 	for _, loop := range loops {
+		if len(loop) != 4 {
+			lib.Fatalf("Loop definition should be array with 4 elements [n, from, to, inc], got: %v", loop)
+		}
+		if loop[3] <= 0 {
+			lib.Fatalf("Loop increment must be positive, got: %v", loop)
+		}
 		loopN := loop[0]
 		from := loop[1]
 		to := loop[2]
@@ -86,6 +92,9 @@ func processQueries(str string, queries map[string]map[string][][]string) string
 }
 
 func handleQuery(c *sql.DB, ctx *lib.Ctx, queries map[string]map[string][][]string, queryData []string) {
+	if len(queryData) < 2 {
+		lib.Fatalf("Query definition should be array with at least 2 elements [name, sql, columns...], got: %v", queryData)
+	}
 	// Name to store query results
 	name := queryData[0]
 	_, ok := queries[name]
@@ -177,8 +186,10 @@ func pdbVars() {
 	replaces := make(map[string]string)
 	// Also make environemnt variables available too
 	for _, e := range os.Environ() {
-		pair := strings.Split(e, "=")
-		replaces["$"+pair[0]] = pair[1]
+		pair := strings.SplitN(e, "=", 2)
+		if len(pair) == 2 {
+			replaces["$"+pair[0]] = pair[1]
+		}
 	}
 	// Queries
 	queries := make(map[string]map[string][][]string)

@@ -471,8 +471,9 @@ func syncCommits(ctx *lib.Ctx) {
 			thLastTime := dtStart
 			// To handle GDPR
 			maybeHide := lib.MaybeHideFunc(lib.GetHidden(ctx, lib.HideCfgFile))
-			// Need deep copy - threads
-			copt := opt
+			// Need deep copy - threads (each goroutine advances its own Page)
+			coptCopy := *opt
+			copt := &coptCopy
 			// No DTFROM/DTTO set and no GHA2DB_NO_AUTOFETCHCOMMITS
 			if !isDateRange && ctx.AutoFetchCommits {
 				dtf, dtt, ok := getEnrichCommitsDateRange(c, ctx, orgRepo)
@@ -765,8 +766,6 @@ func syncEvents(ctx *lib.Ctx) {
 	nRepos := len(repos)
 	lib.Printf("ghapi2db.go: Processing %d repos - GHAPI Events part\n", nRepos)
 
-	//opt := &github.ListOptions{}
-	opt := &github.ListOptions{PerPage: 100}
 	issues := make(map[int64]lib.IssueConfigAry)
 	var issuesMutex = &sync.Mutex{}
 	eids := make(map[int64][2]int64)
@@ -796,6 +795,8 @@ func syncEvents(ctx *lib.Ctx) {
 			gcfg := lib.IssueConfig{
 				Repo: orgRepo,
 			}
+			// Per goroutine paging options (each goroutine advances its own Page)
+			opt := &github.ListOptions{PerPage: 100}
 			var (
 				err      error
 				events   []*github.IssueEvent
@@ -1263,6 +1264,7 @@ func syncLicenses(ctx *lib.Ctx) {
 		org := ary[0]
 		repo := ary[1]
 		var license *github.RepositoryLicense
+		retries := 0
 		for {
 			lic, resp, err := cl.Repositories.License(gctx, org, repo)
 			if resp == nil {
@@ -1276,6 +1278,11 @@ func syncLicenses(ctx *lib.Ctx) {
 			}
 			if resp.StatusCode >= 400 {
 				if resp.StatusCode == 403 {
+					retries++
+					if retries > ctx.MaxGHAPIRetry {
+						lib.Printf("Licenses abuse detected on %s/%s, giving up after %d retries\n", org, repo, ctx.MaxGHAPIRetry)
+						return
+					}
 					lib.Printf("Licenses abuse detected on %s/%s, retrying\n", org, repo)
 					mtx.Lock()
 					if !iter(true) {
@@ -1450,6 +1457,7 @@ func syncLangs(ctx *lib.Ctx) {
 		repo := ary[1]
 		var langs map[string]int
 		when := time.Now()
+		retries := 0
 		for {
 			ls, resp, err := cl.Repositories.ListLanguages(gctx, org, repo)
 			if resp == nil {
@@ -1463,6 +1471,11 @@ func syncLangs(ctx *lib.Ctx) {
 			}
 			if resp.StatusCode >= 400 {
 				if resp.StatusCode == 403 {
+					retries++
+					if retries > ctx.MaxGHAPIRetry {
+						lib.Printf("Languages abuse detected on %s/%s, giving up after %d retries\n", org, repo, ctx.MaxGHAPIRetry)
+						return
+					}
 					lib.Printf("Languages abuse detected on %s/%s, retrying\n", org, repo)
 					mtx.Lock()
 					if !iter(true) {

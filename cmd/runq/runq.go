@@ -67,6 +67,9 @@ func runq(sqlFile string, params []string) (ctx lib.Ctx) {
 		// Special replace 'qr' 'period,from,to' is used for {{period.alias.name}} replacements
 		if from == "qr" {
 			qrAry := strings.Split(to, ",")
+			if len(qrAry) < 3 {
+				lib.Fatalf("qr parameter must be 'period,from,to', got: '%s'", to)
+			}
 			qr = true
 			qrPeriod, qrFrom, qrTo = qrAry[0], qrAry[1], qrAry[2]
 			continue
@@ -138,11 +141,9 @@ func runq(sqlFile string, params []string) (ctx lib.Ctx) {
 
 	// Compute column Lengths
 	columnLengths := make(map[string]int)
-	indexLen := 1
 	for index, column := range columns {
-		if index == 10 {
-			indexLen++
-		}
+		// Length of the uniqueness suffix added above
+		indexLen := len(strconv.Itoa(index))
 		maxLen := len(column) - indexLen
 		for _, row := range results {
 			valLen := len(row[column])
@@ -175,12 +176,9 @@ func runq(sqlFile string, params []string) (ctx lib.Ctx) {
 
 	// Header row
 	output = "|"
-	indexLen = 1
 	hdr := []string{}
 	for index, column := range columns {
-		if index == 10 {
-			indexLen++
-		}
+		indexLen := len(strconv.Itoa(index))
 		strFormat := fmt.Sprintf("%%-%ds", columnLengths[column])
 		output += fmt.Sprintf(strFormat, column[:len(column)-indexLen]) + "|"
 		hdr = append(hdr, column[:len(column)-indexLen])
@@ -215,7 +213,7 @@ func runq(sqlFile string, params []string) (ctx lib.Ctx) {
 		if writer != nil {
 			err = writer.Write(vals)
 		}
-		output = strings.Replace(output[:len(output)-1]+"|\n", "%", "%%", -1)
+		output = output[:len(output)-1] + "|\n"
 		lib.Printf("%s", output)
 	}
 

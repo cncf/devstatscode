@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -49,32 +48,20 @@ func syncAllProjects() bool {
 			db := proj.PDB
 			con := lib.PgConnDB(&ctx, db)
 			provisionFlag := "provisioned"
-			var (
-				err  error
-				rows *sql.Rows
-			)
-			trials := 0
-			for true {
-				rows, err = lib.QuerySQL(con, &ctx, "select 1 from gha_computed where metric = "+lib.NValue(1)+" limit 1", provisionFlag)
-				trials++
-				if err != nil {
-					switch e := err.(type) {
-					case *pq.Error:
-						errName := e.Code.Name()
-						if errName == lib.InvalidCatalogName {
-							lib.Printf("No '%s' database, missing provisioning flag\n", db)
-							missing++
-							lib.FatalOnError(con.Close())
-							continue
-						} else {
-							lib.FatalOnError(err)
-						}
-					default:
-						lib.FatalOnError(err)
+			rows, err := lib.QuerySQL(con, &ctx, "select 1 from gha_computed where metric = "+lib.NValue(1)+" limit 1", provisionFlag)
+			if err != nil {
+				switch e := err.(type) {
+				case *pq.Error:
+					errName := e.Code.Name()
+					if errName == lib.InvalidCatalogName {
+						lib.Printf("No '%s' database, missing provisioning flag\n", db)
+						missing++
+						lib.FatalOnError(con.Close())
+						continue
 					}
-				}
-				if err == nil || trials >= 3 {
-					break
+					lib.FatalOnError(err)
+				default:
+					lib.FatalOnError(err)
 				}
 			}
 			provisioned := 0
@@ -151,6 +138,8 @@ func syncAllProjects() bool {
 			lib.Printf("Setting running flag\n")
 		}
 		missing := 0
+		// Databases where the flag was actually set (only those are cleared)
+		flagDBs := []string{}
 		for _, proj := range projs {
 			db := proj.PDB
 			con := lib.PgConnDB(&ctx, db)
@@ -181,14 +170,14 @@ func syncAllProjects() bool {
 			if ctx.Debug > 0 {
 				lib.Printf("Set running flag on %s\n", db)
 			}
+			flagDBs = append(flagDBs, db)
 		}
 		// Defer clearing that flag
 		defer func() {
 			if ctx.Debug > 0 {
 				lib.Printf("Deleting running flag\n")
 			}
-			for _, proj := range projs {
-				db := proj.PDB
+			for _, db := range flagDBs {
 				sleepTime := 1
 				for {
 					con := lib.PgConnDB(&ctx, db)

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -209,42 +208,12 @@ func processHidden(ctx *lib.Ctx) {
 	var projects lib.AllProjects
 	lib.FatalOnError(yaml.Unmarshal(data, &projects))
 
-	orders := []int{}
-	projectsMap := make(map[int]string)
-	for name, proj := range projects.Projects {
-		if lib.IsProjectDisabled(ctx, name, proj.Disabled) {
-			continue
-		}
-		orders = append(orders, proj.Order)
-		projectsMap[proj.Order] = name
-	}
-	sort.Ints(orders)
-
-	only := make(map[string]struct{})
-	onlyS := os.Getenv("ONLY")
-	bOnly := false
-	if onlyS != "" {
-		onlyA := strings.Split(onlyS, " ")
-		for _, item := range onlyA {
-			if item == "" {
-				continue
-			}
-			only[item] = struct{}{}
-		}
-		bOnly = true
-	}
+	// Enabled projects by order (+ ONLY), projects sharing an order are all kept
+	_, projs := lib.GetProjectsList(ctx, &projects)
 
 	tasks := [][3]string{}
 	dbs := []string{}
-	for _, order := range orders {
-		name := projectsMap[order]
-		if bOnly {
-			_, ok := only[name]
-			if !ok {
-				continue
-			}
-		}
-		proj := projects.Projects[name]
+	for _, proj := range projs {
 		for sha, anon := range shaMap {
 			tasks = append(tasks, [3]string{proj.PDB, sha, anon})
 		}

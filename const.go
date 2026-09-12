@@ -27,6 +27,9 @@ const GHA string = "gha"
 // Localhost - common constant string
 const Localhost string = "localhost"
 
+// GHArchiveURL - default GH Archive base URL (gha2db downloads <base>YYYY-MM-DD-H.json.gz from it)
+const GHArchiveURL string = "http://data.gharchive.org/"
+
 // Devstats - common constant string
 const Devstats string = "devstats"
 

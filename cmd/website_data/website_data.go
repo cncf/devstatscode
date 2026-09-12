@@ -187,20 +187,10 @@ func generateJSONData(ctx *lib.Ctx, name, excludeBots, lastTagCmd, repo string, 
 			"dup_created_at >= now() - '1 month'::interval "+
 			"group by dup_repo_name) sub where fmin > 0 and diff > 0",
 	)
-	stats.Totals.Month.Stars = getIntValue(
-		con,
-		ctx,
-		"select coalesce(sum(sub.diff), 0) "+
-			"from (select min(stargazers_count) as fmin, "+
-			"max(stargazers_count) - min(stargazers_count) as diff "+
-			"from gha_forkees where dup_repo_name = full_name and "+
-			"dup_created_at >= now() - '1 month'::interval "+
-			"group by dup_repo_name) sub where fmin > 0 and diff > 0",
-	)
 	stats.Stars = getIntValue(
 		con,
 		ctx,
-		"select sum(fmax) from (select max(stargazers_count) as fmax "+
+		"select coalesce(sum(fmax), 0) from (select max(stargazers_count) as fmax "+
 			"from gha_forkees where dup_repo_name = full_name "+
 			"and dup_created_at >= now() - '3 months'::interval "+
 			"group by dup_repo_name) sub",
@@ -332,6 +322,7 @@ func generateWebsiteData() {
 		lib.Printf("Using single threaded version\n")
 		for name, stats := range pstats {
 			generateJSONData(&ctx, name, excludeBots, lastTagCmd, projects.Projects[name].MainRepo, &stats)
+			stats.Timestamp = time.Now()
 			jsonBytes, err := jsoniter.Marshal(stats)
 			lib.FatalOnError(err)
 			pretty := lib.PrettyPrintJSON(jsonBytes)

@@ -11,6 +11,8 @@
 #   --offline  pass --offline to cargo (no network for crates.io)
 # Env:
 #   BINDIR     if set, copy the resulting binaries there (like `make install BINDIR=...`)
+#   DEVSTATS_BUILD_STAMP / DEVSTATS_GIT_HASH / DEVSTATS_HOST_NAME / DEVSTATS_RUST_VERSION
+#              build information compiled into the binaries (defaults computed like the Go Makefile)
 set -euo pipefail
 cd "$(dirname "$0")"
 # shellcheck source=./env.sh
@@ -28,6 +30,7 @@ for arg in "$@"; do
 done
 [ "$profile" = release ] && cargo_flags+=(--release)
 
+devstats_build_info
 cargo build "${cargo_flags[@]}"
 
 echo "Built ($profile, $DEVSTATS_OS):"

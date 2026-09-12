@@ -79,7 +79,9 @@ func FatalNoLog(err error) string {
 	if err != nil {
 		tm := time.Now()
 		fmt.Fprintf(os.Stderr, "Error(time=%+v):\nError: '%s'\nStacktrace:\n", tm, err.Error())
-		time.Sleep(time.Duration(60) * time.Second)
+		if os.Getenv("NO_FATAL_DELAY") == "" {
+			time.Sleep(time.Duration(60) * time.Second)
+		}
 		panic(fmt.Sprintf("stacktrace: %+v", err))
 	}
 	return OK

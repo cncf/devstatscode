@@ -420,19 +420,32 @@ func GetProjectsList(ctx *Ctx, projects *AllProjects) (names []string, projs []P
 	if projects == nil {
 		Fatalf("GetProjectsList: projects is nil")
 	}
-	// Order projects
-	orders := []int{}
-	projectsMap := make(map[int]string)
+	// Order projects (by order, then by name - so that projects sharing
+	// the same order are all kept, in a deterministic order)
+	type orderedProject struct {
+		order int
+		name  string
+	}
+	ordered := []orderedProject{}
 
 	// Handle disabled/enabled
 	for name, proj := range projects.Projects {
 		if IsProjectDisabled(ctx, name, proj.Disabled) {
 			continue
 		}
-		orders = append(orders, proj.Order)
-		projectsMap[proj.Order] = name
+		ordered = append(ordered, orderedProject{order: proj.Order, name: name})
 	}
-	sort.Ints(orders)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].order != ordered[j].order {
+			return ordered[i].order < ordered[j].order
+		}
+		return ordered[i].name < ordered[j].name
+	})
+	for i := 1; i < len(ordered); i++ {
+		if ordered[i].order == ordered[i-1].order {
+			Printf("Warning: projects '%s' and '%s' have the same order %d\n", ordered[i-1].name, ordered[i].name, ordered[i].order)
+		}
+	}
 
 	// Support ONLY="proj1 proj2 ... projN"
 	only := make(map[string]struct{})
@@ -450,8 +463,8 @@ func GetProjectsList(ctx *Ctx, projects *AllProjects) (names []string, projs []P
 	}
 
 	// Order + ONLY
-	for _, order := range orders {
-		name := projectsMap[order]
+	for _, item := range ordered {
+		name := item.name
 		if bOnly {
 			_, ok := only[name]
 			if !ok {

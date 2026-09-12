@@ -62,18 +62,26 @@ type configKey struct {
 	} `json:"config"`
 }
 
+// jsonMessage - {"message": "..."} with the message properly JSON-quoted
+// (error texts can contain quotes and newlines).
+func jsonMessage(m string) string {
+	quoted, err := json.Marshal(m)
+	if err != nil {
+		quoted = []byte("\"\"")
+	}
+	return fmt.Sprintf("{\"message\": %s}", string(quoted))
+}
+
 func respondWithError(w http.ResponseWriter, m string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
-	message := fmt.Sprintf("{\"message\": \"%s\"}", m)
-	_, _ = w.Write([]byte(message))
+	_, _ = w.Write([]byte(jsonMessage(m)))
 }
 
 func respondWithSuccess(w http.ResponseWriter, m string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	message := fmt.Sprintf("{\"message\": \"%s\"}", m)
-	_, _ = w.Write([]byte(message))
+	_, _ = w.Write([]byte(jsonMessage(m)))
 }
 
 func payloadSignature(r *http.Request) ([]byte, error) {
@@ -104,7 +112,11 @@ func parsePublicKey(key string) (*rsa.PublicKey, error) {
 		return nil, errors.New("invalid public key")
 	}
 
-	return publicKey.(*rsa.PublicKey), nil
+	rsaKey, ok := publicKey.(*rsa.PublicKey)
+	if !ok {
+		return nil, errors.New("invalid public key")
+	}
+	return rsaKey, nil
 }
 
 func travisPublicKey() (*rsa.PublicKey, error) {
@@ -239,7 +251,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		payload := payloadDigest(jsonStr)
 		err = rsa.VerifyPKCS1v15(key, crypto.SHA1, payload, signature)
 		if err != nil {
-			lib.Printf("webhook: unauthorized payload: %v", err)
+			lib.Printf("webhook: unauthorized payload: %v\n", err)
 			respondWithError(w, errors.New("unauthorized payload").Error())
 			return
 		}
@@ -250,6 +262,11 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		sBody, err := url.QueryUnescape(string(body))
 		if checkError(true, true, w, err) {
+			return
+		}
+		// Body is expected to be "payload=<json>"
+		if len(sBody) < 8 {
+			checkError(true, true, w, errors.New("payload too short"))
 			return
 		}
 		jsonStr = sBody[8:]
@@ -375,5 +392,5 @@ func main() {
 	// WebHookPort defaults to ":1982"
 	// WebHookRoot defaults to "/"
 	http.HandleFunc(ctx.WebHookRoot, webhookHandler)
-	_ = http.ListenAndServe(ctx.WebHookHost+ctx.WebHookPort, nil)
+	lib.FatalOnError(http.ListenAndServe(ctx.WebHookHost+ctx.WebHookPort, nil))
 }

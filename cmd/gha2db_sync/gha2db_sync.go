@@ -50,6 +50,31 @@ type metric struct {
 	AlwaysRecalc         bool              `yaml:"always_recalc"`
 }
 
+// String - the %+v rendering of a metric with the 'sqls' list printed as a value
+// (fmt would print the address of the *[]string pointer, which is useless in logs)
+func (m metric) String() string {
+	sqls := "<nil>"
+	if m.MetricSQLs != nil {
+		sqls = fmt.Sprintf("%v", *m.MetricSQLs)
+	}
+	startFrom := "<nil>"
+	if m.StartFrom != nil {
+		startFrom = m.StartFrom.String()
+	}
+	return fmt.Sprintf(
+		"{Name:%s Periods:%s SeriesNameOrFunc:%s MetricSQL:%s MetricSQLs:%s AddPeriodToName:%v Histogram:%v "+
+			"Aggregate:%s Skip:%s Desc:%s MultiValue:%v EscapeValueName:%v SkipEscapeSeriesName:%v "+
+			"AnnotationsRanges:%v MergeSeries:%s CustomData:%v CustomDataUniqueTime:%v StartFrom:%s "+
+			"LastHours:%d SeriesNameMap:%v EnvMap:%v Disabled:%v Drop:%s Project:%s AllowFail:%v "+
+			"WaitAfterFail:%d HLL:%v AlwaysRecalc:%v}",
+		m.Name, m.Periods, m.SeriesNameOrFunc, m.MetricSQL, sqls, m.AddPeriodToName, m.Histogram,
+		m.Aggregate, m.Skip, m.Desc, m.MultiValue, m.EscapeValueName, m.SkipEscapeSeriesName,
+		m.AnnotationsRanges, m.MergeSeries, m.CustomData, m.CustomDataUniqueTime, startFrom,
+		m.LastHours, m.SeriesNameMap, m.EnvMap, m.Disabled, m.Drop, m.Project, m.AllowFail,
+		m.WaitAfterFail, m.HLL, m.AlwaysRecalc,
+	)
+}
+
 // randomize - shufflues array of metrics to calculate, making sure that ctx.LastSeries is still last
 func (m *metrics) randomize(ctx *lib.Ctx) {
 	lib.Printf("Randomizing metrics calculation order\n")
@@ -769,7 +794,10 @@ func sync(ctx *lib.Ctx, args []string) {
 			}
 			lib.Printf("Final threads join (processed %d)\n", prc)
 			for nThreads > 0 {
-				<-ch
+				res := <-ch
+				if res > maxRes {
+					maxRes = res
+				}
 				nThreads--
 			}
 		} else {

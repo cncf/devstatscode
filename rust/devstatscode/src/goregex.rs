@@ -84,11 +84,13 @@ fn emit_escape(chars: &[char], i: usize, out: &mut String, in_class: bool) -> us
     };
     let ascii = match (c, in_class) {
         ('d', false) => Some("(?-u:\\d)"),
-        ('D', false) => Some("(?-u:\\D)"),
+        // Negations as explicit (Unicode) classes: `(?-u:\D)` can match
+        // invalid UTF-8, which the `str` regex flavour rejects at compile time
+        ('D', false) => Some("[^0-9]"),
         ('w', false) => Some("(?-u:\\w)"),
-        ('W', false) => Some("(?-u:\\W)"),
+        ('W', false) => Some("[^0-9A-Za-z_]"),
         ('s', false) => Some("(?-u:\\s)"),
-        ('S', false) => Some("(?-u:\\S)"),
+        ('S', false) => Some("[^\\t\\n\\x0C\\r ]"),
         ('b', false) => Some("(?-u:\\b)"),
         ('B', false) => Some("(?-u:\\B)"),
         ('d', true) => Some("0-9"),
@@ -242,6 +244,14 @@ mod tests {
         assert!(!re.is_match("٣")); // Arabic-Indic digit: not a Go \d
         let re = compile(r"[\d]").unwrap();
         assert!(re.is_match("7") && !re.is_match("٣"));
+        // Negated classes outside brackets (real companies.yaml pattern)
+        assert_eq!(t(r"\D\W\S"), r"[^0-9][^0-9A-Za-z_][^\t\n\x0C\r ]");
+        let re = compile(r"(?i)^mastercard(\s*\S*)?$").unwrap();
+        assert!(re.is_match("MasterCard Inc.") && re.is_match("mastercard Łódź"));
+        assert!(!re.is_match("mastercard a b"));
+        let re = compile(r"^\S+$").unwrap();
+        assert!(re.is_match("Łukasz") && !re.is_match("a b") && !re.is_match("a\tb"));
+        assert!(compile(r"^\D+\W+$").unwrap().is_match("ąę!!"));
     }
 
     #[test]

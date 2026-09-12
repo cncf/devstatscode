@@ -45,3 +45,22 @@ devstats_ensure_go() {
   echo "warning: go not found — Go⇄Rust comparison tests will be skipped (DEVSTATS_SKIP_GO_COMPAT=1)" >&2
   export DEVSTATS_SKIP_GO_COMPAT=1
 }
+
+# Build information baked into the binaries (Go: -ldflags -X ...BuildStamp/GitHash/HostName/GoVersion,
+# printed by the logger as "Compiled <stamp>, commit: <hash> on <host> using <compiler>").
+# Only set when unset so callers (and reproducible builds) can override them.
+devstats_build_info() {
+  if [ -z "${DEVSTATS_BUILD_STAMP:-}" ]; then
+    DEVSTATS_BUILD_STAMP="$(date -u '+%Y-%m-%d_%I:%M:%S%p')"
+  fi
+  if [ -z "${DEVSTATS_GIT_HASH:-}" ]; then
+    DEVSTATS_GIT_HASH="$(git rev-parse HEAD 2>/dev/null || echo None)"
+  fi
+  if [ -z "${DEVSTATS_HOST_NAME:-}" ]; then
+    DEVSTATS_HOST_NAME="$(uname -a | sed 's/ /_/g')"
+  fi
+  if [ -z "${DEVSTATS_RUST_VERSION:-}" ]; then
+    DEVSTATS_RUST_VERSION="$(rustc --version 2>/dev/null | sed 's/ /_/g' || echo None)"
+  fi
+  export DEVSTATS_BUILD_STAMP DEVSTATS_GIT_HASH DEVSTATS_HOST_NAME DEVSTATS_RUST_VERSION
+}

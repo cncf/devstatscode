@@ -225,6 +225,8 @@ func TestInit(t *testing.T) {
 		VarsYaml:                 "metrics/vars.yaml",
 		VarsFnYaml:               "vars.yaml",
 		GitHubOAuth:              "not_use",
+		GitHubAPIURL:             "",
+		GHArchiveURL:             "",
 		ClearDBPeriod:            "1 week",
 		ClearAffsLockPeriod:      "16 hours",
 		ClearGiantLockPeriod:     "40 hours",
@@ -233,6 +235,8 @@ func TestInit(t *testing.T) {
 		WebHookRoot:              "/hook",
 		WebHookPort:              ":1982",
 		WebHookHost:              "127.0.0.1",
+		APIHost:                  "0.0.0.0",
+		APIPort:                  ":8080",
 		CheckPayload:             true,
 		FullDeploy:               true,
 		DeployBranches:           []string{"master"},
@@ -931,6 +935,58 @@ func TestInit(t *testing.T) {
 			),
 		},
 		{
+			"Setting GitHub API URL",
+			map[string]string{
+				"GHA2DB_GITHUB_API_URL": "http://127.0.0.1:8080/api/v3/",
+			},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{
+					"GitHubAPIURL": "http://127.0.0.1:8080/api/v3/",
+				},
+			),
+		},
+		{
+			"Setting GitHub API URL without trailing slash",
+			map[string]string{
+				"GHA2DB_GITHUB_API_URL": "http://127.0.0.1:8080",
+			},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{
+					"GitHubAPIURL": "http://127.0.0.1:8080/",
+				},
+			),
+		},
+		{
+			"Setting GH Archive URL",
+			map[string]string{
+				"GHA2DB_GHARCHIVE_URL": "http://127.0.0.1:8081/archive/",
+			},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{
+					"GHArchiveURL": "http://127.0.0.1:8081/archive/",
+				},
+			),
+		},
+		{
+			"Setting GH Archive URL without trailing slash",
+			map[string]string{
+				"GHA2DB_GHARCHIVE_URL": "http://127.0.0.1:8081",
+			},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{
+					"GHArchiveURL": "http://127.0.0.1:8081/",
+				},
+			),
+		},
+		{
 			"Setting clear DB logs period",
 			map[string]string{
 				"GHA2DB_MAXLOGAGE":          "3 days",
@@ -971,6 +1027,30 @@ func TestInit(t *testing.T) {
 				t,
 				defaultContext.CopyContext(),
 				map[string]interface{}{"WebHookPort": ":1986"},
+			),
+		},
+		{
+			"Setting API server data",
+			map[string]string{
+				"GHA2DB_API_PORT": ":8090",
+				"GHA2DB_API_HOST": "127.0.0.1",
+			},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{
+					"APIPort": ":8090",
+					"APIHost": "127.0.0.1",
+				},
+			),
+		},
+		{
+			"Setting API server data missing ':'",
+			map[string]string{"GHA2DB_API_PORT": "8091"},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{"APIPort": ":8091"},
 			),
 		},
 		{

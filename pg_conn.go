@@ -63,7 +63,7 @@ func HandleRowIsTooBig(con *sql.DB, ctx *Ctx, table, info string, addedCols map[
 		}
 	}
 	if !strings.Contains(err.Error(), "already exists") {
-		Printf("Error handle row is too big %s: %+v", info, err)
+		Printf("Error handle row is too big %s: %+v\n", info, err)
 	}
 	return false
 }

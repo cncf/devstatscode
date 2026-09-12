@@ -632,13 +632,20 @@ func mergePDBs() {
 				}
 				flush()
 			} else {
+				// Pass the scanned values (not the *interface{} pointers holding them):
+				// the pointers would work for the insert but GHA2DB_QOUT would print
+				// their addresses instead of the values.
+				args := make([]interface{}, nColumns)
 				for rows.Next() {
 					lib.FatalOnError(rows.Scan(vals...))
+					for vi := range vals {
+						args[vi] = *(vals[vi].(*interface{}))
+					}
 					_, err := lib.ExecSQL(
 						co,
 						&ctx,
 						"insert into "+table+cols+" "+lib.NValues(nColumns),
-						vals...,
+						args...,
 					)
 					if err != nil {
 						switch e := err.(type) {

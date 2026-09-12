@@ -661,7 +661,11 @@ func eventExistsCollision(db *sql.DB, ctx *lib.Ctx, eventID string, eType, repoN
 		exists = true
 	}
 	lib.FatalOnError(rows.Err())
-	if exists && (eT != eType || eR != repoName || !eD.Equal(createdAt)) {
+	// `created_at` is a `timestamp` (no zone): the DB keeps the wall clock of the
+	// value written, so compare wall clocks - comparing instants (`Equal`) reported
+	// bogus collisions for old-format (2012-2014) events whose `created_at` carries
+	// a non-UTC offset (`2014-12-31T23:00:00-08:00` is stored as `2014-12-31 23:00:00`).
+	if exists && (eT != eType || eR != repoName || lib.ToYMDHMSDate(eD) != lib.ToYMDHMSDate(createdAt)) {
 		lib.Printf("event id collision: id %s already exists as (%s, %s, %v), new event (%s, %s, %v) skipped\n", eventID, eT, eR, eD, eType, repoName, createdAt)
 	}
 	return exists
@@ -2210,7 +2214,11 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg, frepo map[s
 		return
 	}
 
-	fn := fmt.Sprintf("http://data.gharchive.org/%s.json.gz", lib.ToGHADate(dt))
+	ghaURL := ctx.GHArchiveURL
+	if ghaURL == "" {
+		ghaURL = lib.GHArchiveURL
+	}
+	fn := fmt.Sprintf("%s%s.json.gz", ghaURL, lib.ToGHADate(dt))
 
 	// Get gzipped JSON array via HTTP
 	trials := 0

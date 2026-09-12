@@ -19,10 +19,10 @@ func ReadFile(ctx *Ctx, path string) ([]byte, error) {
 	path = strings.Replace(path, "/"+ctx.Project+"/", "/shared/", -1)
 	data, err = ioutil.ReadFile(path)
 	if err == nil && ctx.Debug > 0 {
-		Printf("lib.ReadFile('%s'): ok", path)
+		Printf("lib.ReadFile('%s'): ok\n", path)
 	}
 	if err != nil {
-		Printf("lib.ReadFile('%s'): error: %+v", path, err)
+		Printf("lib.ReadFile('%s'): error: %+v\n", path, err)
 	}
 	return data, err
 }

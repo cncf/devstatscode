@@ -452,13 +452,15 @@ func ensureManualData(c *sql.DB, ctx *lib.Ctx, project, db, apiName, metric, per
 		file, mode = "project_developer_stats", "multi_row_single_column"
 		if metric == "approves" {
 			if db != lib.GHA {
-				err = fmt.Errorf("ensureManualData: approves mode only allowed for kubernetes projectreturn (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
+				err = fmt.Errorf("ensureManualData: approves mode only allowed for kubernetes project (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
+				return
 			}
 			file = "hist_approvers"
 		}
 		if metric == "reviews" {
 			if db != lib.GHA {
-				err = fmt.Errorf("ensureManualData: reviews mode only allowed for kubernetes projectreturn (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
+				err = fmt.Errorf("ensureManualData: reviews mode only allowed for kubernetes project (%s,%s,%s,%s,%s,%v)", project, db, apiName, metric, period, reposMode)
+				return
 			}
 			file = "hist_reviewers"
 		}
@@ -1161,7 +1163,7 @@ func apiGithubIDContributions(info string, w http.ResponseWriter, payload map[st
 			jsoniter.NewEncoder(w).Encode(pl)
 			return
 		}
-		lib.Printf("%s: deleting cached values for %+v: %+v (age is %.0f >= %d)\n", apiName, key, data, age, CumulativeCountsCacheTTL)
+		lib.Printf("%s: deleting cached values for %+v: %+v (age is %.0f >= %d)\n", apiName, key, data, age, GithubIDContributionsCacheTTL)
 		githubIDContributionsCacheMtx.Lock()
 		delete(githubIDContributionsCache, key)
 		githubIDContributionsCacheMtx.Unlock()
@@ -2041,6 +2043,7 @@ func apiRepos(info string, w http.ResponseWriter, payload map[string]interface{}
 		returnError(apiName, w, err)
 		return
 	}
+	defer func() { _ = c.Close() }()
 	repositoryGroupParam := params["repository_group"]
 	var rows *sql.Rows
 	// TODO: consider swiitching to gha_repo_groups
@@ -2456,7 +2459,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 			jsoniter.NewEncoder(w).Encode(data.siteStats)
 			return
 		}
-		lib.Printf("%s: deleting cached values for %+v (age is %.0f >= %d)\n", apiName, key, age, CumulativeCountsCacheTTL)
+		lib.Printf("%s: deleting cached values for %+v (age is %.0f >= %d)\n", apiName, key, age, SiteStatsCacheTTL)
 		siteStatsCacheMtx.Lock()
 		delete(siteStatsCache, key)
 		siteStatsCacheMtx.Unlock()
@@ -2467,7 +2470,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		return
 	}
 	defer func() { _ = c.Close() }()
-	ch := make(chan error)
+	ch := make(chan error, 4)
 	mtx := &sync.Mutex{}
 	sspl := siteStatsPayload{Project: project, DB: db}
 	go func(ch chan error) {
@@ -2873,7 +2876,7 @@ func serveAPI() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1", handleAPI)
 	handler := cors.AllowAll().Handler(mux)
-	lib.FatalOnError(http.ListenAndServe("0.0.0.0:8080", handler))
+	lib.FatalOnError(http.ListenAndServe(ctx.APIHost+ctx.APIPort, handler))
 }
 
 func main() {

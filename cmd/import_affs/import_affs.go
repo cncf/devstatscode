@@ -95,10 +95,12 @@ func tzOffset(db *sql.DB, ctx *lib.Ctx, ptz *string, cache map[string]*int) *int
 	if ok {
 		return off
 	}
+	// PostgreSQL 14+ returns numeric from extract(), which database/sql cannot
+	// scan into *int ("120.0000000000000000": invalid syntax) - cast to int
 	rows := lib.QuerySQLWithErr(
 		db,
 		ctx,
-		"select extract(epoch from utc_offset) / 60 "+
+		"select (extract(epoch from utc_offset) / 60)::int "+
 			"from pg_timezone_names where name = "+lib.NValue(1)+
 			" union select null order by 1 limit 1",
 		tz,
@@ -418,12 +420,12 @@ func importAffs(jsonFN string) int {
 	}
 
 	// Read company acquisitions mapping
-	var (
-		acqs   allAcquisitions
-		acqMap map[*regexp.Regexp]string
-		comMap map[string][2]string
-		stat   map[string][2]int
-	)
+	// Maps must exist even in skip company acquisitions mode: mapCompanyName
+	// writes to comMap/stat for every company (nil map assignment would panic)
+	var acqs allAcquisitions
+	acqMap := make(map[*regexp.Regexp]string)
+	comMap := make(map[string][2]string)
+	stat := make(map[string][2]int)
 	if !ctx.SkipCompanyAcq {
 		data, err := lib.ReadFile(&ctx, dataPrefix+ctx.CompanyAcqYaml)
 		if err != nil {
@@ -435,9 +437,6 @@ func importAffs(jsonFN string) int {
 			}
 		}
 		var re *regexp.Regexp
-		acqMap = make(map[*regexp.Regexp]string)
-		comMap = make(map[string][2]string)
-		stat = make(map[string][2]int)
 		srcMap := make(map[string]string)
 		resMap := make(map[string]struct{})
 		idxMap := make(map[*regexp.Regexp]int)
@@ -786,37 +785,55 @@ func importAffs(jsonFN string) int {
 	}
 
 	// Handle GitHub login changes
+	// Propagate until nothing changes: the loop adds new logins to loginAffs and Go's map
+	// iteration may or may not visit keys added during the iteration (unspecified), which made
+	// the result differ between runs; iterating a sorted snapshot to a fixpoint is deterministic
 	newLogins, copiedAffs, otherPrios := 0, 0, 0
-	for login, prios := range loginAffs {
-		actLogins, ok := cacheActLogins[login]
-		if !ok {
-			continue
+	for {
+		changed := false
+		affLogins := []string{}
+		for login := range loginAffs {
+			affLogins = append(affLogins, login)
 		}
-		for _, otherLogin := range actLogins {
-			if otherLogin == login {
+		sort.Strings(affLogins)
+		for _, login := range affLogins {
+			prios := loginAffs[login]
+			actLogins, ok := cacheActLogins[login]
+			if !ok {
 				continue
 			}
-			// fmt.Printf("found %s correlated to %s\n", otherLogin, login)
-			_, ok := loginAffs[otherLogin]
-			if !ok {
-				loginAffs[otherLogin] = mapIntSet{}
-				newLogins++
-			}
-			for prio, affs := range prios {
-				_, ok := loginAffs[otherLogin][prio]
-				if !ok {
-					loginAffs[otherLogin][prio] = stringSet{}
-					otherPrios++
+			for _, otherLogin := range actLogins {
+				if otherLogin == login {
+					continue
 				}
-				for aff := range affs {
-					_, ok := loginAffs[otherLogin][prio][aff]
+				// fmt.Printf("found %s correlated to %s\n", otherLogin, login)
+				_, ok := loginAffs[otherLogin]
+				if !ok {
+					loginAffs[otherLogin] = mapIntSet{}
+					newLogins++
+					changed = true
+				}
+				for prio, affs := range prios {
+					_, ok := loginAffs[otherLogin][prio]
 					if !ok {
-						// fmt.Printf("other login %s (correlated to %s) has no %s affiliation, adding\n", otherLogin, login, aff)
-						loginAffs[otherLogin][prio][aff] = emptyVal
-						copiedAffs++
+						loginAffs[otherLogin][prio] = stringSet{}
+						otherPrios++
+						changed = true
+					}
+					for aff := range affs {
+						_, ok := loginAffs[otherLogin][prio][aff]
+						if !ok {
+							// fmt.Printf("other login %s (correlated to %s) has no %s affiliation, adding\n", otherLogin, login, aff)
+							loginAffs[otherLogin][prio][aff] = emptyVal
+							copiedAffs++
+							changed = true
+						}
 					}
 				}
 			}
+		}
+		if !changed {
+			break
 		}
 	}
 	lib.Printf("%d new logins added by correlations, copied affiliations: %d (%d different priority)\n", newLogins, copiedAffs, otherPrios)

@@ -786,7 +786,7 @@ func setLastComputed(con *sql.DB, ctx *lib.Ctx, metric, intervalAbbr string) {
 
 func handleSeriesDrop(ctx *lib.Ctx, con *sql.DB, cfg *calcMetricData) {
 	if cfg.hist && len(cfg.drop) > 0 {
-		lib.Fatalf("you cannot use drop series property on histogram metrics: %+v", &cfg)
+		lib.Fatalf("you cannot use drop series property on histogram metrics: %+v", cfg)
 	}
 	if !ctx.EnableMetricsDrop {
 		return
@@ -1334,7 +1334,8 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 		}
 	} else {
 		lib.Printf("Using single threaded version\n")
-		for i := 0; i < thrN; i++ {
+		// No ranges at all (from > to): nothing to compute
+		if ldt > 0 {
 			calcRange(
 				nil,
 				&ctx,

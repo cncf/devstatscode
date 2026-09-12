@@ -149,7 +149,17 @@ func ComputePeriodAtThisDate(ctx *Ctx, period string, idt time.Time, hist bool) 
 	// ch: current hour without tz offset
 	h := dth.Hour()
 	ch := dtc.Hour()
-	periodStart := period[0:1]
+	// Empty period (misconfigured 'periods:' in metrics.yaml) must not panic, it falls
+	// through to the 'unknown period' fatal error below
+	periodStart := ""
+	if len(period) > 0 {
+		periodStart = period[0:1]
+	}
+	// last 2 characters of the period, the period itself when shorter
+	periodEnd := period
+	if len(period) > 2 {
+		periodEnd = period[len(period)-2:]
+	}
 	if periodStart == "h" {
 		// hour(s)
 		return true
@@ -164,8 +174,6 @@ func ComputePeriodAtThisDate(ctx *Ctx, period string, idt time.Time, hist bool) 
 		return h == 1 || h == 6 || h == 9 || h == 13 || h == 18 || h == 21
 	} else if hist && periodStart == "a" {
 		// histograms between annotations or the final one "a_num_n"
-		periodLen := len(period)
-		periodEnd := period[periodLen-2:]
 		if periodEnd == "_n" {
 			if ctx.RandComputeAtThisDate {
 				return Probab(25)
@@ -179,8 +187,6 @@ func ComputePeriodAtThisDate(ctx *Ctx, period string, idt time.Time, hist bool) 
 	} else if hist && periodStart == "c" {
 		// histograms between maturity level or the final sandbox/incubation/graduation - now "c_n", "c_g_n", "c_i_n"
 		if ctx.RandComputeAtThisDate {
-			periodLen := len(period)
-			periodEnd := period[periodLen-2:]
 			if periodEnd == "_n" {
 				return Probab(25)
 			}
@@ -423,7 +429,11 @@ func TimeParseAny(dtStr string) time.Time {
 			return t
 		}
 	}
-	Printf("Error:\nCannot parse date: '%v'\n", dtStr)
+	// Printf initializes the logger (which calls ctx.Init() -> TimeParseAny for GHA2DB_STARTDT):
+	// calling it while that initialization is in progress would deadlock on sync.Once.
+	if IsLogInitialized() {
+		Printf("Error:\nCannot parse date: '%v'\n", dtStr)
+	}
 	fmt.Fprintf(os.Stdout, "Error:\nCannot parse date: '%v'\n", dtStr)
 	os.Exit(1)
 	return time.Now()

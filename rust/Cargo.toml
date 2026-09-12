@@ -5,6 +5,27 @@ members = [
     "compat",
     "cmd/tsplit",
     "cmd/replacer",
+    "cmd/splitcrons",
+    "cmd/structure",
+    "cmd/tags",
+    "cmd/runq",
+    "cmd/vars",
+    "cmd/columns",
+    "cmd/devstats",
+    "cmd/hide_data",
+    "cmd/website_data",
+    "cmd/webhook",
+    "cmd/sqlitedb",
+    "cmd/merge_dbs",
+    "cmd/gha2db_sync",
+    "cmd/import_affs",
+    "cmd/calc_metric",
+    "cmd/annotations",
+    "cmd/get_repos",
+    "cmd/sync_issues",
+    "cmd/ghapi2db",
+    "cmd/gha2db",
+    "cmd/api",
 ]
 
 [workspace.package]
@@ -12,7 +33,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/cncf/devstatscode"
-rust-version = "1.85"
+rust-version = "1.87"
 
 [workspace.dependencies]
 devstatscode = { path = "devstatscode" }
@@ -21,6 +42,23 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 regex = "1"
 memchr = "2"
 tempfile = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+unicode-normalization = "0.1"
+sha1 = "0.11"
+sha2 = "0.11"
+csv = "1"
+signal-hook = "0.4"
+postgres-protocol = "0.6"
+bytes = "1"
+fallible-iterator = "0.2"
+libc = "0.2"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+rsa = "0.9"
+base64 = "0.23"
+rusqlite = { version = "0.40", features = ["bundled"] }
+flate2 = "1"
 
 # Release binaries: small, stripped, single codegen unit — mirrors the Go
 # Makefile's `-ldflags "-s -w"` intent.

@@ -60,6 +60,8 @@ type Ctx struct {
 	VarsFnYaml               string                       // From GHA2DB_VARS_FN_YAML db_vars tool, set other vars.yaml file (final file name without path), default is "vars.yaml"
 	SkipDatesYaml            string                       // From GHA2DB_SKIP_DATES_YAML gha2db tool, set other skip_dates.yaml file, default is "skip_dates.yaml"
 	GitHubOAuth              string                       // From GHA2DB_GITHUB_OAUTH ghapi2db tool, if not set reads from /etc/github/oauth file, set to "-" to force public access.
+	GitHubAPIURL             string                       // From GHA2DB_GITHUB_API_URL ghapi2db/sync_issues tools, override GitHub API base URL (GitHub Enterprise / testing), default "" = https://api.github.com/
+	GHArchiveURL             string                       // From GHA2DB_GHARCHIVE_URL gha2db tool, override GH Archive base URL (mirrors / testing), default "" = http://data.gharchive.org/
 	ClearDBPeriod            string                       // From GHA2DB_MAXLOGAGE gha2db_sync tool, maximum age of devstats.gha_logs entries, default "1 week"
 	ClearAffsLockPeriod      string                       // From GHA2DB_MAX_AFFS_LOCK_AGE devstats tool, maximum age of devstats.gha_metrics "affs_lock" age, default "16 hours"
 	ClearGiantLockPeriod     string                       // From GHA2DB_MAX_GIANT_LOCK_AGE devstats tool, maximum age of devstats.gha_metrics "giant_lock" age, default "40 hours"
@@ -67,6 +69,8 @@ type Ctx struct {
 	WebHookRoot              string                       // From GHA2DB_WHROOT, webhook tool, default "/hook", must match .travis.yml notifications webhooks
 	WebHookPort              string                       // From GHA2DB_WHPORT, webhook tool, default ":1982", note that webhook listens using http:1982, but we use apache on https:2982 (to enable https protocol and proxy requests to http:1982)
 	WebHookHost              string                       // From GHA2DB_WHHOST, webhook tool, default "127.0.0.1" (this can be localhost to disable access by IP, we use Apache proxy to enable https and then apache only need 127.0.0.1)
+	APIHost                  string                       // From GHA2DB_API_HOST, api tool, default "0.0.0.0", listen address of the API server
+	APIPort                  string                       // From GHA2DB_API_PORT, api tool, default ":8080", listen port of the API server
 	CheckPayload             bool                         // From GHA2DB_SKIP_VERIFY_PAYLOAD, webhook tool, default true, use GHA2DB_SKIP_VERIFY_PAYLOAD=1 to manually test payloads
 	FullDeploy               bool                         // From GHA2DB_SKIP_FULL_DEPLOY, webhook tool, default true, use GHA2DB_SKIP_FULL_DEPLOY=1 to ignore "[deploy]" requests that call `./devel/deploy_all.sh`.
 	DeployBranches           []string                     // From GHA2DB_DEPLOY_BRANCHES, webhook tool, default "master" - comma separated list
@@ -520,6 +524,18 @@ func (ctx *Ctx) Init() {
 		}
 	}
 
+	// GitHub API base URL override (GitHub Enterprise / testing)
+	ctx.GitHubAPIURL = os.Getenv("GHA2DB_GITHUB_API_URL")
+	if ctx.GitHubAPIURL != "" && !strings.HasSuffix(ctx.GitHubAPIURL, "/") {
+		ctx.GitHubAPIURL += "/"
+	}
+
+	// GH Archive base URL override (mirrors / testing)
+	ctx.GHArchiveURL = os.Getenv("GHA2DB_GHARCHIVE_URL")
+	if ctx.GHArchiveURL != "" && !strings.HasSuffix(ctx.GHArchiveURL, "/") {
+		ctx.GHArchiveURL += "/"
+	}
+
 	// Max DB logs age
 	ctx.ClearDBPeriod = os.Getenv("GHA2DB_MAXLOGAGE")
 	if ctx.ClearDBPeriod == "" {
@@ -674,6 +690,19 @@ func (ctx *Ctx) Init() {
 	} else {
 		if ctx.WebHookPort[0:1] != ":" {
 			ctx.WebHookPort = ":" + ctx.WebHookPort
+		}
+	}
+	// API Host, Port
+	ctx.APIHost = os.Getenv("GHA2DB_API_HOST")
+	if ctx.APIHost == "" {
+		ctx.APIHost = "0.0.0.0"
+	}
+	ctx.APIPort = os.Getenv("GHA2DB_API_PORT")
+	if ctx.APIPort == "" {
+		ctx.APIPort = ":8080"
+	} else {
+		if ctx.APIPort[0:1] != ":" {
+			ctx.APIPort = ":" + ctx.APIPort
 		}
 	}
 	ctx.WebHookRoot = os.Getenv("GHA2DB_WHROOT")
@@ -1017,6 +1046,8 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		VarsYaml:                 ctx.VarsYaml,
 		VarsFnYaml:               ctx.VarsFnYaml,
 		GitHubOAuth:              ctx.GitHubOAuth,
+		GitHubAPIURL:             ctx.GitHubAPIURL,
+		GHArchiveURL:             ctx.GHArchiveURL,
 		ClearDBPeriod:            ctx.ClearDBPeriod,
 		ClearAffsLockPeriod:      ctx.ClearAffsLockPeriod,
 		ClearGiantLockPeriod:     ctx.ClearGiantLockPeriod,
@@ -1025,6 +1056,8 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		WebHookRoot:              ctx.WebHookRoot,
 		WebHookPort:              ctx.WebHookPort,
 		WebHookHost:              ctx.WebHookHost,
+		APIHost:                  ctx.APIHost,
+		APIPort:                  ctx.APIPort,
 		CheckPayload:             ctx.CheckPayload,
 		FullDeploy:               ctx.FullDeploy,
 		DeployBranches:           ctx.DeployBranches,

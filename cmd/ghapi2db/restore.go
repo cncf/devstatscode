@@ -425,10 +425,14 @@ func ghGraphQLStargazers(gctx context.Context, ctx *lib.Ctx, tokens []string, or
 		return
 	}
 	cl := &http.Client{Timeout: time.Duration(60) * time.Second}
+	graphQLURL := "https://api.github.com/graphql"
+	if ctx.GitHubAPIURL != "" {
+		graphQLURL = ctx.GitHubAPIURL + "graphql"
+	}
 	for i, token := range tokens {
 		for try := 1; try <= ctx.MaxGHAPIRetry; try++ {
 			var req *http.Request
-			req, err = http.NewRequestWithContext(gctx, "POST", "https://api.github.com/graphql", bytes.NewReader(payload))
+			req, err = http.NewRequestWithContext(gctx, "POST", graphQLURL, bytes.NewReader(payload))
 			if err != nil {
 				return
 			}

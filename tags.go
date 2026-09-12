@@ -91,6 +91,11 @@ func ProcessTag(con *sql.DB, ctx *Ctx, tg *Tag, replaces [][]string) {
 			_, e := ExecSQLTx(tx, ctx, "truncate "+table)
 			if e != nil {
 				Printf("truncate failed for %s (warning): %v\n", table, e)
+				// The failed truncate aborted the transaction (every further statement
+				// would fail with "current transaction is aborted"), so start a new one
+				_ = tx.Rollback()
+				tx, err = con.Begin()
+				FatalOnError(err)
 				_, err = ExecSQLTx(tx, ctx, "set local lock_timeout='500ms'")
 				FatalOnError(err)
 				_, err = ExecSQLTx(tx, ctx, "set local statement_timeout='300s'")

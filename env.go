@@ -76,7 +76,7 @@ func EnvReplace(prefix, suffix string) map[string]string {
 			l = eLen
 		}
 		if pLen == 0 || e[0:l] == prefix {
-			pair := strings.Split(e, "=")
+			pair := strings.SplitN(e, "=", 2)
 			eSuff := os.Getenv(pair[0] + suffix)
 			if eSuff != "" {
 				oldEnv[pair[0]] = pair[1]
@@ -86,7 +86,7 @@ func EnvReplace(prefix, suffix string) map[string]string {
 	}
 	sLen := len(suffix)
 	for _, e := range environ {
-		pair := strings.Split(e, "=")
+		pair := strings.SplitN(e, "=", 2)
 		eLen := len(pair[0])
 		lS := eLen - sLen
 		if lS <= 0 {

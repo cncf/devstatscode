@@ -1019,7 +1019,8 @@ func generateCronValues(inFile, outFile string) {
 		var err error
 		gWeightPower, err = strconv.ParseFloat(os.Getenv("WEIGHT_POWER"), 64)
 		lib.FatalOnError(err)
-		if gWeightPower < 0.0 || gWeightPower > 4.0 {
+		// NaN passes plain range checks and would crash the scheduler later (int(NaN) index)
+		if math.IsNaN(gWeightPower) || gWeightPower < 0.0 || gWeightPower > 4.0 {
 			lib.Fatalf("WEIGHT_POWER must be from 0.0 to 4.0")
 		}
 		gSplitAlgo = fmt.Sprintf("power=%g", gWeightPower)

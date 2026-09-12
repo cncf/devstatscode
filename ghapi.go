@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -265,6 +266,14 @@ func GHClient(ctx *Ctx) (ghCtx context.Context, clients []*github.Client) {
 			clients = append(clients, client)
 		}
 	}
+	// Optional API base URL override (GitHub Enterprise / testing)
+	if ctx.GitHubAPIURL != "" {
+		baseURL, err := url.Parse(ctx.GitHubAPIURL)
+		FatalOnError(err)
+		for _, client := range clients {
+			client.BaseURL = baseURL
+		}
+	}
 	return
 }
 
@@ -362,8 +371,10 @@ func ghActor(con *sql.Tx, ctx *Ctx, actor *github.User, maybeHide func(string) s
 }
 
 // Insert single GitHub milestone
-func ghMilestone(con *sql.Tx, ctx *Ctx, eid int64, ic *IssueConfig, maybeHide func(string) string) {
-	milestone := ic.GhIssue.Milestone
+// milestone: the milestone to insert - the issue's one for artificial issue events,
+// the PR's one for artificial PR events (they can differ: the two API payloads are
+// fetched separately and the PR payload can carry a milestone the issue payload lacks).
+func ghMilestone(con *sql.Tx, ctx *Ctx, eid int64, ic *IssueConfig, milestone *github.Milestone, maybeHide func(string) string) {
 	// Defensive no-op for current callers: ArtificialEvent/ArtificialPREvent already skipped
 	// (GHA2DB_GHAPIALLOWINSERTFAIL) or ghost-reassigned actor-less events before calling here.
 	// Kept because the code below dereferences ev.Actor directly - protects any future caller.
@@ -407,7 +418,7 @@ func ghMilestone(con *sql.Tx, ctx *Ctx, eid int64, ic *IssueConfig, maybeHide fu
 			),
 		),
 		AnyArray{
-			ic.MilestoneID,
+			milestone.ID,
 			eid,
 			milestone.ClosedAt,
 			milestone.ClosedIssues,
@@ -539,7 +550,7 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 	}
 
 	if pr.Milestone != nil {
-		ghMilestone(tc, ctx, eventID, cfg, maybeHide)
+		ghMilestone(tc, ctx, eventID, cfg, pr.Milestone, maybeHide)
 	}
 
 	prid := *pr.ID
@@ -936,7 +947,7 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 
 	// Create Milestone if new event and milestone non-null
 	if issue.Milestone != nil {
-		ghMilestone(tc, ctx, eventID, cfg, maybeHide)
+		ghMilestone(tc, ctx, eventID, cfg, issue.Milestone, maybeHide)
 	}
 
 	// Create artificial event
