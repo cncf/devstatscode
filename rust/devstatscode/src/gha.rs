@@ -1621,6 +1621,14 @@ mod tests {
         assert!(!compare_float64_ptr(Some(1.1), Some(1.2)));
         assert!(compare_float64_ptr(Some(1.1), Some(1.1)));
         assert!(compare_float64_ptr(Some(1.1), Some(1.10000000001)));
+        // Go `TestCompare*Ptr` "&x1, &x3" cases: two distinct variables holding
+        // equal values compare equal (by value, not by pointer identity).
+        let (s1, s3) = (String::from("string1"), String::from("string1"));
+        assert!(compare_string_ptr(Some(s1.as_str()), Some(s3.as_str())));
+        let (i1, i3) = (1i64, 1i64);
+        assert!(compare_int_ptr(Some(i1), Some(i3)));
+        let (f1, f3) = (1.1f64, 1.1f64);
+        assert!(compare_float64_ptr(Some(f1), Some(f3)));
     }
 
     #[test]

@@ -257,6 +257,33 @@ mod tests {
     }
 
     #[test]
+    fn make_unique_sort_go_table() {
+        // 1:1 port of Go `gha_test.go::TestMakeUniqueSort`.
+        let test_cases: &[(&[&str], &[&str])] = &[
+            (&[], &[]),
+            (&["a", "b", "cde"], &["a", "b", "cde"]),
+            (&["cde", "a", "b"], &["a", "b", "cde"]),
+            (&["a", "a", "b", "cde"], &["a", "b", "cde"]),
+            (
+                &["a", "b", "b", "a", "cde", "a", "cde", "b"],
+                &["a", "b", "cde"],
+            ),
+            (&["a", "a", "b", "b", "b", "cde", "cde"], &["a", "b", "cde"]),
+        ];
+        for (index, (input, expected)) in test_cases.iter().enumerate() {
+            let input: Vec<String> = input.iter().map(|s| s.to_string()).collect();
+            let got = make_unique_sort(&input);
+            let expected: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+            assert_eq!(
+                got,
+                expected,
+                "test number {}, expected {expected:?}, got {got:?}",
+                index + 1
+            );
+        }
+    }
+
+    #[test]
     fn slugify_table() {
         assert_eq!(slugify("A b C"), "a-b-c");
         assert_eq!(slugify("Hello, world\t   bye"), "hello-world-bye");

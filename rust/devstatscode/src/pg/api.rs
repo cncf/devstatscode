@@ -1643,6 +1643,133 @@ mod tests {
         );
     }
 
+    // 1:1 ports of the Go `pg_test.go` helper tables (`TestCleanUTF8`,
+    // `TestTruncToBytes`, `TestTruncStringOrNil`, `TestBoolOrNil`,
+    // `TestNegatedBoolOrNil`, `TestTimeOrNil`, `TestIntOrNil`,
+    // `TestFirstIntOrNil`, `TestStringOrNil`). Go's `\x00`, `\u0000` and
+    // `\U00000000` all denote the NUL character.
+
+    #[test]
+    fn clean_utf8_go_table() {
+        let test_cases: &[(&str, &str)] = &[
+            ("value", "value"),
+            ("val\0ue", "value"),
+            ("val\u{0000}ue", "value"),
+            ("v\0a\u{0000}l\u{0000}ue", "value"),
+            ("平仮名, ひらがな", "平仮名, ひらがな"),
+            ("\u{0000}平仮名\0ひらがな\u{0000}", "平仮名ひらがな"),
+        ];
+        for (index, (value, expected)) in test_cases.iter().enumerate() {
+            let got = clean_utf8(value);
+            assert_eq!(
+                got,
+                *expected,
+                "test number {}, expected {expected}, got {got}",
+                index + 1
+            );
+        }
+    }
+
+    #[test]
+    fn trunc_to_bytes_go_table() {
+        let test_cases: &[(&str, usize, &str, usize)] = &[
+            ("value", 3, "val", 3),
+            ("平仮名, ひらがな", 6, "平仮", 6),
+            ("平仮名, ひらがな", 8, "平仮", 6),
+            ("平仮名, ひらがな", 9, "平仮名", 9),
+            ("\u{0000}平仮名, \0ひら\u{0000}がな", 9, "平仮名", 9),
+        ];
+        for (index, (value, n, expected_str, expected_len)) in test_cases.iter().enumerate() {
+            let got_str = trunc_to_bytes(value, *n);
+            assert_eq!(
+                got_str,
+                *expected_str,
+                "test number {}, expected string {expected_str}, got {got_str}",
+                index + 1
+            );
+            assert_eq!(
+                got_str.len(),
+                *expected_len,
+                "test number {}, expected length {expected_len}, got {}",
+                index + 1,
+                got_str.len()
+            );
+        }
+    }
+
+    #[test]
+    fn trunc_string_or_nil_go_table() {
+        let s_values = [
+            "value",
+            "平仮名, ひらがな",
+            "\u{0000}平仮名, \0ひら\u{0000}がな",
+        ];
+        let test_cases: &[(Option<&str>, usize, SqlArg)] = &[
+            (None, 10, SqlArg::Null),
+            (Some(s_values[0]), 3, SqlArg::Str("val".into())),
+            (Some(s_values[1]), 6, SqlArg::Str("平仮".into())),
+            (Some(s_values[2]), 9, SqlArg::Str("平仮名".into())),
+        ];
+        for (index, (value, n, expected)) in test_cases.iter().enumerate() {
+            let got = trunc_string_or_nil(*value, *n);
+            assert_eq!(
+                got,
+                *expected,
+                "test number {}, expected {expected:?}, got {got:?}",
+                index + 1
+            );
+        }
+    }
+
+    #[test]
+    fn or_nil_scalars_go_cases() {
+        // TestBoolOrNil
+        assert_eq!(bool_or_nil(None), SqlArg::Null);
+        assert_eq!(bool_or_nil(Some(true)), SqlArg::Bool(true));
+        // TestNegatedBoolOrNil
+        assert_eq!(negated_bool_or_nil(None), SqlArg::Null);
+        assert_eq!(negated_bool_or_nil(Some(true)), SqlArg::Bool(!true));
+        // TestTimeOrNil
+        assert_eq!(time_or_nil(None), SqlArg::Null);
+        let val = Utc::now();
+        assert_eq!(time_or_nil(Some(val)), SqlArg::Time(val.fixed_offset()));
+        // TestIntOrNil
+        assert_eq!(int_or_nil(None), SqlArg::Null);
+        assert_eq!(int_or_nil(Some(2)), SqlArg::Int(2));
+        // TestStringOrNil
+        assert_eq!(string_or_nil(None), SqlArg::Null);
+        assert_eq!(
+            string_or_nil(Some("hello\0 world")),
+            SqlArg::Str("hello world".into())
+        );
+    }
+
+    #[test]
+    fn first_int_or_nil_go_table() {
+        let nn1 = 1;
+        let nn2 = 2;
+        let test_cases: &[(&[Option<i64>], SqlArg)] = &[
+            (&[], SqlArg::Null),
+            (&[None], SqlArg::Null),
+            (&[Some(nn1)], SqlArg::Int(nn1)),
+            (&[None, None], SqlArg::Null),
+            (&[None, Some(nn1)], SqlArg::Int(nn1)),
+            (&[Some(nn1), None], SqlArg::Int(nn1)),
+            (&[Some(nn1), Some(nn2)], SqlArg::Int(nn1)),
+            (&[Some(nn2), Some(nn1)], SqlArg::Int(nn2)),
+            (&[None, Some(nn2), Some(nn1)], SqlArg::Int(nn2)),
+        ];
+        for (index, (array, expected)) in test_cases.iter().enumerate() {
+            let got = first_int_or_nil(array);
+            assert_eq!(
+                got,
+                *expected,
+                "test number {}, expected {expected:?}, got {got:?}",
+                index + 1
+            );
+        }
+    }
+
     #[test]
     fn identify_columns() {
         let curr: Vec<String> = ["time", "series", "period", "All", "none", "a", "b", "c"]

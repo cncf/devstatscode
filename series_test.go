@@ -161,7 +161,7 @@ func TestProcessAnnotations(t *testing.T) {
 				{"Since joining CNCF", "c_n"},
 			},
 			additionalSkip: true,
-			skipI:          []int{11},
+			skipI:          []int{12},
 		},
 		{
 			annotations: lib.Annotations{
@@ -530,7 +530,7 @@ func TestProcessAnnotations(t *testing.T) {
 				{"Since graduating", "c_g_n"},
 			},
 			additionalSkip: true,
-			skipI:          []int{11, 13},
+			skipI:          []int{12, 14},
 		},
 		{
 			annotations: lib.Annotations{
@@ -570,7 +570,7 @@ func TestProcessAnnotations(t *testing.T) {
 				{"release 0.0.0 - now", "a_0_n"},
 			},
 			additionalSkip: true,
-			skipI:          []int{11, 13},
+			skipI:          []int{12, 14},
 		},
 		{
 			annotations: lib.Annotations{
@@ -611,7 +611,7 @@ func TestProcessAnnotations(t *testing.T) {
 				{"Since moving to incubating state", "c_i_n"},
 			},
 			additionalSkip: true,
-			skipI:          []int{11, 13},
+			skipI:          []int{12, 14},
 		},
 		{
 			annotations: lib.Annotations{
@@ -652,7 +652,7 @@ func TestProcessAnnotations(t *testing.T) {
 				{"Since graduating", "c_g_n"},
 			},
 			additionalSkip: true,
-			skipI:          []int{11, 13},
+			skipI:          []int{12, 14},
 		},
 		{
 			annotations: lib.Annotations{
@@ -695,7 +695,7 @@ func TestProcessAnnotations(t *testing.T) {
 				{"Since joining CNCF", "c_n"},
 			},
 			additionalSkip: true,
-			skipI:          []int{11},
+			skipI:          []int{12},
 		},
 	}
 	// Execute test cases
