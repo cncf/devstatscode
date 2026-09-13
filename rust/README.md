@@ -98,6 +98,12 @@ rust/
     └── fixtures/       compares outcomes; real-world fixtures
 ```
 
+The bot-exclusion fixtures (`compat/fixtures/{tags/data,website_data,runq/data}/util_sql/exclude_bots.sql`,
+`calc_metric/exclude_bots.sql`, `structure/util_sql/exclude_bots_table_insert.sql`, `runq/data/util_sql/actors.sql`)
+are verbatim copies of `../devstats/util_sql/*`; `../devstats/devel/regen_bot_lists.py` re-syncs them whenever
+the bot list changes (the tests compare Go vs Rust dynamically, so any list works, but keeping the real one exercises
+the real `%[%bot]%`-style patterns).
+
 ## Build
 
 ```sh
