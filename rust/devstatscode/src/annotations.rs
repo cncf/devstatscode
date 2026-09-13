@@ -699,6 +699,52 @@ mod tests {
         assert_eq!(a.annotations[1].description, "2016-03-10");
     }
 
+    /// 1:1 port of Go `annotations_test.go` (`TestGetFakeAnnotations`).
+    #[test]
+    fn get_fake_annotations_go_table() {
+        let ft = |y: i32| fx(&format!("{y}-01-01T00:00:00Z"));
+        let start_date = [ft(2014), ft(2015), ft(2015), ft(2012)];
+        let join_date = [ft(2015), ft(2015), ft(2014), ft(2013)];
+        let test_cases: Vec<(
+            DateTime<FixedOffset>,
+            DateTime<FixedOffset>,
+            Vec<Annotation>,
+        )> = vec![
+            (
+                start_date[0],
+                join_date[0],
+                vec![
+                    Annotation {
+                        name: "Project start".into(),
+                        description: format!("{} - project starts", to_ymd_date(start_date[0])),
+                        date: start_date[0],
+                    },
+                    Annotation {
+                        name: "First CNCF project join date".into(),
+                        description: to_ymd_date(join_date[0]),
+                        date: join_date[0],
+                    },
+                ],
+            ),
+            (start_date[1], join_date[1], vec![]),
+            (start_date[2], join_date[2], vec![]),
+            (start_date[3], join_date[3], vec![]),
+            (start_date[0], join_date[3], vec![]),
+            (start_date[3], join_date[0], vec![]),
+        ];
+        for (index, (start, join, expected)) in test_cases.iter().enumerate() {
+            let got = get_fake_annotations(*start, *join);
+            assert_eq!(
+                &got.annotations,
+                expected,
+                "test number {}, start date: {}, join date: {}",
+                index + 1,
+                start,
+                join
+            );
+        }
+    }
+
     #[test]
     fn byte_helpers_follow_go_strings() {
         assert_eq!(trim_space(b"  a b \t\r"), b"a b");
