@@ -1680,9 +1680,12 @@ fn real_projects_yaml() {
     assert_eq!(names.len(), 254);
     assert!(!names.contains("opentracing"));
     assert!(names.contains("agones") && names.contains("kaischeduler"));
-    assert!(rust.stdout_set().contains(
-        &"Warning: projects 'agones' and 'kaischeduler' have the same order 245".to_string()
-    ));
+    // every `order` is unique since 2026-09-13 (agones 245 → 246) — no
+    // bug 19 warning on the real file any more
+    assert!(!rust
+        .stdout_set()
+        .iter()
+        .any(|l| l.contains("have the same order")));
     // The first database (`gha`) does not exist here → fatal.
     assert_eq!(rust.out.code, Some(2));
 }

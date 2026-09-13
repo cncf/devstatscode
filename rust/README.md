@@ -1395,8 +1395,10 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
   same `order` were reduced to one (a random one — Go map iteration) listed
   twice, so the other was never synced; now all are kept, ordered by `order`
   then name, with a `Warning: projects 'a' and 'b' have the same order N`
-  line. The real `cncf/devstats` `projects.yaml` currently has `agones` and
-  `kaischeduler` both at `order: 245`. `hide_data` had its own copy of the
+  line. The real `cncf/devstats` `projects.yaml` had `agones` and
+  `kaischeduler` both at `order: 245` (fixed 2026-09-13: agones → 246,
+  velero…sdc renumbered 247…256, every `order` unique again). `hide_data` had
+  its own copy of the
   same ordering code (same effect: one of the two databases was never
   anonymized) and now uses `GetProjectsList`.
 * `lib` `GetHidden` (Rust side only): the CSV field-count error was rendered

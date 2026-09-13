@@ -1018,7 +1018,7 @@ fn real_projects_yaml_syncs_every_enabled_project_in_order() {
     assert_eq!(env_of(&calls[0], "GHA2DB_PROJECT").unwrap(), "prometheus");
     assert_eq!(env_of(&calls[0], "PG_DB").unwrap(), "prometheus");
     assert_eq!(env_of(&calls[1], "GHA2DB_PROJECT").unwrap(), "fluentd");
-    // the last one by `order` (255; `all` at 1255 is ignored)
+    // the last one by `order` (256; `all` at 1255 is ignored)
     assert_eq!(
         env_of(calls.last().unwrap(), "GHA2DB_PROJECT").unwrap(),
         "sdc"
@@ -1039,13 +1039,12 @@ fn real_projects_yaml_syncs_every_enabled_project_in_order() {
         );
     }
     let out = side.stdout();
-    // bug 19 hits real data: two projects share order 245
-    assert!(
-        out.contains("Warning: projects 'agones' and 'kaischeduler' have the same order 245\n"),
-        "{out}"
-    );
-    assert!(out.contains("Syncing #245 agones\n"), "{out}");
+    // bug 19 used to hit real data (agones and kaischeduler shared order 245
+    // until 2026-09-13); every `order` is unique now, so no warning
+    assert!(!out.contains("have the same order"), "{out}");
     assert!(out.contains("Syncing #245 kaischeduler\n"), "{out}");
+    assert!(out.contains("Syncing #246 agones\n"), "{out}");
+    assert!(out.contains("Syncing #256 sdc\n"), "{out}");
     // disabled projects are not synced
     assert!(!out.contains("Syncing #3 opentracing\n"), "{out}");
     assert!(

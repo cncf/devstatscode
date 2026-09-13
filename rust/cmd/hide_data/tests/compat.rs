@@ -1439,15 +1439,16 @@ fn db_extra_argument_switches_to_file_mode() {
 
 #[test]
 fn db_real_projects_yaml_without_hidden_shas() {
-    // The real `projects.yaml` (254 enabled projects, two sharing `order`
-    // 245): without SHA1s to hide no database is touched — the database list
-    // in order (and the bug 19 warning) is all there is to compare.
+    // The real `projects.yaml` (254 enabled projects, every `order` unique
+    // since 2026-09-13 — agones/kaischeduler used to share 245): without
+    // SHA1s to hide no database is touched — the database list in order is
+    // all there is to compare (and no bug 19 warning any more).
     let Some(rs) = both(&Case::new("real").yaml(Yaml::Real).dbs(&[]).csv(None)) else {
         return;
     };
     assert_eq!(rs.out.code, Some(0));
     let lines = rs.stdout_set();
-    assert_eq!(lines.len(), 3, "{lines:#?}");
+    assert_eq!(lines.len(), 2, "{lines:#?}");
     let dbs = lines
         .iter()
         .find(|l| l.starts_with("Processing databases: ["))
@@ -1458,9 +1459,7 @@ fn db_real_projects_yaml_without_hidden_shas() {
     );
     assert!(dbs.ends_with(" sdc allprj]"), "{dbs}");
     assert_eq!(dbs.split(' ').count() - 2, 254, "{dbs}");
-    assert!(lines.contains(
-        &"Warning: projects 'agones' and 'kaischeduler' have the same order 245".to_string()
-    ));
+    assert!(!lines.iter().any(|l| l.contains("have the same order")));
     // `ONLY` with the real file.
     let Some(rs) = both(
         &Case::new("realonly")
