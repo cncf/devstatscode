@@ -132,6 +132,23 @@ DevStats shell scripts — asserting identical exit codes, stdout (and stderr or
 resulting files where that is part of the contract). Set
 `DEVSTATS_SKIP_GO_COMPAT=1` to run without a Go toolchain.
 
+Every Go test of the original repository has a Rust twin: the table-driven
+unit tests (`context`, `gha`, `time`, `string`, `pg` helpers, …) live in the
+`mod tests` of the corresponding module with the Go tables copied 1:1
+(`*_go_table` tests), and the PostgreSQL-backed ones in
+`devstatscode/tests/`: `pg_db.rs` (`TestPostgres`), `series_db.rs`
+(`TestProcessAnnotations`, 15 cases), `annotation_regexp.rs`
+(`TestAnnotationRegexp`, 264 rows) and `metrics_yaml.rs` — the port of the
+sibling repository's `devstats/metrics_test.go`, which runs the 70 Kubernetes
+metric cases of `devstats/tests.yaml` (fixtures, tags, `{{…}}` substitutions,
+`CompareSlices2D` semantics) against a scratch `dbtest_metrics` database. It
+needs a `devstats` checkout (`DEVSTATS_DIR=/path/to/devstats`, default
+`../../../devstats`; skipped when absent). The `tests.yaml` cases that also
+fail under Go because the fixtures are older than the metric SQL are listed in
+`KNOWN_STALE` (executed and reported, fatal only with `METRICS_TEST_STRICT=1`);
+one collation-dependent case is ignored on non-glibc PostgreSQL servers.
+`TEST_METRICS=metric1,metric2` selects cases like in Go.
+
 ## Compatibility notes
 
 * Fatal errors (`lib.FatalOnError` in Go) keep the production behaviour: message
@@ -1529,6 +1546,22 @@ resulting files where that is part of the contract). Set
   Go and Rust alike; the `API points: [...]` progress lines showed ~5000 unused
   points the whole time). Now polled concurrently and cached
   (`GHA2DB_GHAPI_RATE_LIMITS_CACHE`, see the `ghapi2db` notes above).
+
+* Stale Go tests found by the parity audit (2026-09-13; the code was right,
+  the tests were not): `series_test.go` `TestProcessAnnotations` filtered the
+  `now`-dependent rows with `skipI` indices that were off by one since the
+  `y100` quick range was added (2024-06-28) — 6/15 cases failed under Go;
+  fixed (`{11}`→`{12}`, `{11, 13}`→`{12, 14}`) and mirrored in
+  `tests/series_db.rs`. The sibling `devstats/metrics_test.go` did not compile
+  since the Elasticsearch removal (5-arg `ProcessTag`) — fixed; with it
+  compiling, 15 of its 70 `tests.yaml` cases fail identically under Go and
+  Rust because the fixtures predate the current metric SQL (`gha_repo_groups`,
+  `trepo_groups`/`tsig_mentions_labels` tag tables, changed `prs_state` /
+  `reviews_per_user` sources) — kept as `KNOWN_STALE` in `tests/metrics_yaml.rs`
+  by decision, not modernized. The Go tests Docker image never generated the
+  `en_US.UTF-8` locale, so its `create database … lc_collate = 'en_US.UTF-8'`
+  step could not succeed (`locale-gen` added to
+  `devstats-docker-images/images/Dockerfile.tests`).
 
 ### Rust-only bugs found after go-live (Go was correct)
 
