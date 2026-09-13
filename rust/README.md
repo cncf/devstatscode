@@ -1592,3 +1592,22 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
   `[\w-\-]`, `[a\-z]`, `[a-c-]`, `[--x]`, `[\.-z]`, `[^\w-+]`, plus a test that
   compiles every `annotation_regexp` of the sibling `devstats/projects.yaml`
   when it is available.
+* Bug 59 (`threads::num_cpu`, Rust only, found 2026-09-13 by comparing
+  per-step durations in prod `gha_logs` after the switchover): Go's
+  `runtime.NumCPU()` is the popcount of the process' `sched_getaffinity` mask
+  and ignores cgroup CPU quotas, but the port used
+  `std::thread::available_parallelism()`, which also caps the count to the
+  cgroup v2 `cpu.max` bandwidth limit. Every DevStats CronJob sets
+  `GHA2DB_NCPUS=8` with a pod CPU limit of 6 or 10, so `GetThreadsNum`
+  returned 8 under Go but the `NCPUs > NumCPU` clamp gave **6** under Rust on
+  the limit-6 pods (`Running (6 CPUs)` vs `Running (8 CPUs)` banners). The
+  visible symptom was `gha2db` taking ~28 s instead of ~21 s per hourly sync:
+  a 6-hour window plus the current hour is 7 archives, Go fetched all 7 in
+  parallel, Rust only 6, so the current hour (which always ends in the
+  `No data yet` retry cycle with `sleep((1+intn(3))*trials)`) started ~6 s
+  later. `num_cpu()` now uses `libc::sched_getaffinity` + `CPU_COUNT` on
+  Linux/Android and falls back to `available_parallelism()` elsewhere; unit
+  tests check `num_cpu() >= available_parallelism()` and that it equals the
+  popcount of `Cpus_allowed_list` from `/proc/self/status` (both verified
+  inside `docker run --cpus=6`, where the affinity count is the host's 16 and
+  the std answer is 6).
