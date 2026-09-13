@@ -2020,11 +2020,8 @@ fn max_histograms_limits_the_threads() {
     .unwrap();
     assert_eq!(side.out.code(), 0, "{}", side.out.stderr_str());
     let out = stdout_lines(&side);
-    if std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        >= 4
-    {
+    // Same CPU-count source as the binary under test (Go `runtime.NumCPU()`).
+    if devstatscode::threads::num_cpu() >= 4 {
         assert!(
             out.contains(&"Number of parallel histograms limited to 4 -> 2".to_string()),
             "{out:?}"
