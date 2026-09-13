@@ -1529,3 +1529,25 @@ resulting files where that is part of the contract). Set
   Go and Rust alike; the `API points: [...]` progress lines showed ~5000 unused
   points the whole time). Now polled concurrently and cached
   (`GHA2DB_GHAPI_RATE_LIMITS_CACHE`, see the `ghapi2db` notes above).
+
+### Rust-only bugs found after go-live (Go was correct)
+
+* Bug 55 (`goregex`, Rust only, found 2026-09-13 04:44 UTC by the overnight
+  log check, one day after the switch to the `-rust` images): a `-` that
+  follows a class escape, a POSIX class or a completed range inside a bracket
+  expression is a **literal** in Go (`[\w-+\d.]` = word chars, `-`, `+`,
+  digits, `.`), but the adapter expanded `\w` to `0-9A-Za-z_` and left the `-`
+  alone, producing the range `_-+` which the `regex` crate rejects
+  (`invalid character class range, the start must be <= the end`). The only
+  real pattern with this construct is containerd's
+  `annotation_regexp: '^v?\d+\.\d+\.\d+(-[\w-+\d.]+)?$'`, so the 2026-09-13
+  00:18 UTC containerd sync failed at `annotations` (exit 2, sync aborted
+  before metrics; the Job itself is `Complete` because `devstats` logs the
+  error and exits 0) — the first Rust run that reached the once-a-day
+  annotations step. Fixed in `goregex::emit_class` (a `-` after such an item
+  is emitted as `\-`; `\pL`/`\PN` one-letter classes are consumed as one item),
+  covered by unit tests mirroring `regexp.MatchString` results from Go for
+  `[\w-+\d.]`, `[a-c-e]`, `[\d-x]`, `[[:alpha:]-x]`, `[\pL-x]`, `[\w--]`,
+  `[\w-\-]`, `[a\-z]`, `[a-c-]`, `[--x]`, `[\.-z]`, `[^\w-+]`, plus a test that
+  compiles every `annotation_regexp` of the sibling `devstats/projects.yaml`
+  when it is available.

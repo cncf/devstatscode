@@ -12,6 +12,7 @@
 //! | `\d \w \s \b` (+ negations) | ASCII only | Unicode | rewritten to ASCII classes |
 //! | `[` inside a class (not `[:posix:]`) | literal | nested class | escaped |
 //! | `&&` `~~` inside a class | literal | set operators | escaped |
+//! | `-` after a class escape / POSIX class / range inside a class (e.g. `[\w-+\d.]`) | literal | range start (error or wrong set after the ASCII expansion above) | escaped |
 //!
 //! Not translated (unused in DevStats, documented deviation): `\Q..\E` literal
 //! quoting and octal escapes (`\123`) are Go-only; Rust-only syntax (`(?x)`,
@@ -113,6 +114,13 @@ fn emit_escape(chars: &[char], i: usize, out: &mut String, in_class: bool) -> us
                     return i + 3 + close;
                 }
             }
+            // `\pL`, `\PN`: the one-letter class name belongs to the escape.
+            if matches!(c, 'p' | 'P') {
+                if let Some(&name) = chars.get(i + 2) {
+                    out.push(name);
+                    return i + 3;
+                }
+            }
         }
     }
     i + 2
@@ -131,39 +139,74 @@ fn emit_class(chars: &[char], i: usize, out: &mut String) -> usize {
         out.push_str("\\]");
         j += 1;
     }
+    // Go: a `-` that cannot start a range (it follows a class escape such as
+    // `\w`, a POSIX class or a completed range, e.g. `[\w-+]`, `[a-c-e]`) is a
+    // literal; the regex crate rejects such patterns (or, after the ASCII
+    // expansion of `\w`, would read `_-+` as an invalid range), so escape it.
+    let mut prev_multi = false;
     while j < chars.len() {
         let c = chars[j];
-        match c {
-            ']' => {
-                out.push(']');
-                return j + 1;
-            }
-            '\\' => {
-                j = emit_escape(chars, j, out, true);
-                continue;
-            }
-            '[' => {
-                if let Some(end) = posix_class_end(chars, j) {
-                    out.extend(&chars[j..=end]);
-                    j = end + 1;
-                    continue;
-                }
-                out.push_str("\\[");
-            }
-            '&' | '~' if chars.get(j + 1) == Some(&c) => {
-                out.push('\\');
-                out.push(c);
-                out.push('\\');
-                out.push(c);
-                j += 2;
-                continue;
-            }
-            _ => out.push(c),
+        if c == ']' {
+            out.push(']');
+            return j + 1;
         }
-        j += 1;
+        if c == '-' && prev_multi && chars.get(j + 1).is_some_and(|&n| n != ']') {
+            out.push_str("\\-");
+            prev_multi = false;
+            j += 1;
+            continue;
+        }
+        let (next, multi) = emit_class_atom(chars, j, out);
+        if !multi && chars.get(next) == Some(&'-') && chars.get(next + 1).is_some_and(|&n| n != ']')
+        {
+            // `x-y` range: the end atom is emitted as is (a class escape there
+            // is an error in Go and in Rust alike).
+            out.push('-');
+            let (after, _) = emit_class_atom(chars, next + 1, out);
+            j = after;
+            prev_multi = true;
+            continue;
+        }
+        j = next;
+        prev_multi = multi;
     }
     // Unterminated class: leave as is, the regex compiler reports the error.
     j
+}
+
+/// Emit one class item starting at `chars[j]` (escape, POSIX class or single
+/// character); returns the next index and whether the item is a multi-character
+/// class (after which Go treats a `-` as a literal).
+fn emit_class_atom(chars: &[char], j: usize, out: &mut String) -> (usize, bool) {
+    let c = chars[j];
+    match c {
+        '\\' => {
+            let multi = matches!(
+                chars.get(j + 1),
+                Some('d' | 'D' | 'w' | 'W' | 's' | 'S' | 'p' | 'P')
+            );
+            (emit_escape(chars, j, out, true), multi)
+        }
+        '[' => {
+            if let Some(end) = posix_class_end(chars, j) {
+                out.extend(&chars[j..=end]);
+                return (end + 1, true);
+            }
+            out.push_str("\\[");
+            (j + 1, false)
+        }
+        '&' | '~' if chars.get(j + 1) == Some(&c) => {
+            out.push('\\');
+            out.push(c);
+            out.push('\\');
+            out.push(c);
+            (j + 2, false)
+        }
+        _ => {
+            out.push(c);
+            (j + 1, false)
+        }
+    }
 }
 
 /// If `chars[i..]` starts a POSIX class `[:name:]` / `[:^name:]`, return the index of its final `]`.
@@ -277,6 +320,55 @@ mod tests {
     }
 
     #[test]
+    fn dash_after_a_class_escape_range_or_posix_class_is_literal() {
+        // Go: a `-` that cannot start a range is a literal (bug 55: the containerd
+        // `annotation_regexp` `^v?\d+\.\d+\.\d+(-[\w-+\d.]+)?$` failed to compile
+        // because the ASCII expansion of `\w` produced the range `_-+`).
+        assert_eq!(t(r"[\w-+\d.]"), r"[0-9A-Za-z_\-+0-9.]");
+        assert_eq!(t(r"[a-c-e]"), r"[a-c\-e]");
+        assert_eq!(t(r"[\d-x]"), r"[0-9\-x]");
+        assert_eq!(t(r"[[:alpha:]-x]"), r"[[:alpha:]\-x]");
+        assert_eq!(t(r"[\pL-x]"), r"[\pL\-x]");
+        assert_eq!(t(r"[\w--]"), r"[0-9A-Za-z_\--]");
+        assert_eq!(t(r"[\w-\-]"), r"[0-9A-Za-z_\-\-]");
+        // Unchanged: `-` first/last, escaped, or a real range (also from an escaped char)
+        assert_eq!(t(r"[\w-]"), r"[0-9A-Za-z_-]");
+        assert_eq!(t(r"[-\w]"), r"[-0-9A-Za-z_]");
+        assert_eq!(t(r"[a\-z]"), r"[a\-z]");
+        assert_eq!(t(r"[a-c-]"), r"[a-c-]");
+        assert_eq!(t(r"[--x]"), r"[--x]");
+        assert_eq!(t(r"[\.-z]"), r"[\.-z]");
+        assert_eq!(t(r"[^\w-+]"), r"[^0-9A-Za-z_\-+]");
+        // Same match sets as Go (checked with regexp.MatchString on the same probes)
+        let probes = ["a", "z", "-", "+", "5", ".", "d", "e", "x", "_"];
+        let matched = |p: &str| -> String {
+            let re = compile(p).unwrap();
+            probes.iter().filter(|s| re.is_match(s)).copied().collect()
+        };
+        assert_eq!(matched(r"[\w-+\d.]"), "az-+5.dex_");
+        assert_eq!(matched(r"[a-c-e]"), "a-e");
+        assert_eq!(matched(r"[\d-x]"), "-5x");
+        assert_eq!(matched(r"[[:alpha:]-x]"), "az-dex");
+        assert_eq!(matched(r"[a\-z]"), "az-");
+        assert_eq!(matched(r"[\w-]"), "az-5dex_");
+        assert_eq!(matched(r"[-\w]"), "az-5dex_");
+        assert_eq!(matched(r"[\pL-x]"), "az-dex");
+        assert_eq!(matched(r"[a-c-]"), "a-");
+        assert_eq!(matched(r"[\w--]"), "az-5dex_");
+        assert_eq!(matched(r"[\w-\-]"), "az-5dex_");
+        assert!(compile(r"[a-\d]").is_err()); // error in Go too
+
+        // The containerd pattern itself
+        let re = compile(r"^v?\d+\.\d+\.\d+(-[\w-+\d.]+)?$").unwrap();
+        for s in ["v1.7.0", "1.7.0", "v1.7.0-rc.1", "v1.7.0-beta+2_x"] {
+            assert!(re.is_match(s), "{s}");
+        }
+        for s in ["v1.7", "v1.7.0-", "v1.7.0-rc/1", "1.7.0x"] {
+            assert!(!re.is_match(s), "{s}");
+        }
+    }
+
+    #[test]
     fn trailing_backslash_and_unterminated_class_are_left_to_the_compiler() {
         assert_eq!(t(r"abc\"), r"abc\");
         assert!(compile(r"abc\").is_err());
@@ -314,5 +406,38 @@ mod tests {
             let re = compile(p).unwrap();
             assert!(re.is_match("v1.2.0") || re.is_match("release-1.2"), "{p}");
         }
+    }
+
+    /// Every `annotation_regexp` of the real devstats `projects.yaml` (when the
+    /// sibling checkout is available) must compile — containerd's pattern did
+    /// not before bug 55 was fixed.
+    #[test]
+    fn all_projects_yaml_annotation_regexps_compile() {
+        let candidates = [
+            std::env::var("GHA2DB_PROJECTS_YAML").unwrap_or_default(),
+            "../../devstats/projects.yaml".to_string(),
+            "../../../devstats/projects.yaml".to_string(),
+        ];
+        let Some(body) = candidates
+            .iter()
+            .filter(|p| !p.is_empty())
+            .find_map(|p| std::fs::read_to_string(p).ok())
+        else {
+            eprintln!("projects.yaml not found, skipping");
+            return;
+        };
+        let mut n = 0;
+        for line in body.lines() {
+            let Some(rest) = line.trim_start().strip_prefix("annotation_regexp:") else {
+                continue;
+            };
+            let p = rest.trim().trim_matches('\'').trim_matches('"');
+            if p.is_empty() {
+                continue;
+            }
+            assert!(compile(p).is_ok(), "{p}: {:?}", compile(p).err());
+            n += 1;
+        }
+        assert!(n > 100, "only {n} patterns found");
     }
 }
