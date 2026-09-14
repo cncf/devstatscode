@@ -257,13 +257,16 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 	}
 
 	// Compare to what we currently have, eventually warn and insert new
-	if committerLogin != "" && sha != "" && newCommitterID != committerID {
+	// The actor rows are ensured for every commit whose author/committer emails and names are
+	// recorded below (also for commits not present in gha_commits), otherwise those identity rows
+	// reference a missing actor and are unusable (gha_actors_emails/names → gha_actors)
+	if committerLogin != "" && newCommitterID != committerID {
 		if ctx.Debug > 0 {
 			lib.Printf("DB Committer ID: %d != API Committer ID: %d, sha: %s, login: %s\n", newCommitterID, committerID, cSHA, committerLogin)
 		}
 		insertActorTx(tx, ctx, committerID, committerLogin, committerName, maybeHide)
 	}
-	if authorLogin != "" && sha != "" && authorLogin != committerLogin && newAuthorID != authorID {
+	if authorLogin != "" && authorLogin != committerLogin && newAuthorID != authorID {
 		if ctx.Debug > 0 {
 			lib.Printf("DB Author ID: %d != API Author ID: %d, SHA: %s, login: %s\n", newAuthorID, authorID, cSHA, authorLogin)
 		}

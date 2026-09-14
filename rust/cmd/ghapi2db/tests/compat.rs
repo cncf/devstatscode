@@ -3140,6 +3140,111 @@ fn commits_shared_affiliations_db() {
     });
 }
 
+const SHA4: &str = "4444444444444444444444444444444444444444";
+
+fn unknown_commit_json() -> Value {
+    // a commit the GHA archives never delivered (not in gha_commits): both users are unknown
+    CommitSpec::new(SHA4)
+        .author(Some((14, "dave")), "Dave D", "dave@example.com")
+        .committer(Some((15, "erin")), "Erin E", "erin@example.com")
+        .date("2020-03-01T11:30:00Z")
+        .json()
+}
+
+// Go bug 60: author/committer emails and names of every API commit were recorded, but the
+// actor row was only inserted for commits already present in gha_commits - the identity rows
+// of a commit not delivered by GHA referenced a missing actor (unusable, flagged by the health
+// check as dangling); now the actors are ensured whenever their emails/names are recorded
+#[test]
+fn commits_unknown_sha_ensures_actors() {
+    let sides = check(
+        Case::new("cm_unknown", Pass::Commits)
+            .env("GHA2DB_DEBUG", "2")
+            .seed(&commits_seed())
+            .setup(|gh| {
+                gh.get_ok(
+                    &commits_path(REPO),
+                    &json!([unknown_commit_json(), CommitSpec::new(SHA1).json()]),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "DB Committer ID: -5608866784325272487 != API Committer ID: 15, sha: 4444444444444444444444444444444444444444, login: erin");
+        s.expect_line(0, "DB Author ID: -8839355063028867649 != API Author ID: 14, SHA: 4444444444444444444444444444444444444444, login: dave");
+        s.expect_line(0, "SHA 4444444444444444444444444444444444444444 not found");
+        // the unknown commit itself is not created
+        assert_eq!(
+            s.count(&format!(
+                "select count(*) from gha_commits where sha = '{SHA4}'"
+            )),
+            0
+        );
+        assert_eq!(
+            s.query("select id, login, name from gha_actors where id in (14, 15) order by id"),
+            vec![
+                vec!["14".to_string(), "dave".to_string(), "Dave D".to_string()],
+                vec!["15".to_string(), "erin".to_string(), "Erin E".to_string()],
+            ]
+        );
+        assert_eq!(
+            s.query("select actor_id, email, origin from gha_actors_emails where actor_id in (14, 15) order by 1"),
+            vec![
+                vec!["14".to_string(), "dave@example.com".to_string(), "1".to_string()],
+                vec!["15".to_string(), "erin@example.com".to_string(), "1".to_string()],
+            ]
+        );
+        assert_eq!(
+            s.query("select actor_id, name, origin from gha_actors_names where actor_id in (14, 15) order by 1"),
+            vec![
+                vec!["14".to_string(), "Dave D".to_string(), "1".to_string()],
+                vec!["15".to_string(), "Erin E".to_string(), "1".to_string()],
+            ]
+        );
+        // no identity row references a missing actor
+        assert_eq!(s.count("select count(*) from gha_actors_emails e where not exists (select 1 from gha_actors a where a.id = e.actor_id)"), 0);
+        assert_eq!(s.count("select count(*) from gha_actors_names n where not exists (select 1 from gha_actors a where a.id = n.actor_id)"), 0);
+    });
+}
+
+#[test]
+fn commits_unknown_sha_ensures_actors_in_shared_affiliations_db() {
+    let sides = check(
+        Case::new("cm_unknown_affs", Pass::Commits)
+            .affs_db()
+            .seed(&commits_seed())
+            .setup(|gh| {
+                gh.get_ok(&commits_path(REPO), &json!([unknown_commit_json()]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "GH Commits API calls: 1");
+        // everything goes to the shared affiliations database, nothing to the project one
+        assert_eq!(
+            s.count("select count(*) from gha_actors where id in (14, 15)"),
+            0
+        );
+        assert_eq!(s.count("select count(*) from gha_actors_emails"), 0);
+        assert_eq!(
+            s.affs_query("select id, login, name from gha_actors where id in (14, 15) order by id"),
+            vec![
+                vec!["14".to_string(), "dave".to_string(), "Dave D".to_string()],
+                vec!["15".to_string(), "erin".to_string(), "Erin E".to_string()],
+            ]
+        );
+        assert_eq!(
+            s.affs_query("select actor_id, email from gha_actors_emails order by 1"),
+            vec![
+                vec!["14".to_string(), "dave@example.com".to_string()],
+                vec!["15".to_string(), "erin@example.com".to_string()],
+            ]
+        );
+        assert_eq!(
+            s.affs_query("select count(*)::text from gha_actors_emails e where not exists (select 1 from gha_actors a where a.id = e.actor_id)"),
+            vec![vec!["0".to_string()]]
+        );
+    });
+}
+
 #[test]
 fn commits_hidden_actors() {
     let sides = check(

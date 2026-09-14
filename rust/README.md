@@ -1570,6 +1570,21 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
   `en_US.UTF-8` locale, so its `create database … lc_collate = 'en_US.UTF-8'`
   step could not succeed (`locale-gen` added to
   `devstats-docker-images/images/Dockerfile.tests`).
+* Bug 60 (`ghapi2db` commits pass, Go and Rust alike, found 2026-09-14 by
+  `devstats/devel/mega_health_check.sh` as "dangling" `gha_actors_emails` /
+  `gha_actors_names` rows in the shared `affiliations` DB: 60/66 on prod,
+  2819/3055 on test): `processCommit` recorded the author's and committer's
+  email and name (origin 1) for **every** commit returned by the GitHub API,
+  but inserted the actor row only for commits already present in
+  `gha_commits` (`sha != ""` guard). Commits the GHA archives never delivered
+  (pushes with more than 20 commits — the `linux` project on test — or
+  events lost between hourly archives) therefore produced identity rows that
+  referenced a missing actor, which nothing can join. The `sha` condition was
+  removed from both actor inserts (author/committer) in Go and Rust, so an
+  actor now exists for every identity row written; compat tests
+  `commits_unknown_sha_ensures_actors[_in_shared_affiliations_db]`. The
+  existing dangling rows were repaired in place (the GitHub user looked up by
+  id and inserted exactly like `InsertActorTx` would have), not deleted.
 
 ### Rust-only bugs found after go-live (Go was correct)
 

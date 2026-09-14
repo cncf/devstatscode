@@ -338,7 +338,10 @@ fn process_commit(c: &PgConn, ctx: &Ctx, commit: &RepositoryCommit, maybe_hide: 
     }
 
     // Compare to what we currently have, eventually warn and insert new
-    if !committer_login.is_empty() && !sha.is_empty() && new_committer_id != committer_id {
+    // The actor rows are ensured for every commit whose author/committer emails and names are
+    // recorded below (also for commits not present in gha_commits), otherwise those identity rows
+    // reference a missing actor and are unusable (gha_actors_emails/names → gha_actors)
+    if !committer_login.is_empty() && new_committer_id != committer_id {
         if ctx.debug > 0 {
             printf!(
                 "DB Committer ID: {} != API Committer ID: {}, sha: {}, login: {}\n",
@@ -357,11 +360,7 @@ fn process_commit(c: &PgConn, ctx: &Ctx, commit: &RepositoryCommit, maybe_hide: 
             maybe_hide,
         );
     }
-    if !author_login.is_empty()
-        && !sha.is_empty()
-        && author_login != committer_login
-        && new_author_id != author_id
-    {
+    if !author_login.is_empty() && author_login != committer_login && new_author_id != author_id {
         if ctx.debug > 0 {
             printf!(
                 "DB Author ID: {} != API Author ID: {}, SHA: {}, login: {}\n",
