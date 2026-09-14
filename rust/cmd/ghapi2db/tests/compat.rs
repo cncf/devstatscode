@@ -82,7 +82,7 @@ static NOW: LazyLock<Regex> = LazyLock::new(|| {
 /// The `recent` dates (`HourStart(now) - 10 years`, so 2016) after their
 /// markers: `recent date: …`, `Repos to process from …:`, `] < …:`.
 static RECENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(recent date: |Repos to process from |\] < )\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? [+-]\d{4} \S+")
+    Regex::new(r"(recent date: |Repos to process from |\] < |active since |\(no [A-Za-z ]+ since )\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? [+-]\d{4} [A-Za-z0-9+-]+")
         .unwrap()
 });
 /// `since=2016-…Z` query parameters derived from the recent date.
@@ -787,6 +787,8 @@ enum Pass {
     Forks,
     Releases,
     Stars,
+    RepoStats,
+    RepoEvents,
     All,
 }
 
@@ -800,6 +802,8 @@ const SKIP_VARS: &[(Pass, &str)] = &[
     (Pass::Forks, "GHA2DB_GHAPISKIPFORKS"),
     (Pass::Releases, "GHA2DB_GHAPISKIPRELEASES"),
     (Pass::Stars, "GHA2DB_GHAPISKIPSTARS"),
+    (Pass::RepoStats, "GHA2DB_GHAPISKIPREPOSTATS"),
+    (Pass::RepoEvents, "GHA2DB_GHAPISKIPREPOEVENTS"),
 ];
 
 type Setup = Box<dyn Fn(&FakeGitHub) + Send + Sync>;
@@ -855,6 +859,13 @@ impl Case {
                 "GHA2DB_GHAPI_RATE_LIMITS_CACHE".to_string(),
                 "0".to_string(),
             ),
+            // legacy repository scope (repos with recent events, no GraphQL
+            // heartbeat) - the default all-tracked-repos scope has its own
+            // `scope_*` tests (`all_repos()`)
+            (
+                "GHA2DB_GHAPI_RECENT_REPOS_ONLY".to_string(),
+                "1".to_string(),
+            ),
         ];
         if pass == Pass::None {
             env.push(("GHA2DB_GHAPISKIP".to_string(), "1".to_string()));
@@ -904,6 +915,13 @@ impl Case {
     }
     fn no_data_compare(mut self) -> Self {
         self.compare_data = false;
+        self
+    }
+    /// The default scope: every `gha_repos` repository gated by the GraphQL
+    /// heartbeat (drop the legacy `GHA2DB_GHAPI_RECENT_REPOS_ONLY`).
+    fn all_repos(mut self) -> Self {
+        self.env
+            .retain(|(k, _)| k != "GHA2DB_GHAPI_RECENT_REPOS_ONLY");
         self
     }
     fn oauth(mut self, o: Option<&str>) -> Self {
@@ -2146,8 +2164,8 @@ fn events_paging_stops_at_old_events() {
     );
     both(&sides, |s| {
         s.expect_line(0, "GH Repo Events/PRs API calls: 2");
-        s.expect_line(0, "org/repo: [2020-05-03 10:00:00 +0000 UTC - 2020-05-03 10:00:00 +0000 UTC] < <recent> false");
-        s.expect_line(0, "org/repo: [2010-01-01 00:00:00 +0000 UTC - 2020-05-02 10:00:00 +0000 UTC] < <recent> true");
+        s.expect_line(0, "org/repo: [2020-05-03 10:00:00 +0000 UTC - 2020-05-03 10:00:00 +0000 UTC] < <recent>: false");
+        s.expect_line(0, "org/repo: [2010-01-01 00:00:00 +0000 UTC - 2020-05-02 10:00:00 +0000 UTC] < <recent>: true");
         assert!(s
             .requests()
             .iter()
@@ -2204,9 +2222,10 @@ fn events_empty_page_debug_uses_now() {
         // min = time.Now() (no events), max = the recent date
         let lines = s.lines(0);
         assert!(
-            lines.iter().any(
-                |l| l.starts_with("org/repo: [<now> - 20") && l.ends_with("] < <recent> false")
-            ),
+            lines
+                .iter()
+                .any(|l| l.starts_with("org/repo: [<now> - 20")
+                    && l.ends_with("] < <recent>: false")),
             "{lines:#?}"
         );
         s.expect_line(0, "GH Repo Events/PRs API calls: 1");
@@ -4977,10 +4996,12 @@ fn all_passes_run_in_order() {
             &license_json("mit", "MIT License"),
         );
         gh.get_ok("/repos/org/repo/languages", &json!({"Go": 10}));
+        gh.get_ok(&feed_path(REPO), &json!([]));
         gh.get_ok(&events_path(REPO), &json!([]));
         gh.get_ok(&commits_path(REPO), &json!([]));
         empty_restores(gh, REPO);
         gql_route(gh, vec![Scripted::ok(&gql_page(&[], false, ""))]);
+        gh.get_ok("/repos/org/repo", &repo_json(REPO_ID, REPO, 77, [5, 2, 4]));
     }));
     both(&sides, |s| {
         let lines = s.lines(0);
@@ -4993,6 +5014,7 @@ fn all_passes_run_in_order() {
         let order = [
             pos("Checking license on 1 repos"),
             pos("Checking programming languages on 1 repos"),
+            pos("ghapi2db repo events: processing 1 repos"),
             pos("ghapi2db.go: Processing 1 repos - GHAPI Events part"),
             pos("ghapi2db.go: Processing 1 repos - GHAPI commits part"),
             pos("ghapi2db comments restore: processing 1 repos"),
@@ -5000,11 +5022,22 @@ fn all_passes_run_in_order() {
             pos("ghapi2db forks restore: processing 1 repos"),
             pos("ghapi2db releases restore: processing 1 repos"),
             pos("ghapi2db stars restore: processing 1 repos"),
+            pos("ghapi2db repo stats: processing 1 repos"),
             pos("Time: "),
         ];
         assert!(order.windows(2).all(|w| w[0] < w[1]), "{lines:#?}");
         // no gha_commits rows: the commits pass skips the repo silently
         s.expect_line(0, "GH Commits API calls: 0");
+        // an empty feed: one page fetched, nothing to write
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 1 repos, 1 pages, checked 0, restored 0",
+        );
+        // legacy scope: the repository counters come from the API
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: processed 1 repos, snapshots: 1 inserted, 0 refreshed; skipped: 0 without events, 0 unavailable; GH API calls: 1",
+        );
     });
 }
 
@@ -5102,5 +5135,2359 @@ fn restore_unreachable_api() {
             "ghapi2db comments restore: processed 1 repos, 0 pages, checked 0, restored 0",
         );
         assert_eq!(s.code(0), Some(0));
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios: repository scope and the GraphQL heartbeat (P1-A)
+// ---------------------------------------------------------------------------
+//
+// Default scope: every `gha_repos` repository (one current name per id),
+// each pass gated by one GraphQL heartbeat (batches of 50 repositories)
+// evaluated once per process. `GHA2DB_GHAPI_RECENT_REPOS_ONLY` (set by
+// `Case::new` for every other scenario) keeps the legacy scope.
+
+/// A timestamp inside the (10 years) recent range.
+const RECENT_TS: &str = "2020-05-03T10:00:00Z";
+
+const HEARTBEAT_FRAGMENT: &str = "fragment F on Repository { databaseId nameWithOwner isArchived pushedAt stargazerCount forkCount watchers { totalCount } owner { login ... on User { databaseId } ... on Organization { databaseId } } openIssues: issues(states: OPEN) { totalCount } openPRs: pullRequests(states: OPEN) { totalCount } issues(last: 1, orderBy: {field: UPDATED_AT, direction: ASC}) { nodes { updatedAt } } pullRequests(last: 1, orderBy: {field: UPDATED_AT, direction: ASC}) { nodes { updatedAt } } releases(last: 1, orderBy: {field: CREATED_AT, direction: ASC}) { nodes { createdAt publishedAt } } forks(last: 1, orderBy: {field: CREATED_AT, direction: ASC}) { nodes { createdAt } } }";
+
+/// The heartbeat request body for the given (sorted) repositories.
+fn hb_query(repos: &[&str]) -> String {
+    let mut q = String::from("query { rateLimit { cost remaining }");
+    for (i, r) in repos.iter().enumerate() {
+        let (org, repo) = r.split_once('/').unwrap();
+        q.push_str(&format!(
+            " r{i}: repository(owner: \"{org}\", name: \"{repo}\") {{ ...F }}"
+        ));
+    }
+    q.push_str(" } ");
+    q.push_str(HEARTBEAT_FRAGMENT);
+    json!({"query": q}).to_string()
+}
+
+/// One repository of a heartbeat response.
+#[derive(Clone, Default)]
+struct HbNode {
+    id: i64,
+    name: &'static str,
+    archived: bool,
+    pushed_at: Option<&'static str>,
+    issue_at: Option<&'static str>,
+    pr_at: Option<&'static str>,
+    fork_at: Option<&'static str>,
+    /// newest release: (createdAt, publishedAt)
+    release: Option<(&'static str, Option<&'static str>)>,
+    stars: i64,
+    owner_id: i64,
+}
+
+impl HbNode {
+    fn new(id: i64, name: &'static str) -> Self {
+        HbNode {
+            id,
+            name,
+            ..Default::default()
+        }
+    }
+    fn pushed(mut self, at: &'static str) -> Self {
+        self.pushed_at = Some(at);
+        self
+    }
+    fn issue(mut self, at: &'static str) -> Self {
+        self.issue_at = Some(at);
+        self
+    }
+    fn pr(mut self, at: &'static str) -> Self {
+        self.pr_at = Some(at);
+        self
+    }
+    fn fork(mut self, at: &'static str) -> Self {
+        self.fork_at = Some(at);
+        self
+    }
+    fn release(mut self, created: &'static str, published: Option<&'static str>) -> Self {
+        self.release = Some((created, published));
+        self
+    }
+    fn stars(mut self, n: i64) -> Self {
+        self.stars = n;
+        self
+    }
+    fn owner(mut self, id: i64) -> Self {
+        self.owner_id = id;
+        self
+    }
+    fn archived(mut self) -> Self {
+        self.archived = true;
+        self
+    }
+    fn json(&self) -> Value {
+        let nodes = |t: Option<&str>, key: &str| -> Value {
+            json!({"nodes": t.map(|t| vec![json!({key: t})]).unwrap_or_default()})
+        };
+        json!({
+            "databaseId": self.id,
+            "nameWithOwner": self.name,
+            "isArchived": self.archived,
+            "pushedAt": self.pushed_at,
+            "stargazerCount": self.stars,
+            "forkCount": 2,
+            "watchers": {"totalCount": 4},
+            "owner": {"login": self.name.split('/').next().unwrap_or(""), "databaseId": self.owner_id},
+            "openIssues": {"totalCount": 3},
+            "openPRs": {"totalCount": 1},
+            "issues": nodes(self.issue_at, "updatedAt"),
+            "pullRequests": nodes(self.pr_at, "updatedAt"),
+            "releases": {"nodes": self.release.map(|(c, p)| vec![json!({"createdAt": c, "publishedAt": p})]).unwrap_or_default()},
+            "forks": nodes(self.fork_at, "createdAt"),
+        })
+    }
+}
+
+/// A heartbeat response for the aliases `r0..rN`: `Ok(node)` = found,
+/// `Err(type)` = `null` plus a GraphQL error of that type on the alias.
+fn hb_response(repos: &[Result<HbNode, &str>]) -> Value {
+    let mut data = serde_json::Map::new();
+    data.insert(
+        "rateLimit".to_string(),
+        json!({"cost": 1, "remaining": 4999}),
+    );
+    let mut errors = Vec::new();
+    for (i, r) in repos.iter().enumerate() {
+        let alias = format!("r{i}");
+        match r {
+            Ok(n) => {
+                data.insert(alias, n.json());
+            }
+            Err(t) => {
+                data.insert(alias.clone(), Value::Null);
+                errors.push(json!({
+                    "type": t,
+                    "path": [alias],
+                    "locations": [{"line": 1, "column": 40}],
+                    "message": format!("Could not resolve to a Repository ({t}).")
+                }));
+            }
+        }
+    }
+    let mut out = json!({"data": data});
+    if !errors.is_empty() {
+        out["errors"] = json!(errors);
+    }
+    out
+}
+
+fn hb_limits_error() -> Value {
+    json!({"errors": [{"type": "RESOURCE_LIMITS_EXCEEDED", "message": "Query has complexity of 60200, which exceeds max complexity of 50000"}]})
+}
+
+const SCOPE_TWO: &str =
+    "ghapi2db scope: 2 repos from gha_repos (2 ids), 0 historical names skipped";
+
+/// The heartbeat summary line: `active` = pushes, issues, PRs, forks,
+/// releases, stars.
+fn heartbeat_line(repos: usize, queries: usize, outcome: &str, active: [usize; 6]) -> String {
+    let [pushes, issues, prs, forks, releases, stars] = active;
+    format!(
+        "ghapi2db heartbeat: {repos} repos in {queries} GraphQL queries: {outcome}; active since <recent>: pushes {pushes}, issues {issues}, PRs {prs}, forks {forks}, releases {releases}, stars {stars}"
+    )
+}
+
+#[test]
+fn scope_heartbeat_gates_the_forks_pass() {
+    let sides = check(
+        Case::new("sc_forks", Pass::Forks)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed_repo(501, "org/dormant", None))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[
+                        Ok(HbNode::new(501, "org/dormant").fork(OLD)),
+                        Ok(HbNode::new(REPO_ID, REPO).fork(RECENT_TS)),
+                    ]))],
+                );
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, SCOPE_TWO);
+        s.expect_line(0, "Repos to process (all tracked): [org/dormant org/repo]");
+        s.expect_line(0, "Historical names skipped: []");
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                2,
+                1,
+                "2 found, 0 not found, 0 moved, 0 unknown, 0 archived",
+                [0, 0, 0, 1, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: org/dormant: skipped by heartbeat (no forks since <recent>)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 1 repos (heartbeat: 1 skipped), recent date: <recent>",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processed 1 repos, 1 pages, checked 0, restored 0",
+        );
+        // the legacy debug lines are gone
+        s.expect_no_prefix(0, "Repos to process from ");
+        s.expect_no_prefix(0, "Unique repos: ");
+        let reqs = s.requests();
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/dormant/")),
+            "{reqs:?}"
+        );
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("POST /graphql") && r.contains(" auth=tok1 ")),
+            "{reqs:?}"
+        );
+        let bodies = s.graphql_bodies();
+        assert_eq!(bodies, vec![hb_query(&["org/dormant", "org/repo"])]);
+    });
+}
+
+#[test]
+fn scope_legacy_flag_keeps_the_recent_repos_scope() {
+    // `Case::new` sets GHA2DB_GHAPI_RECENT_REPOS_ONLY: org/dormant has no
+    // events, so it is not processed and no heartbeat is sent
+    let sides = check(
+        Case::new("sc_legacy", Pass::Forks)
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed_repo(501, "org/dormant", None))
+            .setup(|gh| {
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "Unique repos: [org/repo]");
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 1 repos, recent date: <recent>",
+        );
+        s.expect_no_prefix(0, "ghapi2db scope: ");
+        s.expect_no_prefix(0, "ghapi2db heartbeat: ");
+        assert!(s.graphql_bodies().is_empty());
+    });
+}
+
+#[test]
+fn scope_heartbeat_runs_once_for_every_pass() {
+    // forks + releases passes: one heartbeat, each pass gated on its own field
+    let sides = check(
+        Case::new("sc_once", Pass::Forks)
+            .all_repos()
+            .env("GHA2DB_GHAPISKIPRELEASES", "")
+            .seed(&seed_repo(501, "org/dormant", None))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[
+                        // a release created long ago but published recently counts
+                        Ok(HbNode::new(501, "org/dormant").release(OLD, Some(RECENT_TS))),
+                        Ok(HbNode::new(REPO_ID, REPO)
+                            .fork(RECENT_TS)
+                            .release(OLD, None)),
+                    ]))],
+                );
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+                gh.get_ok("/repos/org/dormant/releases", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        assert_eq!(s.count_prefix(0, "ghapi2db scope: "), 1);
+        assert_eq!(s.count_prefix(0, "ghapi2db heartbeat: "), 1);
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                2,
+                1,
+                "2 found, 0 not found, 0 moved, 0 unknown, 0 archived",
+                [0, 0, 0, 1, 1, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 1 repos (heartbeat: 1 skipped), recent date: <recent>",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db releases restore: processing 1 repos (heartbeat: 1 skipped), recent date: <recent>",
+        );
+        let reqs = s.requests();
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/org/dormant/releases?")),
+            "{reqs:?}"
+        );
+        assert!(
+            !reqs
+                .iter()
+                .any(|r| r.starts_with("GET /repos/org/repo/releases?")),
+            "{reqs:?}"
+        );
+        assert_eq!(s.graphql_bodies().len(), 1);
+    });
+}
+
+#[test]
+fn scope_heartbeat_gates_events_and_commits() {
+    let sides = check(
+        Case::new("sc_evcm", Pass::Events)
+            .all_repos()
+            .env("GHA2DB_GHAPISKIPCOMMITS", "")
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed_repo(501, "org/dormant", None))
+            .seed(&seed_repo(502, "org/pushed", None))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[
+                        Ok(HbNode::new(501, "org/dormant")
+                            .issue(OLD)
+                            .pr(OLD)
+                            .pushed(OLD)),
+                        Ok(HbNode::new(502, "org/pushed").pushed(RECENT_TS)),
+                        Ok(HbNode::new(REPO_ID, REPO).issue(OLD).pr(RECENT_TS)),
+                    ]))],
+                );
+                gh.get_ok(&events_path(REPO), &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db scope: 3 repos from gha_repos (3 ids), 0 historical names skipped",
+        );
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                3,
+                1,
+                "3 found, 0 not found, 0 moved, 0 unknown, 0 archived",
+                [1, 0, 1, 0, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db events: org/dormant: skipped by heartbeat (no issue or PR updates since <recent>)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db events: org/pushed: skipped by heartbeat (no issue or PR updates since <recent>)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db.go: Processing 1 repos (heartbeat: 2 skipped) - GHAPI Events part",
+        );
+        s.expect_line(0, "GH Repo Events/PRs API calls: 1");
+        s.expect_line(
+            0,
+            "ghapi2db commits: org/dormant: skipped by heartbeat (no pushes since <recent>)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db commits: org/repo: skipped by heartbeat (no pushes since <recent>)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db.go: Processing 1 repos (heartbeat: 2 skipped) - GHAPI commits part",
+        );
+        // org/pushed has no gha_commits: the commits pass skips it itself
+        s.expect_line(0, "org/pushed: no date from");
+        s.expect_line(0, "GH Commits API calls: 0");
+        assert_eq!(s.graphql_bodies().len(), 1);
+    });
+}
+
+#[test]
+fn scope_heartbeat_gates_comments_and_reviews() {
+    let sides = check(
+        Case::new("sc_cmrv", Pass::Reviews)
+            .all_repos()
+            .env("GHA2DB_GHAPISKIPCOMMENTS", "")
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed_repo(501, "org/dormant", None))
+            .seed(&seed_repo(502, "org/pushed", None))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[
+                        Ok(HbNode::new(501, "org/dormant").issue(OLD)),
+                        // commit comments need no issue/PR activity: pushes open the comments pass
+                        Ok(HbNode::new(502, "org/pushed").pushed(RECENT_TS)),
+                        Ok(HbNode::new(REPO_ID, REPO).pr(RECENT_TS)),
+                    ]))],
+                );
+                for repo in ["org/pushed", REPO] {
+                    gh.get_ok(&issue_comments_path(repo), &json!([]));
+                    gh.get_ok(&review_comments_path(repo), &json!([]));
+                    gh.get_ok(&commit_comments_path(repo), &json!([]));
+                }
+                gh.get_ok("/repos/org/repo/pulls", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                3,
+                1,
+                "3 found, 0 not found, 0 moved, 0 unknown, 0 archived",
+                [1, 0, 1, 0, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db comments restore: org/dormant: skipped by heartbeat (no issue or PR updates or pushes since <recent>)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db comments restore: processing 2 repos (heartbeat: 1 skipped), recent date: <recent>",
+        );
+        s.expect_line(0, "org/pushed: no events, using gha_repos id 502");
+        s.expect_line(
+            0,
+            "ghapi2db comments restore: processed 2 repos, 6 pages, checked 0, restored 0",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db reviews restore: org/dormant: skipped by heartbeat (no PR updates since <recent>)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db reviews restore: org/pushed: skipped by heartbeat (no PR updates since <recent>)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db reviews restore: processing 1 repos (heartbeat: 2 skipped), recent date: <recent>",
+        );
+        let reqs = s.requests();
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/dormant/")),
+            "{reqs:?}"
+        );
+        assert!(
+            !reqs
+                .iter()
+                .any(|r| r.starts_with("GET /repos/org/pushed/pulls?")),
+            "{reqs:?}"
+        );
+        assert_eq!(s.graphql_bodies().len(), 1);
+    });
+}
+
+#[test]
+fn scope_stars_gate_uses_the_forkees_snapshot() {
+    let sides = check(
+        Case::new("sc_stars", Pass::Stars)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed_repo(501, "org/nostars", None))
+            .seed(&seed_repo(502, "org/same", None))
+            .seed(&seed_repo(503, "org/changed", None))
+            .seed(&seed_repo(504, "org/fresh", None))
+            // org/same: the newest snapshot before the recent date already shows 5 stars
+            .seed("insert into gha_forkees(id, event_id, name, full_name, owner_id, updated_at, stargazers_count, forks, open_issues, watchers, dup_actor_id, dup_repo_id, dup_repo_name, dup_created_at) values(502, 2001, 'same', 'org/same', 1, '2010-01-01 00:00:00', 4, 0, 0, 0, 11, 502, 'org/same', '2010-01-01 00:00:00');")
+            .seed("insert into gha_forkees(id, event_id, name, full_name, owner_id, updated_at, stargazers_count, forks, open_issues, watchers, dup_actor_id, dup_repo_id, dup_repo_name, dup_created_at) values(502, 2002, 'same', 'org/same', 1, '2010-02-01 00:00:00', 5, 0, 0, 0, 11, 502, 'org/same', '2010-02-01 00:00:00');")
+            // org/changed: snapshot 4 stars, GitHub says 5
+            .seed("insert into gha_forkees(id, event_id, name, full_name, owner_id, updated_at, stargazers_count, forks, open_issues, watchers, dup_actor_id, dup_repo_id, dup_repo_name, dup_created_at) values(503, 2003, 'changed', 'org/changed', 1, '2010-02-01 00:00:00', 4, 0, 0, 0, 11, 503, 'org/changed', '2010-02-01 00:00:00');")
+            // org/fresh: an equal snapshot inside the recent range proves nothing
+            .seed("insert into gha_forkees(id, event_id, name, full_name, owner_id, updated_at, stargazers_count, forks, open_issues, watchers, dup_actor_id, dup_repo_id, dup_repo_name, dup_created_at) values(504, 2004, 'fresh', 'org/fresh', 1, '2020-05-01 00:00:00', 5, 0, 0, 0, 11, 504, 'org/fresh', '2020-05-01 00:00:00');")
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![
+                        Scripted::ok(&hb_response(&[
+                            Ok(HbNode::new(503, "org/changed").stars(5)),
+                            Ok(HbNode::new(504, "org/fresh").stars(5)),
+                            Ok(HbNode::new(501, "org/nostars").stars(0)),
+                            Ok(HbNode::new(REPO_ID, REPO).stars(3)),
+                            Ok(HbNode::new(502, "org/same").stars(5)),
+                        ])),
+                        // stargazer pages for org/changed, org/fresh, org/repo (in order)
+                        Scripted::ok(&gql_page(&[], false, "")),
+                        Scripted::ok(&gql_page(&[], false, "")),
+                        Scripted::ok(&gql_page(&[], false, "")),
+                    ],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                5,
+                1,
+                "5 found, 0 not found, 0 moved, 0 unknown, 0 archived",
+                [0, 0, 0, 0, 0, 3],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: org/nostars: skipped by heartbeat (no star changes since <recent>)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: org/same: skipped by heartbeat (no star changes since <recent>)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: processing 3 repos (heartbeat: 2 skipped), recent date: <recent>",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: processed 3 repos, 3 pages, checked 0, restored 0",
+        );
+        // repos without events get their ids from gha_repos
+        s.expect_line(0, "org/changed: no events, using gha_repos id 503");
+        s.expect_line(0, "org/fresh: no events, using gha_repos id 504");
+        s.expect_no_prefix(0, "ghapi2db stars restore: org/repo: no");
+        let bodies = s.graphql_bodies();
+        assert_eq!(bodies.len(), 4, "{bodies:?}");
+        assert!(bodies[0].starts_with(r#"{"query":"query { rateLimit"#));
+        for (body, repo) in bodies[1..].iter().zip(["changed", "fresh", "repo"]) {
+            let vars = format!(r#""variables":{{"o":"org","r":"{repo}"}}"#);
+            assert!(body.contains(&vars), "{body}");
+        }
+    });
+}
+
+#[test]
+fn scope_current_names_come_from_the_newest_native_event() {
+    let sides = check(
+        Case::new("sc_names", Pass::Forks)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            // id 500 was org/old-name before the rename (older native event)
+            .seed(&seed_repo(REPO_ID, "org/old-name", None))
+            .seed(&seed_event(
+                900,
+                "IssuesEvent",
+                "org/old-name",
+                REPO_ID,
+                (11, "alice"),
+                "2019-02-01T10:00:00Z",
+            ))
+            // a newer artificial event (id >= 2^48) must not make org/older current
+            .seed(&seed_repo(REPO_ID, "org/older", None))
+            .seed(&seed_event(
+                ARTIFICIAL_BASE + 1,
+                "IssuesEvent",
+                "org/older",
+                REPO_ID,
+                (11, "alice"),
+                "2020-06-01T10:00:00Z",
+            ))
+            // id 501 never had events: alphabetically first name wins
+            .seed(&seed_repo(501, "org/noevents-b", None))
+            .seed(&seed_repo(501, "org/noevents-a", None))
+            // org/repo is also tracked under id 502 (recreated repository)
+            .seed(&seed_repo(502, REPO, None))
+            // org/old-name is current for id 503, so it is not historical
+            .seed(&seed_repo(503, "org/old-name", None))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[
+                        Ok(HbNode::new(501, "org/noevents-a")),
+                        Ok(HbNode::new(503, "org/old-name")),
+                        Ok(HbNode::new(REPO_ID, REPO).fork(RECENT_TS)),
+                    ]))],
+                );
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db scope: 3 repos from gha_repos (4 ids), 2 historical names skipped",
+        );
+        s.expect_line(
+            0,
+            "Repos to process (all tracked): [org/noevents-a org/old-name org/repo]",
+        );
+        s.expect_line(0, "Historical names skipped: [org/noevents-b org/older]");
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                3,
+                1,
+                "3 found, 0 not found, 0 moved, 0 unknown, 0 archived",
+                [0, 0, 0, 1, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 1 repos (heartbeat: 2 skipped), recent date: <recent>",
+        );
+        assert_eq!(
+            s.graphql_bodies(),
+            vec![hb_query(&["org/noevents-a", "org/old-name", "org/repo"])]
+        );
+    });
+}
+
+#[test]
+fn scope_not_found_moved_renamed_and_malformed_repos() {
+    let sides = check(
+        Case::new("sc_lost", Pass::Forks)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed_repo(501, "org/gone", None))
+            .seed(&seed_repo(502, "org/taken", None))
+            .seed(&seed_repo(503, "org/renamed", None))
+            .seed(&seed_repo(504, "noslash", None))
+            .seed(&seed_repo(505, "org/", None))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[
+                        Err("NOT_FOUND"),
+                        Ok(HbNode::new(503, "neworg/renamed")
+                            .fork(RECENT_TS)
+                            .archived()),
+                        Ok(HbNode::new(REPO_ID, REPO).fork(RECENT_TS)),
+                        Ok(HbNode::new(999, "org/taken").fork(RECENT_TS)),
+                    ]))],
+                );
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+                gh.get_ok("/repos/org/renamed/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db scope: 6 repos from gha_repos (6 ids), 0 historical names skipped",
+        );
+        s.expect_line(0, "noslash: not found on GitHub (malformed name), skipping");
+        s.expect_line(0, "org/: not found on GitHub (malformed name), skipping");
+        s.expect_line(0, "org/gone: not found on GitHub (NOT_FOUND), skipping");
+        s.expect_line(0, "org/renamed: renamed to neworg/renamed on GitHub");
+        s.expect_line(0, "org/renamed: no events, using gha_repos id 503");
+        s.expect_line(
+            0,
+            "WARNING: org/taken: resolves to org/taken (id 999) but is tracked as id 502, skipping",
+        );
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                6,
+                1,
+                "2 found, 3 not found, 1 moved, 0 unknown, 1 archived",
+                [0, 0, 0, 2, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 2 repos (heartbeat: 4 skipped), recent date: <recent>",
+        );
+        // not found / moved / malformed repos get no per-pass skip line
+        assert_eq!(s.count_prefix(0, "ghapi2db forks restore: org/"), 0);
+        assert_eq!(s.count_prefix(0, "ghapi2db forks restore: noslash"), 0);
+        s.expect_no_prefix(0, "WARNING: ghapi2db forks restore: malformed repo name");
+        let reqs = s.requests();
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/org/renamed/forks?")),
+            "{reqs:?}"
+        );
+        assert!(
+            !reqs
+                .iter()
+                .any(|r| r.contains("/repos/org/taken/") || r.contains("/repos/org/gone/")),
+            "{reqs:?}"
+        );
+        assert_eq!(
+            s.graphql_bodies(),
+            vec![hb_query(&[
+                "org/gone",
+                "org/renamed",
+                "org/repo",
+                "org/taken"
+            ])]
+        );
+    });
+}
+
+#[test]
+fn scope_heartbeat_failures_fail_open() {
+    // every token fails: the repos are unknown = processed by every pass
+    let sides = check(
+        Case::new("sc_hb500", Pass::Forks)
+            .all_repos()
+            .oauth(Some("tok1,tok2"))
+            .seed(&seed_repo(501, "org/dormant", None))
+            .setup(|gh| {
+                gql_route(gh, vec![Scripted::raw(500, "text/plain", "boom")]);
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+                gh.get_ok("/repos/org/dormant/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "WARNING: ghapi2db heartbeat: 2 repos unknown (graphql status 500 (token 2/2): boom), processing them in every pass",
+        );
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                2,
+                1,
+                "0 found, 0 not found, 0 moved, 2 unknown, 0 archived",
+                [0, 0, 0, 0, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 2 repos (heartbeat: 0 skipped), recent date: <recent>",
+        );
+        let reqs = s.requests();
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/org/dormant/forks?")),
+            "{reqs:?}"
+        );
+        assert_eq!(s.graphql_bodies().len(), 2);
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("POST /graphql") && r.contains(" auth=tok2 ")),
+            "{reqs:?}"
+        );
+    });
+    // a top-level GraphQL error without a path is a batch failure too
+    let sides = check(
+        Case::new("sc_hberr", Pass::Forks)
+            .all_repos()
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(
+                        &json!({"errors": [{"message": "Something went wrong while executing your query."}]}),
+                    )],
+                );
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "WARNING: ghapi2db heartbeat: 1 repos unknown (graphql (token 1/1): Something went wrong while executing your query.), processing them in every pass",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 1 repos (heartbeat: 0 skipped), recent date: <recent>",
+        );
+    });
+    // a rate limited token is skipped for the next one
+    let sides = check(
+        Case::new("sc_hb429", Pass::Forks)
+            .all_repos()
+            .oauth(Some("tok1,tok2"))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![
+                        Scripted::raw(429, "application/json", r#"{"message":"slow down"}"#)
+                            .header("Retry-After", "3600"),
+                        Scripted::ok(&hb_response(&[Ok(HbNode::new(REPO_ID, REPO))])),
+                    ],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                1,
+                1,
+                "1 found, 0 not found, 0 moved, 0 unknown, 0 archived",
+                [0, 0, 0, 0, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 0 repos (heartbeat: 1 skipped), recent date: <recent>",
+        );
+        s.expect_no_prefix(0, "WARNING: ghapi2db heartbeat");
+        let reqs = s.requests();
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("POST /graphql") && r.contains(" auth=tok2 ")),
+            "{reqs:?}"
+        );
+        assert_eq!(s.graphql_bodies().len(), 2);
+    });
+    // no token at all: no heartbeat, everything is processed
+    let sides = check(
+        Case::new("sc_hbnotok", Pass::Forks)
+            .all_repos()
+            .oauth(Some("-"))
+            .setup(|gh| {
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "WARNING: ghapi2db heartbeat needs GHA2DB_GITHUB_OAUTH token(s), processing every repo in every pass",
+        );
+        s.expect_no_prefix(0, "ghapi2db heartbeat: ");
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 1 repos (heartbeat: 0 skipped), recent date: <recent>",
+        );
+        assert!(s.graphql_bodies().is_empty());
+    });
+}
+
+#[test]
+fn scope_resource_limits_split_the_batch() {
+    let sides = check(
+        Case::new("sc_split", Pass::Forks)
+            .all_repos()
+            .seed(&seed_repo(501, "org/a", None))
+            .seed(&seed_repo(502, "org/b", None))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![
+                        // the 3-repos query is rejected, the halves ([org/a], [org/b, org/repo]) work
+                        Scripted::ok(&hb_limits_error()),
+                        Scripted::ok(&hb_response(&[Ok(
+                            HbNode::new(501, "org/a").fork(RECENT_TS)
+                        )])),
+                        Scripted::ok(&hb_response(&[
+                            Ok(HbNode::new(502, "org/b")),
+                            Ok(HbNode::new(REPO_ID, REPO).fork(RECENT_TS)),
+                        ])),
+                    ],
+                );
+                gh.get_ok("/repos/org/a/forks", &json!([]));
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                3,
+                3,
+                "3 found, 0 not found, 0 moved, 0 unknown, 0 archived",
+                [0, 0, 0, 2, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 2 repos (heartbeat: 1 skipped), recent date: <recent>",
+        );
+        s.expect_no_prefix(0, "WARNING: ghapi2db heartbeat");
+        assert_eq!(
+            s.graphql_bodies(),
+            vec![
+                hb_query(&["org/a", "org/b", "org/repo"]),
+                hb_query(&["org/a"]),
+                hb_query(&["org/b", "org/repo"]),
+            ]
+        );
+    });
+    // a single repository whose query is still rejected is unknown
+    let sides = check(Case::new("sc_split1", Pass::Forks).all_repos().setup(|gh| {
+        gql_route(gh, vec![Scripted::ok(&hb_limits_error())]);
+        gh.get_ok("/repos/org/repo/forks", &json!([]));
+    }));
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "WARNING: ghapi2db heartbeat: 1 repos unknown (graphql query rejected: Query has complexity of 60200, which exceeds max complexity of 50000), processing them in every pass",
+        );
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                1,
+                1,
+                "0 found, 0 not found, 0 moved, 1 unknown, 0 archived",
+                [0, 0, 0, 0, 0, 0],
+            ),
+        );
+        assert_eq!(s.graphql_bodies().len(), 1);
+    });
+}
+
+#[test]
+fn scope_batches_of_fifty() {
+    let mut seed = String::new();
+    for i in 0..120 {
+        seed.push_str(&seed_repo(1000 + i, &format!("org/r{i:03}"), None));
+    }
+    let seed_c = seed.clone();
+    let sides = check(
+        Case::new("sc_batches", Pass::Forks)
+            .all_repos()
+            .seed(&seed_c)
+            .setup(|gh| {
+                // sorted names: org/r000..org/r119 then org/repo (121 repos, 3 batches)
+                let mut names: Vec<String> = (0..120).map(|i| format!("org/r{i:03}")).collect();
+                names.push(REPO.to_string());
+                let mut pages = Vec::new();
+                for chunk in names.chunks(50) {
+                    let nodes: Vec<Result<HbNode, &str>> = chunk
+                        .iter()
+                        .map(|n| {
+                            let leaked: &'static str = Box::leak(n.clone().into_boxed_str());
+                            let id = if n == REPO {
+                                REPO_ID
+                            } else {
+                                1000 + n[5..].parse::<i64>().unwrap()
+                            };
+                            let node = HbNode::new(id, leaked);
+                            Ok(if n == "org/r007" || n == REPO {
+                                node.fork(RECENT_TS)
+                            } else {
+                                node
+                            })
+                        })
+                        .collect();
+                    pages.push(Scripted::ok(&hb_response(&nodes)));
+                }
+                gql_route(gh, pages);
+                gh.get_ok("/repos/org/r007/forks", &json!([]));
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db scope: 121 repos from gha_repos (121 ids), 0 historical names skipped",
+        );
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                121,
+                3,
+                "121 found, 0 not found, 0 moved, 0 unknown, 0 archived",
+                [0, 0, 0, 2, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 2 repos (heartbeat: 119 skipped), recent date: <recent>",
+        );
+        let bodies = s.graphql_bodies();
+        assert_eq!(bodies.len(), 3);
+        assert!(
+            bodies[0].contains(r#"r49: repository(owner: \"org\", name: \"r049\")"#),
+            "{}",
+            bodies[0]
+        );
+        assert!(!bodies[0].contains("r50:"), "{}", bodies[0]);
+        assert!(
+            bodies[2].contains(r#"r20: repository(owner: \"org\", name: \"repo\")"#),
+            "{}",
+            bodies[2]
+        );
+    });
+}
+
+#[test]
+fn scope_single_repo_and_date_range_bypass_the_heartbeat() {
+    // REPO: every tracked repository is listed, no heartbeat, the pass filters
+    let sides = check(
+        Case::new("sc_single", Pass::Forks)
+            .all_repos()
+            .env("REPO", "org/dormant")
+            .seed(&seed_repo(501, "org/dormant", None))
+            .setup(|gh| {
+                gh.get_ok("/repos/org/dormant/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, SCOPE_TWO);
+        s.expect_no_prefix(0, "ghapi2db heartbeat: ");
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 2 repos, recent date: <recent>",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processed 1 repos, 1 pages, checked 0, restored 0",
+        );
+        assert!(s.graphql_bodies().is_empty());
+        let reqs = s.requests();
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/org/dormant/forks?")),
+            "{reqs:?}"
+        );
+        assert!(
+            !reqs
+                .iter()
+                .any(|r| r.starts_with("GET /repos/org/repo/forks?")),
+            "{reqs:?}"
+        );
+    });
+    // DTFROM/DTTO: the events and commits passes are not gated
+    let sides = check(
+        Case::new("sc_dtfrom", Pass::Commits)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .env("DTFROM", "2020-05-01 00:00:00")
+            .seed(&seed_repo(501, "org/dormant", None))
+            .setup(|_| {}),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, SCOPE_TWO);
+        s.expect_no_prefix(0, "ghapi2db heartbeat: ");
+        s.expect_line(0, "ghapi2db.go: Processing 2 repos - GHAPI commits part");
+        // with DTFROM the pass queries every repo (nothing is scripted → 404)
+        s.expect_line(0, "Warning: not found: org/dormant");
+        s.expect_line(0, "Warning: not found: org/repo");
+        s.expect_line(0, "GH Commits API calls: 2");
+        assert!(s.graphql_bodies().is_empty());
+    });
+}
+
+// ---- repo stats pass (P1-D): one gha_forkees snapshot per repository per run ----
+
+/// The `Accept` header go-github v38 `Repositories.Get` sends.
+const REPO_GET_ACCEPT: &str = "application/vnd.github.scarlet-witch-preview+json, application/vnd.github.mercy-preview+json, application/vnd.github.baptiste-preview+json, application/vnd.github.nebula-preview+json";
+
+/// A `GET /repos/{o}/{r}` body: `counters` = stargazers, forks, open issues
+/// (REST: including PRs; `watchers_count` = stargazers).
+fn repo_json(id: i64, full_name: &str, owner_id: i64, counters: [i64; 3]) -> Value {
+    let [stars, forks, open_issues] = counters;
+    let (owner, name) = full_name.split_once('/').unwrap();
+    json!({
+        "id": id,
+        "node_id": "R_kgDO",
+        "name": name,
+        "full_name": full_name,
+        "owner": {"login": owner, "id": owner_id, "type": "Organization"},
+        "private": false,
+        "fork": false,
+        "created_at": "2019-01-01T00:00:00Z",
+        "updated_at": "2020-05-01T00:00:00Z",
+        "pushed_at": "2020-05-01T00:00:00Z",
+        "stargazers_count": stars,
+        "watchers_count": stars,
+        "forks_count": forks,
+        "open_issues_count": open_issues,
+        "subscribers_count": 9,
+        "default_branch": "main",
+    })
+}
+
+const REPO_STATS_COLS: &str = "select id, event_id, name, full_name, owner_id, stargazers_count, forks, open_issues, watchers, dup_actor_id, dup_repo_id, dup_repo_name, dup_created_at, updated_at > '2025-01-01' from gha_forkees order by id, event_id";
+
+/// A `gha_forkees` row as `REPO_STATS_COLS` renders it: `event` = the
+/// anchoring event (id, actor id, created at), `counters` = stars, forks,
+/// open issues.
+fn repo_stats_row(
+    id: i64,
+    full_name: &str,
+    owner_id: i64,
+    counters: [i64; 3],
+    event: (&str, i64, &str),
+    dup_repo_name: &str,
+) -> Vec<String> {
+    let [stars, forks, open_issues] = counters;
+    let (event_id, actor_id, dup_created_at) = event;
+    let name = full_name
+        .split_once('/')
+        .map(|(_, n)| n)
+        .unwrap_or(full_name);
+    vec![
+        id.to_string(),
+        event_id.to_string(),
+        name.to_string(),
+        full_name.to_string(),
+        owner_id.to_string(),
+        stars.to_string(),
+        forks.to_string(),
+        open_issues.to_string(),
+        stars.to_string(),
+        actor_id.to_string(),
+        id.to_string(),
+        dup_repo_name.to_string(),
+        dup_created_at.to_string(),
+        "true".to_string(),
+    ]
+}
+
+#[test]
+fn repo_stats_snapshot_comes_from_the_heartbeat() {
+    let sides = check(
+        Case::new("rs_hb", Pass::RepoStats)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed_repo(501, "org/noev", None))
+            .seed(&seed_repo(502, "org/gone", None))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[
+                        Err("NOT_FOUND"),
+                        Ok(HbNode::new(501, "org/noev").owner(77)),
+                        Ok(HbNode::new(REPO_ID, REPO).stars(5).owner(77)),
+                    ]))],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                3,
+                1,
+                "2 found, 1 not found, 0 moved, 0 unknown, 0 archived",
+                [0, 0, 0, 0, 0, 1],
+            ),
+        );
+        s.expect_line(0, "org/gone: not found on GitHub (NOT_FOUND), skipping");
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: processing 2 repos (heartbeat: 1 skipped)",
+        );
+        s.expect_line(0, "ghapi2db repo stats: org/noev: no events, skipping");
+        // heartbeat semantics → GH Archive semantics: watchers = stargazers, open issues = issues + PRs
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: org/repo: 5 stars, 2 forks, 4 open issues from the heartbeat, snapshot inserted (event 1000)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: processed 2 repos, snapshots: 1 inserted, 0 refreshed; skipped: 1 without events, 0 unavailable; GH API calls: 0",
+        );
+        // the snapshot hangs off the newest event of the repository, dup_* copy the event's columns
+        assert_eq!(
+            s.query(REPO_STATS_COLS),
+            vec![repo_stats_row(
+                REPO_ID,
+                REPO,
+                77,
+                [5, 2, 4],
+                ("1000", 11, "2020-02-01T10:00:00Z"),
+                REPO
+            )]
+        );
+        // no REST call at all: the counters were already in the heartbeat
+        let reqs = s.requests();
+        assert!(
+            reqs.iter().all(|r| r.starts_with("POST /graphql")),
+            "{reqs:?}"
+        );
+        assert_eq!(s.graphql_bodies().len(), 1);
+    });
+}
+
+#[test]
+fn repo_stats_refreshes_the_same_anchor_and_follows_renames() {
+    let sides = check(
+        Case::new("rs_twice", Pass::RepoStats)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .runs(2)
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![
+                        Scripted::ok(&hb_response(&[Ok(HbNode::new(REPO_ID, REPO)
+                            .stars(5)
+                            .owner(77))])),
+                        // second run: GitHub reports the repository under a new name with one more star
+                        Scripted::ok(&hb_response(&[Ok(HbNode::new(REPO_ID, "neworg/repo")
+                            .stars(6)
+                            .owner(78))])),
+                    ],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: org/repo: 5 stars, 2 forks, 4 open issues from the heartbeat, snapshot inserted (event 1000)",
+        );
+        s.expect_line(1, "org/repo: renamed to neworg/repo on GitHub");
+        s.expect_line(
+            1,
+            "ghapi2db repo stats: org/repo: 6 stars, 2 forks, 4 open issues from the heartbeat, snapshot refreshed (event 1000)",
+        );
+        s.expect_line(
+            1,
+            "ghapi2db repo stats: processed 1 repos, snapshots: 0 inserted, 1 refreshed; skipped: 0 without events, 0 unavailable; GH API calls: 0",
+        );
+        // still one row: (id, event_id) is the key, name/full_name follow GitHub, dup_repo_name stays the tracked name
+        assert_eq!(
+            s.query(REPO_STATS_COLS),
+            vec![repo_stats_row(
+                REPO_ID,
+                "neworg/repo",
+                78,
+                [6, 2, 4],
+                ("1000", 11, "2020-02-01T10:00:00Z"),
+                REPO
+            )]
+        );
+    });
+}
+
+#[test]
+fn repo_stats_upgrades_the_counters_less_gha_rows() {
+    let sides = check(
+        Case::new("rs_stub", Pass::RepoStats)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            // what GH Archive writes since 2024-09: the PR event's base repository object without counters
+            .seed("insert into gha_forkees(id, event_id, name, full_name, owner_id, updated_at, stargazers_count, forks, open_issues, watchers, dup_actor_id, dup_repo_id, dup_repo_name, dup_created_at) values(500, 1000, '', '', 0, '0001-01-01 00:00:00', 0, 0, 0, 0, 11, 500, 'org/repo', '2020-02-01 10:00:00');")
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[Ok(HbNode::new(REPO_ID, REPO).stars(5).owner(77))]))],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: org/repo: 5 stars, 2 forks, 4 open issues from the heartbeat, snapshot refreshed (event 1000)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: processed 1 repos, snapshots: 0 inserted, 1 refreshed; skipped: 0 without events, 0 unavailable; GH API calls: 0",
+        );
+        assert_eq!(
+            s.query(REPO_STATS_COLS),
+            vec![repo_stats_row(
+                REPO_ID,
+                REPO,
+                77,
+                [5, 2, 4],
+                ("1000", 11, "2020-02-01T10:00:00Z"),
+                REPO
+            )]
+        );
+    });
+}
+
+#[test]
+fn repo_stats_anchor_is_the_newest_event_under_any_name() {
+    let sides = check(
+        Case::new("rs_anchor", Pass::RepoStats)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            // org/repo: an artificial (restored) event newer than the native one
+            .seed(&seed_event(
+                ARTIFICIAL_BASE + 5,
+                "ForkEvent",
+                REPO,
+                REPO_ID,
+                (12, "bob"),
+                "2020-03-01T10:00:00Z",
+            ))
+            // org/renamed (id 600): tracked under its new name only, events still under the old one
+            .seed(&seed_repo(600, "org/renamed", None))
+            .seed(&seed_event(
+                2001,
+                "PushEvent",
+                "org/oldname",
+                600,
+                (12, "bob"),
+                "2020-04-01T10:00:00Z",
+            ))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[
+                        Ok(HbNode::new(600, "org/renamed").stars(1).owner(77)),
+                        Ok(HbNode::new(REPO_ID, REPO).stars(5).owner(77)),
+                    ]))],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, SCOPE_TWO);
+        s.expect_line(
+            0,
+            &format!("ghapi2db repo stats: org/repo: 5 stars, 2 forks, 4 open issues from the heartbeat, snapshot inserted (event {})", ARTIFICIAL_BASE + 5),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: org/renamed: 1 stars, 2 forks, 4 open issues from the heartbeat, snapshot inserted (event 2001)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: processed 2 repos, snapshots: 2 inserted, 0 refreshed; skipped: 0 without events, 0 unavailable; GH API calls: 0",
+        );
+        assert_eq!(
+            s.query(REPO_STATS_COLS),
+            vec![
+                repo_stats_row(
+                    REPO_ID,
+                    REPO,
+                    77,
+                    [5, 2, 4],
+                    (
+                        &(ARTIFICIAL_BASE + 5).to_string(),
+                        12,
+                        "2020-03-01T10:00:00Z"
+                    ),
+                    REPO
+                ),
+                repo_stats_row(
+                    600,
+                    "org/renamed",
+                    77,
+                    [1, 2, 4],
+                    ("2001", 12, "2020-04-01T10:00:00Z"),
+                    "org/renamed"
+                ),
+            ]
+        );
+    });
+}
+
+#[test]
+fn repo_stats_single_repo_mode_asks_the_api() {
+    let sides = check(
+        Case::new("rs_repo", Pass::RepoStats)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .env("REPO", REPO)
+            .seed(&seed_repo(501, "org/other", None))
+            .setup(|gh| {
+                gh.get_ok("/repos/org/repo", &repo_json(REPO_ID, REPO, 77, [9, 4, 6]));
+            }),
+    );
+    both(&sides, |s| {
+        // REPO bypasses the heartbeat: the whole scope is listed, one repository processed
+        s.expect_line(0, "ghapi2db repo stats: processing 2 repos");
+        s.expect_no_prefix(0, "ghapi2db heartbeat:");
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: org/repo: 9 stars, 4 forks, 6 open issues from the API, snapshot inserted (event 1000)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: processed 1 repos, snapshots: 1 inserted, 0 refreshed; skipped: 0 without events, 0 unavailable; GH API calls: 1",
+        );
+        assert_eq!(
+            s.query(REPO_STATS_COLS),
+            vec![repo_stats_row(
+                REPO_ID,
+                REPO,
+                77,
+                [9, 4, 6],
+                ("1000", 11, "2020-02-01T10:00:00Z"),
+                REPO
+            )]
+        );
+        let reqs = s.requests();
+        assert!(
+            reqs.contains(&format!(
+                "GET /repos/org/repo accept={REPO_GET_ACCEPT} auth=tok1"
+            )),
+            "{reqs:?}"
+        );
+        assert!(s.graphql_bodies().is_empty());
+    });
+}
+
+#[test]
+fn repo_stats_legacy_scope_asks_the_api_and_checks_the_id() {
+    let sides = check(
+        Case::new("rs_legacy", Pass::RepoStats)
+            .unordered()
+            // Go lists the unique repos in map order (the port sorts them)
+            .loose("Unique repos: ")
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed_repo(501, "org/gone", None))
+            .seed(&seed_event(
+                1001,
+                "PushEvent",
+                "org/gone",
+                501,
+                (12, "bob"),
+                "2020-02-02T10:00:00Z",
+            ))
+            .seed(&seed_repo(502, "org/fine", None))
+            .seed(&seed_event(
+                1002,
+                "PushEvent",
+                "org/fine",
+                502,
+                (12, "bob"),
+                "2020-02-03T10:00:00Z",
+            ))
+            .setup(|gh| {
+                // org/repo resolves to another repository id than the tracked one
+                gh.get_ok("/repos/org/repo", &repo_json(999, REPO, 77, [9, 4, 6]));
+                gh.get_ok(
+                    "/repos/org/fine",
+                    &repo_json(502, "org/fine", 77, [3, 1, 2]),
+                );
+                // org/gone: 404
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "ghapi2db repo stats: processing 3 repos");
+        s.expect_line(
+            0,
+            "WARNING: ghapi2db repo stats: org/repo: resolves to org/repo (id 999) which is not tracked, skipping",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: org/fine: 3 stars, 1 forks, 2 open issues from the API, snapshot inserted (event 1002)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: processed 3 repos, snapshots: 1 inserted, 0 refreshed; skipped: 0 without events, 2 unavailable; GH API calls: 3",
+        );
+        assert_eq!(
+            s.query(REPO_STATS_COLS),
+            vec![repo_stats_row(
+                502,
+                "org/fine",
+                77,
+                [3, 1, 2],
+                ("1002", 12, "2020-02-03T10:00:00Z"),
+                "org/fine"
+            )]
+        );
+        let reqs = s.requests();
+        for repo in ["repo", "gone", "fine"] {
+            assert!(
+                reqs.contains(&format!(
+                    "GET /repos/org/{repo} accept={REPO_GET_ACCEPT} auth=tok1"
+                )),
+                "{reqs:?}"
+            );
+        }
+    });
+}
+
+#[test]
+fn repo_stats_unknown_heartbeat_falls_back_to_the_api() {
+    let sides = check(
+        Case::new("rs_unknown", Pass::RepoStats)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .setup(|gh| {
+                // the heartbeat query fails on every token: the repository is unknown, processed in every pass
+                gql_route(gh, vec![Scripted::raw(502, "text/html", "bad gateway")]);
+                gh.get_ok("/repos/org/repo", &repo_json(REPO_ID, REPO, 77, [9, 4, 6]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                1,
+                1,
+                "0 found, 0 not found, 0 moved, 1 unknown, 0 archived",
+                [0, 0, 0, 0, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: processing 1 repos (heartbeat: 0 skipped)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: org/repo: 9 stars, 4 forks, 6 open issues from the API, snapshot inserted (event 1000)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: processed 1 repos, snapshots: 1 inserted, 0 refreshed; skipped: 0 without events, 0 unavailable; GH API calls: 1",
+        );
+        assert_eq!(
+            s.query(REPO_STATS_COLS),
+            vec![repo_stats_row(
+                REPO_ID,
+                REPO,
+                77,
+                [9, 4, 6],
+                ("1000", 11, "2020-02-01T10:00:00Z"),
+                REPO
+            )]
+        );
+    });
+}
+
+#[test]
+fn scope_stars_gate_ignores_the_counters_less_gha_rows() {
+    let sides = check(
+        Case::new("sc_stars_stub", Pass::Stars)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            // a real snapshot with 5 stars…
+            .seed("insert into gha_forkees(id, event_id, name, full_name, owner_id, updated_at, stargazers_count, forks, open_issues, watchers, dup_actor_id, dup_repo_id, dup_repo_name, dup_created_at) values(500, 900, 'repo', 'org/repo', 1, '2010-02-01 00:00:00', 5, 0, 0, 0, 11, 500, 'org/repo', '2010-02-01 00:00:00');")
+            // …followed by the counters-less row GH Archive writes with a newer PR event
+            .seed("insert into gha_forkees(id, event_id, name, full_name, owner_id, updated_at, stargazers_count, forks, open_issues, watchers, dup_actor_id, dup_repo_id, dup_repo_name, dup_created_at) values(500, 1000, '', '', 0, '0001-01-01 00:00:00', 0, 0, 0, 0, 11, 500, 'org/repo', '2020-02-01 10:00:00');")
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[Ok(HbNode::new(REPO_ID, REPO).stars(5))]))],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                1,
+                1,
+                "1 found, 0 not found, 0 moved, 0 unknown, 0 archived",
+                [0, 0, 0, 0, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: org/repo: skipped by heartbeat (no star changes since <recent>)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: processing 0 repos (heartbeat: 1 skipped), recent date: <recent>",
+        );
+        assert_eq!(s.graphql_bodies().len(), 1);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios: repository events feed (`ghapi2db repo events`, GH Archive gap
+// filler): `GET /repos/{owner}/{repo}/events` objects written with the
+// gha2db writer under their native ids.
+// ---------------------------------------------------------------------------
+
+fn feed_path(repo: &str) -> String {
+    format!("/repos/{repo}/events")
+}
+
+/// The `Link`-header base of the feed pages (`page=N` is appended).
+fn feed_base(repo: &str) -> String {
+    format!("{}?per_page=100", feed_path(repo))
+}
+
+/// The route of feed page `page` (query parameters are matched as a set).
+fn feed_page_path(repo: &str, page: i64) -> String {
+    format!("{}?per_page=100&page={page}", feed_path(repo))
+}
+
+fn actor_json(actor: (i64, &str)) -> Value {
+    json!({
+        "id": actor.0,
+        "login": actor.1,
+        "display_login": actor.1,
+        "gravatar_id": "",
+        "url": format!("https://api.github.com/users/{}", actor.1),
+        "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?", actor.0)
+    })
+}
+
+/// One events-feed element (the GH Archive event shape).
+fn feed_event(
+    id: i64,
+    e_type: &str,
+    repo: (i64, &str),
+    actor: (i64, &str),
+    created_at: &str,
+    payload: Value,
+) -> Value {
+    json!({
+        "id": id.to_string(),
+        "type": e_type,
+        "actor": actor_json(actor),
+        "repo": {
+            "id": repo.0,
+            "name": repo.1,
+            "url": format!("https://api.github.com/repos/{}", repo.1)
+        },
+        "payload": payload,
+        "public": true,
+        "created_at": created_at,
+        "org": {
+            "id": ORG_ID,
+            "login": "org",
+            "gravatar_id": "",
+            "url": "https://api.github.com/orgs/org",
+            "avatar_url": "https://avatars.githubusercontent.com/u/1?"
+        }
+    })
+}
+
+/// A full issue object of the feed (`IssuesEvent`/`IssueCommentEvent`).
+fn feed_issue(
+    number: i64,
+    id: i64,
+    user: (i64, &str),
+    title: &str,
+    body: &str,
+    created_at: &str,
+) -> Value {
+    json!({
+        "url": format!("https://api.github.com/repos/{REPO}/issues/{number}"),
+        "repository_url": format!("https://api.github.com/repos/{REPO}"),
+        "id": id,
+        "node_id": format!("I_{id}"),
+        "number": number,
+        "title": title,
+        "user": {"login": user.1, "id": user.0, "type": "User", "site_admin": false},
+        "labels": [{"id": 4001, "node_id": "L_4001", "name": "kind/bug", "color": "d73a4a", "default": true, "description": "Something isn't working"}],
+        "state": "open",
+        "locked": false,
+        "assignee": null,
+        "assignees": [],
+        "milestone": null,
+        "comments": 0,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "closed_at": null,
+        "author_association": "MEMBER",
+        "body": body
+    })
+}
+
+/// A repository object of the feed (`ForkEvent` forkee, PR base/head repo).
+fn feed_repo_object(id: i64, full_name: &str, owner: (i64, &str), created_at: &str) -> Value {
+    let name = full_name.split('/').nth(1).unwrap_or(full_name);
+    json!({
+        "id": id,
+        "node_id": format!("R_{id}"),
+        "name": name,
+        "full_name": full_name,
+        "private": false,
+        "owner": {"login": owner.1, "id": owner.0, "type": "User", "site_admin": false},
+        "html_url": format!("https://github.com/{full_name}"),
+        "description": "A fork",
+        "fork": true,
+        "url": format!("https://api.github.com/repos/{full_name}"),
+        "created_at": created_at,
+        "updated_at": created_at,
+        "pushed_at": created_at,
+        "homepage": null,
+        "size": 12,
+        "stargazers_count": 0,
+        "watchers_count": 0,
+        "language": "Go",
+        "has_issues": false,
+        "has_projects": true,
+        "has_downloads": true,
+        "has_wiki": true,
+        "has_pages": false,
+        "forks_count": 0,
+        "mirror_url": null,
+        "archived": false,
+        "disabled": false,
+        "open_issues_count": 0,
+        "license": null,
+        "forks": 0,
+        "open_issues": 0,
+        "watchers": 0,
+        "default_branch": "main",
+        "public": true
+    })
+}
+
+/// A PR branch object (`base`/`head`) of a feed PR stub.
+fn feed_pr_branch(
+    label: &str,
+    ref_: &str,
+    sha: &str,
+    user: (i64, &str),
+    repo: Option<Value>,
+) -> Value {
+    json!({
+        "label": label,
+        "ref": ref_,
+        "sha": sha,
+        "user": {"login": user.1, "id": user.0, "type": "User", "site_admin": false},
+        "repo": repo
+    })
+}
+
+/// The 5-field pull request stub the events feed carries since 2024.
+fn feed_pr_stub(id: i64, number: i64) -> Value {
+    json!({
+        "url": format!("https://api.github.com/repos/{REPO}/pulls/{number}"),
+        "id": id,
+        "number": number,
+        "head": feed_pr_branch("carol:fix", "fix", "1111111111111111111111111111111111111111", (13, "carol"),
+            Some(feed_repo_object(700, "carol/repo", (13, "carol"), "2020-04-01T00:00:00Z"))),
+        "base": feed_pr_branch("org:main", "main", "2222222222222222222222222222222222222222", (11, "alice"),
+            Some(feed_repo_object(REPO_ID, REPO, (ORG_ID, "org"), "2020-01-01T00:00:00Z")))
+    })
+}
+
+/// A mixed page of six feed events, newest first (the `IssuesEvent` opens
+/// issue 1, the comment is on it, PR 2 is a stub, the push has no commits).
+fn feed_mixed_page() -> Value {
+    let issue = feed_issue(
+        1,
+        8001,
+        (11, "alice"),
+        "Feed issue",
+        "Found in the feed",
+        "2020-05-03T09:00:00Z",
+    );
+    json!([
+        feed_event(
+            9000006,
+            "ForkEvent",
+            (REPO_ID, REPO),
+            (13, "carol"),
+            "2020-05-03T10:05:00Z",
+            json!({
+                "forkee": feed_repo_object(700, "carol/repo", (13, "carol"), "2020-05-03T10:05:00Z")
+            })
+        ),
+        feed_event(
+            9000005,
+            "PushEvent",
+            (REPO_ID, REPO),
+            (11, "alice"),
+            "2020-05-03T10:04:00Z",
+            json!({
+                "repository_id": REPO_ID,
+                "push_id": 20000000005i64,
+                "ref": "refs/heads/main",
+                "head": "3333333333333333333333333333333333333333",
+                "before": "2222222222222222222222222222222222222222"
+            })
+        ),
+        feed_event(
+            9000004,
+            "WatchEvent",
+            (REPO_ID, REPO),
+            (12, "bob"),
+            "2020-05-03T10:03:00Z",
+            json!({"action": "started"})
+        ),
+        feed_event(
+            9000003,
+            "PullRequestEvent",
+            (REPO_ID, REPO),
+            (13, "carol"),
+            "2020-05-03T10:02:00Z",
+            json!({
+                "action": "opened",
+                "number": 2,
+                "pull_request": feed_pr_stub(8102, 2)
+            })
+        ),
+        feed_event(
+            9000002,
+            "IssueCommentEvent",
+            (REPO_ID, REPO),
+            (12, "bob"),
+            "2020-05-03T10:01:00Z",
+            json!({
+                "action": "created",
+                "issue": issue,
+                "comment": {
+                    "url": format!("https://api.github.com/repos/{REPO}/issues/comments/90101"),
+                    "id": 90101,
+                    "node_id": "IC_90101",
+                    "user": {"login": "bob", "id": 12, "type": "User", "site_admin": false},
+                    "created_at": "2020-05-03T10:01:00Z",
+                    "updated_at": "2020-05-03T10:01:00Z",
+                    "author_association": "CONTRIBUTOR",
+                    "body": "Seen in the feed"
+                }
+            })
+        ),
+        feed_event(
+            9000001,
+            "IssuesEvent",
+            (REPO_ID, REPO),
+            (11, "alice"),
+            "2020-05-03T09:00:00Z",
+            json!({
+                "action": "opened",
+                "issue": issue
+            })
+        ),
+    ])
+}
+
+/// `n` `WatchEvent`s with consecutive ids from `first_id`, one minute apart
+/// going back from `newest` (`"YYYY-MM-DDTHH:MM:SSZ"`); the last one gets
+/// `oldest` when given.
+fn feed_watch_events(
+    repo: (i64, &str),
+    first_id: i64,
+    n: i64,
+    newest: &str,
+    oldest: Option<&str>,
+) -> Value {
+    let base = chrono::DateTime::parse_from_rfc3339(newest).unwrap();
+    let evs: Vec<Value> = (0..n)
+        .map(|i| {
+            let ts = match oldest {
+                Some(o) if i == n - 1 => o.to_string(),
+                _ => (base - chrono::Duration::minutes(i))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            };
+            feed_event(
+                first_id + i,
+                "WatchEvent",
+                repo,
+                (12, "bob"),
+                &ts,
+                json!({"action": "started"}),
+            )
+        })
+        .collect();
+    json!(evs)
+}
+
+const FEED_MIXED_SUMMARY: &str =
+    "ghapi2db repo events: processed 1 repos, 1 pages, checked 6, restored 6";
+const FEED_MIXED_TYPES: &str = "ghapi2db repo events: restored events by type: ForkEvent 1, IssueCommentEvent 1, IssuesEvent 1, PullRequestEvent 1, PushEvent 1, WatchEvent 1";
+
+#[test]
+fn repo_events_feed_is_written_with_native_ids() {
+    let sides = check(
+        Case::new("fe_basic", Pass::RepoEvents)
+            .env("GHA2DB_DEBUG", "1")
+            .setup(|gh| {
+                // no `Link: next` header: the single page is the whole feed
+                gh.get_ok(&feed_page_path(REPO, 1), &feed_mixed_page());
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processing 1 repos, recent date: <recent>",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: restored IssuesEvent 9000001 (2020-05-03 09:00:00 +0000 UTC)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: restored PushEvent 9000005 (2020-05-03 10:04:00 +0000 UTC)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: page 1: 6 events, oldest 2020-05-03 09:00:00 +0000 UTC, restored so far 6",
+        );
+        s.expect_line(0, FEED_MIXED_SUMMARY);
+        s.expect_line(0, FEED_MIXED_TYPES);
+        // native ids, actors, times: exactly what GH Archive would have stored
+        assert_eq!(
+            s.query("select id, type, actor_id, dup_actor_login, created_at::text from gha_events where id > 1000 order by id"),
+            vec![
+                vec!["9000001".to_string(), "IssuesEvent".to_string(), "11".to_string(), "alice".to_string(), "2020-05-03 09:00:00".to_string()],
+                vec!["9000002".to_string(), "IssueCommentEvent".to_string(), "12".to_string(), "bob".to_string(), "2020-05-03 10:01:00".to_string()],
+                vec!["9000003".to_string(), "PullRequestEvent".to_string(), "13".to_string(), "carol".to_string(), "2020-05-03 10:02:00".to_string()],
+                vec!["9000004".to_string(), "WatchEvent".to_string(), "12".to_string(), "bob".to_string(), "2020-05-03 10:03:00".to_string()],
+                vec!["9000005".to_string(), "PushEvent".to_string(), "11".to_string(), "alice".to_string(), "2020-05-03 10:04:00".to_string()],
+                vec!["9000006".to_string(), "ForkEvent".to_string(), "13".to_string(), "carol".to_string(), "2020-05-03 10:05:00".to_string()],
+            ]
+        );
+        // payload tables: the issue (twice: opened + commented), its label, the comment,
+        // the PR stub, the fork's forkee, the push without commits, the new actor
+        assert_eq!(
+            s.query("select event_id, number, title, state from gha_issues order by event_id"),
+            vec![
+                vec![
+                    "9000001".to_string(),
+                    "1".to_string(),
+                    "Feed issue".to_string(),
+                    "open".to_string()
+                ],
+                vec![
+                    "9000002".to_string(),
+                    "1".to_string(),
+                    "Feed issue".to_string(),
+                    "open".to_string()
+                ],
+            ]
+        );
+        assert_eq!(
+            s.column("select label_id::text from gha_issues_labels where event_id = 9000001"),
+            vec!["4001".to_string()]
+        );
+        assert_eq!(
+            s.query("select id, event_id, body, dup_type from gha_comments"),
+            vec![vec![
+                "90101".to_string(),
+                "9000002".to_string(),
+                "Seen in the feed".to_string(),
+                "IssueCommentEvent".to_string()
+            ]]
+        );
+        assert_eq!(
+            s.query("select id, event_id, number, base_sha, head_sha from gha_pull_requests"),
+            vec![vec![
+                "8102".to_string(),
+                "9000003".to_string(),
+                "2".to_string(),
+                "2222222222222222222222222222222222222222".to_string(),
+                "1111111111111111111111111111111111111111".to_string()
+            ]]
+        );
+        assert_eq!(
+            s.query("select id, event_id, full_name from gha_forkees order by event_id, id"),
+            vec![
+                vec![REPO_ID.to_string(), "9000003".to_string(), REPO.to_string()],
+                vec![
+                    "700".to_string(),
+                    "9000003".to_string(),
+                    "carol/repo".to_string()
+                ],
+                vec![
+                    "700".to_string(),
+                    "9000006".to_string(),
+                    "carol/repo".to_string()
+                ],
+            ]
+        );
+        assert_eq!(
+            s.query(
+                "select push_id, ref, head, size::text from gha_payloads where event_id = 9000005"
+            ),
+            vec![vec![
+                "20000000005".to_string(),
+                "refs/heads/main".to_string(),
+                "3333333333333333333333333333333333333333".to_string(),
+                "<nil>".to_string()
+            ]]
+        );
+        assert_eq!(s.count("select count(*) from gha_commits"), 0);
+        assert_eq!(
+            s.column("select login from gha_actors where id = 13"),
+            vec!["carol".to_string()]
+        );
+        // one page, no more requests than the feed itself
+        assert_eq!(
+            s.requests(),
+            vec![
+                format!("GET /rate_limit accept={V3_ACCEPT} auth=tok1"),
+                format!(
+                    "GET /repos/org/repo/events?page=1&per_page=100 accept={V3_ACCEPT} auth=tok1"
+                ),
+            ]
+        );
+    });
+}
+
+#[test]
+fn repo_events_existing_ids_are_skipped_and_collisions_logged() {
+    let sides = check(
+        Case::new("fe_twice", Pass::RepoEvents)
+            .runs(2)
+            // the base seed's event 1000 (IssuesEvent, 2020-02-01) shows up in the
+            // feed as something else: an id collision, the feed copy is skipped
+            .setup(|gh| {
+                let mut page = feed_mixed_page();
+                page.as_array_mut().unwrap().push(feed_event(
+                    1000,
+                    "WatchEvent",
+                    (REPO_ID, REPO),
+                    (12, "bob"),
+                    "2020-05-03T08:00:00Z",
+                    json!({"action": "started"}),
+                ));
+                gh.get_ok(&feed_page_path(REPO, 1), &page);
+            }),
+    );
+    both(&sides, |s| {
+        for i in 0..2 {
+            s.expect_line(
+                i,
+                "event id collision: id 1000 already exists as (IssuesEvent, org/repo, 2020-02-01 10:00:00 +0000 +0000), new event (WatchEvent, org/repo, 2020-05-03 08:00:00 +0000 UTC) skipped",
+            );
+        }
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 1 repos, 1 pages, checked 7, restored 6",
+        );
+        s.expect_line(0, FEED_MIXED_TYPES);
+        // the second run finds every feed event already stored
+        s.expect_line(
+            1,
+            "ghapi2db repo events: processed 1 repos, 1 pages, checked 7, restored 0",
+        );
+        s.expect_no_prefix(1, "ghapi2db repo events: restored events by type: ");
+        assert_eq!(s.count("select count(*) from gha_events"), 7);
+        assert_eq!(s.count("select count(*) from gha_comments"), 1);
+        assert_eq!(
+            s.query("select type, created_at::text from gha_events where id = 1000"),
+            vec![vec![
+                "IssuesEvent".to_string(),
+                "2020-02-01 10:00:00".to_string()
+            ]]
+        );
+    });
+}
+
+#[test]
+fn repo_events_paging_follows_the_link_header_and_caps_at_three_pages() {
+    let sides = check(
+        Case::new("fe_paging", Pass::RepoEvents)
+            .env("GHA2DB_DEBUG", "1")
+            // two repos in the legacy scope: Go walks a map (order-free output)
+            .unordered()
+            .loose("Unique repos: ")
+            .seed(&seed_repo(501, "org/busy", None))
+            .seed(&seed_event(
+                1001,
+                "IssuesEvent",
+                "org/busy",
+                501,
+                (11, "alice"),
+                "2020-02-01T10:00:00Z",
+            ))
+            .setup(|gh| {
+                // org/repo mirrors the live feed: GitHub filters events after paginating (the
+                // "full" pages hold 96/94/84 events) and orders by id, so an event from 2010
+                // sits in the middle of page 2 while page 3 is recent again — every page
+                // `Link: next` announces is fetched, nothing else stops the paging
+                gh.get(
+                    &feed_page_path(REPO, 1),
+                    vec![Scripted::ok(&feed_watch_events(
+                        (REPO_ID, REPO),
+                        9100001,
+                        96,
+                        "2020-05-03T10:00:00Z",
+                        None,
+                    ))
+                    .paged(&feed_base(REPO), 1, 3)],
+                );
+                gh.get(
+                    &feed_page_path(REPO, 2),
+                    vec![Scripted::ok(&feed_watch_events(
+                        (REPO_ID, REPO),
+                        9100101,
+                        94,
+                        "2020-05-02T10:00:00Z",
+                        Some(OLD),
+                    ))
+                    .paged(&feed_base(REPO), 2, 3)],
+                );
+                gh.get(
+                    &feed_page_path(REPO, 3),
+                    vec![Scripted::ok(&feed_watch_events(
+                        (REPO_ID, REPO),
+                        9100201,
+                        84,
+                        "2020-05-03T09:00:00Z",
+                        None,
+                    ))
+                    .paged(&feed_base(REPO), 3, 3)],
+                );
+                // org/busy: every page is full, GitHub announces 4 → stop after 3
+                for page in 1..=4 {
+                    gh.get(
+                        &feed_page_path("org/busy", page),
+                        vec![Scripted::ok(&feed_watch_events(
+                            (501, "org/busy"),
+                            9200001 + (page - 1) * 100,
+                            100,
+                            &format!("2020-05-0{}T10:00:00Z", 5 - page),
+                            None,
+                        ))
+                        .paged(&feed_base("org/busy"), page, 4)],
+                    );
+                }
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: page 1: 96 events, oldest 2020-05-03 08:25:00 +0000 UTC, restored so far 96",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: page 2: 94 events, oldest 2010-01-01 00:00:00 +0000 UTC, restored so far 190",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: page 3: 84 events, oldest 2020-05-03 07:37:00 +0000 UTC, restored so far 274",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/busy: page 3: 100 events, oldest 2020-05-02 08:21:00 +0000 UTC, restored so far 300",
+        );
+        // the old event (2010) is written too: everything the fetched pages hold is kept
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 2 repos, 6 pages, checked 574, restored 574",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: restored events by type: WatchEvent 574",
+        );
+        let reqs = s.requests();
+        for page in 1..=3 {
+            assert!(
+                reqs.iter().any(|r| {
+                    r.starts_with(&format!("GET /repos/org/repo/events?page={page}&"))
+                }),
+                "{reqs:?}"
+            );
+            assert!(
+                reqs.iter().any(|r| {
+                    r.starts_with(&format!("GET /repos/org/busy/events?page={page}&"))
+                }),
+                "{reqs:?}"
+            );
+        }
+        assert!(
+            !reqs
+                .iter()
+                .any(|r| r.starts_with("GET /repos/org/busy/events?page=4")),
+            "{reqs:?}"
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where id = 9100194"),
+            1
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where type = 'WatchEvent'"),
+            574
+        );
+    });
+}
+
+#[test]
+fn repo_events_untracked_feeds_and_missing_repos_are_skipped() {
+    let sides = check(
+        Case::new("fe_untracked", Pass::RepoEvents)
+            .seed(&seed_repo(501, "org/gone", None))
+            .seed(&seed_event(
+                1001,
+                "IssuesEvent",
+                "org/gone",
+                501,
+                (11, "alice"),
+                "2020-02-01T10:00:00Z",
+            ))
+            .setup(|gh| {
+                // `org/repo` now redirects to another repository: its feed carries id 999
+                gh.get_ok(
+                    &feed_page_path(REPO, 1),
+                    &json!([feed_event(
+                        9000011,
+                        "WatchEvent",
+                        (999, "other/repo"),
+                        (12, "bob"),
+                        "2020-05-03T10:00:00Z",
+                        json!({"action": "started"})
+                    )]),
+                );
+                gh.get(&feed_page_path("org/gone", 1), vec![Scripted::not_found()]);
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "WARNING: ghapi2db repo events: org/repo: the feed belongs to other/repo (id 999) which is not tracked, skipping",
+        );
+        // 404: silently skipped (no page counted)
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 2 repos, 1 pages, checked 0, restored 0",
+        );
+        assert_eq!(s.count("select count(*) from gha_events"), 2);
+        assert_eq!(s.count("select count(*) from gha_repos where id = 999"), 0);
+    });
+}
+
+#[test]
+fn repo_events_single_repo_mode_and_hidden_actors() {
+    let sides = check(
+        Case::new("fe_single", Pass::RepoEvents)
+            .env("REPO", REPO)
+            .hide(&format!("sha1\n{ALICE_SHA1}\n"))
+            .seed(&seed_repo(501, "org/other", None))
+            .seed(&seed_event(
+                1001,
+                "IssuesEvent",
+                "org/other",
+                501,
+                (11, "alice"),
+                "2020-02-01T10:00:00Z",
+            ))
+            .setup(|gh| {
+                gh.get_ok(&feed_page_path(REPO, 1), &feed_mixed_page());
+                gh.get_ok(&feed_page_path("org/other", 1), &feed_mixed_page());
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, FEED_MIXED_SUMMARY);
+        let reqs = s.requests();
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/other/")),
+            "{reqs:?}"
+        );
+        // GDPR: alice is anonymised in every written row, bob and carol are not
+        assert_eq!(
+            s.column(
+                "select distinct dup_actor_login from gha_events where id >= 9000000 order by 1"
+            ),
+            vec![
+                format!("anon-{ALICE_SHA1}"),
+                "bob".to_string(),
+                "carol".to_string()
+            ]
+        );
+        assert_eq!(
+            s.column("select dup_user_login from gha_issues where event_id = 9000001"),
+            vec![format!("anon-{ALICE_SHA1}")]
+        );
+        assert_eq!(
+            s.count(&format!(
+                "select count(*) from gha_actors where login = 'anon-{ALICE_SHA1}'"
+            )),
+            1
+        );
+    });
+}
+
+#[test]
+fn repo_events_honour_the_gha2db_actor_filters() {
+    let sides = check(
+        Case::new("fe_actors", Pass::RepoEvents)
+            .env("GHA2DB_ACTORS_FILTER", "1")
+            .env("GHA2DB_ACTORS_FORBID", "^bob$")
+            .setup(|gh| {
+                gh.get_ok(&feed_page_path(REPO, 1), &feed_mixed_page());
+            }),
+    );
+    both(&sides, |s| {
+        // bob's comment and star are checked (they count for the page's age) but not written
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 1 repos, 1 pages, checked 6, restored 4",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: restored events by type: ForkEvent 1, IssuesEvent 1, PullRequestEvent 1, PushEvent 1",
+        );
+        assert_eq!(
+            s.column("select id::text from gha_events where id >= 9000000 order by id"),
+            vec![
+                "9000001".to_string(),
+                "9000003".to_string(),
+                "9000005".to_string(),
+                "9000006".to_string()
+            ]
+        );
+        assert_eq!(s.count("select count(*) from gha_comments"), 0);
+        assert_eq!(
+            s.count("select count(*) from gha_actors where login = 'bob'"),
+            1
+        );
+    });
+}
+
+#[test]
+fn repo_events_heartbeat_gate_skips_quiet_repos() {
+    let sides = check(
+        Case::new("fe_hb", Pass::RepoEvents)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed_repo(501, "org/quiet", None))
+            .seed(&seed_repo(502, "org/starred", None))
+            .seed(&seed_repo(503, "org/gone", None))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[
+                        Err("NOT_FOUND"),
+                        Ok(HbNode::new(501, "org/quiet").pushed(OLD).issue(OLD)),
+                        Ok(HbNode::new(REPO_ID, REPO).issue(RECENT_TS)),
+                        // no activity dates at all, but a star count the snapshot does not know: active
+                        Ok(HbNode::new(502, "org/starred").stars(9)),
+                    ]))],
+                );
+                gh.get_ok(&feed_page_path(REPO, 1), &feed_mixed_page());
+                gh.get_ok(&feed_page_path("org/starred", 1), &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                4,
+                1,
+                "3 found, 1 not found, 0 moved, 0 unknown, 0 archived",
+                [0, 1, 0, 0, 0, 1],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/quiet: skipped by heartbeat (no activity since <recent>)",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processing 2 repos (heartbeat: 2 skipped), recent date: <recent>",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 2 repos, 2 pages, checked 6, restored 6",
+        );
+        s.expect_line(0, FEED_MIXED_TYPES);
+        let reqs = s.requests();
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/quiet/")),
+            "{reqs:?}"
+        );
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/gone/")),
+            "{reqs:?}"
+        );
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/org/starred/events?")),
+            "{reqs:?}"
+        );
+    });
+}
+
+#[test]
+fn repo_events_run_the_targeted_postprocess() {
+    let sides = check(
+        Case::new("fe_pp", Pass::RepoEvents)
+            .util_sql()
+            .seed("insert into gha_texts(event_id, body, created_at, repo_id, repo_name, actor_id, actor_login, type) values(1000, 'seed', '2020-02-01 10:00:00', 500, 'org/repo', 11, 'alice', 'IssuesEvent');")
+            .setup(|gh| {
+                gh.get_ok(&feed_page_path(REPO, 1), &feed_mixed_page());
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, FEED_MIXED_SUMMARY);
+        s.expect_line(
+            0,
+            "targeted postprocess executed for 6 restored event id(s)",
+        );
+        // texts: the issue title and body (opened + commented), the comment body
+        assert_eq!(
+            s.query("select event_id, body, type from gha_texts where event_id > 1000 order by event_id, body"),
+            vec![
+                vec!["9000001".to_string(), "Feed issue".to_string(), "IssuesEvent".to_string()],
+                vec!["9000001".to_string(), "Found in the feed".to_string(), "IssuesEvent".to_string()],
+                vec!["9000002".to_string(), "Feed issue".to_string(), "IssueCommentEvent".to_string()],
+                vec!["9000002".to_string(), "Found in the feed".to_string(), "IssueCommentEvent".to_string()],
+                vec!["9000002".to_string(), "Seen in the feed".to_string(), "IssueCommentEvent".to_string()],
+            ]
+        );
+        // the issue-PR link table: issue 1 has no PR, PR 2 has no issue counterpart
+        assert_eq!(s.count("select count(*) from gha_issues_pull_requests"), 0);
+        assert_eq!(
+            s.query(
+                "select label_id::text, dup_label_name from gha_issues_labels where event_id = 9000001"
+            ),
+            vec![vec!["4001".to_string(), "kind/bug".to_string()]]
+        );
     });
 }

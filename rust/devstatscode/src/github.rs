@@ -32,6 +32,11 @@ pub const MEDIA_TYPE_MULTI_LINE_COMMENTS_PREVIEW: &str =
     "application/vnd.github.comfort-fade-preview+json";
 /// go-github `mediaTypeTopicsPreview` (`Repositories.ListForks`).
 pub const MEDIA_TYPE_TOPICS_PREVIEW: &str = "application/vnd.github.mercy-preview+json";
+/// The `Accept` header of go-github v38 `Repositories.Get`: codes of conduct,
+/// topics, repository template and repository visibility previews.
+pub const MEDIA_TYPE_REPOSITORY_GET: &str = "application/vnd.github.scarlet-witch-preview+json, \
+application/vnd.github.mercy-preview+json, application/vnd.github.baptiste-preview+json, \
+application/vnd.github.nebula-preview+json";
 /// The `User-Agent` sent (go-github sends `go-github/38.1.0`).
 pub const USER_AGENT: &str = "devstatscode-rust";
 /// The default API endpoint.
@@ -1550,6 +1555,42 @@ impl Client {
             "GET",
             &format!("repos/{owner}/{repo}/languages"),
             &[],
+            None,
+            None,
+            false,
+        )
+    }
+
+    /// go-github `Repositories.Get` (sends the preview media types go-github
+    /// v38 still asks for).
+    pub fn repositories_get(&self, owner: &str, repo: &str) -> ApiResult<Repository> {
+        self.do_json_full(
+            "GET",
+            &format!("repos/{owner}/{repo}"),
+            &[],
+            Some(MEDIA_TYPE_REPOSITORY_GET),
+            None,
+            false,
+        )
+    }
+
+    /// `GET /repos/{owner}/{repo}/events?per_page=N&page=M` as raw JSON
+    /// objects - the same objects GH Archive stores, decoded later with the
+    /// GHA event types (Go: `NewRequest` + `Do` into `[]json.RawMessage`).
+    pub fn activity_list_repository_events_raw(
+        &self,
+        owner: &str,
+        repo: &str,
+        per_page: i64,
+        page: i64,
+    ) -> ApiResult<Vec<Box<serde_json::value::RawValue>>> {
+        self.do_json_full(
+            "GET",
+            &format!("repos/{owner}/{repo}/events"),
+            &[
+                ("per_page".to_string(), per_page.to_string()),
+                ("page".to_string(), page.to_string()),
+            ],
             None,
             None,
             false,

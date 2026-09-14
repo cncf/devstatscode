@@ -3,7 +3,7 @@
 //! classification, and the "artificial" API events (event id = 2^48 +
 //! `EventID`) written into `gha_*` tables.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::mpsc;
 use std::sync::Mutex;
@@ -743,6 +743,81 @@ pub fn get_recent_repos(
     fatal_on_err(rows.err());
     fatal_on_err(rows.close());
     (repos, rids)
+}
+
+/// Every repository of `gha_repos`, one current name per repository id.
+/// A repository id can be listed under several names (renames); the current
+/// name is the one with the newest native GH Archive event (`0 < id < 2^48`),
+/// the other names are historical. Ids without any native event keep their
+/// alphabetically first name.
+/// Returns the current names (sorted), their ids (a name can be tracked under
+/// several ids, ascending) and the sorted historical names (those that are
+/// current for no id).
+pub fn get_tracked_repos(
+    con: &PgConn,
+    ctx: &Ctx,
+) -> (Vec<String>, BTreeMap<String, Vec<i64>>, Vec<String>) {
+    struct Named {
+        name: String,
+        created_at: Option<DateTime<Utc>>,
+        event_id: i64,
+    }
+    let mut rows = query_sql_with_err(
+        con,
+        ctx,
+        "select r.id, r.name, n.created_at, n.id from gha_repos r left join lateral (\
+         select e.created_at, e.id from gha_events e where e.repo_id = r.id and e.dup_repo_name = r.name \
+         and e.id > 0 and e.id < 281474976710656 order by e.created_at desc, e.id desc limit 1) n on true",
+        &[],
+    );
+    let mut by_id: BTreeMap<i64, Vec<Named>> = BTreeMap::new();
+    while rows.next() {
+        let mut rid: i64 = 0;
+        let mut name = String::new();
+        let mut created_at: Option<DateTime<Utc>> = None;
+        let mut event_id: Option<i64> = None;
+        fatal_on_err(rows.scan(&mut [&mut rid, &mut name, &mut created_at, &mut event_id]));
+        by_id.entry(rid).or_default().push(Named {
+            name,
+            created_at,
+            event_id: event_id.unwrap_or(0),
+        });
+    }
+    fatal_on_err(rows.err());
+    fatal_on_err(rows.close());
+    let mut ids: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+    let mut old: BTreeSet<String> = BTreeSet::new();
+    for (rid, names) in &by_id {
+        let mut best = 0;
+        for i in 1..names.len() {
+            let (n, b) = (&names[i], &names[best]);
+            let better = match (n.created_at, b.created_at) {
+                (Some(_), None) => true,
+                (Some(nd), Some(bd)) => nd > bd || (nd == bd && n.event_id > b.event_id),
+                (None, None) => n.name < b.name,
+                (None, Some(_)) => false,
+            };
+            if better {
+                best = i;
+            }
+        }
+        for (i, n) in names.iter().enumerate() {
+            if i == best {
+                ids.entry(n.name.clone()).or_default().push(*rid);
+            } else {
+                old.insert(n.name.clone());
+            }
+        }
+    }
+    for rids in ids.values_mut() {
+        rids.sort_unstable();
+    }
+    let repos: Vec<String> = ids.keys().cloned().collect();
+    let historical: Vec<String> = old
+        .into_iter()
+        .filter(|name| !ids.contains_key(name))
+        .collect();
+    (repos, ids, historical)
 }
 
 // ---------------------------------------------------------------------------

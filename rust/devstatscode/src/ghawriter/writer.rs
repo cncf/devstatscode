@@ -1,20 +1,20 @@
 //! Whole-event writers — port of `ghaPullRequest`, `ghaTeam`,
 //! `writeToDBOldFmt` and `writeToDB` of `cmd/gha2db/gha2db.go`.
 
-use devstatscode::gha::{
+use crate::gha::{
     actor_id_or_nil, actor_login_or_nil, comment_id_or_nil, forkee_id_or_nil, issue_id_or_nil,
     milestone_id_or_nil, org_id_or_nil, org_login_or_nil, pull_request_id_or_nil,
     release_id_or_nil, Actor, Event, EventOld, Forkee, GhaTime, Org, PullRequest, Repo, Team,
 };
-use devstatscode::hash::hash_strings;
-use devstatscode::pg::api::{
+use crate::hash::hash_strings;
+use crate::pg::api::{
     bool_or_nil, clean_utf8, exec_sql_tx_with_err, exec_sql_with_err, first_int_or_nil,
     insert_ignore, int_or_nil, n_values, string_or_nil, trunc_string_or_nil, trunc_to_bytes,
 };
-use devstatscode::pg::{PgConn, PgTx, SqlArg};
-use devstatscode::{fatal_on_err, fatalf, Ctx};
+use crate::pg::{PgConn, PgTx, SqlArg};
+use crate::{fatal_on_err, fatalf, Ctx};
 
-use crate::db::{
+use super::db::{
     event_exists_collision, find_org_id_or_nil, find_repo_from_name_and_org, gha_actor, gha_branch,
     gha_comment, gha_commits_roles, gha_forkee, gha_forkee_old, gha_milestone, gha_org, gha_pages,
     gha_release, gha_repo, gha_review, lookup_actor, lookup_label, Db, MaybeHide,

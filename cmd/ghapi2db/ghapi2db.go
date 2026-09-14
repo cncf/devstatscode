@@ -32,13 +32,31 @@ func execAffsUpsert(tx *sql.Tx, ctx *lib.Ctx, query string, args ...interface{})
 }
 
 // getAPIParams connects to GitHub and Postgres
-// Returns list of recent repositories and recent date to fetch commits from
-func getAPIParams(ctx *lib.Ctx) (repos []string, isSingleRepo bool, singleRepo string, gctx context.Context, gcs []*github.Client, c *sql.DB, recentDt time.Time) {
+// Returns list of repositories to process by the pass, how many the heartbeat skipped (-1: not gated)
+// and the recent date to fetch data from
+// Default scope: every tracked repository (gha_repos, one current name per id) gated per pass by the
+// GraphQL heartbeat; GHA2DB_GHAPI_RECENT_REPOS_ONLY restores the legacy scope: repositories with
+// events in the recent repos range, no heartbeat
+func getAPIParams(ctx *lib.Ctx, pass apiPass) (repos []string, skipped int, isSingleRepo bool, singleRepo string, gctx context.Context, gcs []*github.Client, c *sql.DB, recentDt time.Time) {
 	// Connect to GitHub API
 	gctx, gcs = lib.GHClient(ctx)
 
 	// Connect to Postgres DB
 	c = lib.PgConn(ctx)
+
+	recentDt = lib.GetDateAgo(c, ctx, lib.HourStart(time.Now()), ctx.RecentRange)
+
+	// Single repo mode
+	singleRepo = os.Getenv("REPO")
+	if singleRepo != "" {
+		isSingleRepo = true
+	}
+
+	if ctx.GHAPIAllRepos {
+		repos, skipped = scopeRepos(gctx, ctx, c, pass, recentDt)
+		return
+	}
+	skipped = -1
 
 	// Get list of repositories to process
 	recentReposDt := lib.GetDateAgo(c, ctx, lib.HourStart(time.Now()), ctx.RecentReposRange)
@@ -65,13 +83,6 @@ func getAPIParams(ctx *lib.Ctx) (repos []string, isSingleRepo bool, singleRepo s
 	}
 	if ctx.Debug > 0 {
 		lib.Printf("Unique repos: %v\n", repos)
-	}
-	recentDt = lib.GetDateAgo(c, ctx, lib.HourStart(time.Now()), ctx.RecentRange)
-
-	// Single repo mode
-	singleRepo = os.Getenv("REPO")
-	if singleRepo != "" {
-		isSingleRepo = true
 	}
 
 	return
@@ -398,7 +409,7 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 // To use DTFROM make sure you set GHA2DB_RECENT_RANGE to cover that range too.
 func syncCommits(ctx *lib.Ctx) {
 	// Get common params
-	repos, isSingleRepo, singleRepo, gctx, gc, c, recentDt := getAPIParams(ctx)
+	repos, skipped, isSingleRepo, singleRepo, gctx, gc, c, recentDt := getAPIParams(ctx, passCommits)
 	defer func() { lib.FatalOnError(c.Close()) }()
 
 	// Date range mode
@@ -436,7 +447,7 @@ func syncCommits(ctx *lib.Ctx) {
 	lastTime := dtStart
 	checked := 0
 	nRepos := len(repos)
-	lib.Printf("ghapi2db.go: Processing %d repos - GHAPI commits part\n", nRepos)
+	lib.Printf("ghapi2db.go: Processing %d repos%s - GHAPI commits part\n", nRepos, scopeSuffix(skipped))
 
 	opt := &github.CommitsListOptions{
 		Since: recentDt,
@@ -636,7 +647,7 @@ func syncCommits(ctx *lib.Ctx) {
 // To use DTFROM and DTTO make sure you set GHA2DB_RECENT_RANGE to cover that range too.
 func syncEvents(ctx *lib.Ctx) {
 	// Get common params
-	repos, isSingleRepo, singleRepo, gctx, gc, c, recentDt := getAPIParams(ctx)
+	repos, skipped, isSingleRepo, singleRepo, gctx, gc, c, recentDt := getAPIParams(ctx, passEvents)
 	defer func() { lib.FatalOnError(c.Close()) }()
 
 	// Date range mode
@@ -767,7 +778,7 @@ func syncEvents(ctx *lib.Ctx) {
 	lastTime := dtStart
 	checked := 0
 	nRepos := len(repos)
-	lib.Printf("ghapi2db.go: Processing %d repos - GHAPI Events part\n", nRepos)
+	lib.Printf("ghapi2db.go: Processing %d repos%s - GHAPI Events part\n", nRepos, scopeSuffix(skipped))
 
 	issues := make(map[int64]lib.IssueConfigAry)
 	var issuesMutex = &sync.Mutex{}
@@ -1587,13 +1598,18 @@ func main() {
 		if !ctx.SkipAPILangs {
 			syncLangs(&ctx)
 		}
+		restored := restoreStats{}
+		// the events feed goes first: its native events are what the issue events, comments,
+		// reviews and forks passes below check for before synthesizing artificial ones
+		if !ctx.SkipAPIRepoEvents {
+			restored.merge(syncRepoEvents(&ctx))
+		}
 		if !ctx.SkipAPIEvents {
 			syncEvents(&ctx)
 		}
 		if !ctx.SkipAPICommits {
 			syncCommits(&ctx)
 		}
-		restored := restoreStats{}
 		if !ctx.SkipAPIComments {
 			restored.merge(syncComments(&ctx))
 		}
@@ -1608,6 +1624,9 @@ func main() {
 		}
 		if !ctx.SkipAPIStars {
 			restored.merge(syncStars(&ctx))
+		}
+		if !ctx.SkipAPIRepoStats {
+			syncRepoStats(&ctx)
 		}
 		if len(restored.eids) > 0 {
 			lib.RunEventIDsPostprocess(&ctx, restored.eids)

@@ -398,6 +398,12 @@ pub struct Ctx {
     pub skip_api_releases: bool,
     /// From GHA2DB_GHAPISKIPSTARS, ghapi2db tool, if set then tool is skipping GH API stars (WatchEvent) restore
     pub skip_api_stars: bool,
+    /// From GHA2DB_GHAPISKIPREPOSTATS, ghapi2db tool, if set then tool is skipping the repository counters snapshots (gha_forkees rows: stars, forks, open issues per tracked repository)
+    pub skip_api_repo_stats: bool,
+    /// From GHA2DB_GHAPISKIPREPOEVENTS, ghapi2db tool, if set then tool is skipping the repository events feed pass (GET /repos/{owner}/{repo}/events written with the gha2db writer: fills the events GH Archive missed)
+    pub skip_api_repo_events: bool,
+    /// From GHA2DB_GHAPI_RECENT_REPOS_ONLY, ghapi2db tool, when set the API passes only process repositories with gha_events rows in the recent repos range (legacy scope, no heartbeat), default: every gha_repos repository (one current name per id) gated per pass by a GraphQL heartbeat
+    pub ghapi_all_repos: bool,
     /// From GHA2DB_GETREPOSSKIP, get_repos tool, if set then tool does nothing
     pub skip_get_repos: bool,
     /// From GHA2DB_CSVOUT, runq tool, if set, saves result in this file
@@ -679,6 +685,9 @@ impl Ctx {
         self.skip_api_forks = env_set("GHA2DB_GHAPISKIPFORKS");
         self.skip_api_releases = env_set("GHA2DB_GHAPISKIPRELEASES");
         self.skip_api_stars = env_set("GHA2DB_GHAPISKIPSTARS");
+        self.skip_api_repo_stats = env_set("GHA2DB_GHAPISKIPREPOSTATS");
+        self.skip_api_repo_events = env_set("GHA2DB_GHAPISKIPREPOEVENTS");
+        self.ghapi_all_repos = !env_set("GHA2DB_GHAPI_RECENT_REPOS_ONLY");
         self.ghapi_error_is_fatal = env_set("GHA2DB_GHAPI_ERROR_FATAL");
         self.auto_fetch_commits = !env_set("GHA2DB_NO_AUTOFETCHCOMMITS");
 
@@ -1206,6 +1215,9 @@ impl Ctx {
             ("SkipAPIForks", self.skip_api_forks.to_string()),
             ("SkipAPIReleases", self.skip_api_releases.to_string()),
             ("SkipAPIStars", self.skip_api_stars.to_string()),
+            ("SkipAPIRepoStats", self.skip_api_repo_stats.to_string()),
+            ("SkipAPIRepoEvents", self.skip_api_repo_events.to_string()),
+            ("GHAPIAllRepos", self.ghapi_all_repos.to_string()),
             ("SkipGetRepos", self.skip_get_repos.to_string()),
             ("CSVFile", self.csv_file.clone()),
             ("ComputeAll", self.compute_all.to_string()),
@@ -1452,6 +1464,7 @@ mod tests {
             orphan_commits_range: "8 hours".to_string(),
             orphan_commits_all_branches: true,
             orphan_commits_group: true,
+            ghapi_all_repos: true,
             ..Ctx::default()
         }
     }
@@ -1747,7 +1760,7 @@ mod tests {
         },
         Case {
             name: "Setting skip GHAPI and GetRepos",
-            env: &[("GHA2DB_GETREPOSSKIP", "1"), ("GHA2DB_GHAPISKIP", "1"), ("GHA2DB_GHAPISKIPEVENTS", "1"), ("GHA2DB_GHAPISKIPISSUES", "1"), ("GHA2DB_GHAPISKIPPRS", "1"), ("GHA2DB_GHAPISKIPCOMMITS", "1"), ("GHA2DB_GHAPISKIPLICENSES", "1"), ("GHA2DB_GHAPIFORCELICENSES", "1"), ("GHA2DB_GHAPISKIPLANGS", "1"), ("GHA2DB_GHAPIFORCELANGS", "1"), ("GHA2DB_GHAPISKIPCOMMENTS", "1"), ("GHA2DB_GHAPISKIPREVIEWS", "1"), ("GHA2DB_GHAPISKIPFORKS", "1"), ("GHA2DB_GHAPISKIPRELEASES", "1"), ("GHA2DB_GHAPISKIPSTARS", "1"), ("GHA2DB_GHAPI_ERROR_FATAL", "1"), ("GHA2DB_NO_AUTOFETCHCOMMITS", "1")],
+            env: &[("GHA2DB_GETREPOSSKIP", "1"), ("GHA2DB_GHAPISKIP", "1"), ("GHA2DB_GHAPISKIPEVENTS", "1"), ("GHA2DB_GHAPISKIPISSUES", "1"), ("GHA2DB_GHAPISKIPPRS", "1"), ("GHA2DB_GHAPISKIPCOMMITS", "1"), ("GHA2DB_GHAPISKIPLICENSES", "1"), ("GHA2DB_GHAPIFORCELICENSES", "1"), ("GHA2DB_GHAPISKIPLANGS", "1"), ("GHA2DB_GHAPIFORCELANGS", "1"), ("GHA2DB_GHAPISKIPCOMMENTS", "1"), ("GHA2DB_GHAPISKIPREVIEWS", "1"), ("GHA2DB_GHAPISKIPFORKS", "1"), ("GHA2DB_GHAPISKIPRELEASES", "1"), ("GHA2DB_GHAPISKIPSTARS", "1"), ("GHA2DB_GHAPISKIPREPOSTATS", "1"), ("GHA2DB_GHAPISKIPREPOEVENTS", "1"), ("GHA2DB_GHAPI_ERROR_FATAL", "1"), ("GHA2DB_NO_AUTOFETCHCOMMITS", "1")],
             set: |c| {
                 c.skip_get_repos = true;
                 c.skip_ghapi = true;
@@ -1764,6 +1777,8 @@ mod tests {
                 c.skip_api_forks = true;
                 c.skip_api_releases = true;
                 c.skip_api_stars = true;
+                c.skip_api_repo_stats = true;
+                c.skip_api_repo_events = true;
                 c.ghapi_error_is_fatal = true;
                 c.auto_fetch_commits = false;
             },
@@ -2448,6 +2463,13 @@ mod tests {
             },
         },
         Case {
+            name: "Setting legacy ghapi2db recent repos scope",
+            env: &[("GHA2DB_GHAPI_RECENT_REPOS_ONLY", "1")],
+            set: |c| {
+                c.ghapi_all_repos = false;
+            },
+        },
+        Case {
             name: "Setting legacy orphan commits restore shape",
             env: &[
                 ("GHA2DB_ORPHAN_COMMITS_DEFAULT_BRANCH_ONLY", "1"),
@@ -2459,7 +2481,7 @@ mod tests {
             },
         },
         ];
-        assert_eq!(cases.len(), 126);
+        assert_eq!(cases.len(), 127);
         let default = default_context();
         for (index, case) in cases.iter().enumerate() {
             let mut expected = default.copy_context();
@@ -2550,7 +2572,20 @@ mod tests {
         assert!(s.contains(" MaxRunningFlagAge:9h0m0s "), "{}", s);
         assert!(s.contains(" ProjectScale:1 "), "{}", s);
         assert!(s.contains(" MaxRunDuration:map[] "), "{}", s);
-        assert!(s.ends_with(" OrphanCommitsRange:8 hours}"), "{}", s);
+        assert!(
+            s.contains(
+                " SkipAPIStars:false SkipAPIRepoStats:false SkipAPIRepoEvents:false GHAPIAllRepos:true SkipGetRepos:false "
+            ),
+            "{}",
+            s
+        );
+        assert!(
+            s.ends_with(
+                " OrphanCommitsRange:8 hours OrphanCommitsAllBranches:true OrphanCommitsGroup:true}"
+            ),
+            "{}",
+            s
+        );
         let mut ctx2 = ctx.clone();
         ctx2.compute_periods = Some(periods(&[("m", &[false, true]), ("q2", &[true])]));
         ctx2.max_run_duration = durs(&[("tags", [3600, 0]), ("calc_metric", [43200, 1])]);

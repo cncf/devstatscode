@@ -53,6 +53,7 @@ pub mod error;
 pub mod exec;
 pub mod gha;
 pub mod ghapi;
+pub mod ghawriter;
 pub mod github;
 pub mod gobase64;
 pub mod gocsv;

@@ -26,6 +26,7 @@ use devstatscode::time::progress_info;
 use devstatscode::{fatal_on_err, fatalf, printf, Ctx};
 use serde::Deserialize;
 
+use crate::heartbeat::{scope_suffix, ApiPass};
 use crate::{db_time, get_api_params, MaybeHide};
 
 const RESTORE_PAGE_CAP: i64 = 2000;
@@ -45,10 +46,26 @@ pub struct RestoreStats {
     /// sources); forks/releases/stars restores add no gha_texts/labels/issue-PR-link rows,
     /// so they are counted but never collected here (they must not trigger a postprocess)
     pub eids: Vec<i64>,
+    /// restored events per GHA event type - repo events feed only
+    pub types: BTreeMap<String, usize>,
 }
 
 impl RestoreStats {
-    fn mark(&mut self, dt: DateTime<Utc>) {
+    /// Count one restored event of the given type.
+    pub fn add_type(&mut self, e_type: &str) {
+        *self.types.entry(e_type.to_string()).or_insert(0) += 1;
+    }
+
+    /// `"TypeA N, TypeB M"` sorted by type name.
+    fn types_summary(&self) -> String {
+        self.types
+            .iter()
+            .map(|(name, n)| format!("{name} {n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    pub fn mark(&mut self, dt: DateTime<Utc>) {
         if self.min_dt.map(|m| dt < m).unwrap_or(true) {
             self.min_dt = Some(dt);
         }
@@ -69,24 +86,27 @@ impl RestoreStats {
             self.mark(m);
         }
         self.eids.extend(o.eids);
+        for (e_type, n) in o.types {
+            *self.types.entry(e_type).or_insert(0) += n;
+        }
     }
 }
 
 /// The per-repository arguments of a restore function (Go `restoreRepoFunc`).
-struct RepoJob<'a> {
-    gc: &'a Client,
-    c: &'a PgConn,
-    ctx: &'a Ctx,
-    org: &'a str,
-    repo: &'a str,
-    org_repo: &'a str,
-    repo_id: i64,
-    org_id: SqlArg,
-    recent_dt: DateTime<Utc>,
-    maybe_hide: MaybeHide<'a>,
+pub struct RepoJob<'a> {
+    pub gc: &'a Client,
+    pub c: &'a PgConn,
+    pub ctx: &'a Ctx,
+    pub org: &'a str,
+    pub repo: &'a str,
+    pub org_repo: &'a str,
+    pub repo_id: i64,
+    pub org_id: SqlArg,
+    pub recent_dt: DateTime<Utc>,
+    pub maybe_hide: MaybeHide<'a>,
 }
 
-type RestoreRepoFunc = fn(&RepoJob<'_>, &mut RestoreStats);
+pub type RestoreRepoFunc = fn(&RepoJob<'_>, &mut RestoreStats);
 
 /// Go `numberFromURL`: the trailing number of an API URL (0 when absent).
 fn number_from_url(url: Option<&str>) -> i64 {
@@ -162,33 +182,47 @@ fn star_present(c: &PgConn, ctx: &Ctx, actor_id: i64, org_repo: &str, starred_at
 }
 
 /// Go `repoIDs`: the repository id (0 when unknown) and organization id
-/// (NULL when none) seen in `gha_events`.
-fn repo_ids(c: &PgConn, ctx: &Ctx, org_repo: &str) -> (i64, SqlArg) {
-    let mut rows = query_sql_with_err(
-        c,
-        ctx,
-        &format!(
+/// (NULL when none) from the repository's events, else (no events yet - a
+/// GHA gap) from `gha_repos`.
+pub fn repo_ids(c: &PgConn, ctx: &Ctx, org_repo: &str) -> (i64, SqlArg) {
+    let queries = [
+        format!(
             "select coalesce(max(repo_id), 0), max(org_id) from gha_events where dup_repo_name = {}",
             n_value(1)
         ),
-        &[SqlArg::from(org_repo)],
-    );
+        format!(
+            "select coalesce(max(id), 0), max(org_id) from gha_repos where name = {}",
+            n_value(1)
+        ),
+    ];
     let mut repo_id: i64 = 0;
-    let mut oid: Option<i64> = None;
-    while rows.next() {
-        fatal_on_err(rows.scan(&mut [&mut repo_id, &mut oid]));
+    for (i, query) in queries.iter().enumerate() {
+        let mut rows = query_sql_with_err(c, ctx, query, &[SqlArg::from(org_repo)]);
+        let mut oid: Option<i64> = None;
+        while rows.next() {
+            fatal_on_err(rows.scan(&mut [&mut repo_id, &mut oid]));
+        }
+        fatal_on_err(rows.err());
+        fatal_on_err(rows.close());
+        if repo_id <= 0 {
+            continue;
+        }
+        if i > 0 && ctx.debug > 0 {
+            printf(&format!(
+                "{org_repo}: no events, using gha_repos id {repo_id}\n"
+            ));
+        }
+        let org_id = match oid {
+            None => SqlArg::Null,
+            Some(o) => SqlArg::Int(o),
+        };
+        return (repo_id, org_id);
     }
-    fatal_on_err(rows.err());
-    fatal_on_err(rows.close());
-    let org_id = match oid {
-        None => SqlArg::Null,
-        Some(o) => SqlArg::Int(o),
-    };
-    (repo_id, org_id)
+    (repo_id, SqlArg::Null)
 }
 
 /// The result of one API page call: Go's `(*github.Response, more, error)`.
-type PageResult = (Option<Response>, bool, Option<Error>);
+pub type PageResult = (Option<Response>, bool, Option<Error>);
 
 /// Go `time.Until(t)` as a Go duration.
 fn time_until(t: DateTime<Utc>) -> GoDuration {
@@ -197,7 +231,7 @@ fn time_until(t: DateTime<Utc>) -> GoDuration {
 
 /// Go `apiPage` - true: process next page, false: skip repo; retries 403
 /// abuse with backoff.
-fn api_page(ctx: &Ctx, info: &str, call: &mut dyn FnMut() -> PageResult) -> bool {
+pub fn api_page(ctx: &Ctx, info: &str, call: &mut dyn FnMut() -> PageResult) -> bool {
     for try_ in 1..=ctx.max_ghapi_retry {
         let (resp, more, err) = call();
         let status = resp.as_ref().map(|r| r.status).unwrap_or(0);
@@ -288,14 +322,16 @@ struct PassRate {
 
 /// Go `restorePass`: run `process` for every recent repository (the Go
 /// goroutine pool), summing the statistics.
-fn restore_pass(ctx: &mut Ctx, name: &str, process: RestoreRepoFunc) -> RestoreStats {
-    let params = get_api_params(ctx);
+pub fn restore_pass(ctx: &mut Ctx, pass: ApiPass, process: RestoreRepoFunc) -> RestoreStats {
+    let name = pass.label();
+    let params = get_api_params(ctx, pass);
     let maybe_hide = maybe_hide_func(get_hidden(ctx, HIDE_CFG_FILE));
     let n_repos = params.repos.len();
     printf!(
-        "{}: processing {} repos, recent date: {}\n",
+        "{}: processing {} repos{}, recent date: {}\n",
         name,
         n_repos,
+        scope_suffix(params.heartbeat_skipped),
         db_time(params.recent_dt)
     );
     let (hint, _, rem, _) = get_rate_limits(ctx, &params.gcs, true);
@@ -421,6 +457,13 @@ fn restore_pass(ctx: &mut Ctx, name: &str, process: RestoreRepoFunc) -> RestoreS
         total.checked,
         total.restored
     );
+    if !total.types.is_empty() {
+        printf!(
+            "{}: restored events by type: {}\n",
+            name,
+            total.types_summary()
+        );
+    }
     if total.unavailable > 0 {
         printf!(
             "{}: stargazer lists unavailable for {}/{} repos (GitHub restricted stargazer/watcher lists to repository admins on 2026-06-30), star events cannot be restored\n",
@@ -434,7 +477,7 @@ fn restore_pass(ctx: &mut Ctx, name: &str, process: RestoreRepoFunc) -> RestoreS
 }
 
 /// Go's `if err != nil || resp == nil || resp.StatusCode >= 400 { return resp, false, err }`.
-fn page_failed<T>(r: &github::ApiResult<T>) -> bool {
+pub fn page_failed<T>(r: &github::ApiResult<T>) -> bool {
     r.error.is_some() || r.response.is_none() || r.status() >= 400
 }
 
@@ -617,7 +660,7 @@ fn restore_comments_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
 
 /// Go `ghTokens`: the OAuth tokens of `GHA2DB_GITHUB_OAUTH` (a file path
 /// when it contains `/`), separated by commas/whitespace; `-` means none.
-fn gh_tokens(ctx: &Ctx) -> Vec<String> {
+pub(crate) fn gh_tokens(ctx: &Ctx) -> Vec<String> {
     let mut oauth = ctx.github_oauth.trim().to_string();
     if oauth.contains('/') {
         let bytes = fatal_on_err(read_file(ctx, &oauth));
@@ -727,6 +770,120 @@ struct GqlStargazersPage {
     star_count: i64,
 }
 
+/// Prefix of the errors a `gh_graphql_post` handler returns when trying
+/// another token cannot help (Go `errGraphQLNoRetry`: the query itself is
+/// rejected).
+pub(crate) const GRAPHQL_NO_RETRY: &str = "graphql query rejected";
+
+/// `gh_graphql_post` body handler: decodes a 200 response body knowing which
+/// token (index) produced it.
+pub(crate) type GraphQLHandler<'a> = &'a (dyn Fn(&[u8], usize) -> Result<(), String> + Sync);
+
+/// Go `ghGraphQLPost`: POST a GraphQL payload trying the tokens round-robin
+/// from `start`; `handle` decodes a 200 body (its error means: try the next
+/// token, unless it starts with `GRAPHQL_NO_RETRY`). 403/429 wait for the
+/// rate limit (Retry-After / X-RateLimit-Reset) up to `MaxGHAPIWaitSeconds`,
+/// other statuses, transport and decode errors move on to the next token.
+/// Returns the last error when no token succeeded.
+pub(crate) fn gh_graphql_post(
+    ctx: &Ctx,
+    tokens: &[String],
+    start: usize,
+    what: &str,
+    payload: &[u8],
+    handle: GraphQLHandler<'_>,
+) -> Result<(), String> {
+    let graphql_url = if ctx.github_api_url.is_empty() {
+        "https://api.github.com/graphql".to_string()
+    } else {
+        format!("{}graphql", ctx.github_api_url)
+    };
+    let mut err: Option<String> = None;
+    let n_tokens = tokens.len();
+    for k in 0..n_tokens {
+        let i = (start + k) % n_tokens;
+        let token = &tokens[i];
+        for try_ in 1..=ctx.max_ghapi_retry {
+            let auth = format!("bearer {token}");
+            let resp = match github::raw_post(
+                &graphql_url,
+                &[
+                    ("Authorization", auth.as_str()),
+                    ("Content-Type", "application/json"),
+                ],
+                payload,
+                Duration::from_secs(60),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    err = Some(e);
+                    break;
+                }
+            };
+            let snippet_len = resp.body.len().min(200);
+            let snippet = String::from_utf8_lossy(&resp.body[..snippet_len]).to_string();
+            if resp.status == 403 || resp.status == 429 {
+                let mut wait = GoDuration::from_secs(10 * try_);
+                if let Some(ra) = resp.header("Retry-After") {
+                    if let Some(secs) = go_atoi(ra) {
+                        wait = GoDuration::from_secs(secs);
+                    }
+                } else if let Some(xr) = resp.header("X-RateLimit-Reset") {
+                    if let Some(epoch) = go_atoi(xr) {
+                        let reset = DateTime::<Utc>::from_timestamp(epoch, 0).unwrap_or_default();
+                        wait = time_until(reset);
+                    }
+                }
+                if wait.0 > 0 && wait.seconds() <= ctx.max_ghapi_wait_seconds as f64 {
+                    wait.sleep();
+                    continue;
+                }
+                if ctx.ghapi_error_is_fatal {
+                    fatalf!(
+                        "{}: graphql rate limited, don't want to wait {}: {}",
+                        what,
+                        wait,
+                        snippet
+                    );
+                }
+                err = Some(format!(
+                    "graphql rate limited (token {}/{}), reset in {}: {}",
+                    i + 1,
+                    n_tokens,
+                    wait,
+                    snippet
+                ));
+                break;
+            }
+            if resp.status != 200 {
+                err = Some(format!(
+                    "graphql status {} (token {}/{}): {}",
+                    resp.status,
+                    i + 1,
+                    n_tokens,
+                    snippet
+                ));
+                break;
+            }
+            match handle(&resp.body, i) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let no_retry = e.starts_with(GRAPHQL_NO_RETRY);
+                    err = Some(e);
+                    if no_retry {
+                        return Err(err.unwrap_or_default());
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    match err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
 /// Go `ghGraphQLStargazers` - stars restore uses GraphQL: the REST
 /// stargazers path returns 404 / no usable starred_at data on prod as of
 /// 2026-07; GraphQL exposes starredAt directly, ordered by STARRED_AT.
@@ -758,92 +915,23 @@ fn gh_graphql_stargazers(
         serde_json::to_value(&vars).map_err(|e| e.to_string())?,
     );
     let payload = serde_json::to_vec(&payload_map).map_err(|e| e.to_string())?;
-    let graphql_url = if ctx.github_api_url.is_empty() {
-        "https://api.github.com/graphql".to_string()
-    } else {
-        format!("{}graphql", ctx.github_api_url)
-    };
-    let mut err: Option<String> = None;
     let n_tokens = tokens.len();
-    for (i, token) in tokens.iter().enumerate() {
-        for try_ in 1..=ctx.max_ghapi_retry {
-            let auth = format!("bearer {token}");
-            let resp = match github::raw_post(
-                &graphql_url,
-                &[
-                    ("Authorization", auth.as_str()),
-                    ("Content-Type", "application/json"),
-                ],
-                &payload,
-                Duration::from_secs(60),
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    err = Some(e);
-                    break;
-                }
-            };
-            let snippet_len = resp.body.len().min(200);
-            let snippet = String::from_utf8_lossy(&resp.body[..snippet_len]).to_string();
-            if resp.status == 403 || resp.status == 429 {
-                let mut wait = GoDuration::from_secs(10 * try_);
-                if let Some(ra) = resp.header("Retry-After") {
-                    if let Some(secs) = go_atoi(ra) {
-                        wait = GoDuration::from_secs(secs);
-                    }
-                } else if let Some(xr) = resp.header("X-RateLimit-Reset") {
-                    if let Some(epoch) = go_atoi(xr) {
-                        let reset = DateTime::<Utc>::from_timestamp(epoch, 0).unwrap_or_default();
-                        wait = time_until(reset);
-                    }
-                }
-                if wait.0 > 0 && wait.seconds() <= ctx.max_ghapi_wait_seconds as f64 {
-                    wait.sleep();
-                    continue;
-                }
-                if ctx.ghapi_error_is_fatal {
-                    fatalf!(
-                        "{}/{}: graphql rate limited, don't want to wait {}: {}",
-                        org,
-                        repo,
-                        wait,
-                        snippet
-                    );
-                }
-                err = Some(format!(
-                    "graphql rate limited (token {}/{}), reset in {}: {}",
-                    i + 1,
-                    n_tokens,
-                    wait,
-                    snippet
-                ));
-                break;
-            }
-            if resp.status != 200 {
-                err = Some(format!(
-                    "graphql status {} (token {}/{}): {}",
-                    resp.status,
-                    i + 1,
-                    n_tokens,
-                    snippet
-                ));
-                break;
-            }
-            let out: GqlOut = match serde_json::from_slice(&resp.body) {
-                Ok(o) => o,
-                Err(e) => {
-                    err = Some(go_json_error(&e));
-                    break;
-                }
-            };
+    let page: Mutex<Option<GqlStargazersPage>> = Mutex::new(None);
+    gh_graphql_post(
+        ctx,
+        tokens,
+        0,
+        &format!("{org}/{repo}"),
+        &payload,
+        &|body, token_idx| {
+            let out: GqlOut = serde_json::from_slice(body).map_err(|e| go_json_error(&e))?;
             if let Some(first) = out.errors.first() {
-                err = Some(format!(
+                return Err(format!(
                     "graphql (token {}/{}): {}",
-                    i + 1,
+                    token_idx + 1,
                     n_tokens,
                     first.message
                 ));
-                break;
             }
             let star_count = out.data.repository.stargazer_count;
             let sg = out.data.repository.stargazers;
@@ -863,29 +951,30 @@ fn gh_graphql_stargazers(
                     id: edge.node.database_id,
                 });
             }
-            return Ok(GqlStargazersPage {
+            *page.lock().unwrap_or_else(|p| p.into_inner()) = Some(GqlStargazersPage {
                 gazers,
                 prev_cursor: sg.page_info.start_cursor,
                 has_prev: sg.page_info.has_previous_page,
                 n_edges,
                 star_count,
             });
-        }
-    }
-    match err {
-        Some(e) => Err(e),
-        None => Ok(GqlStargazersPage {
+            Ok(())
+        },
+    )?;
+    Ok(page
+        .into_inner()
+        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or(GqlStargazersPage {
             gazers: Vec::new(),
             prev_cursor: String::new(),
             has_prev: false,
             n_edges: 0,
             star_count: 0,
-        }),
-    }
+        }))
 }
 
 /// Go `encoding/json` unmarshal error text for a serde error.
-fn go_json_error(e: &serde_json::Error) -> String {
+pub(crate) fn go_json_error(e: &serde_json::Error) -> String {
     if e.is_eof() {
         "unexpected end of JSON input".to_string()
     } else {
@@ -1177,21 +1266,21 @@ fn restore_releases_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
 }
 
 pub fn sync_comments(ctx: &mut Ctx) -> RestoreStats {
-    restore_pass(ctx, "ghapi2db comments restore", restore_comments_repo)
+    restore_pass(ctx, ApiPass::Comments, restore_comments_repo)
 }
 
 pub fn sync_reviews(ctx: &mut Ctx) -> RestoreStats {
-    restore_pass(ctx, "ghapi2db reviews restore", restore_reviews_repo)
+    restore_pass(ctx, ApiPass::Reviews, restore_reviews_repo)
 }
 
 pub fn sync_forks(ctx: &mut Ctx) -> RestoreStats {
-    restore_pass(ctx, "ghapi2db forks restore", restore_forks_repo)
+    restore_pass(ctx, ApiPass::Forks, restore_forks_repo)
 }
 
 pub fn sync_stars(ctx: &mut Ctx) -> RestoreStats {
-    restore_pass(ctx, "ghapi2db stars restore", restore_stars_repo)
+    restore_pass(ctx, ApiPass::Stars, restore_stars_repo)
 }
 
 pub fn sync_releases(ctx: &mut Ctx) -> RestoreStats {
-    restore_pass(ctx, "ghapi2db releases restore", restore_releases_repo)
+    restore_pass(ctx, ApiPass::Releases, restore_releases_repo)
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,30 @@ type restoreStats struct {
 	// sources); forks/releases/stars restores add no gha_texts/labels/issue-PR-link rows,
 	// so they are counted but never collected here (they must not trigger a postprocess)
 	eids []int64
+	// restored events per GHA event type - repo events feed only
+	types map[string]int
+}
+
+// addType - count one restored event of the given type
+func (st *restoreStats) addType(eType string) {
+	if st.types == nil {
+		st.types = make(map[string]int)
+	}
+	st.types[eType]++
+}
+
+// typesSummary - "TypeA N, TypeB M" sorted by type name
+func (st *restoreStats) typesSummary() string {
+	names := make([]string, 0, len(st.types))
+	for name := range st.types {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s %d", name, st.types[name]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (st *restoreStats) mark(dt time.Time) {
@@ -56,6 +81,12 @@ func (st *restoreStats) merge(o restoreStats) {
 		st.mark(o.maxDt)
 	}
 	st.eids = append(st.eids, o.eids...)
+	for eType, n := range o.types {
+		if st.types == nil {
+			st.types = make(map[string]int)
+		}
+		st.types[eType] += n
+	}
 }
 
 type restoreRepoFunc func(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats)
@@ -105,16 +136,31 @@ func starPresent(c *sql.DB, ctx *lib.Ctx, actorID int64, orgRepo string, starred
 	return present
 }
 
+// repoIDs - repository id (0 when unknown) and organization id (nil when none):
+// from the repository's events, else (no events yet - a GHA gap) from gha_repos
 func repoIDs(c *sql.DB, ctx *lib.Ctx, orgRepo string) (repoID int64, orgID interface{}) {
-	rows := lib.QuerySQLWithErr(c, ctx, "select coalesce(max(repo_id), 0), max(org_id) from gha_events where dup_repo_name = "+lib.NValue(1), orgRepo)
-	defer func() { lib.FatalOnError(rows.Close()) }()
-	var oid *int64
-	for rows.Next() {
-		lib.FatalOnError(rows.Scan(&repoID, &oid))
+	queries := []string{
+		"select coalesce(max(repo_id), 0), max(org_id) from gha_events where dup_repo_name = " + lib.NValue(1),
+		"select coalesce(max(id), 0), max(org_id) from gha_repos where name = " + lib.NValue(1),
 	}
-	lib.FatalOnError(rows.Err())
-	if oid != nil {
-		orgID = *oid
+	for i, query := range queries {
+		rows := lib.QuerySQLWithErr(c, ctx, query, orgRepo)
+		var oid *int64
+		for rows.Next() {
+			lib.FatalOnError(rows.Scan(&repoID, &oid))
+		}
+		lib.FatalOnError(rows.Err())
+		lib.FatalOnError(rows.Close())
+		if repoID <= 0 {
+			continue
+		}
+		if oid != nil {
+			orgID = *oid
+		}
+		if i > 0 && ctx.Debug > 0 {
+			lib.Printf("%s: no events, using gha_repos id %d\n", orgRepo, repoID)
+		}
+		return
 	}
 	return
 }
@@ -182,12 +228,13 @@ func apiPage(ctx *lib.Ctx, info string, call func() (*github.Response, bool, err
 	return false
 }
 
-func restorePass(ctx *lib.Ctx, name string, process restoreRepoFunc) restoreStats {
-	repos, isSingleRepo, singleRepo, gctx, gcs, c, recentDt := getAPIParams(ctx)
+func restorePass(ctx *lib.Ctx, pass apiPass, process restoreRepoFunc) restoreStats {
+	name := pass.label()
+	repos, skipped, isSingleRepo, singleRepo, gctx, gcs, c, recentDt := getAPIParams(ctx, pass)
 	defer func() { lib.FatalOnError(c.Close()) }()
 	maybeHide := lib.MaybeHideFuncTS(lib.GetHidden(ctx, lib.HideCfgFile))
 	nRepos := len(repos)
-	lib.Printf("%s: processing %d repos, recent date: %v\n", name, nRepos, recentDt)
+	lib.Printf("%s: processing %d repos%s, recent date: %v\n", name, nRepos, scopeSuffix(skipped), recentDt)
 	hint, _, rem, _ := lib.GetRateLimits(gctx, ctx, gcs, true)
 	thrN := lib.GetThreadsNum(ctx)
 	mtx := &sync.Mutex{}
@@ -275,6 +322,9 @@ func restorePass(ctx *lib.Ctx, name string, process restoreRepoFunc) restoreStat
 		}
 	}
 	lib.Printf("%s: processed %d repos, %d pages, checked %d, restored %d\n", name, processed, total.pages, total.checked, total.restored)
+	if len(total.types) > 0 {
+		lib.Printf("%s: restored events by type: %s\n", name, total.typesSummary())
+	}
 	if total.unavailable > 0 {
 		lib.Printf("%s: stargazer lists unavailable for %d/%d repos (GitHub restricted stargazer/watcher lists to repository admins on 2026-06-30), star events cannot be restored\n", name, total.unavailable, processed)
 	}
@@ -417,29 +467,20 @@ type gqlStargazer struct {
 	id        int64
 }
 
-// ghGraphQLStargazers - stars restore uses GraphQL: the REST stargazers path returns 404 / no usable
-// starred_at data on prod as of 2026-07; GraphQL exposes starredAt directly, ordered by STARRED_AT.
-// Also returns the number of raw edges on the page and the repository's stargazerCount: since
-// 2026-06-30 GitHub returns an empty stargazers connection for non-admins while the count still works,
-// which is how an unavailable list is told apart from a repository nobody starred.
-func ghGraphQLStargazers(gctx context.Context, ctx *lib.Ctx, tokens []string, org, repo, before string) (gazers []gqlStargazer, prevCursor string, hasPrev bool, nEdges int, starCount int64, err error) {
-	vars := map[string]interface{}{"o": org, "r": repo}
-	if before != "" {
-		vars["b"] = before
-	}
-	payload, err := json.Marshal(map[string]interface{}{
-		"query":     "query($o: String!, $r: String!, $b: String) { repository(owner: $o, name: $r) { stargazerCount stargazers(last: 100, before: $b, orderBy: {field: STARRED_AT, direction: ASC}) { pageInfo { hasPreviousPage startCursor } edges { starredAt node { login databaseId } } } } }",
-		"variables": vars,
-	})
-	if err != nil {
-		return
-	}
+// ghGraphQLPost - POST a GraphQL payload trying the tokens round-robin from start; handle decodes a 200
+// body (its error means: try the next token, unless it wraps errGraphQLNoRetry). 403/429 wait for the
+// rate limit (Retry-After / X-RateLimit-Reset) up to MaxGHAPIWaitSeconds, other statuses, transport and
+// decode errors move on to the next token. Returns the last error when no token succeeded.
+func ghGraphQLPost(gctx context.Context, ctx *lib.Ctx, tokens []string, start int, what string, payload []byte, handle func(body []byte, tokenIdx int) error) (err error) {
 	cl := &http.Client{Timeout: time.Duration(60) * time.Second}
 	graphQLURL := "https://api.github.com/graphql"
 	if ctx.GitHubAPIURL != "" {
 		graphQLURL = ctx.GitHubAPIURL + "graphql"
 	}
-	for i, token := range tokens {
+	n := len(tokens)
+	for k := 0; k < n; k++ {
+		i := (start + k) % n
+		token := tokens[i]
 		for try := 1; try <= ctx.MaxGHAPIRetry; try++ {
 			var req *http.Request
 			req, err = http.NewRequestWithContext(gctx, "POST", graphQLURL, bytes.NewReader(payload))
@@ -476,55 +517,86 @@ func ghGraphQLStargazers(gctx context.Context, ctx *lib.Ctx, tokens []string, or
 					continue
 				}
 				if ctx.GHAPIErrorIsFatal {
-					lib.Fatalf("%s/%s: graphql rate limited, don't want to wait %v: %s", org, repo, wait, snippet)
+					lib.Fatalf("%s: graphql rate limited, don't want to wait %v: %s", what, wait, snippet)
 				}
-				err = fmt.Errorf("graphql rate limited (token %d/%d), reset in %v: %s", i+1, len(tokens), wait, snippet)
+				err = fmt.Errorf("graphql rate limited (token %d/%d), reset in %v: %s", i+1, n, wait, snippet)
 				break
 			}
 			if resp.StatusCode != 200 {
-				err = fmt.Errorf("graphql status %d (token %d/%d): %s", resp.StatusCode, i+1, len(tokens), snippet)
+				err = fmt.Errorf("graphql status %d (token %d/%d): %s", resp.StatusCode, i+1, n, snippet)
 				break
 			}
-			var out struct {
-				Data struct {
-					Repository struct {
-						StargazerCount int64 `json:"stargazerCount"`
-						Stargazers     struct {
-							PageInfo struct {
-								HasPreviousPage bool   `json:"hasPreviousPage"`
-								StartCursor     string `json:"startCursor"`
-							} `json:"pageInfo"`
-							Edges []struct {
-								StarredAt time.Time `json:"starredAt"`
-								Node      struct {
-									Login      string `json:"login"`
-									DatabaseID int64  `json:"databaseId"`
-								} `json:"node"`
-							} `json:"edges"`
-						} `json:"stargazers"`
-					} `json:"repository"`
-				} `json:"data"`
-				Errors []struct {
-					Message string `json:"message"`
-				} `json:"errors"`
+			err = handle(body, i)
+			if err == nil {
+				return nil
 			}
-			if err = json.Unmarshal(body, &out); err != nil {
-				break
+			if errors.Is(err, errGraphQLNoRetry) {
+				return
 			}
-			if len(out.Errors) > 0 {
-				err = fmt.Errorf("graphql (token %d/%d): %s", i+1, len(tokens), out.Errors[0].Message)
-				break
-			}
-			sg := out.Data.Repository.Stargazers
-			for _, edge := range sg.Edges {
-				if edge.Node.DatabaseID <= 0 || edge.Node.Login == "" || edge.StarredAt.IsZero() {
-					continue
-				}
-				gazers = append(gazers, gqlStargazer{starredAt: edge.StarredAt, login: edge.Node.Login, id: edge.Node.DatabaseID})
-			}
-			return gazers, sg.PageInfo.StartCursor, sg.PageInfo.HasPreviousPage, len(sg.Edges), out.Data.Repository.StargazerCount, nil
+			break
 		}
 	}
+	return
+}
+
+// ghGraphQLStargazers - stars restore uses GraphQL: the REST stargazers path returns 404 / no usable
+// starred_at data on prod as of 2026-07; GraphQL exposes starredAt directly, ordered by STARRED_AT.
+// Also returns the number of raw edges on the page and the repository's stargazerCount: since
+// 2026-06-30 GitHub returns an empty stargazers connection for non-admins while the count still works,
+// which is how an unavailable list is told apart from a repository nobody starred.
+func ghGraphQLStargazers(gctx context.Context, ctx *lib.Ctx, tokens []string, org, repo, before string) (gazers []gqlStargazer, prevCursor string, hasPrev bool, nEdges int, starCount int64, err error) {
+	vars := map[string]interface{}{"o": org, "r": repo}
+	if before != "" {
+		vars["b"] = before
+	}
+	payload, err := json.Marshal(map[string]interface{}{
+		"query":     "query($o: String!, $r: String!, $b: String) { repository(owner: $o, name: $r) { stargazerCount stargazers(last: 100, before: $b, orderBy: {field: STARRED_AT, direction: ASC}) { pageInfo { hasPreviousPage startCursor } edges { starredAt node { login databaseId } } } } }",
+		"variables": vars,
+	})
+	if err != nil {
+		return
+	}
+	err = ghGraphQLPost(gctx, ctx, tokens, 0, org+"/"+repo, payload, func(body []byte, tokenIdx int) error {
+		var out struct {
+			Data struct {
+				Repository struct {
+					StargazerCount int64 `json:"stargazerCount"`
+					Stargazers     struct {
+						PageInfo struct {
+							HasPreviousPage bool   `json:"hasPreviousPage"`
+							StartCursor     string `json:"startCursor"`
+						} `json:"pageInfo"`
+						Edges []struct {
+							StarredAt time.Time `json:"starredAt"`
+							Node      struct {
+								Login      string `json:"login"`
+								DatabaseID int64  `json:"databaseId"`
+							} `json:"node"`
+						} `json:"edges"`
+					} `json:"stargazers"`
+				} `json:"repository"`
+			} `json:"data"`
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+		if derr := json.Unmarshal(body, &out); derr != nil {
+			return derr
+		}
+		if len(out.Errors) > 0 {
+			return fmt.Errorf("graphql (token %d/%d): %s", tokenIdx+1, len(tokens), out.Errors[0].Message)
+		}
+		sg := out.Data.Repository.Stargazers
+		gazers = nil
+		for _, edge := range sg.Edges {
+			if edge.Node.DatabaseID <= 0 || edge.Node.Login == "" || edge.StarredAt.IsZero() {
+				continue
+			}
+			gazers = append(gazers, gqlStargazer{starredAt: edge.StarredAt, login: edge.Node.Login, id: edge.Node.DatabaseID})
+		}
+		prevCursor, hasPrev, nEdges, starCount = sg.PageInfo.StartCursor, sg.PageInfo.HasPreviousPage, len(sg.Edges), out.Data.Repository.StargazerCount
+		return nil
+	})
 	return
 }
 
@@ -716,21 +788,21 @@ func restoreReleasesRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 }
 
 func syncComments(ctx *lib.Ctx) restoreStats {
-	return restorePass(ctx, "ghapi2db comments restore", restoreCommentsRepo)
+	return restorePass(ctx, passComments, restoreCommentsRepo)
 }
 
 func syncReviews(ctx *lib.Ctx) restoreStats {
-	return restorePass(ctx, "ghapi2db reviews restore", restoreReviewsRepo)
+	return restorePass(ctx, passReviews, restoreReviewsRepo)
 }
 
 func syncForks(ctx *lib.Ctx) restoreStats {
-	return restorePass(ctx, "ghapi2db forks restore", restoreForksRepo)
+	return restorePass(ctx, passForks, restoreForksRepo)
 }
 
 func syncStars(ctx *lib.Ctx) restoreStats {
-	return restorePass(ctx, "ghapi2db stars restore", restoreStarsRepo)
+	return restorePass(ctx, passStars, restoreStarsRepo)
 }
 
 func syncReleases(ctx *lib.Ctx) restoreStats {
-	return restorePass(ctx, "ghapi2db releases restore", restoreReleasesRepo)
+	return restorePass(ctx, passReleases, restoreReleasesRepo)
 }

@@ -4,20 +4,20 @@
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
-use devstatscode::gha::{
+use crate::gha::{
     actor_id_or_nil, actor_login_or_nil, forkee_id_or_nil, Actor, Branch, Comment, Event, EventOld,
     Forkee, ForkeeOld, GhaTime, Milestone, Org, Page, Release, Repo, Review,
 };
-use devstatscode::hash::hash_strings;
-use devstatscode::pg::api::{
+use crate::hash::hash_strings;
+use crate::pg::api::{
     exec_sql_tx_with_err, exec_sql_with_err, insert_actor_tx, insert_ignore, int_or_nil, n_value,
     n_values, query_sql_tx_with_err, query_sql_with_err, string_or_nil, trunc_string_or_nil,
     trunc_to_bytes,
 };
-use devstatscode::pg::{PgConn, PgTx, SqlArg};
-use devstatscode::time::to_ymdhms_date;
-use devstatscode::trailers::{GIT_ALLOWED_TRAILERS, GIT_TRAILER_PATTERN};
-use devstatscode::{fatal_on_err, printf, Ctx};
+use crate::pg::{PgConn, PgTx, SqlArg};
+use crate::time::to_ymdhms_date;
+use crate::trailers::{GIT_ALLOWED_TRAILERS, GIT_TRAILER_PATTERN};
+use crate::{fatal_on_err, printf, Ctx};
 
 /// Go `func(string) string` hiding function shared between threads.
 pub type MaybeHide<'a> = &'a (dyn Fn(&str) -> String + Sync);
@@ -555,7 +555,7 @@ pub fn event_exists_collision(
             event_id,
             e_t,
             e_r,
-            devstatscode::pg::value::go_time_string(&e_d.fixed_offset()),
+            crate::pg::value::go_time_string(&e_d.fixed_offset()),
             e_type,
             repo_name,
             created_at

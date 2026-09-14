@@ -34,7 +34,7 @@ the difference.
 | `annotations` | `cmd/annotations` | `cmd/annotations` | 5 / 73 (PostgreSQL + git) |
 | `get_repos`  | `cmd/get_repos`   | `cmd/get_repos`   | 3 / 117 (PostgreSQL + git) |
 | `sync_issues` | `cmd/sync_issues` | `cmd/sync_issues` | 10 / 53 (PostgreSQL + fake GitHub API) |
-| `ghapi2db`   | `cmd/ghapi2db`    | `cmd/ghapi2db`    | 78 (PostgreSQL + fake GitHub REST/GraphQL API) |
+| `ghapi2db`   | `cmd/ghapi2db`    | `cmd/ghapi2db`    | 109 (PostgreSQL + fake GitHub REST/GraphQL API) |
 | `gha2db`     | `cmd/gha2db`      | `cmd/gha2db`      | 5 (+9 lib) / 60 (PostgreSQL + fake GH Archive) |
 | `api`        | `cmd/api`         | `cmd/api`         | 10 / 17 scenarios ≈ 330 requests (HTTP servers + PostgreSQL) |
 
@@ -1169,6 +1169,75 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `GHA2DB_SKIPPDB`, `GHA2DB_ST`/`GHA2DB_NCPUS`, `GHA2DB_DEBUG`,
     `GHA2DB_GITHUB_DEBUG`, `GHA2DB_GITHUB_OAUTH`, `GHA2DB_GITHUB_API_URL`,
     `GHA2DB_AFFILIATIONS_DB`, `GHA2DB_LOCAL`, `hide/hide.csv`.
+  * Repository scope (2026-09-14, Go and Rust alike — see
+    `docs/ghapi2db-gha-gaps.md` P1-A): by default every `gha_repos` repository
+    is in scope (lib `GetTrackedRepos`/`get_tracked_repos`: one current name per
+    id = the name of its newest native event, other names are "historical" and
+    skipped; `ghapi2db scope: N repos from gha_repos (I ids), H historical names
+    skipped`), and one GraphQL **heartbeat** per process (`heartbeat.go` /
+    `heartbeat.rs`, 50 repos per query, `ghapi2db heartbeat: N repos in Q
+    GraphQL queries: F found, N not found, M moved, U unknown, A archived; active
+    since …: pushes P, issues I, PRs R, forks F, releases L, stars S`) decides
+    which repos each pass may skip (`… processing N repos (heartbeat: K
+    skipped) …`, per-repo `skipped by heartbeat (no <gate> since …)` with
+    `GHA2DB_DEBUG`): events need issue/PR updates, commits pushes, comments
+    either, reviews PR updates, forks/releases a newer fork/release, stars a
+    `stargazerCount` differing from the newest `gha_forkees` snapshot at or
+    before the recent date. Repos GitHub cannot resolve (or whose name now
+    belongs to another repository id — `WARNING: … resolves to … but is tracked
+    as id …`) are skipped, a heartbeat failure or a missing token processes
+    everything (fail open). `GHA2DB_GHAPI_RECENT_REPOS_ONLY` restores the
+    legacy "repos with events in `GHA2DB_RECENT_REPOS_RANGE`" scope without a
+    heartbeat; `REPO=` and `DTFROM`/`DTTO` bypass the heartbeat. Restore passes
+    resolve `repo_id`/`org_id` from `gha_repos` when a repository has no
+    `gha_events` rows yet (bug 63).
+  * Repository counters (2026-09-14, Go and Rust alike — gaps report P1-D): a
+    last pass `ghapi2db repo stats` (`GHA2DB_GHAPISKIPREPOSTATS` disables it)
+    writes one `gha_forkees` snapshot per tracked repository per run —
+    `stargazers_count`/`watchers` (= stars, the GH Archive semantics), `forks`,
+    `open_issues` (issues + PRs, the REST semantics), `name`/`full_name`/
+    `owner_id` — taken from the heartbeat (the fragment also asks
+    `owner { … databaseId }`), so it costs no REST request in the default
+    scope; repos without a heartbeat (`REPO=`, the legacy scope, *unknown*)
+    cost one `GET /repos/{o}/{r}` each and the returned id must be the tracked
+    one (`WARNING: … resolves to … (id N) which is not tracked, skipping`).
+    The row hangs off the newest `gha_events` row of the repository (under
+    the tracked name, else under any name — renamed repos), copies its
+    `dup_actor_id`/`dup_created_at`, keeps the tracked `dup_repo_name`, sets
+    `updated_at = now`, and is upserted on `(id, event_id)`: `ghapi2db repo
+    stats: processed N repos, snapshots: I inserted, R refreshed; skipped: W
+    without events, U unavailable; GH API calls: C` (per repo with
+    `GHA2DB_DEBUG`: `… N stars, F forks, O open issues from the heartbeat|API,
+    snapshot inserted|refreshed (event E)`). The counter-less rows GH Archive
+    attaches to PR events since 2024-09 are upgraded in place, and the stars
+    heartbeat gate now picks the newest snapshot by `updated_at`, so those
+    rows cannot hide a real one.
+  * Repository events feed (2026-09-14, Go and Rust alike — gaps report P1-B):
+    a pass `ghapi2db repo events` (`GHA2DB_GHAPISKIPREPOEVENTS` disables it)
+    running right after the licenses/languages passes and before every other
+    API pass. For each repository with *any* heartbeat activity since the
+    recent date (issue/PR update, push, fork, release, or a star count the
+    snapshot does not know; unknown → processed, not found/moved → skipped)
+    it reads `GET /repos/{o}/{r}/events?per_page=100&page=1..3` — the very
+    objects GH Archive is built from — decodes each element with the gha2db
+    `Event` type and writes it with the shared gha2db writer (`lib.WriteToDB`
+    / `devstatscode::ghawriter::write_to_db`) under its **native id, actor and
+    time stamp**, hide.csv anonymisation and the gha2db actor filters
+    (`GHA2DB_ACTORS_FILTER`/`ALLOW`/`FORBID`) included, all event types
+    (`PushEvent` stubs without commits and 5-field PR stubs too). Ids GH Archive already
+    delivered are skipped, a different event under a known id logs the
+    writer's `event id collision` line. Paging follows the `Link: next`
+    header only, up to page 3 (GitHub answers 422 for page 4): the live feed
+    is ordered by id — which is no longer monotonic in time — and filtered
+    after pagination (a "full" page holds 84–96 events while more follow), so
+    neither a short page nor an old event on a page ends it; every event of a
+    fetched page is written, months-old ones included. A feed carrying an
+    untracked repository id is skipped with a
+    `WARNING`, 404/410 silently. Restored ids go to the targeted postprocess.
+    Summary: `ghapi2db repo events: processed N repos, P pages, checked C,
+    restored R` + `… restored events by type: ForkEvent 1, IssuesEvent 3, …`
+    (sorted); with `GHA2DB_DEBUG`: `… restored <type> <id> (<time>)` and
+    `… page N: E events, oldest <time>, restored so far R` per repo.
   * `GHA2DB_GHAPI_RATE_LIMITS_CACHE` (new, in Go and Rust, default `5`, `0`
     disables): `GetRateLimits`/`get_rate_limits` polls all tokens
     **concurrently** (was: one sequential `/rate_limit` round trip per token
@@ -1186,7 +1255,7 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `sync_issues` run with the cache disabled (so the asserted `/rate_limit`
     request counts stay deterministic) plus five `rate_limits_cache_*`
     scenarios with it enabled.
-  * Go⇄Rust tests: `cmd/ghapi2db/tests/compat.rs` — 78 scenarios, each side on
+  * Go⇄Rust tests: `cmd/ghapi2db/tests/compat.rs` — 109 scenarios, each side on
     a scratch database (`full_structure.sql` + seeded events/repos/actors)
     against its own scripted fake GitHub REST + GraphQL server: skip-all;
     licenses (found / not found / already set / force / debug `Stringify`
@@ -1215,7 +1284,29 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     prerelease; stars over GraphQL with two pages, skipped edges, no token,
     HTTP 500 / GraphQL errors / 429 Retry-After / 403 X-RateLimit-Reset,
     `null` page cursor / edges / node fields / `data`, next-token fallback,
-    hash id conflict; all passes in order). Compared: exit
+    hash id conflict; all passes in order); scope (12 `scope_*` scenarios:
+    heartbeat gates of every pass incl. the stars snapshot rule, exact GraphQL
+    body, one heartbeat for several passes, current/historical names and
+    shared ids, not-found / moved / renamed / archived / malformed repos,
+    fail-open on 500 / path-less errors / 429 → next token / no token,
+    `RESOURCE_LIMITS_EXCEEDED` batch splitting, 121 repos → 3 batches, the
+    legacy flag and the `REPO=`/`DTFROM` bypasses, the stars gate ignoring
+    counter-less GHA rows); repo stats (7 `repo_stats_*` scenarios: snapshot
+    from the heartbeat with zero REST calls, refresh of the same anchor row
+    across runs and renames, in-place upgrade of GHA stub rows, the newest
+    event under any name as the anchor incl. artificial ids, `REPO=` / legacy
+    scope / unknown heartbeat → `GET /repos/{o}/{r}` with go-github's `Accept`
+    header, untracked id warning and 404 → unavailable); repo events (8
+    `repo_events_*` scenarios: a mixed six-type page written with native ids
+    into `gha_events`/`gha_issues`/`gha_issues_labels`/`gha_comments`/
+    `gha_pull_requests`/`gha_forkees`/`gha_payloads`/`gha_actors`, the short
+    page ending the feed, a second run finding everything present plus an
+    `event id collision`, paging across 3 pages of 100 with the recent-date
+    stop and the 3-page cap, an untracked feed id and a 404, `REPO=` with
+    hide.csv anonymisation, the gha2db actor filters
+    (`GHA2DB_ACTORS_FILTER/ALLOW/FORBID`), the heartbeat "no activity" gate
+    incl. the star-count signal, and the targeted postprocess filling
+    `gha_texts` from the restored ids). Compared: exit
     code, stdout (durations, now-derived ids and timestamps, API URL and binary
     path masked; multiset for MT and where Go's map order shows), `Error:`
     stderr lines, the full database contents and the API request log (method,
@@ -1231,11 +1322,15 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
 * `gha2db`
   * `cmd/gha2db/gha2db.go` → `src/main.rs` (hour loop, `getGHAJSON` download /
     gunzip / split / parse, `parseJSON`, retries, `today`/`now` arguments, the
-    deferred `refreshCommitRoles` / `updateCommitRoles`), `src/writer.rs`
-    (`writeToDB` / `writeToDBOldFmt` and every payload writer), `src/db.rs`
-    (lookups, actor / repo / org / milestone / forkee / branch / label /
-    comment / review / release / pages / commit-roles rows, the shared
-    `(email,name) → actor` cache, `eventExistsCollision`), `src/roles.rs`,
+    deferred `refreshCommitRoles` / `updateCommitRoles`), the shared
+    `devstatscode::ghawriter` (since 2026-09-14 the writer lives in the lib —
+    Go: root-package `ghawriter.go` — so `ghapi2db` can write GitHub API
+    events with exactly the gha2db semantics): `ghawriter/writer.rs`
+    (`writeToDB` / `writeToDBOldFmt` and every payload writer),
+    `ghawriter/db.rs` (lookups, actor / repo / org / milestone / forkee /
+    branch / label / comment / review / release / pages / commit-roles rows,
+    the shared `(email,name) → actor` cache, `eventExistsCollision`);
+    `src/roles.rs`,
     `src/gz.rs` (Go `compress/gzip` error texts: `EOF`, `unexpected EOF`,
     `gzip: invalid header`, `gzip: invalid checksum`) on top of
     `devstatscode::gha` — the port of `gha.go`: serde structs with Go

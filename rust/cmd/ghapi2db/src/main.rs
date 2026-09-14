@@ -6,6 +6,8 @@
 //! comments, reviews, forks, releases and stars missed by GH Archive.
 //! Environment, output and exit codes are those of the Go program.
 
+mod feed;
+mod heartbeat;
 mod restore;
 
 use std::collections::BTreeSet;
@@ -40,6 +42,7 @@ use devstatscode::time::{
 };
 use devstatscode::{fatal_on_err, fatalf, printf, signal, Ctx};
 
+use heartbeat::{scope_repos, scope_suffix, sync_repo_stats, ApiPass};
 use restore::RestoreStats;
 
 /// Go `func(string) string` hiding function shared between threads.
@@ -63,9 +66,11 @@ fn exec_affs_upsert(tx: &mut PgTx<'_>, ctx: &Ctx, query: &str, args: &[SqlArg]) 
 }
 
 /// Go `getAPIParams` results: the GitHub clients, the database connection,
-/// the recent repositories and the recent date.
+/// the repositories of the pass and the recent date.
 pub struct ApiParams {
     pub repos: Vec<String>,
+    /// how many repositories the heartbeat skipped (`None`: not gated)
+    pub heartbeat_skipped: Option<usize>,
     pub is_single_repo: bool,
     pub single_repo: String,
     pub gcs: Vec<Client>,
@@ -74,16 +79,40 @@ pub struct ApiParams {
 }
 
 /// Go `getAPIParams`: connects to GitHub and Postgres, returns the list of
-/// recent repositories (unique by id, then by name) and the recent date.
-pub fn get_api_params(ctx: &Ctx) -> ApiParams {
+/// repositories to process by the pass and the recent date.
+/// Default scope: every tracked repository (`gha_repos`, one current name
+/// per id) gated per pass by the GraphQL heartbeat;
+/// `GHA2DB_GHAPI_RECENT_REPOS_ONLY` restores the legacy scope: repositories
+/// with events in the recent repos range (unique by id, then by name), no
+/// heartbeat.
+pub fn get_api_params(ctx: &mut Ctx, pass: ApiPass) -> ApiParams {
     // Connect to GitHub API
     let gcs = gh_client(ctx);
 
     // Connect to Postgres DB
     let c = pg_conn(ctx);
 
-    // Get list of repositories to process
     let now_hour = hour_start(wall_as_utc(&Local::now()));
+    let recent_dt = get_date_ago(&c, ctx, now_hour, &ctx.recent_range);
+
+    // Single repo mode
+    let single_repo = std::env::var("REPO").unwrap_or_default();
+    let is_single_repo = !single_repo.is_empty();
+
+    if ctx.ghapi_all_repos {
+        let (repos, heartbeat_skipped) = scope_repos(ctx, &c, pass, recent_dt);
+        return ApiParams {
+            repos,
+            heartbeat_skipped,
+            is_single_repo,
+            single_repo,
+            gcs,
+            c,
+            recent_dt,
+        };
+    }
+
+    // Get list of repositories to process
     let recent_repos_dt = get_date_ago(&c, ctx, now_hour, &ctx.recent_repos_range);
     let (repos_a, rids) = get_recent_repos(&c, ctx, recent_repos_dt);
     if ctx.debug > 0 {
@@ -109,14 +138,10 @@ pub fn get_api_params(ctx: &Ctx) -> ApiParams {
     if ctx.debug > 0 {
         printf!("Unique repos: {}\n", fmt_slice(&repos));
     }
-    let recent_dt = get_date_ago(&c, ctx, now_hour, &ctx.recent_range);
-
-    // Single repo mode
-    let single_repo = std::env::var("REPO").unwrap_or_default();
-    let is_single_repo = !single_repo.is_empty();
 
     ApiParams {
         repos,
+        heartbeat_skipped: None,
         is_single_repo,
         single_repo,
         gcs,
@@ -885,7 +910,7 @@ fn run_pool<'a>(
 /// `DTFROM`/`DTTO` datetimes (set `GHA2DB_RECENT_RANGE` to cover them).
 fn sync_commits(ctx: &mut Ctx) {
     // Get common params
-    let params = get_api_params(ctx);
+    let params = get_api_params(ctx, ApiPass::Commits);
 
     // Date range mode
     let date_range = date_range_from_env();
@@ -896,8 +921,9 @@ fn sync_commits(ctx: &mut Ctx) {
     let dt_start = Utc::now();
     let n_repos = params.repos.len();
     printf!(
-        "ghapi2db.go: Processing {} repos - GHAPI commits part\n",
-        n_repos
+        "ghapi2db.go: Processing {} repos{} - GHAPI commits part\n",
+        n_repos,
+        scope_suffix(params.heartbeat_skipped)
     );
 
     let mut opt = CommitsListOptions {
@@ -1345,7 +1371,7 @@ fn fetch_events(sh: &Shared<'_>, es: &EventsShared, filter: &EventsFilter, org_r
 /// `REPO`, `DTFROM`/`DTTO`, `MILESTONE=milestone name`, `ISSUE=number`.
 fn sync_events(ctx: &mut Ctx) {
     // Get common params
-    let params = get_api_params(ctx);
+    let params = get_api_params(ctx, ApiPass::Events);
 
     // Date range mode
     let date_range = date_range_from_env();
@@ -1369,8 +1395,9 @@ fn sync_events(ctx: &mut Ctx) {
     let max_threads = 16.min(thr_n).max(1);
     let n_repos = params.repos.len();
     printf!(
-        "ghapi2db.go: Processing {} repos - GHAPI Events part\n",
-        n_repos
+        "ghapi2db.go: Processing {} repos{} - GHAPI Events part\n",
+        n_repos,
+        scope_suffix(params.heartbeat_skipped)
     );
 
     let sh = Shared {
@@ -2010,13 +2037,18 @@ fn main() {
         if !ctx.skip_api_langs {
             sync_langs(&mut ctx);
         }
+        let mut restored = RestoreStats::default();
+        // the events feed goes first: its native events are what the issue events, comments,
+        // reviews and forks passes below check for before synthesizing artificial ones
+        if !ctx.skip_api_repo_events {
+            restored.merge(feed::sync_repo_events(&mut ctx));
+        }
         if !ctx.skip_api_events {
             sync_events(&mut ctx);
         }
         if !ctx.skip_api_commits {
             sync_commits(&mut ctx);
         }
-        let mut restored = RestoreStats::default();
         if !ctx.skip_api_comments {
             restored.merge(restore::sync_comments(&mut ctx));
         }
@@ -2031,6 +2063,9 @@ fn main() {
         }
         if !ctx.skip_api_stars {
             restored.merge(restore::sync_stars(&mut ctx));
+        }
+        if !ctx.skip_api_repo_stats {
+            sync_repo_stats(&mut ctx);
         }
         if !restored.eids.is_empty() {
             run_event_ids_postprocess(&ctx, &restored.eids);

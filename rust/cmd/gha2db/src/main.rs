@@ -4,10 +4,8 @@
 //! all their nested objects) into the PostgreSQL database. The old (2012–2014)
 //! and the current GH Archive formats are both supported (`GHA2DB_OLDFMT`).
 
-mod db;
 mod gz;
 mod roles;
-mod writer;
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
@@ -33,8 +31,7 @@ use devstatscode::time::{
 };
 use devstatscode::{fatal_on_err, gofmt, printf, rng, signal, yamlv2, Ctx};
 
-use crate::db::MaybeHide;
-use crate::writer::{write_to_db, write_to_db_old_fmt};
+use devstatscode::ghawriter::{write_to_db, write_to_db_old_fmt, MaybeHide};
 
 /// One processed hour with Go's rendering of it. `time.Parse(RFC3339,
 /// "…+00:00")` yields a `time.Local` value (printed `+0000 UTC`) only when

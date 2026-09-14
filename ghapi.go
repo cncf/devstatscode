@@ -570,6 +570,76 @@ func GetRecentRepos(c *sql.DB, ctx *Ctx, dtFrom time.Time) (repos []string, rids
 	return
 }
 
+// GetTrackedRepos - every repository of gha_repos, one current name per repository id.
+// A repository id can be listed under several names (renames); the current name is the one
+// with the newest native GH Archive event (0 < id < 2^48), the other names are historical.
+// Ids without any native event keep their alphabetically first name.
+// Returns the current names (sorted), their ids (a name can be tracked under several ids,
+// sorted ascending) and the sorted historical names (those that are current for no id).
+func GetTrackedRepos(c *sql.DB, ctx *Ctx) (repos []string, ids map[string][]int64, historical []string) {
+	type named struct {
+		name      string
+		createdAt time.Time
+		eventID   int64
+		valid     bool
+	}
+	rows := QuerySQLWithErr(
+		c,
+		ctx,
+		"select r.id, r.name, n.created_at, n.id from gha_repos r left join lateral ("+
+			"select e.created_at, e.id from gha_events e where e.repo_id = r.id and e.dup_repo_name = r.name "+
+			"and e.id > 0 and e.id < 281474976710656 order by e.created_at desc, e.id desc limit 1) n on true",
+	)
+	defer func() { FatalOnError(rows.Close()) }()
+	byID := make(map[int64][]named)
+	for rows.Next() {
+		var (
+			rid       int64
+			name      string
+			createdAt sql.NullTime
+			eventID   sql.NullInt64
+		)
+		FatalOnError(rows.Scan(&rid, &name, &createdAt, &eventID))
+		byID[rid] = append(byID[rid], named{name: name, createdAt: createdAt.Time, eventID: eventID.Int64, valid: createdAt.Valid})
+	}
+	FatalOnError(rows.Err())
+	ids = make(map[string][]int64)
+	old := make(map[string]struct{})
+	for rid, names := range byID {
+		best := 0
+		for i := 1; i < len(names); i++ {
+			n, b := names[i], names[best]
+			switch {
+			case n.valid && !b.valid:
+				best = i
+			case n.valid && b.valid && (n.createdAt.After(b.createdAt) || (n.createdAt.Equal(b.createdAt) && n.eventID > b.eventID)):
+				best = i
+			case !n.valid && !b.valid && n.name < b.name:
+				best = i
+			}
+		}
+		for i, n := range names {
+			if i == best {
+				ids[n.name] = append(ids[n.name], rid)
+			} else {
+				old[n.name] = struct{}{}
+			}
+		}
+	}
+	for name, rids := range ids {
+		sort.Slice(rids, func(i, j int) bool { return rids[i] < rids[j] })
+		repos = append(repos, name)
+	}
+	sort.Strings(repos)
+	for name := range old {
+		if _, ok := ids[name]; !ok {
+			historical = append(historical, name)
+		}
+	}
+	sort.Strings(historical)
+	return
+}
+
 // DeleteArtificialPREvent - create artificial API event (but from the past)
 func DeleteArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 	if ctx.SkipPDB {

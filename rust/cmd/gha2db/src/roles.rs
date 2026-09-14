@@ -17,8 +17,8 @@ use devstatscode::threads::get_threads_num;
 use devstatscode::trailers::{GIT_ALLOWED_TRAILERS, GIT_TRAILER_PATTERN};
 use devstatscode::{fatal_on_err, printf, Ctx};
 
-use crate::db::{cache_len, lookup_actor_name_email, Db, MaybeHide};
 use crate::run_gc;
+use devstatscode::ghawriter::{cache_len, lookup_actor_name_email, Db, MaybeHide};
 
 /// One `gha_commits` row of the refresh query.
 struct CommitRow {
