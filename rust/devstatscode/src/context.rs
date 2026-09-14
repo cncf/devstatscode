@@ -504,6 +504,10 @@ pub struct Ctx {
     pub restore_orphan_commits: bool,
     /// From GHA2DB_ORPHAN_COMMITS_RANGE, get_repos tool, orphan commits restore window, default '8 hours' (6h sync cadence + 2h overlap, keep equal to GHA2DB_RECENT_RANGE)
     pub orphan_commits_range: String,
+    /// From GHA2DB_ORPHAN_COMMITS_DEFAULT_BRANCH_ONLY, get_repos tool, when set only the default branch is scanned for orphan commits, default: every `origin/*` branch whose tip moved inside the window
+    pub orphan_commits_all_branches: bool,
+    /// From GHA2DB_ORPHAN_COMMITS_NO_GROUPING, get_repos tool, when set restored commits keep the legacy shape (commit-date window, one artificial PushEvent per commit, author as actor), default: landing window + one GHA-shaped PushEvent per first-parent step (committer as actor)
+    pub orphan_commits_group: bool,
 }
 
 static SYNCER_ONCE: OnceLock<()> = OnceLock::new();
@@ -721,6 +725,8 @@ impl Ctx {
         // Restore orphan commits (get_repos)
         self.restore_orphan_commits = env_set("GHA2DB_RESTORE_ORPHAN_COMMITS");
         self.orphan_commits_range = env_string_or("GHA2DB_ORPHAN_COMMITS_RANGE", "8 hours");
+        self.orphan_commits_all_branches = !env_set("GHA2DB_ORPHAN_COMMITS_DEFAULT_BRANCH_ONLY");
+        self.orphan_commits_group = !env_set("GHA2DB_ORPHAN_COMMITS_NO_GROUPING");
 
         // Run website_data tool after sync
         self.website_data = env_set("GHA2DB_WEBSITEDATA");
@@ -1280,6 +1286,11 @@ impl Ctx {
                 self.restore_orphan_commits.to_string(),
             ),
             ("OrphanCommitsRange", self.orphan_commits_range.clone()),
+            (
+                "OrphanCommitsAllBranches",
+                self.orphan_commits_all_branches.to_string(),
+            ),
+            ("OrphanCommitsGroup", self.orphan_commits_group.to_string()),
         ]
     }
 
@@ -1439,6 +1450,8 @@ mod tests {
             git_commits_batch: 1000,
             restore_orphan_commits: false,
             orphan_commits_range: "8 hours".to_string(),
+            orphan_commits_all_branches: true,
+            orphan_commits_group: true,
             ..Ctx::default()
         }
     }
@@ -2434,8 +2447,19 @@ mod tests {
                 c.orphan_commits_range = "9 months".to_string();
             },
         },
+        Case {
+            name: "Setting legacy orphan commits restore shape",
+            env: &[
+                ("GHA2DB_ORPHAN_COMMITS_DEFAULT_BRANCH_ONLY", "1"),
+                ("GHA2DB_ORPHAN_COMMITS_NO_GROUPING", "yes"),
+            ],
+            set: |c| {
+                c.orphan_commits_all_branches = false;
+                c.orphan_commits_group = false;
+            },
+        },
         ];
-        assert_eq!(cases.len(), 125);
+        assert_eq!(cases.len(), 126);
         let default = default_context();
         for (index, case) in cases.iter().enumerate() {
             let mut expected = default.copy_context();

@@ -306,6 +306,8 @@ func TestInit(t *testing.T) {
 		GitCommitsBatch:          1000,
 		RestoreOrphanCommits:     false,
 		OrphanCommitsRange:       "8 hours",
+		OrphanCommitsAllBranches: true,
+		OrphanCommitsGroup:       true,
 	}
 
 	var nilRegexp *regexp.Regexp
@@ -1897,6 +1899,15 @@ func TestInit(t *testing.T) {
 				t,
 				defaultContext.CopyContext(),
 				map[string]interface{}{"RestoreOrphanCommits": true, "OrphanCommitsRange": "9 months"},
+			),
+		},
+		{
+			"Setting legacy orphan commits restore shape",
+			map[string]string{"GHA2DB_ORPHAN_COMMITS_DEFAULT_BRANCH_ONLY": "1", "GHA2DB_ORPHAN_COMMITS_NO_GROUPING": "yes"},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{"OrphanCommitsAllBranches": false, "OrphanCommitsGroup": false},
 			),
 		},
 	}

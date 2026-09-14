@@ -175,6 +175,8 @@ type Ctx struct {
 	GitCommitsBatch          int                          // From GHA2DB_GIT_COMMITS_BATCH get_repos tool, max number of commit SHAs passed to git_commits.sh in one call, default 1000
 	RestoreOrphanCommits     bool                         // From GHA2DB_RESTORE_ORPHAN_COMMITS, get_repos tool, enable restoring commits present in git but with no gha_commits row, binary default false (prod enables it via repos.sh/helm)
 	OrphanCommitsRange       string                       // From GHA2DB_ORPHAN_COMMITS_RANGE, get_repos tool, orphan commits restore window, default '8 hours' (6h sync cadence + 2h overlap, keep equal to GHA2DB_RECENT_RANGE)
+	OrphanCommitsAllBranches bool                         // From GHA2DB_ORPHAN_COMMITS_DEFAULT_BRANCH_ONLY, get_repos tool, when set only the default branch is scanned for orphan commits, default: every `origin/*` branch whose tip moved inside the window
+	OrphanCommitsGroup       bool                         // From GHA2DB_ORPHAN_COMMITS_NO_GROUPING, get_repos tool, when set restored commits keep the legacy shape (commit-date window, one artificial PushEvent per commit, author as actor), default: landing window + one GHA-shaped PushEvent per first-parent step (committer as actor)
 }
 
 // SetCPUs - set CPUs
@@ -451,6 +453,8 @@ func (ctx *Ctx) Init() {
 	if ctx.OrphanCommitsRange == "" {
 		ctx.OrphanCommitsRange = "8 hours"
 	}
+	ctx.OrphanCommitsAllBranches = os.Getenv("GHA2DB_ORPHAN_COMMITS_DEFAULT_BRANCH_ONLY") == ""
+	ctx.OrphanCommitsGroup = os.Getenv("GHA2DB_ORPHAN_COMMITS_NO_GROUPING") == ""
 
 	// Run website_data tool after sync
 	ctx.WebsiteData = os.Getenv("GHA2DB_WEBSITEDATA") != ""
@@ -1133,5 +1137,7 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		GitCommitsBatch:          ctx.GitCommitsBatch,
 		RestoreOrphanCommits:     ctx.RestoreOrphanCommits,
 		OrphanCommitsRange:       ctx.OrphanCommitsRange,
+		OrphanCommitsAllBranches: ctx.OrphanCommitsAllBranches,
+		OrphanCommitsGroup:       ctx.OrphanCommitsGroup,
 	}
 }

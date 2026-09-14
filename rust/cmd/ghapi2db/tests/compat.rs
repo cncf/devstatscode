@@ -611,9 +611,22 @@ fn release_json(
 
 /// A GraphQL stargazers page: `edges` = (starredAt, login, databaseId).
 fn gql_page(edges: &[(&str, &str, i64)], has_prev: bool, start_cursor: &str) -> Value {
+    gql_page_count(edges, has_prev, start_cursor, edges.len() as i64)
+}
+
+/// A stargazers GraphQL page whose repository reports `star_count` stars
+/// (GitHub keeps serving `stargazerCount` for repos whose stargazer list it
+/// hides since 2026-06-30).
+fn gql_page_count(
+    edges: &[(&str, &str, i64)],
+    has_prev: bool,
+    start_cursor: &str,
+    star_count: i64,
+) -> Value {
     json!({
         "data": {
             "repository": {
+                "stargazerCount": star_count,
                 "stargazers": {
                     "pageInfo": {"hasPreviousPage": has_prev, "startCursor": start_cursor},
                     "edges": edges.iter().map(|(at, login, id)| json!({
@@ -4600,7 +4613,7 @@ fn stars_restore_over_graphql() {
         assert_eq!(bodies.len(), 2);
         assert_eq!(
             bodies[0],
-            r#"{"query":"query($o: String!, $r: String!, $b: String) { repository(owner: $o, name: $r) { stargazers(last: 100, before: $b, orderBy: {field: STARRED_AT, direction: ASC}) { pageInfo { hasPreviousPage startCursor } edges { starredAt node { login databaseId } } } } }","variables":{"o":"org","r":"repo"}}"#
+            r#"{"query":"query($o: String!, $r: String!, $b: String) { repository(owner: $o, name: $r) { stargazerCount stargazers(last: 100, before: $b, orderBy: {field: STARRED_AT, direction: ASC}) { pageInfo { hasPreviousPage startCursor } edges { starredAt node { login databaseId } } } } }","variables":{"o":"org","r":"repo"}}"#
         );
         assert!(
             bodies[1].ends_with(r#""variables":{"b":"cursor-1","o":"org","r":"repo"}}"#),
@@ -4794,6 +4807,88 @@ fn stars_restore_tolerates_graphql_nulls() {
             0,
             "ghapi2db stars restore: processed 1 repos, 1 pages, checked 0, restored 0",
         );
+    });
+}
+
+const STARS_UNAVAILABLE: &str = "ghapi2db stars restore: stargazer lists unavailable for 1/1 repos (GitHub restricted stargazer/watcher lists to repository admins on 2026-06-30), star events cannot be restored";
+
+/// Bug 62: GitHub hides stargazer lists from non-admins since 2026-06-30 -
+/// the connection comes back empty without any error while `stargazerCount`
+/// still works; report that honestly instead of a silent "checked 0".
+#[test]
+fn stars_restore_reports_unavailable_lists() {
+    let sides = check(Case::new("rs_unavail", Pass::Stars).setup(|gh| {
+        gql_route(
+            gh,
+            vec![
+                Scripted::ok(&gql_page_count(&[], false, "", 1234)),
+                Scripted::ok(&gql_page_count(&[], false, "", 1234)),
+            ],
+        );
+    }));
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: processed 1 repos, 1 pages, checked 0, restored 0",
+        );
+        s.expect_line(0, STARS_UNAVAILABLE);
+        s.expect_no_prefix(0, "org/repo: stargazer list unavailable");
+        s.expect_no_prefix(0, "org/repo: stargazers graphql:");
+        assert_eq!(s.graphql_bodies().len(), 1);
+        assert_eq!(
+            s.count("select count(*) from gha_events where type = 'WatchEvent'"),
+            0
+        );
+    });
+    // debug names the repo and its star count
+    let sides = check(
+        Case::new("rs_unavail_dbg", Pass::Stars)
+            .env("GHA2DB_DEBUG", "1")
+            .setup(|gh| {
+                gql_route(gh, vec![Scripted::ok(&gql_page_count(&[], true, "c1", 7))]);
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "org/repo: stargazer list unavailable (7 stars), skipping",
+        );
+        s.expect_line(0, STARS_UNAVAILABLE);
+        assert_eq!(s.graphql_bodies().len(), 1);
+    });
+    // a repo nobody starred is not "unavailable"
+    let sides = check(Case::new("rs_nostars", Pass::Stars).setup(|gh| {
+        gql_route(gh, vec![Scripted::ok(&gql_page_count(&[], false, "", 0))]);
+    }));
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: processed 1 repos, 1 pages, checked 0, restored 0",
+        );
+        s.expect_no_prefix(0, "ghapi2db stars restore: stargazer lists unavailable");
+    });
+    // a visible list whose page 1 is all recent and page 2 empty: only page 1 decides
+    let sides = check(Case::new("rs_page2empty", Pass::Stars).setup(|gh| {
+        gql_route(
+            gh,
+            vec![
+                Scripted::ok(&gql_page_count(
+                    &[("2020-05-02T10:00:00Z", "dave", 14)],
+                    true,
+                    "cursor-1",
+                    50,
+                )),
+                Scripted::ok(&gql_page_count(&[], false, "", 50)),
+            ],
+        );
+    }));
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: processed 1 repos, 2 pages, checked 1, restored 1",
+        );
+        s.expect_no_prefix(0, "ghapi2db stars restore: stargazer lists unavailable");
+        assert_eq!(s.graphql_bodies().len(), 2);
     });
 }
 

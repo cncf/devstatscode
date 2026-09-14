@@ -1254,27 +1254,59 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 			lib.FatalOnError(con.Close())
 			continue
 		}
+		aliases, err := selectRepoAliases(con)
+		if err != nil {
+			lib.Printf("selectRepoAliases(DB=%s) error: %v\n", db, err)
+			lib.FatalOnError(con.Close())
+			continue
+		}
 		var claimedShas sync.Map
 
+		// Renamed repos are cloned under every historical name (gha_repos keeps them all); their
+		// current name is gha_repos.alias. A historical clone is skipped when the current-name
+		// clone exists (it holds the same history), otherwise its commits are attributed to the
+		// current name - never to the alias (bug 61).
+		work := make([]orphanRepoWork, 0, len(repos))
+		nAliasesSkipped := 0
+		for _, repo := range repos {
+			name := repo
+			if alias, ok := aliases[repo]; ok {
+				name = alias
+			}
+			if name != repo {
+				if _, serr := os.Stat(ctx.ReposDir + name); serr == nil {
+					nAliasesSkipped++
+					if ctx.Debug > 0 {
+						lib.Printf("%s/%s: historical alias of %s, skipping\n", db, repo, name)
+					}
+					continue
+				}
+			}
+			work = append(work, orphanRepoWork{repo: repo, name: name})
+		}
+		if nAliasesSkipped > 0 {
+			lib.Printf("Restoring orphan commits: DB '%s': skipped %d historical alias clone(s)\n", db, nAliasesSkipped)
+		}
+
 		thr := make(chan struct{}, thrN)
-		done := make(chan struct{}, len(repos))
+		done := make(chan struct{}, len(work))
 		var mtx sync.Mutex
 		nReposProcessed := 0
 		nCommitsChecked := 0
 		nCommitsRestored := 0
 		var dbEids []int64
 
-		for _, repo := range repos {
+		for _, w := range work {
 			thr <- struct{}{}
-			repo := repo
+			w := w
 			go func() {
 				defer func() {
 					<-thr
 					done <- struct{}{}
 				}()
-				rp, cc, cr, reids, err := restoreOrphanRepo(ctx, con, db, repo, maybeHide, acache, skipSet, &claimedShas)
+				rp, cc, cr, reids, err := restoreOrphanRepo(ctx, con, db, w.repo, w.name, maybeHide, acache, skipSet, &claimedShas)
 				if err != nil {
-					lib.Printf("restoreOrphanRepo(DB=%s, repo=%s) error: %v\n", db, repo, err)
+					lib.Printf("restoreOrphanRepo(DB=%s, repo=%s) error: %v\n", db, w.repo, err)
 				}
 				mtx.Lock()
 				nReposProcessed += rp
@@ -1285,7 +1317,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 			}()
 		}
 
-		for range repos {
+		for range work {
 			<-done
 		}
 		lib.FatalOnError(con.Close())
@@ -1307,7 +1339,51 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		allReposProcessed, allCommitsChecked, allCommitsRestored, dtEnd.Sub(dtStart))
 }
 
-func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(string) string, acache *actorCache, skipSet map[string]struct{}, claimedShas *sync.Map) (int, int, int, []int64, error) {
+// orphanRepoWork - one clone to scan (repo = clone directory name) and the repo name the
+// restored rows are attributed to (name = current name, differs from repo for historical aliases)
+type orphanRepoWork struct {
+	repo string
+	name string
+}
+
+// orphanBranch - one `refs/remotes/origin/<name>` branch scanned for orphan commits
+type orphanBranch struct {
+	ref  string
+	name string
+}
+
+// orphanPush - commits that became reachable from a branch in one first-parent step, i.e. the
+// GHA PushEvent shape: head = the step commit, before = its first parent ("" for a root commit),
+// ref = refs/heads/<branch>, created = the step's committer date (landing time), size = number of
+// commits that landed (payload size, also counting commits that are already in the database),
+// commits = the ones handled by this clone (newest first).
+// In the legacy one-event-per-commit mode every commit is its own push: head = the commit,
+// before = "", ref = the remote ref, created = its author date, size = 1.
+type orphanPush struct {
+	head    string
+	before  string
+	ref     string
+	created time.Time
+	size    int
+	commits []string
+}
+
+// branchName - refs/remotes/origin/<name> or refs/heads/<name> -> <name> (anything else, e.g. HEAD,
+// is returned unchanged)
+func branchName(ref string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(ref, "refs/remotes/origin/"), "refs/heads/")
+}
+
+// pushRef - the payload ref of pushes scanned from ref: refs/heads/<name> for a remote branch, the
+// ref itself otherwise (the HEAD fallback)
+func pushRef(ref string) string {
+	if strings.HasPrefix(ref, "refs/remotes/origin/") {
+		return "refs/heads/" + branchName(ref)
+	}
+	return ref
+}
+
+func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo, name string, maybeHide func(string) string, acache *actorCache, skipSet map[string]struct{}, claimedShas *sync.Map) (int, int, int, []int64, error) {
 	var eids []int64
 	repoPath := ctx.ReposDir + repo
 	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
@@ -1328,16 +1404,70 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 		}
 	}
 
-	// Scan the default ref only, --all would also pick upstream history reachable in fork clones.
+	// The default ref first; --all would also pick upstream history reachable in fork clones,
+	// so only `origin/*` branches whose tip moved inside the window are added.
 	defaultRef, err := gitDefaultRef(ctx, repoPath)
 	if err != nil || defaultRef == "" {
 		defaultRef = "HEAD"
 		lib.Printf("Warning: could not determine default ref for %s/%s: %v, using %s\n", db, repo, err, defaultRef)
 	}
+	branches := []orphanBranch{{ref: defaultRef, name: branchName(defaultRef)}}
+	if ctx.OrphanCommitsAllBranches {
+		more, berr := gitOriginBranches(ctx, repoPath, dtFrom)
+		if berr != nil {
+			lib.Printf("Warning: cannot list branches of %s/%s: %v, scanning %s only\n", db, repo, berr, defaultRef)
+		}
+		for _, b := range more {
+			if b.ref != defaultRef {
+				branches = append(branches, b)
+			}
+		}
+		if len(branches) > 1 && ctx.Debug > 0 {
+			lib.Printf("%s/%s: scanning %d branches updated since %s\n", db, repo, len(branches), dtFrom)
+		}
+	}
 
-	shas, commitDates, err := gitListCommits(ctx, repoPath, defaultRef, dtFrom)
-	if err != nil {
-		return 0, 0, 0, nil, fmt.Errorf("gitListCommits failed for %s/%s: %w", db, repo, err)
+	// Every commit is handled once per clone: the default branch claims it first.
+	var pushes []orphanPush
+	var shas []string
+	seen := make(map[string]struct{})
+	for _, b := range branches {
+		var bp []orphanPush
+		var lerr error
+		if ctx.OrphanCommitsGroup {
+			bp, lerr = gitLandedCommits(ctx, repoPath, b, dtFrom)
+		} else {
+			bp, lerr = gitListedCommits(ctx, repoPath, b.ref, dtFrom)
+		}
+		if lerr != nil {
+			if b.ref == defaultRef {
+				return 0, 0, 0, nil, fmt.Errorf("gitListCommits failed for %s/%s: %w", db, repo, lerr)
+			}
+			lib.Printf("Warning: listing commits of %s/%s branch %s failed: %v, skipping it\n", db, repo, b.name, lerr)
+			continue
+		}
+		nCommits, nPushes := 0, 0
+		for _, p := range bp {
+			kept := make([]string, 0, len(p.commits))
+			for _, sha := range p.commits {
+				if _, ok := seen[sha]; ok {
+					continue
+				}
+				seen[sha] = struct{}{}
+				kept = append(kept, sha)
+				shas = append(shas, sha)
+			}
+			if len(kept) == 0 {
+				continue
+			}
+			p.commits = kept
+			pushes = append(pushes, p)
+			nCommits += len(kept)
+			nPushes++
+		}
+		if ctx.OrphanCommitsGroup && nCommits > 0 && ctx.Debug > 0 {
+			lib.Printf("%s/%s: %s: %d commits in %d pushes landed since %s\n", db, repo, b.name, nCommits, nPushes, dtFrom)
+		}
 	}
 
 	if len(shas) == 0 {
@@ -1353,9 +1483,8 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 
 	candidates := make([]string, 0)
 	for _, sha := range shas {
-		shaNorm := normalizeSHA(sha)
-		if _, inSkip := skipSet[shaNorm]; !inSkip {
-			candidates = append(candidates, shaNorm)
+		if _, inSkip := skipSet[sha]; !inSkip {
+			candidates = append(candidates, sha)
 		}
 	}
 
@@ -1396,9 +1525,11 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 		}
 	}
 
+	restoreSet := make(map[string]struct{})
 	toRestore := make([]string, 0, len(candidates))
 	for _, sha := range candidates {
 		if _, inExisting := existingSet[sha]; !inExisting {
+			restoreSet[sha] = struct{}{}
 			toRestore = append(toRestore, sha)
 		}
 	}
@@ -1414,23 +1545,41 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 		lib.Printf("%s/%s: need to restore %d orphan commits\n", db, repo, len(toRestore))
 	}
 
-	pageSize := ctx.GitCommitsBatch
-	if pageSize <= 0 {
-		pageSize = 1000
+	// Metadata of the commits to restore plus the heads of their pushes (the event actor
+	// is the head's committer, and a head may itself be in the database already).
+	metaShas := make([]string, 0, len(toRestore))
+	metaShas = append(metaShas, toRestore...)
+	metaSet := make(map[string]struct{}, len(toRestore))
+	for _, sha := range toRestore {
+		metaSet[sha] = struct{}{}
+	}
+	for _, p := range pushes {
+		if _, ok := metaSet[p.head]; ok {
+			continue
+		}
+		for _, sha := range p.commits {
+			if _, ok := restoreSet[sha]; ok {
+				metaSet[p.head] = struct{}{}
+				metaShas = append(metaShas, p.head)
+				break
+			}
+		}
 	}
 
+	pageSize := batch
+
 	infoMap := make(map[string]commitInfo)
-	for i := 0; i < len(toRestore); i += pageSize {
+	for i := 0; i < len(metaShas); i += pageSize {
 		j := i + pageSize
-		if j > len(toRestore) {
-			j = len(toRestore)
+		if j > len(metaShas) {
+			j = len(metaShas)
 		}
-		batchInfos, ierr := gitCommitInfoBatch(ctx, repoPath, toRestore[i:j])
+		batchInfos, ierr := gitCommitInfoBatch(ctx, repoPath, metaShas[i:j])
 		for sha, info := range batchInfos {
 			infoMap[normalizeSHA(sha)] = info
 		}
 		if ierr != nil {
-			lib.Printf("Warning: git_commits.sh error for %s/%s batch %d-%d/%d: %v\n", db, repo, i, j, len(toRestore), ierr)
+			lib.Printf("Warning: git_commits.sh error for %s/%s batch %d-%d/%d: %v\n", db, repo, i, j, len(metaShas), ierr)
 		}
 	}
 
@@ -1439,12 +1588,21 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 	}
 
 	if ctx.Debug > 0 {
-		lib.Printf("Fetched commit metadata for %s/%s: %d SHAs, %d records\n", db, repo, len(toRestore), len(infoMap))
+		lib.Printf("Fetched commit metadata for %s/%s: %d SHAs, %d records\n", db, repo, len(metaShas), len(infoMap))
 	}
 
-	repoID, err := getRepoID(con, repo)
+	if name != repo && ctx.Debug > 0 {
+		lib.Printf("%s/%s: attributing restored commits to %s (current name)\n", db, repo, name)
+	}
+	repoID, err := getRepoID(con, name)
 	if err != nil {
 		return 1, len(shas), 0, nil, err
+	}
+	if repoID == 0 && name != repo {
+		repoID, err = getRepoID(con, repo)
+		if err != nil {
+			return 1, len(shas), 0, nil, err
+		}
 	}
 	if repoID == 0 {
 		if ctx.Debug > 0 {
@@ -1461,38 +1619,18 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide fun
 		_ = tx.Rollback()
 	}()
 
-	// 	insEventSQL := `
-	// insert into gha_events(id, type, actor_id, repo_id, public, created_at, dup_actor_login, dup_repo_name)
-	// values($1,$2,$3,$4,true,$5,$6,$7)
-	// on conflict do nothing
-	// `
 	insEventSQL := `
 insert into gha_events(id, type, actor_id, repo_id, created_at, dup_actor_login, dup_repo_name)
 values($1,$2,$3,$4,$5,$6,$7)
 on conflict do nothing
 `
 
-	// 	insPayloadSQL := `
-	// insert into gha_payloads(event_id, size, ref, head, befor, action, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at)
-	// values($1,$2,$3,$4,$5,'restored_orphan_commit',$6,$7,$8,$9,$10,$11)
-	// on conflict do nothing
-	// `
 	insPayloadSQL := `
 insert into gha_payloads(event_id, size, ref, head, befor, action, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at)
 values($1,$2,$3,$4,$5,'restored_orphan_commit',$6,$7,$8,$9,$10)
 on conflict do nothing
 `
 
-	// 	insCommitSQL := `
-	// insert into gha_commits(
-	//   sha, event_id, author_name, encrypted_email, message,
-	//   is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at,
-	//   author_id, committer_id, dup_author_login, dup_committer_login,
-	//   author_email, committer_name, committer_email, origin
-	// )
-	// values($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,2)
-	// on conflict do nothing
-	// `
 	insCommitSQL := `
 insert into gha_commits(
   sha, event_id, author_name, message,
@@ -1529,106 +1667,155 @@ on conflict do nothing
 	defer func() { _ = insRoleStmt.Close() }()
 
 	nRestored := 0
-	for _, sha := range toRestore {
-		shaNorm := normalizeSHA(sha)
-		ci, ok := infoMap[shaNorm]
+	for _, push := range pushes {
+		// Commits of this push that can be restored: not in the database, with git metadata,
+		// not restored by another clone meanwhile (claim late: an un-restorable alias must not
+		// block a valid one).
+		todo := make([]string, 0, len(push.commits))
+		for _, sha := range push.commits {
+			if _, ok := restoreSet[sha]; !ok {
+				continue
+			}
+			if _, ok := infoMap[sha]; !ok {
+				if ctx.Debug > 0 {
+					lib.Printf("Warning: missing git metadata for %s/%s sha %s\n", db, repo, sha)
+				}
+				continue
+			}
+			todo = append(todo, sha)
+		}
+		if len(todo) == 0 {
+			continue
+		}
+		hi, ok := infoMap[push.head]
 		if !ok {
 			if ctx.Debug > 0 {
-				lib.Printf("Warning: missing git metadata for %s/%s sha %s\n", db, repo, shaNorm)
+				lib.Printf("Warning: missing git metadata for %s/%s push head %s, skipping %d commits\n", db, repo, push.head, len(todo))
 			}
 			continue
 		}
-
-		authorNameRaw := strings.ReplaceAll(ci.AuthorName, "\x00", "")
-		authorEmailRaw := strings.ReplaceAll(ci.AuthorEmail, "\x00", "")
-		commNameRaw := strings.ReplaceAll(ci.CommitterName, "\x00", "")
-		commEmailRaw := strings.ReplaceAll(ci.CommitterEmail, "\x00", "")
-		msgRaw := strings.ReplaceAll(ci.Message, "\x00", "")
-
-		authorName := lib.TruncToBytes(maybeHide(authorNameRaw), 120)
-		authorEmail := lib.TruncToBytes(maybeHide(authorEmailRaw), 160)
-		msg := lib.TruncToBytes(maybeHide(msgRaw), 0xffff)
-
-		authorID, authorLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, authorNameRaw, authorEmailRaw)
-		commID, commLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, commNameRaw, commEmailRaw)
-
-		dupAuthorLogin := authorLogin
-		if dupAuthorLogin == "" {
-			dupAuthorLogin = authorNameRaw
-		}
-		dupAuthorLogin = lib.TruncToBytes(maybeHide(dupAuthorLogin), 120)
-
-		dupCommLogin := ""
-		if commLogin != "" {
-			dupCommLogin = lib.TruncToBytes(maybeHide(commLogin), 120)
-		}
-
-		createdAt, okDt := commitDates[shaNorm]
-		if !okDt {
-			lib.Printf("Warning: missing commit date for %s/%s sha %s, skipping\n", db, repo, shaNorm)
-			continue
-		}
-		// Claim late: an un-restorable alias must not block a valid one.
-		if _, loaded := claimedShas.LoadOrStore(shaNorm, struct{}{}); loaded {
-			continue
-		}
-		eventID := lib.NegativeArtificialID([]string{"PushEvent", repo, shaNorm})
-		if conflict, cerr := orphanEventConflict(tx, eventID, repo, shaNorm, createdAt); cerr != nil || conflict {
-			if cerr != nil {
-				lib.Printf("Warning: event id check failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, cerr)
+		claimed := make([]string, 0, len(todo))
+		for _, sha := range todo {
+			if _, loaded := claimedShas.LoadOrStore(sha, struct{}{}); loaded {
+				continue
 			}
+			claimed = append(claimed, sha)
+		}
+		if len(claimed) == 0 {
 			continue
 		}
 
-		if _, err := insEventStmt.Exec(
-			eventID, "PushEvent", authorID, repoID, createdAt, dupAuthorLogin, repo,
-		); err != nil {
-			lib.Printf("Warning: insert gha_events failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, err)
+		// The event actor: GHA's pusher - the committer of the step commit, or its author when
+		// GitHub's web-flow identity committed it (UI merges); the legacy shape uses the author.
+		actorNameRaw := strings.ReplaceAll(hi.CommitterName, "\x00", "")
+		actorEmailRaw := strings.ReplaceAll(hi.CommitterEmail, "\x00", "")
+		if !ctx.OrphanCommitsGroup || strings.EqualFold(strings.TrimSpace(actorEmailRaw), "noreply@github.com") {
+			actorNameRaw = strings.ReplaceAll(hi.AuthorName, "\x00", "")
+			actorEmailRaw = strings.ReplaceAll(hi.AuthorEmail, "\x00", "")
+		}
+		actorID, actorLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, actorNameRaw, actorEmailRaw)
+		dupActorLogin := actorLogin
+		if dupActorLogin == "" {
+			dupActorLogin = actorNameRaw
+		}
+		dupActorLogin = lib.TruncToBytes(maybeHide(dupActorLogin), 120)
+
+		createdAt := push.created
+		eventID := lib.NegativeArtificialID([]string{"PushEvent", name, push.head})
+		exists, conflict, existingDt, cerr := orphanEventCheck(tx, eventID, name, push.head)
+		if cerr != nil {
+			lib.Printf("Warning: event id check failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, push.head, cerr)
 			continue
 		}
-
-		if _, err := insPayloadStmt.Exec(
-			// eventID, 1, defaultRef, shaNorm, "", authorID, dupAuthorLogin, repoID, repo, "PushEvent", createdAt,
-			eventID, 1, defaultRef, shaNorm, "", dupAuthorLogin, repoID, repo, "PushEvent", createdAt,
-		); err != nil {
-			lib.Printf("Warning: insert gha_payloads failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, err)
+		if conflict {
 			continue
 		}
-
-		commRoleName := lib.TruncToBytes(maybeHide(commNameRaw), 160)
-		commRoleEmail := lib.TruncToBytes(maybeHide(commEmailRaw), 160)
-
-		if _, err := insCommitStmt.Exec(
-			// shaNorm, eventID, authorName, authorEmail, msg,
-			shaNorm, eventID, authorName, msg,
-			authorID, dupAuthorLogin, repoID, repo, "PushEvent", createdAt,
-			authorID, commID, dupAuthorLogin, dupCommLogin,
-			authorEmail, commRoleName, commRoleEmail,
-		); err != nil {
-			lib.Printf("Warning: insert gha_commits failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, err)
-			continue
-		}
-
-		ev := pushEvent{EventID: eventID, RepoID: repoID, RepoName: repo, CreatedAt: createdAt}
-		if InsertAuthorRole {
-			if err := insertRoles(insRoleStmt, shaNorm, ev, "Author", authorID, authorLogin, lib.TruncToBytes(maybeHide(authorNameRaw), 160), lib.TruncToBytes(maybeHide(authorEmailRaw), 160), maybeHide); err != nil {
-				lib.Printf("Warning: insert Author role failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, err)
+		if exists {
+			// The same push is already there (a legacy one-event-per-commit row or an earlier
+			// run) - its remaining commits join the existing event.
+			createdAt = existingDt
+		} else {
+			if _, err := insEventStmt.Exec(
+				eventID, "PushEvent", actorID, repoID, createdAt, dupActorLogin, name,
+			); err != nil {
+				lib.Printf("Warning: insert gha_events failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, push.head, err)
+				continue
+			}
+			if _, err := insPayloadStmt.Exec(
+				eventID, push.size, push.ref, push.head, push.before, dupActorLogin, repoID, name, "PushEvent", createdAt,
+			); err != nil {
+				lib.Printf("Warning: insert gha_payloads failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, push.head, err)
+				continue
 			}
 		}
-		if InsertCommitterRole {
-			if err := insertRoles(insRoleStmt, shaNorm, ev, "Committer", commID, commLogin, commRoleName, commRoleEmail, maybeHide); err != nil {
-				lib.Printf("Warning: insert Committer role failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, err)
-			}
-		}
-		for _, tr := range parseTrailers(ctx, msgRaw) {
-			tID, tLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, tr.Name, tr.Email)
-			if err := insertRoles(insRoleStmt, shaNorm, ev, tr.Role, tID, tLogin, lib.TruncToBytes(maybeHide(tr.Name), 160), lib.TruncToBytes(maybeHide(tr.Email), 160), maybeHide); err != nil {
-				lib.Printf("Warning: insert trailer role failed (db=%s, repo=%s, sha=%s, role=%s): %v\n", db, repo, shaNorm, tr.Role, err)
-			}
+		if ctx.OrphanCommitsGroup && ctx.Debug > 0 {
+			lib.Printf("%s/%s: %s push %s: restoring %d of %d commits\n", db, repo, branchName(push.ref), push.head, len(claimed), push.size)
 		}
 
-		nRestored++
-		eids = append(eids, eventID)
+		nPush := 0
+		for _, shaNorm := range claimed {
+			ci := infoMap[shaNorm]
+
+			authorNameRaw := strings.ReplaceAll(ci.AuthorName, "\x00", "")
+			authorEmailRaw := strings.ReplaceAll(ci.AuthorEmail, "\x00", "")
+			commNameRaw := strings.ReplaceAll(ci.CommitterName, "\x00", "")
+			commEmailRaw := strings.ReplaceAll(ci.CommitterEmail, "\x00", "")
+			msgRaw := strings.ReplaceAll(ci.Message, "\x00", "")
+
+			authorName := lib.TruncToBytes(maybeHide(authorNameRaw), 120)
+			authorEmail := lib.TruncToBytes(maybeHide(authorEmailRaw), 160)
+			msg := lib.TruncToBytes(maybeHide(msgRaw), 0xffff)
+
+			authorID, authorLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, authorNameRaw, authorEmailRaw)
+			commID, commLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, commNameRaw, commEmailRaw)
+
+			dupAuthorLogin := authorLogin
+			if dupAuthorLogin == "" {
+				dupAuthorLogin = authorNameRaw
+			}
+			dupAuthorLogin = lib.TruncToBytes(maybeHide(dupAuthorLogin), 120)
+
+			dupCommLogin := ""
+			if commLogin != "" {
+				dupCommLogin = lib.TruncToBytes(maybeHide(commLogin), 120)
+			}
+
+			commRoleName := lib.TruncToBytes(maybeHide(commNameRaw), 160)
+			commRoleEmail := lib.TruncToBytes(maybeHide(commEmailRaw), 160)
+
+			if _, err := insCommitStmt.Exec(
+				shaNorm, eventID, authorName, msg,
+				actorID, dupActorLogin, repoID, name, "PushEvent", createdAt,
+				authorID, commID, dupAuthorLogin, dupCommLogin,
+				authorEmail, commRoleName, commRoleEmail,
+			); err != nil {
+				lib.Printf("Warning: insert gha_commits failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, err)
+				continue
+			}
+
+			ev := pushEvent{EventID: eventID, RepoID: repoID, RepoName: name, CreatedAt: createdAt}
+			if InsertAuthorRole {
+				if err := insertRoles(insRoleStmt, shaNorm, ev, "Author", authorID, authorLogin, lib.TruncToBytes(maybeHide(authorNameRaw), 160), lib.TruncToBytes(maybeHide(authorEmailRaw), 160), maybeHide); err != nil {
+					lib.Printf("Warning: insert Author role failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, err)
+				}
+			}
+			if InsertCommitterRole {
+				if err := insertRoles(insRoleStmt, shaNorm, ev, "Committer", commID, commLogin, commRoleName, commRoleEmail, maybeHide); err != nil {
+					lib.Printf("Warning: insert Committer role failed (db=%s, repo=%s, sha=%s): %v\n", db, repo, shaNorm, err)
+				}
+			}
+			for _, tr := range parseTrailers(ctx, msgRaw) {
+				tID, tLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, tr.Name, tr.Email)
+				if err := insertRoles(insRoleStmt, shaNorm, ev, tr.Role, tID, tLogin, lib.TruncToBytes(maybeHide(tr.Name), 160), lib.TruncToBytes(maybeHide(tr.Email), 160), maybeHide); err != nil {
+					lib.Printf("Warning: insert trailer role failed (db=%s, repo=%s, sha=%s, role=%s): %v\n", db, repo, shaNorm, tr.Role, err)
+				}
+			}
+			nPush++
+		}
+		if nPush > 0 {
+			nRestored += nPush
+			eids = append(eids, eventID)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1660,6 +1847,92 @@ func selectSkipCommits(ctx *lib.Ctx, con *sql.DB) (map[string]struct{}, error) {
 		out[normalizeSHA(sha)] = struct{}{}
 	}
 	return out, rows.Err()
+}
+
+// selectRepoAliases - historical repo name -> current name for repositories that were renamed.
+// Derived from data, not from `gha_repos.alias` (set once at project setup, it goes stale after later renames):
+// for every `gha_repos` (id, name) row the newest native GHA event (0 < id < 2^48, so artificial rows written
+// by get_repos/ghapi2db never influence the choice; index (repo_id, dup_repo_name, created_at)) is looked up,
+// the current name of a repository id is the name with the newest such event and every other name of that id
+// maps to it. A name that is current for one id and historical for another one is ambiguous and never mapped.
+func selectRepoAliases(con *sql.DB) (map[string]string, error) {
+	type newest struct {
+		createdAt time.Time
+		eventID   int64
+		valid     bool
+	}
+	type named struct {
+		name string
+		last newest
+	}
+	out := make(map[string]string)
+	rows, err := con.Query(
+		`select r.id, r.name, n.created_at, n.id from gha_repos r left join lateral (` +
+			`select e.created_at, e.id from gha_events e where e.repo_id = r.id and e.dup_repo_name = r.name ` +
+			`and e.id > 0 and e.id < 281474976710656 order by e.created_at desc, e.id desc limit 1) n on true`,
+	)
+	if err != nil {
+		return out, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	byID := make(map[int64][]named)
+	for rows.Next() {
+		var (
+			repoID    int64
+			name      string
+			createdAt sql.NullTime
+			eventID   sql.NullInt64
+		)
+		if err := rows.Scan(&repoID, &name, &createdAt, &eventID); err != nil {
+			return out, err
+		}
+		byID[repoID] = append(byID[repoID], named{name: name, last: newest{createdAt.Time, eventID.Int64, createdAt.Valid}})
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+
+	ambiguous := make(map[string]struct{})
+	for _, names := range byID {
+		if len(names) < 2 {
+			continue
+		}
+		current := -1
+		for i, n := range names {
+			if !n.last.valid {
+				continue
+			}
+			if current < 0 || n.last.createdAt.After(names[current].last.createdAt) ||
+				(n.last.createdAt.Equal(names[current].last.createdAt) && n.last.eventID > names[current].last.eventID) {
+				current = i
+			}
+		}
+		if current < 0 {
+			continue
+		}
+		currentName := names[current].name
+		for i, n := range names {
+			if i == current {
+				continue
+			}
+			if prev, ok := out[n.name]; ok && prev != currentName {
+				ambiguous[n.name] = struct{}{}
+			}
+			out[n.name] = currentName
+		}
+	}
+	for name := range out {
+		if _, ok := out[out[name]]; ok {
+			// the current name of one id is a historical name of another one
+			ambiguous[name] = struct{}{}
+			ambiguous[out[name]] = struct{}{}
+		}
+	}
+	for name := range ambiguous {
+		delete(out, name)
+	}
+	return out, nil
 }
 
 func getRepoID(con *sql.DB, repoName string) (int64, error) {
@@ -1702,6 +1975,167 @@ func gitListCommits(ctx *lib.Ctx, repoPath, ref string, since time.Time) ([]stri
 	return shas, dates, nil
 }
 
+// gitListedCommits - the legacy listing (gitListCommits: commits whose committer date is inside
+// the window, day granularity) as one-commit pushes: head = the commit, created = its author date.
+func gitListedCommits(ctx *lib.Ctx, repoPath, ref string, since time.Time) ([]orphanPush, error) {
+	shas, dates, err := gitListCommits(ctx, repoPath, ref, since)
+	if err != nil {
+		return nil, err
+	}
+	pushes := make([]orphanPush, 0, len(shas))
+	for _, sha := range shas {
+		shaNorm := normalizeSHA(sha)
+		dt, ok := dates[shaNorm]
+		if !ok {
+			lib.Printf("Warning: missing commit date for %s sha %s, skipping\n", repoPath, shaNorm)
+			continue
+		}
+		pushes = append(pushes, orphanPush{head: shaNorm, before: "", ref: ref, created: dt, size: 1, commits: []string{shaNorm}})
+	}
+	return pushes, nil
+}
+
+// gitOriginBranches - `refs/remotes/origin/*` branches (sorted by name, `origin/HEAD` excluded)
+// whose tip's committer date is after `since`.
+func gitOriginBranches(ctx *lib.Ctx, repoPath string, since time.Time) ([]orphanBranch, error) {
+	out, err := lib.ExecCommand(
+		ctx,
+		[]string{"git", "-C", repoPath, "for-each-ref", "--format=%(refname) %(committerdate:unix)", "refs/remotes/origin/"},
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var branches []orphanBranch
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) != 2 || fields[0] == "refs/remotes/origin/HEAD" || !strings.HasPrefix(fields[0], "refs/remotes/origin/") {
+			continue
+		}
+		ts, terr := strconv.ParseInt(fields[1], 10, 64)
+		if terr != nil || ts <= since.Unix() {
+			continue
+		}
+		branches = append(branches, orphanBranch{ref: fields[0], name: branchName(fields[0])})
+	}
+	return branches, nil
+}
+
+// gitLandedCommits - commits that became reachable from `branch` after `since`, grouped by the
+// first-parent step that brought them in (the GHA PushEvent shape). The boundary is the branch's
+// first-parent tip as of `since` (`git rev-list -1 --first-parent --before=…`); when there is
+// none (young repository) everything reachable from the branch landed inside the window.
+// Pushes are returned oldest first, commits inside a push in `git log` order (newest first).
+func gitLandedCommits(ctx *lib.Ctx, repoPath string, branch orphanBranch, since time.Time) ([]orphanPush, error) {
+	out, err := lib.ExecCommand(ctx, []string{"git", "-C", repoPath, "rev-parse", "--verify", "--quiet", branch.ref + "^{commit}"}, nil)
+	if err != nil {
+		return nil, err
+	}
+	tip := normalizeSHA(strings.TrimSpace(out))
+	if !isValidNonZeroSHA40(tip) {
+		return nil, fmt.Errorf("cannot resolve %s: %q", branch.ref, strings.TrimSpace(out))
+	}
+
+	out, err = lib.ExecCommand(
+		ctx,
+		[]string{"git", "-C", repoPath, "rev-list", "-1", "--first-parent", "--before=@" + strconv.FormatInt(since.Unix(), 10), branch.ref},
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	boundary := normalizeSHA(strings.TrimSpace(out))
+	rangeSpec := branch.ref
+	if isValidNonZeroSHA40(boundary) {
+		if boundary == tip {
+			return nil, nil
+		}
+		rangeSpec = boundary + ".." + branch.ref
+	}
+
+	out, err = lib.ExecCommand(ctx, []string{"git", "-C", repoPath, "log", "--format=%H %P %ct", rangeSpec}, nil)
+	if err != nil {
+		return nil, err
+	}
+	type landed struct {
+		parents []string
+		created time.Time
+		order   int
+	}
+	commits := make(map[string]landed)
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 || !isValidNonZeroSHA40(fields[0]) {
+			continue
+		}
+		ts, terr := strconv.ParseInt(fields[len(fields)-1], 10, 64)
+		if terr != nil {
+			continue
+		}
+		parents := make([]string, 0, len(fields)-2)
+		for _, p := range fields[1 : len(fields)-1] {
+			if isValidNonZeroSHA40(p) {
+				parents = append(parents, normalizeSHA(p))
+			}
+		}
+		commits[normalizeSHA(fields[0])] = landed{parents: parents, created: time.Unix(ts, 0).UTC(), order: len(commits)}
+	}
+	if _, ok := commits[tip]; !ok {
+		return nil, nil
+	}
+
+	// First-parent steps from the tip down to the boundary, oldest first.
+	var steps []string
+	for sha := tip; ; {
+		c, ok := commits[sha]
+		if !ok {
+			break
+		}
+		steps = append(steps, sha)
+		if len(c.parents) == 0 {
+			break
+		}
+		sha = c.parents[0]
+	}
+	reverseStringsInPlace(steps)
+
+	// A commit belongs to the oldest step it is reachable from: `<previous step>..<step>`.
+	assigned := make(map[string]struct{}, len(commits))
+	pushes := make([]orphanPush, 0, len(steps))
+	for _, step := range steps {
+		var group []string
+		stack := []string{step}
+		for len(stack) > 0 {
+			sha := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			c, ok := commits[sha]
+			if !ok {
+				continue
+			}
+			if _, done := assigned[sha]; done {
+				continue
+			}
+			assigned[sha] = struct{}{}
+			group = append(group, sha)
+			stack = append(stack, c.parents...)
+		}
+		sort.Slice(group, func(i, j int) bool { return commits[group[i]].order < commits[group[j]].order })
+		before := ""
+		if len(commits[step].parents) > 0 {
+			before = commits[step].parents[0]
+		}
+		pushes = append(pushes, orphanPush{
+			head:    step,
+			before:  before,
+			ref:     pushRef(branch.ref),
+			created: commits[step].created,
+			size:    len(group),
+			commits: group,
+		})
+	}
+	return pushes, nil
+}
+
 func gitDefaultRef(ctx *lib.Ctx, repoPath string) (string, error) {
 	out, err := lib.ExecCommand(ctx, []string{"git", "-C", repoPath, "symbolic-ref", "refs/remotes/origin/HEAD"}, nil)
 	if err != nil {
@@ -1715,9 +2149,12 @@ func gitDefaultRef(ctx *lib.Ctx, repoPath string) (string, error) {
 	return ref, nil
 }
 
-// orphanEventConflict - true when eventID already exists for a DIFFERENT event (hash collision):
-// full identity check: type, repo, created_at and payload head (commit sha) when present
-func orphanEventConflict(tx *sql.Tx, eventID int64, repo, sha string, createdAt time.Time) (bool, error) {
+// orphanEventCheck - how eventID relates to the push (repo, head): exists = the same push already
+// has a row (an earlier run or a legacy one-event-per-commit row; its created_at is returned so the
+// remaining commits join it), conflict = a different event owns the id (hash collision - type, repo
+// or payload head differ). created_at is not part of the identity: the legacy shape stamped the
+// author date, the push shape stamps the landing time.
+func orphanEventCheck(tx *sql.Tx, eventID int64, repo, sha string) (bool, bool, time.Time, error) {
 	var eType, eRepo string
 	var eDt time.Time
 	var head *string
@@ -1726,14 +2163,14 @@ func orphanEventConflict(tx *sql.Tx, eventID int64, repo, sha string, createdAt 
 		eventID,
 	).Scan(&eType, &eRepo, &eDt, &head)
 	if err == sql.ErrNoRows {
-		return false, nil
+		return false, false, time.Time{}, nil
 	}
 	if err != nil {
-		return false, err
+		return false, false, time.Time{}, err
 	}
-	if eType != "PushEvent" || eRepo != repo || !eDt.Equal(createdAt) || head == nil || *head != sha {
+	if eType != "PushEvent" || eRepo != repo || head == nil || *head != sha {
 		lib.Printf("orphan event id %d conflict: existing (%s, %s, %v), skipping\n", eventID, eType, eRepo, eDt)
-		return true, nil
+		return true, true, eDt, nil
 	}
-	return false, nil
+	return true, false, eDt, nil
 }

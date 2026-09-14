@@ -583,7 +583,15 @@ impl Side {
                 c[0].to_string()
             }
         });
-        if l.contains("commits found since ") || l.contains("commits since ") {
+        if [
+            "commits found since ",
+            "commits since ",
+            "landed since ",
+            "branches updated since ",
+        ]
+        .iter()
+        .any(|needle| l.contains(needle))
+        {
             return SINCE.replace(&l, " since <ts>").into_owned();
         }
         ARG_NOW.replace_all(&l, "${1}<now>").into_owned()
@@ -2668,10 +2676,22 @@ fn orphan_wide_range() {
         "Restoring orphan commits: processing DB '<db>' (1 repos, threads 1)",
     );
     rs.expect_line(0, "<db>/org/repo: found 4 commits since <ts>");
+    rs.expect_line(
+        0,
+        "<db>/org/repo: main: 4 commits in 4 pushes landed since <ts>",
+    );
+    rs.expect_no_prefix(0, "<db>/org/repo: scanning ");
     rs.expect_line(0, "<db>/org/repo: need to restore 4 orphan commits");
     rs.expect_line(
         0,
         "Fetched commit metadata for <db>/org/repo: 4 SHAs, 4 records",
+    );
+    rs.expect_line(
+        0,
+        &format!(
+            "<db>/org/repo: main push {}: restoring 1 of 1 commits",
+            rs.shas[3]
+        ),
     );
     rs.expect_line(0, "<db>/org/repo: successfully restored 4 orphan commits");
     rs.expect_line(
@@ -2691,7 +2711,9 @@ fn orphan_wide_range() {
     expected.sort();
     assert_eq!(rs.commit_shas(), expected);
 
-    // Artificial events / payloads / commits (Carol is a known actor).
+    // Artificial events / payloads / commits: each commit is its own
+    // first-parent step, the event actor is the step's committer (Dev - also
+    // for commit 4, whose author Carol is a known actor).
     let nids: Vec<String> = (0..4)
         .map(|i| negative_artificial_id(&["PushEvent", "org/repo", &rs.shas[i]]).to_string())
         .collect();
@@ -2726,16 +2748,17 @@ fn orphan_wide_range() {
         strs(&[
             &nids[3],
             "PushEvent",
-            "3",
+            "0",
             "100",
             "2020-01-04 00:00:00",
-            "carol",
+            "Dev",
             "org/repo",
         ]),
     ];
     // `order by id` sorts the `id::text` output column, i.e. as text.
     events.sort();
     assert_eq!(restored_events(&rs), events);
+    // The push shape: ref = the branch, before = the parent, size = commits landed.
     assert_eq!(
         rs.query(&format!(
             "select size::text, ref, head, befor, action, dup_actor_login, dup_repo_id::text, dup_repo_name, dup_type, dup_created_at::text from gha_payloads where event_id = {}",
@@ -2743,9 +2766,9 @@ fn orphan_wide_range() {
         )),
         vec![strs(&[
             "1",
-            "refs/remotes/origin/main",
+            "refs/heads/main",
             &rs.shas[1],
-            "",
+            &rs.shas[0],
             "restored_orphan_commit",
             "Dev",
             "100",
@@ -2753,6 +2776,21 @@ fn orphan_wide_range() {
             "PushEvent",
             "2020-01-02 00:00:00",
         ])]
+    );
+    assert_eq!(
+        rs.column(&format!(
+            "select befor from gha_payloads where event_id = {}",
+            nids[0]
+        )),
+        strs(&[""])
+    );
+    // Commit 4: author Carol (3), committer / event actor Dev (0).
+    assert_eq!(
+        rs.query(&format!(
+            "select author_id::text, committer_id::text, dup_author_login, dup_committer_login, dup_actor_id::text, dup_actor_login from gha_commits where sha = '{}'",
+            rs.shas[3]
+        )),
+        vec![strs(&["3", "0", "carol", "", "0", "Dev"])]
     );
     assert_eq!(
         rs.query(&format!(
@@ -2882,7 +2920,7 @@ fn orphan_texts_present() {
     );
     assert_eq!(
         rs.column("select actor_id::text || '/' || actor_login from gha_texts where event_id < 0 group by 1 order by 1"),
-        strs(&["0/Dev", "3/carol"])
+        strs(&["0/Dev"])
     );
 }
 
@@ -3060,6 +3098,514 @@ insert into gha_payloads(event_id, size, ref, head, befor, action, dup_actor_log
     );
 }
 
+// ------------------------------------ orphan restore: push shape / branches
+
+/// A `Step::Shell` running `script` inside the working clone of `org/repo`
+/// (`$G` = git with the fixed Dev identity; `{sha<n>}` placeholders are
+/// expanded by the harness).
+fn in_clone(script: &str) -> Step {
+    Step::Shell(leak(&format!(
+        "set -e; cd {{dir}}/repos/org/repo; G='git -c user.name=Dev -c user.email=dev@example.com -c commit.gpgsign=false'; {script}"
+    )))
+}
+
+/// Shell snippet committing a new file `name` dated `date` (author and
+/// committer) with the Dev identity.
+fn commit_cmd(name: &str, date: &str, msg: &str) -> String {
+    format!(
+        "echo {name} > {name}.txt; git add {name}.txt; GIT_AUTHOR_DATE={date} GIT_COMMITTER_DATE={date} $G commit -q -m '{msg}'; "
+    )
+}
+
+/// Feature branch `feat` (two commits dated 2020-01-10/11 on top of commit 4)
+/// merged into `origin/main` with a merge commit authored at `author_date`
+/// and committed at `committer_date` (ISO 8601).
+fn merged_feature(author_date: &str, committer_date: &str) -> Step {
+    in_clone(&format!(
+        "git checkout -q -b feat {{sha3}}; {}{}git checkout -q -b main2 {{sha3}}; GIT_AUTHOR_DATE={author_date} GIT_COMMITTER_DATE={committer_date} $G merge -q --no-ff -m 'merge feat' feat; git update-ref refs/remotes/origin/main HEAD; git checkout -q main",
+        commit_cmd("f1", "2020-01-10T00:00:00Z", "feature 1"),
+        commit_cmd("f2", "2020-01-11T00:00:00Z", "feature 2"),
+    ))
+}
+
+/// `git rev-parse <spec>` in the working clone of `org/repo`.
+fn rev(rs: &Side, spec: &str) -> String {
+    git(
+        &rs.dir().join("repos").join("org").join("repo"),
+        "2020-01-01T00:00:00Z",
+        &[],
+        &["rev-parse", spec],
+    )
+    .trim()
+    .to_string()
+}
+
+/// Today's date (UTC) — "recent" fixture commits are dated at its midnight so
+/// both sides build identical SHAs and the commits fall into a short window.
+fn today() -> String {
+    Utc::now().format("%Y-%m-%d").to_string()
+}
+
+/// `(sha, event_id, dup_created_at)` of `gha_commits`.
+fn commit_events(rs: &Side) -> Vec<Vec<String>> {
+    rs.query("select sha, event_id::text, dup_created_at::text from gha_commits order by sha")
+}
+
+#[test]
+fn orphan_landing_window() {
+    // A feature branch with 2020-dated commits merged today: everything that
+    // landed on main inside the window is restored as one push (head = the
+    // merge commit, before = its first parent, size 3, created_at = the
+    // landing time), and a re-run finds nothing new.
+    let today = today();
+    let case = Case::new("orphan_landing_window")
+        .debug()
+        .orphan("2 days")
+        .steps(vec![
+            merged_feature(
+                leak(&format!("{today}T00:00:00Z")),
+                leak(&format!("{today}T00:00:01Z")),
+            ),
+            Step::Run(Vec::new()),
+            Step::Run(Vec::new()),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    assert_eq!(rs.code(1), Some(0));
+    let merge = rev(&rs, "refs/remotes/origin/main");
+    let f2 = rev(&rs, &format!("{merge}^2"));
+    let f1 = rev(&rs, &format!("{merge}^2^"));
+    assert_eq!(rev(&rs, &format!("{merge}^1")), rs.shas[3]);
+    rs.expect_no_prefix(0, "<db>/org/repo: scanning ");
+    rs.expect_line(
+        0,
+        "<db>/org/repo: main: 3 commits in 1 pushes landed since <ts>",
+    );
+    rs.expect_line(0, "<db>/org/repo: found 3 commits since <ts>");
+    rs.expect_line(0, "<db>/org/repo: need to restore 3 orphan commits");
+    rs.expect_line(
+        0,
+        "Fetched commit metadata for <db>/org/repo: 3 SHAs, 3 records",
+    );
+    rs.expect_line(
+        0,
+        &format!("<db>/org/repo: main push {merge}: restoring 3 of 3 commits"),
+    );
+    rs.expect_line(0, "<db>/org/repo: successfully restored 3 orphan commits");
+    rs.expect_line(
+        0,
+        "Finished DB '<db>': processed 1 repos, checked 3 commits, restored 3",
+    );
+    rs.expect_line(1, "<db>/org/repo: found 3 commits since <ts>");
+    rs.expect_line(1, "<db>/org/repo: no orphan commits to restore");
+    rs.expect_line(
+        1,
+        "Finished DB '<db>': processed 1 repos, checked 3 commits, restored 0",
+    );
+    let nid = negative_artificial_id(&["PushEvent", "org/repo", &merge]).to_string();
+    let landed = format!("{today} 00:00:01");
+    assert_eq!(
+        restored_events(&rs),
+        vec![strs(&[
+            &nid,
+            "PushEvent",
+            "0",
+            "100",
+            &landed,
+            "Dev",
+            "org/repo"
+        ])]
+    );
+    assert_eq!(
+        rs.query("select size::text, ref, head, befor, action, dup_actor_login, dup_created_at::text from gha_payloads where event_id < 0"),
+        vec![strs(&[
+            "3",
+            "refs/heads/main",
+            &merge,
+            &rs.shas[3],
+            "restored_orphan_commit",
+            "Dev",
+            &landed,
+        ])]
+    );
+    let mut expected = vec![
+        strs(&[&f1, &nid, &landed]),
+        strs(&[&f2, &nid, &landed]),
+        strs(&[&merge, &nid, &landed]),
+    ];
+    expected.sort();
+    assert_eq!(commit_events(&rs), expected);
+}
+
+#[test]
+fn orphan_no_grouping_commit_dates() {
+    // The legacy shape (GHA2DB_ORPHAN_COMMITS_NO_GROUPING): commit dates
+    // instead of landing times, so the 2020-dated feature commits merged today
+    // are missed; one event per commit, ref = the remote ref, no before, the
+    // author as the actor and the author date as created_at.
+    let today = today();
+    let case = Case::new("orphan_no_grouping_commit_dates")
+        .debug()
+        .orphan("2 days")
+        .env("GHA2DB_ORPHAN_COMMITS_NO_GROUPING", "1")
+        .steps(vec![
+            merged_feature(
+                leak(&format!("{today}T00:00:00Z")),
+                leak(&format!("{today}T00:00:01Z")),
+            ),
+            Step::Run(Vec::new()),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    let merge = rev(&rs, "refs/remotes/origin/main");
+    rs.expect_no_prefix(0, "<db>/org/repo: main");
+    rs.expect_line(0, "<db>/org/repo: found 1 commits since <ts>");
+    rs.expect_line(
+        0,
+        "Fetched commit metadata for <db>/org/repo: 1 SHAs, 1 records",
+    );
+    rs.expect_line(0, "<db>/org/repo: successfully restored 1 orphan commits");
+    let nid = negative_artificial_id(&["PushEvent", "org/repo", &merge]).to_string();
+    let authored = format!("{today} 00:00:00");
+    assert_eq!(
+        restored_events(&rs),
+        vec![strs(&[
+            &nid,
+            "PushEvent",
+            "0",
+            "100",
+            &authored,
+            "Dev",
+            "org/repo"
+        ])]
+    );
+    assert_eq!(
+        rs.query("select size::text, ref, head, befor, dup_created_at::text from gha_payloads where event_id < 0"),
+        vec![strs(&[
+            "1",
+            "refs/remotes/origin/main",
+            &merge,
+            "",
+            &authored
+        ])]
+    );
+    assert_eq!(commit_events(&rs), vec![strs(&[&merge, &nid, &authored])]);
+}
+
+#[test]
+fn orphan_legacy_event_reuse() {
+    // A legacy run restored the merge commit alone (its event id is the same
+    // as the push's); the grouped run then adds the merged commits to that
+    // event: no conflict, the existing created_at is kept, the legacy payload
+    // is left alone.
+    let today = today();
+    let case = Case::new("orphan_legacy_event_reuse")
+        .debug()
+        .orphan("2 days")
+        .steps(vec![
+            merged_feature(
+                leak(&format!("{today}T00:00:00Z")),
+                leak(&format!("{today}T00:00:01Z")),
+            ),
+            Step::Run(vec![("GHA2DB_ORPHAN_COMMITS_NO_GROUPING", "1")]),
+            Step::Run(Vec::new()),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    assert_eq!(rs.code(1), Some(0));
+    let merge = rev(&rs, "refs/remotes/origin/main");
+    let f2 = rev(&rs, &format!("{merge}^2"));
+    let f1 = rev(&rs, &format!("{merge}^2^"));
+    rs.expect_line(0, "<db>/org/repo: successfully restored 1 orphan commits");
+    rs.expect_line(1, "<db>/org/repo: found 3 commits since <ts>");
+    rs.expect_line(1, "<db>/org/repo: need to restore 2 orphan commits");
+    // Metadata of the two commits plus the push head (the event actor).
+    rs.expect_line(
+        1,
+        "Fetched commit metadata for <db>/org/repo: 3 SHAs, 3 records",
+    );
+    rs.expect_no_prefix(1, "orphan event id");
+    rs.expect_line(
+        1,
+        &format!("<db>/org/repo: main push {merge}: restoring 2 of 3 commits"),
+    );
+    rs.expect_line(1, "<db>/org/repo: successfully restored 2 orphan commits");
+    let nid = negative_artificial_id(&["PushEvent", "org/repo", &merge]).to_string();
+    let authored = format!("{today} 00:00:00");
+    assert_eq!(
+        restored_events(&rs),
+        vec![strs(&[
+            &nid,
+            "PushEvent",
+            "0",
+            "100",
+            &authored,
+            "Dev",
+            "org/repo"
+        ])]
+    );
+    assert_eq!(
+        rs.query("select size::text, ref, head, befor, dup_created_at::text from gha_payloads where event_id < 0"),
+        vec![strs(&[
+            "1",
+            "refs/remotes/origin/main",
+            &merge,
+            "",
+            &authored
+        ])]
+    );
+    let mut expected = vec![
+        strs(&[&f1, &nid, &authored]),
+        strs(&[&f2, &nid, &authored]),
+        strs(&[&merge, &nid, &authored]),
+    ];
+    expected.sort();
+    assert_eq!(commit_events(&rs), expected);
+}
+
+#[test]
+fn orphan_web_flow_committer() {
+    // A commit committed by GitHub's web-flow identity (UI merge / edit): the
+    // event actor falls back to the author (Carol, a known actor); the commit
+    // row still records the web-flow committer.
+    let case = Case::new("orphan_web_flow_committer")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .steps(vec![
+            in_clone("git checkout -q -b wf {sha3}; echo w > w.txt; git add w.txt; GIT_AUTHOR_NAME='Carol Jones' GIT_AUTHOR_EMAIL=carol@example.com GIT_COMMITTER_NAME=GitHub GIT_COMMITTER_EMAIL=noreply@github.com GIT_AUTHOR_DATE=2020-01-06T00:00:00Z GIT_COMMITTER_DATE=2020-01-06T00:00:00Z $G commit -q -m 'web merge'; git update-ref refs/remotes/origin/main HEAD; git checkout -q main"),
+            Step::Run(Vec::new()),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    let web = rev(&rs, "refs/remotes/origin/main");
+    rs.expect_line(0, "<db>/org/repo: found 5 commits since <ts>");
+    rs.expect_line(0, "<db>/org/repo: successfully restored 5 orphan commits");
+    let nid_web = negative_artificial_id(&["PushEvent", "org/repo", &web]).to_string();
+    let nid4 = negative_artificial_id(&["PushEvent", "org/repo", &rs.shas[3]]).to_string();
+    assert_eq!(
+        rs.query(&format!(
+            "select actor_id::text, dup_actor_login, created_at::text from gha_events where id = {nid_web}"
+        )),
+        vec![strs(&["3", "carol", "2020-01-06 00:00:00"])]
+    );
+    // Commit 4 is also authored by Carol, but committed by Dev: the committer wins.
+    assert_eq!(
+        rs.query(&format!(
+            "select actor_id::text, dup_actor_login from gha_events where id = {nid4}"
+        )),
+        vec![strs(&["0", "Dev"])]
+    );
+    assert_eq!(
+        rs.query(&format!(
+            "select author_id::text, committer_id::text, dup_author_login, dup_committer_login, committer_name, committer_email, dup_actor_id::text, dup_actor_login from gha_commits where sha = '{web}'"
+        )),
+        vec![strs(&[
+            "3",
+            "0",
+            "carol",
+            "",
+            "GitHub",
+            "noreply@github.com",
+            "3",
+            "carol"
+        ])]
+    );
+}
+
+/// `origin/release-1`: one commit (2020-01-06) on top of commit 2.
+fn release_branch() -> Step {
+    in_clone(&format!(
+        "git checkout -q -b rel {{sha1}}; {}git update-ref refs/remotes/origin/release-1 HEAD; git checkout -q main",
+        commit_cmd("r1", "2020-01-06T00:00:00Z", "release fix")
+    ))
+}
+
+#[test]
+fn orphan_all_branches() {
+    // Every origin/* branch updated inside the window is scanned (origin/HEAD
+    // is not a branch); commits already handled via main are not repeated.
+    let case = Case::new("orphan_all_branches")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .steps(vec![release_branch(), Step::Run(Vec::new())]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    let r1 = rev(&rs, "refs/remotes/origin/release-1");
+    rs.expect_line(0, "<db>/org/repo: scanning 2 branches updated since <ts>");
+    rs.expect_line(
+        0,
+        "<db>/org/repo: main: 4 commits in 4 pushes landed since <ts>",
+    );
+    rs.expect_line(
+        0,
+        "<db>/org/repo: release-1: 1 commits in 1 pushes landed since <ts>",
+    );
+    rs.expect_line(0, "<db>/org/repo: found 5 commits since <ts>");
+    rs.expect_line(
+        0,
+        &format!("<db>/org/repo: release-1 push {r1}: restoring 1 of 1 commits"),
+    );
+    rs.expect_line(0, "<db>/org/repo: successfully restored 5 orphan commits");
+    let nid = negative_artificial_id(&["PushEvent", "org/repo", &r1]).to_string();
+    assert_eq!(rs.count("select count(*) from gha_events where id < 0"), 5);
+    assert_eq!(
+        rs.query(&format!(
+            "select size::text, ref, head, befor, dup_created_at::text from gha_payloads where event_id = {nid}"
+        )),
+        vec![strs(&[
+            "1",
+            "refs/heads/release-1",
+            &r1,
+            &rs.shas[1],
+            "2020-01-06 00:00:00"
+        ])]
+    );
+    assert_eq!(rs.commit_shas().len(), 5);
+}
+
+#[test]
+fn orphan_default_branch_only() {
+    // GHA2DB_ORPHAN_COMMITS_DEFAULT_BRANCH_ONLY: the release branch is ignored.
+    let case = Case::new("orphan_default_branch_only")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .env("GHA2DB_ORPHAN_COMMITS_DEFAULT_BRANCH_ONLY", "1")
+        .steps(vec![release_branch(), Step::Run(Vec::new())]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    let r1 = rev(&rs, "refs/remotes/origin/release-1");
+    rs.expect_no_prefix(0, "<db>/org/repo: scanning ");
+    rs.expect_no_prefix(0, "<db>/org/repo: release-1");
+    rs.expect_line(0, "<db>/org/repo: found 4 commits since <ts>");
+    rs.expect_line(0, "<db>/org/repo: successfully restored 4 orphan commits");
+    assert!(!rs.commit_shas().contains(&r1));
+    assert_eq!(rs.commit_shas().len(), 4);
+}
+
+#[test]
+fn orphan_stale_branch_skipped() {
+    // A branch whose tip is older than the window is not scanned at all, and
+    // the default branch has nothing new either.
+    let case = Case::new("orphan_stale_branch_skipped")
+        .debug()
+        .orphan("2 days")
+        .steps(vec![
+            in_clone("git update-ref refs/remotes/origin/old {sha0}"),
+            Step::Run(Vec::new()),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_no_prefix(0, "<db>/org/repo: scanning ");
+    rs.expect_line(0, "<db>/org/repo: no commits found since <ts>");
+    rs.expect_line(
+        0,
+        "Finished DB '<db>': processed 0 repos, checked 0 commits, restored 0",
+    );
+    assert!(rs.commit_shas().is_empty());
+}
+
+#[test]
+fn orphan_branches_shared_history() {
+    // `feat` (f1, f2 on top of commit 4) merged into main (M) and into
+    // `other` (O, on top of commit 3): main claims f1/f2 with M (size 3); O's
+    // push landed 4 commits (O, f2, f1, commit 4) of which only O is new to
+    // this clone - the payload size still says 4.
+    let case = Case::new("orphan_branches_shared_history")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .steps(vec![
+            in_clone(&format!(
+                "git checkout -q -b feat {{sha3}}; {}{}git checkout -q -b main2 {{sha3}}; GIT_AUTHOR_DATE=2020-01-12T00:00:00Z GIT_COMMITTER_DATE=2020-01-12T00:00:00Z $G merge -q --no-ff -m 'merge feat' feat; git update-ref refs/remotes/origin/main HEAD; git checkout -q -b other {{sha2}}; GIT_AUTHOR_DATE=2020-01-13T00:00:00Z GIT_COMMITTER_DATE=2020-01-13T00:00:00Z $G merge -q --no-ff -m 'merge feat into other' feat; git update-ref refs/remotes/origin/other HEAD; git checkout -q main",
+                commit_cmd("f1", "2020-01-10T00:00:00Z", "feature 1"),
+                commit_cmd("f2", "2020-01-11T00:00:00Z", "feature 2"),
+            )),
+            Step::Run(Vec::new()),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    let merge = rev(&rs, "refs/remotes/origin/main");
+    let other = rev(&rs, "refs/remotes/origin/other");
+    let f2 = rev(&rs, &format!("{merge}^2"));
+    let f1 = rev(&rs, &format!("{merge}^2^"));
+    rs.expect_line(0, "<db>/org/repo: scanning 2 branches updated since <ts>");
+    rs.expect_line(
+        0,
+        "<db>/org/repo: main: 7 commits in 5 pushes landed since <ts>",
+    );
+    rs.expect_line(
+        0,
+        "<db>/org/repo: other: 1 commits in 1 pushes landed since <ts>",
+    );
+    rs.expect_line(0, "<db>/org/repo: found 8 commits since <ts>");
+    rs.expect_line(
+        0,
+        &format!("<db>/org/repo: main push {merge}: restoring 3 of 3 commits"),
+    );
+    rs.expect_line(
+        0,
+        &format!("<db>/org/repo: other push {other}: restoring 1 of 4 commits"),
+    );
+    rs.expect_line(0, "<db>/org/repo: successfully restored 8 orphan commits");
+    let nid_m = negative_artificial_id(&["PushEvent", "org/repo", &merge]).to_string();
+    let nid_o = negative_artificial_id(&["PushEvent", "org/repo", &other]).to_string();
+    assert_eq!(rs.count("select count(*) from gha_events where id < 0"), 6);
+    assert_eq!(rs.commit_shas().len(), 8);
+    assert_eq!(
+        rs.query(&format!(
+            "select size::text, ref, head, befor, dup_created_at::text from gha_payloads where event_id = {nid_m}"
+        )),
+        vec![strs(&[
+            "3",
+            "refs/heads/main",
+            &merge,
+            &rs.shas[3],
+            "2020-01-12 00:00:00"
+        ])]
+    );
+    assert_eq!(
+        rs.query(&format!(
+            "select size::text, ref, head, befor, dup_created_at::text from gha_payloads where event_id = {nid_o}"
+        )),
+        vec![strs(&[
+            "4",
+            "refs/heads/other",
+            &other,
+            &rs.shas[2],
+            "2020-01-13 00:00:00"
+        ])]
+    );
+    let mut with_m: Vec<String> = vec![f1, f2, merge];
+    with_m.sort();
+    assert_eq!(
+        rs.column(&format!(
+            "select sha from gha_commits where event_id = {nid_m} order by sha"
+        )),
+        with_m
+    );
+    assert_eq!(
+        rs.column(&format!(
+            "select sha from gha_commits where event_id = {nid_o} order by sha"
+        )),
+        vec![other]
+    );
+}
+
 #[test]
 fn orphan_no_events_for_repo() {
     // gha_events has no rows for the repo: repo id unknown, nothing restored.
@@ -3119,9 +3665,10 @@ fn orphan_actor_resolved() {
         )),
         vec![strs(&["9", "9", "thedev", "thedev", "9", "thedev"])]
     );
+    // The event actors are the committers: all four commits were committed by Dev.
     assert_eq!(
         rs.column("select actor_id::text || '/' || dup_actor_login from gha_events where id < 0 group by 1 order by 1"),
-        strs(&["3/carol", "9/thedev"])
+        strs(&["9/thedev"])
     );
 }
 
@@ -3181,9 +3728,11 @@ fn orphan_batch1() {
 
 #[test]
 fn orphan_two_repos_same_commits() {
-    // A renamed repo cloned twice from the same upstream: the commits are
-    // restored once (DB-wide existence check). Which name wins depends on
-    // the (random, in Go) processing order, so only the totals are checked.
+    // Two *unrelated* repositories (different ids, so no rename is detected -
+    // see the `orphan_alias_*` cases for renames) cloned from the same
+    // upstream: the commits are restored once (DB-wide existence check). Which
+    // name wins depends on the (random, in Go) processing order, so only the
+    // totals are checked.
     let case = Case::new("orphan_two_repos_same_commits")
         .debug()
         .orphan(WIDE_RANGE)
@@ -3193,8 +3742,8 @@ fn orphan_two_repos_same_commits() {
             Step::Shell("git clone -q {dir}/orig/org_repo {dir}/repos/org/renamed"),
             Step::Run(Vec::new()),
         ])
-        .also("insert into gha_repos(id, name, org_id, org_login) values (100, 'org/renamed', 10, 'org');
-insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values (3001, 'PushEvent', 1, 100, '2020-01-02 01:00:00', 10, 'alice', 'org/renamed');");
+        .also("insert into gha_repos(id, name, org_id, org_login) values (101, 'org/renamed', 10, 'org');
+insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values (3001, 'PushEvent', 1, 101, '2020-01-02 01:00:00', 10, 'alice', 'org/renamed');");
     let Some(rs) = both(&case) else {
         return;
     };
@@ -3212,6 +3761,196 @@ insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_acto
     assert_eq!(
         rs.count("select count(distinct dup_repo_name) from gha_commits"),
         1
+    );
+}
+
+/// Bug 61: a renamed repo is cloned under its historical name too. The
+/// current name is the one with the newest native GHA event (`org/repo`,
+/// 2020-01-04; the stale `gha_repos.alias` column claiming `org/renamed` is
+/// ignored). The historical clone is skipped when the current-name clone
+/// exists, so the restored rows are always attributed to the current name
+/// (deterministic, unlike the no-alias case).
+#[test]
+fn orphan_alias_clone_skipped() {
+    let case = Case::new("orphan_alias_clone_skipped")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .steps(vec![
+            Step::Shell("git clone -q {dir}/orig/org_repo {dir}/repos/org/renamed"),
+            Step::Run(Vec::new()),
+        ])
+        .also("update gha_repos set alias = 'org/renamed' where name = 'org/repo';
+insert into gha_repos(id, name, org_id, org_login, alias) values (100, 'org/renamed', 10, 'org', 'org/renamed');
+insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values (3001, 'PushEvent', 1, 100, '2020-01-02 01:00:00', 10, 'alice', 'org/renamed');");
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: processing DB '<db>' (2 repos, threads 1)",
+    );
+    rs.expect_line(
+        0,
+        "<db>/org/renamed: historical alias of org/repo, skipping",
+    );
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: DB '<db>': skipped 1 historical alias clone(s)",
+    );
+    rs.expect_no_prefix(0, "<db>/org/renamed: found ");
+    rs.expect_line(0, "<db>/org/repo: successfully restored 4 orphan commits");
+    rs.expect_line(
+        0,
+        "Finished DB '<db>': processed 1 repos, checked 4 commits, restored 4",
+    );
+    assert_eq!(
+        rs.query("select distinct dup_repo_name from gha_commits union select distinct dup_repo_name from gha_events where id < 0 union select distinct dup_repo_name from gha_payloads where event_id < 0 union select distinct dup_repo_name from gha_commits_roles"),
+        vec![strs(&["org/repo"])]
+    );
+    let mut expected: Vec<String> = rs.shas[..4].to_vec();
+    expected.sort();
+    assert_eq!(rs.commit_shas(), expected);
+}
+
+/// Bug 61: only the historical clone exists - its commits are restored, but
+/// attributed (name, event id hash, repo id) to the current name.
+#[test]
+fn orphan_alias_only_clone() {
+    let case = Case::new("orphan_alias_only_clone")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .repo(Repo::Missing)
+        .steps(vec![
+            Step::Shell("mkdir -p {dir}/repos/org && git clone -q {dir}/orig/org_repo {dir}/repos/org/renamed"),
+            Step::Run(Vec::new()),
+        ])
+        .also("insert into gha_repos(id, name, org_id, org_login) values (100, 'org/renamed', 10, 'org');
+insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values (3001, 'PushEvent', 1, 100, '2020-01-02 01:00:00', 10, 'alice', 'org/renamed');");
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: processing DB '<db>' (2 repos, threads 1)",
+    );
+    rs.expect_no_prefix(0, "Restoring orphan commits: DB '<db>': skipped ");
+    rs.expect_line(
+        0,
+        "restoreOrphanRepo(DB=<db>, repo=org/repo) error: <db>: repo not cloned: <dir>/repos/org/repo",
+    );
+    rs.expect_line(
+        0,
+        "<db>/org/renamed: attributing restored commits to org/repo (current name)",
+    );
+    rs.expect_line(
+        0,
+        "<db>/org/renamed: successfully restored 4 orphan commits",
+    );
+    rs.expect_line(
+        0,
+        "Finished DB '<db>': processed 1 repos, checked 4 commits, restored 4",
+    );
+    assert_eq!(
+        rs.query("select distinct dup_repo_name from gha_commits union select distinct dup_repo_name from gha_events where id < 0 union select distinct dup_repo_name from gha_payloads where event_id < 0 union select distinct dup_repo_name from gha_commits_roles"),
+        vec![strs(&["org/repo"])]
+    );
+    let mut nids: Vec<String> = (0..4)
+        .map(|i| negative_artificial_id(&["PushEvent", "org/repo", &rs.shas[i]]).to_string())
+        .collect();
+    nids.sort();
+    assert_eq!(
+        rs.query("select id::text from gha_events where id < 0 order by id::text")
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        nids
+    );
+    assert_eq!(
+        rs.count("select count(distinct repo_id) from gha_events where id < 0 and repo_id = 100"),
+        1
+    );
+}
+
+/// Bug 61: the historical clone is the only one, but the *newest native*
+/// event names `org/renamed` (2020-01-06) - it is the current name, so the
+/// `org/repo` clone's commits are attributed to it. Artificial rows (negative
+/// or ghapi2db ids) under `org/repo` are newer still and must be ignored.
+#[test]
+fn orphan_alias_newest_name_wins() {
+    let case = Case::new("orphan_alias_newest_name_wins")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .also("insert into gha_repos(id, name, org_id, org_login) values (100, 'org/renamed', 10, 'org');
+insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values
+ (3001, 'PushEvent', 1, 100, '2020-01-06 01:00:00', 10, 'alice', 'org/renamed'),
+ (-3002, 'PushEvent', 1, 100, '2020-01-07 01:00:00', 10, 'alice', 'org/repo'),
+ (281474976710657, 'IssuesEvent', 1, 100, '2020-01-08 01:00:00', 10, 'alice', 'org/repo');");
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(
+        0,
+        "<db>/org/repo: attributing restored commits to org/renamed (current name)",
+    );
+    rs.expect_line(0, "<db>/org/repo: successfully restored 4 orphan commits");
+    assert_eq!(
+        rs.query("select distinct dup_repo_name, repo_id::text from gha_events where id < 0 and id != -3002"),
+        vec![strs(&["org/renamed", "100"])]
+    );
+    assert_eq!(
+        rs.query("select distinct dup_repo_name from gha_commits"),
+        vec![strs(&["org/renamed"])]
+    );
+    let mut nids: Vec<String> = (0..4)
+        .map(|i| negative_artificial_id(&["PushEvent", "org/renamed", &rs.shas[i]]).to_string())
+        .collect();
+    nids.sort();
+    assert_eq!(
+        rs.query("select id::text from gha_events where id < 0 and id != -3002 order by id::text")
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        nids
+    );
+}
+
+/// Bug 61: `org/other` is a different repository (id 200) even though the
+/// stale `gha_repos.alias` column points it at `org/repo` (project alias hacks
+/// like `set alias = 'kubernetes/kubernetes' where name like '%kubernetes'`):
+/// not a rename, both clones are processed under their own names.
+#[test]
+fn orphan_alias_cross_id_ignored() {
+    let case = Case::new("orphan_alias_cross_id_ignored")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .unordered()
+        .extra(&["org/other"])
+        .also("update gha_repos set alias = 'org/repo' where name = 'org/repo';
+insert into gha_repos(id, name, org_id, org_login, alias) values (200, 'org/other', 10, 'org', 'org/repo');
+insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values (3001, 'PushEvent', 1, 200, '2020-01-02 01:00:00', 10, 'alice', 'org/other');");
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: processing DB '<db>' (2 repos, threads 1)",
+    );
+    rs.expect_no_prefix(0, "Restoring orphan commits: DB '<db>': skipped ");
+    rs.expect_no_prefix(0, "<db>/org/other: historical alias");
+    rs.expect_no_prefix(0, "<db>/org/other: attributing");
+    rs.expect_line(0, "<db>/org/repo: successfully restored 4 orphan commits");
+    rs.expect_line(0, "<db>/org/other: successfully restored 4 orphan commits");
+    rs.expect_line(
+        0,
+        "Finished DB '<db>': processed 2 repos, checked 8 commits, restored 8",
+    );
+    assert_eq!(
+        rs.query("select dup_repo_name, repo_id::text, count(*)::text from gha_events where id < 0 group by 1, 2 order by 1"),
+        vec![strs(&["org/other", "200", "4"]), strs(&["org/repo", "100", "4"])]
     );
 }
 

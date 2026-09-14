@@ -24,8 +24,11 @@ type restoreStats struct {
 	checked  int
 	restored int
 	pages    int
-	minDt    time.Time
-	maxDt    time.Time
+	// repos whose stargazer list GitHub refuses to return (restricted to repository admins
+	// since 2026-06-30) although the repository has stars - stars restore only
+	unavailable int
+	minDt       time.Time
+	maxDt       time.Time
 	// event ids of restored rows that produce postprocessed data (comments/reviews - text
 	// sources); forks/releases/stars restores add no gha_texts/labels/issue-PR-link rows,
 	// so they are counted but never collected here (they must not trigger a postprocess)
@@ -45,6 +48,7 @@ func (st *restoreStats) merge(o restoreStats) {
 	st.checked += o.checked
 	st.restored += o.restored
 	st.pages += o.pages
+	st.unavailable += o.unavailable
 	if !o.minDt.IsZero() {
 		st.mark(o.minDt)
 	}
@@ -271,6 +275,9 @@ func restorePass(ctx *lib.Ctx, name string, process restoreRepoFunc) restoreStat
 		}
 	}
 	lib.Printf("%s: processed %d repos, %d pages, checked %d, restored %d\n", name, processed, total.pages, total.checked, total.restored)
+	if total.unavailable > 0 {
+		lib.Printf("%s: stargazer lists unavailable for %d/%d repos (GitHub restricted stargazer/watcher lists to repository admins on 2026-06-30), star events cannot be restored\n", name, total.unavailable, processed)
+	}
 	return total
 }
 
@@ -411,14 +418,17 @@ type gqlStargazer struct {
 }
 
 // ghGraphQLStargazers - stars restore uses GraphQL: the REST stargazers path returns 404 / no usable
-// starred_at data on prod as of 2026-07; GraphQL exposes starredAt directly, ordered by STARRED_AT
-func ghGraphQLStargazers(gctx context.Context, ctx *lib.Ctx, tokens []string, org, repo, before string) (gazers []gqlStargazer, prevCursor string, hasPrev bool, err error) {
+// starred_at data on prod as of 2026-07; GraphQL exposes starredAt directly, ordered by STARRED_AT.
+// Also returns the number of raw edges on the page and the repository's stargazerCount: since
+// 2026-06-30 GitHub returns an empty stargazers connection for non-admins while the count still works,
+// which is how an unavailable list is told apart from a repository nobody starred.
+func ghGraphQLStargazers(gctx context.Context, ctx *lib.Ctx, tokens []string, org, repo, before string) (gazers []gqlStargazer, prevCursor string, hasPrev bool, nEdges int, starCount int64, err error) {
 	vars := map[string]interface{}{"o": org, "r": repo}
 	if before != "" {
 		vars["b"] = before
 	}
 	payload, err := json.Marshal(map[string]interface{}{
-		"query":     "query($o: String!, $r: String!, $b: String) { repository(owner: $o, name: $r) { stargazers(last: 100, before: $b, orderBy: {field: STARRED_AT, direction: ASC}) { pageInfo { hasPreviousPage startCursor } edges { starredAt node { login databaseId } } } } }",
+		"query":     "query($o: String!, $r: String!, $b: String) { repository(owner: $o, name: $r) { stargazerCount stargazers(last: 100, before: $b, orderBy: {field: STARRED_AT, direction: ASC}) { pageInfo { hasPreviousPage startCursor } edges { starredAt node { login databaseId } } } } }",
 		"variables": vars,
 	})
 	if err != nil {
@@ -478,7 +488,8 @@ func ghGraphQLStargazers(gctx context.Context, ctx *lib.Ctx, tokens []string, or
 			var out struct {
 				Data struct {
 					Repository struct {
-						Stargazers struct {
+						StargazerCount int64 `json:"stargazerCount"`
+						Stargazers     struct {
 							PageInfo struct {
 								HasPreviousPage bool   `json:"hasPreviousPage"`
 								StartCursor     string `json:"startCursor"`
@@ -511,7 +522,7 @@ func ghGraphQLStargazers(gctx context.Context, ctx *lib.Ctx, tokens []string, or
 				}
 				gazers = append(gazers, gqlStargazer{starredAt: edge.StarredAt, login: edge.Node.Login, id: edge.Node.DatabaseID})
 			}
-			return gazers, sg.PageInfo.StartCursor, sg.PageInfo.HasPreviousPage, nil
+			return gazers, sg.PageInfo.StartCursor, sg.PageInfo.HasPreviousPage, len(sg.Edges), out.Data.Repository.StargazerCount, nil
 		}
 	}
 	return
@@ -525,12 +536,20 @@ func restoreStarsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *l
 	}
 	before := ""
 	for page := 1; page <= restorePageCap; page++ {
-		gazers, prev, hasPrev, err := ghGraphQLStargazers(gctx, ctx, tokens, org, repo, before)
+		gazers, prev, hasPrev, nEdges, starCount, err := ghGraphQLStargazers(gctx, ctx, tokens, org, repo, before)
 		if err != nil {
 			lib.Printf("%s: stargazers graphql: %+v, skipping\n", orgRepo, err)
 			return
 		}
 		stats.pages++
+		if page == 1 && nEdges == 0 && starCount > 0 {
+			// the repository has stars but GitHub returns none: the list is restricted, not empty
+			stats.unavailable++
+			if ctx.Debug > 0 {
+				lib.Printf("%s: stargazer list unavailable (%d stars), skipping\n", orgRepo, starCount)
+			}
+			return
+		}
 		anyRecent := false
 		for _, g := range gazers {
 			if g.starredAt.Before(recentDt) {

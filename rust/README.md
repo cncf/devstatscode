@@ -94,8 +94,11 @@ rust/
 ├── cmd/<name>/         one binary crate per Go program
 │   ├── src/main.rs
 │   └── tests/compat.rs Go⇄Rust differential tests for that binary
-└── compat/             test harness: builds the Go reference binary, runs both,
-    └── fixtures/       compares outcomes; real-world fixtures
+├── compat/             test harness: builds the Go reference binary, runs both,
+│   └── fixtures/       compares outcomes; real-world fixtures
+└── docs/               Rust-only design notes (no code):
+    └── ghapi2db-gha-gaps.md  2026-09-14 research: GH Archive degradation measured, what the
+                              GitHub API still offers, phased proposal to extend ghapi2db/get_repos
 ```
 
 The bot-exclusion fixtures (`compat/fixtures/{tags/data,website_data,runq/data}/util_sql/exclude_bots.sql`,
@@ -990,15 +993,29 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `gha_actors_emails` (highest id) with `hide.csv` anonymisation
     (`anon-<sha1>`), `author_id`/`committer_id` 0 when unknown, trailer roles
     into `gha_commits_roles`, `Warning: … payload size=N, computed commits=M`),
-    **orphan restore** (`GHA2DB_RESTORE_ORPHAN_COMMITS`: commits of
-    `refs/remotes/origin/HEAD` → `origin/main` → `HEAD` within
-    `GHA2DB_ORPHAN_COMMITS_RANGE` (a PostgreSQL interval, default `8 hours`)
-    that have no `gha_commits` row get an artificial negative `PushEvent`
-    (`negative_artificial_id(PushEvent, repo, sha)`), payload and commit
-    row, conflicts with existing events of another type/repo/date are
-    skipped, `gha_skip_commits` honoured, then the targeted
+    **orphan restore** (`GHA2DB_RESTORE_ORPHAN_COMMITS`: commits that
+    *landed* on `refs/remotes/origin/HEAD` → `origin/main` → `HEAD` and on
+    every other `refs/remotes/origin/*` branch whose tip moved within
+    `GHA2DB_ORPHAN_COMMITS_RANGE` (a PostgreSQL interval, default `8 hours`;
+    `GHA2DB_ORPHAN_COMMITS_DEFAULT_BRANCH_ONLY` limits the scan to the
+    default branch) and have no `gha_commits` row — the window is the
+    branch's first-parent history since `git rev-list -1 --first-parent
+    --before=<since>` (`<boundary>..<ref>`, so merged commits with old
+    author/committer dates are found too), grouped by the first-parent
+    step that brought them in into GHA-shaped artificial negative
+    `PushEvent`s (`negative_artificial_id(PushEvent, repo, head)`, payload
+    `ref=refs/heads/<branch>`, `head`, `befor` = first parent, `size` =
+    commits landed, `created_at` = the step's committer date, actor = the
+    step's committer or, for GitHub's web-flow `noreply@github.com`
+    committer, its author); an existing PushEvent of the same repo and head
+    is reused (its commits join it), other events with the same id are
+    conflicts and skipped, commits are handled once per clone across
+    branches, `gha_skip_commits` honoured, then the targeted
     `RunEventIDsPostprocessDB` (or `targeted postprocess skipped: gha_texts
-    is empty…`)) and **commits** (`GHA2DB_PROCESS_COMMITS`:
+    is empty…`); `GHA2DB_ORPHAN_COMMITS_NO_GROUPING` restores the legacy
+    shape — one event per commit whose *commit date* is within the range
+    (`git log --since=YYYY-MM-DD`), ref = the remote ref, no `befor`,
+    author and author date) and **commits** (`GHA2DB_PROCESS_COMMITS`:
     `util_sql/list_unprocessed_commits_files.sql` → `git/git_files.sh`
     per commit into `gha_commits_files` (`files_skip_pattern`, `Invalid time`
     breaks, a line without `♂♀` is fatal, no files → `gha_skip_commits`
@@ -1009,7 +1026,7 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     / `GHA2DB_SKIP_COMMITS_LOC`, `Got N (P%) new commit's files/BOC stats, …`
     summaries). `GHA2DB_ST`/`GHA2DB_NCPUS` select the thread count for every
     phase, `GHA2DB_DEBUG` 1/2 the verbosity.
-  * Go⇄Rust tests: `cmd/get_repos/tests/compat.rs` — 117 scenarios, each on
+  * Go⇄Rust tests: `cmd/get_repos/tests/compat.rs` — 129 scenarios, each on
     scratch databases (`full_structure.sql`, seeded `gha_repos`, actors with
     emails/names and two PushEvents with payloads) and a scratch directory
     with `projects.yaml`, the real `git/*.sh` + `util_sql/*.sql` fixtures
@@ -1027,7 +1044,11 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     (wide/default/invalid ranges, quiet, after a backfill, seeded `gha_texts`,
     rerun, `origin/HEAD` fallback, `gha_skip_commits`, event conflicts, same
     id same event, hide, actor resolution, metadata failures, batches, two
-    repos sharing commits, MT, two DBs) and the commits phase (fresh, after a
+    repos sharing commits, renamed repos (historical alias clones), the push
+    shape — landing window with 2020-dated commits merged today, legacy
+    `NO_GROUPING` shape and its reuse by a grouped run, web-flow committer,
+    all `origin/*` branches / `DEFAULT_BRANCH_ONLY`, stale branches, shared
+    history between branches —, MT, two DBs) and the commits phase (fresh, after a
     backfill, files/LOC/both skipped, nothing to do, rerun, debug 2, every
     `git_files.sh` / `git_loc.sh` failure mode incl. empty/invalid times,
     invalid lines, special sizes, garbage and singular/plural shortstats, not

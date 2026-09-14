@@ -36,6 +36,9 @@ pub struct RestoreStats {
     pub checked: usize,
     pub restored: usize,
     pub pages: usize,
+    /// repos whose stargazer list GitHub refuses to return (restricted to repository admins
+    /// since 2026-06-30) although the repository has stars - stars restore only
+    pub unavailable: usize,
     pub min_dt: Option<DateTime<Utc>>,
     pub max_dt: Option<DateTime<Utc>>,
     /// event ids of restored rows that produce postprocessed data (comments/reviews - text
@@ -58,6 +61,7 @@ impl RestoreStats {
         self.checked += o.checked;
         self.restored += o.restored;
         self.pages += o.pages;
+        self.unavailable += o.unavailable;
         if let Some(m) = o.min_dt {
             self.mark(m);
         }
@@ -417,6 +421,14 @@ fn restore_pass(ctx: &mut Ctx, name: &str, process: RestoreRepoFunc) -> RestoreS
         total.checked,
         total.restored
     );
+    if total.unavailable > 0 {
+        printf!(
+            "{}: stargazer lists unavailable for {}/{} repos (GitHub restricted stargazer/watcher lists to repository admins on 2026-06-30), star events cannot be restored\n",
+            name,
+            total.unavailable,
+            processed
+        );
+    }
     params.c.close();
     total
 }
@@ -675,6 +687,8 @@ struct GqlStargazers {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct GqlRepository {
+    #[serde(rename = "stargazerCount", deserialize_with = "nd")]
+    stargazer_count: i64,
     #[serde(deserialize_with = "nd")]
     stargazers: GqlStargazers,
 }
@@ -702,17 +716,30 @@ struct GqlOut {
     errors: Vec<GqlError>,
 }
 
+/// One page of Go `ghGraphQLStargazers`: the usable stargazers, the
+/// previous-page cursor and whether one exists, the number of raw edges on
+/// the page and the repository's `stargazerCount`.
+struct GqlStargazersPage {
+    gazers: Vec<GqlStargazer>,
+    prev_cursor: String,
+    has_prev: bool,
+    n_edges: usize,
+    star_count: i64,
+}
+
 /// Go `ghGraphQLStargazers` - stars restore uses GraphQL: the REST
 /// stargazers path returns 404 / no usable starred_at data on prod as of
 /// 2026-07; GraphQL exposes starredAt directly, ordered by STARRED_AT.
-/// Returns the stargazers, the previous-page cursor and whether one exists.
+/// Since 2026-06-30 GitHub returns an empty stargazers connection for
+/// non-admins while `stargazerCount` still works, which is how an
+/// unavailable list is told apart from a repository nobody starred.
 fn gh_graphql_stargazers(
     ctx: &Ctx,
     tokens: &[String],
     org: &str,
     repo: &str,
     before: &str,
-) -> Result<(Vec<GqlStargazer>, String, bool), String> {
+) -> Result<GqlStargazersPage, String> {
     let mut vars: BTreeMap<&str, &str> = BTreeMap::new();
     vars.insert("o", org);
     vars.insert("r", repo);
@@ -723,7 +750,7 @@ fn gh_graphql_stargazers(
     payload_map.insert(
         "query",
         serde_json::Value::String(
-            "query($o: String!, $r: String!, $b: String) { repository(owner: $o, name: $r) { stargazers(last: 100, before: $b, orderBy: {field: STARRED_AT, direction: ASC}) { pageInfo { hasPreviousPage startCursor } edges { starredAt node { login databaseId } } } } }".to_string(),
+            "query($o: String!, $r: String!, $b: String) { repository(owner: $o, name: $r) { stargazerCount stargazers(last: 100, before: $b, orderBy: {field: STARRED_AT, direction: ASC}) { pageInfo { hasPreviousPage startCursor } edges { starredAt node { login databaseId } } } } }".to_string(),
         ),
     );
     payload_map.insert(
@@ -818,7 +845,9 @@ fn gh_graphql_stargazers(
                 ));
                 break;
             }
+            let star_count = out.data.repository.stargazer_count;
             let sg = out.data.repository.stargazers;
+            let n_edges = sg.edges.len();
             let mut gazers = Vec::new();
             for edge in sg.edges {
                 let starred_at = match edge.starred_at {
@@ -834,16 +863,24 @@ fn gh_graphql_stargazers(
                     id: edge.node.database_id,
                 });
             }
-            return Ok((
+            return Ok(GqlStargazersPage {
                 gazers,
-                sg.page_info.start_cursor,
-                sg.page_info.has_previous_page,
-            ));
+                prev_cursor: sg.page_info.start_cursor,
+                has_prev: sg.page_info.has_previous_page,
+                n_edges,
+                star_count,
+            });
         }
     }
     match err {
         Some(e) => Err(e),
-        None => Ok((Vec::new(), String::new(), false)),
+        None => Ok(GqlStargazersPage {
+            gazers: Vec::new(),
+            prev_cursor: String::new(),
+            has_prev: false,
+            n_edges: 0,
+            star_count: 0,
+        }),
     }
 }
 
@@ -867,16 +904,33 @@ fn restore_stars_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
         return;
     }
     let mut before = String::new();
-    for _page in 1..=RESTORE_PAGE_CAP {
-        let (gazers, prev, has_prev) =
-            match gh_graphql_stargazers(ctx, &tokens, job.org, job.repo, &before) {
-                Ok(v) => v,
-                Err(e) => {
-                    printf!("{}: stargazers graphql: {}, skipping\n", job.org_repo, e);
-                    return;
-                }
-            };
+    for page in 1..=RESTORE_PAGE_CAP {
+        let GqlStargazersPage {
+            gazers,
+            prev_cursor: prev,
+            has_prev,
+            n_edges,
+            star_count,
+        } = match gh_graphql_stargazers(ctx, &tokens, job.org, job.repo, &before) {
+            Ok(v) => v,
+            Err(e) => {
+                printf!("{}: stargazers graphql: {}, skipping\n", job.org_repo, e);
+                return;
+            }
+        };
         stats.pages += 1;
+        if page == 1 && n_edges == 0 && star_count > 0 {
+            // the repository has stars but GitHub returns none: the list is restricted, not empty
+            stats.unavailable += 1;
+            if ctx.debug > 0 {
+                printf!(
+                    "{}: stargazer list unavailable ({} stars), skipping\n",
+                    job.org_repo,
+                    star_count
+                );
+            }
+            return;
+        }
         let mut any_recent = false;
         for g in gazers {
             if g.starred_at.utc() < job.recent_dt {

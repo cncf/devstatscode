@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
+use std::path::Path;
 use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -251,11 +252,12 @@ fn stat_repo_path(db: &str, repo_path: &str) -> Result<(), String> {
     }
 }
 
-/// Run `f(repo)` for every repo, at most `thr_n` at a time, in the given
+/// Run `f(item)` for every item, at most `thr_n` at a time, in the given
 /// order (Go's `thr` semaphore channel of goroutines).
-fn for_each_repo_limited<F>(repos: &[String], thr_n: usize, f: F)
+fn for_each_repo_limited<T, F>(repos: &[T], thr_n: usize, f: F)
 where
-    F: Fn(&str) + Sync,
+    T: Sync,
+    F: Fn(&T) + Sync,
 {
     let thr_n = thr_n.max(1);
     thread::scope(|s| {
@@ -1579,17 +1581,49 @@ pub fn restore_orphan_commits(
                 continue;
             }
         };
+        let aliases = match select_repo_aliases(&con) {
+            Ok(a) => a,
+            Err(err) => {
+                printf!("selectRepoAliases(DB={db}) error: {err}\n");
+                con.close();
+                continue;
+            }
+        };
         let claimed_shas: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+
+        // Renamed repos are cloned under every historical name (gha_repos keeps them all); their
+        // current name is gha_repos.alias. A historical clone is skipped when the current-name
+        // clone exists (it holds the same history), otherwise its commits are attributed to the
+        // current name - never to the alias (bug 61).
+        let mut work: Vec<(String, String)> = Vec::with_capacity(repos.len());
+        let mut n_aliases_skipped = 0usize;
+        for repo in &repos {
+            let name = aliases.get(repo).cloned().unwrap_or_else(|| repo.clone());
+            if name != *repo && Path::new(&format!("{}{name}", ctx_ro.repos_dir)).exists() {
+                n_aliases_skipped += 1;
+                if ctx_ro.debug > 0 {
+                    printf!("{db}/{repo}: historical alias of {name}, skipping\n");
+                }
+                continue;
+            }
+            work.push((repo.clone(), name));
+        }
+        if n_aliases_skipped > 0 {
+            printf!(
+                "Restoring orphan commits: DB '{db}': skipped {n_aliases_skipped} historical alias clone(s)\n"
+            );
+        }
 
         // (repos processed, commits checked, commits restored, restored event ids)
         let totals: Mutex<(i64, i64, i64, Vec<i64>)> = Mutex::new((0, 0, 0, Vec::new()));
 
-        for_each_repo_limited(&repos, thr_n, |repo| {
+        for_each_repo_limited(&work, thr_n, |(repo, name)| {
             let (rp, cc, cr, reids) = match restore_orphan_repo(
                 ctx_ro,
                 &con,
                 db,
                 repo,
+                name,
                 &maybe_hide,
                 &acache,
                 &skip_set,
@@ -1634,14 +1668,56 @@ pub fn restore_orphan_commits(
 
 type RestoreResult = Result<(i64, i64, i64, Vec<i64>), (i64, i64, i64, String)>;
 
+/// Go `orphanBranch`: one `refs/remotes/origin/<name>` branch scanned for orphan commits.
+struct OrphanBranch {
+    ref_: String,
+    name: String,
+}
+
+/// Go `orphanPush`: commits that became reachable from a branch in one first-parent step, i.e.
+/// the GHA PushEvent shape: head = the step commit, before = its first parent ("" for a root
+/// commit), ref = refs/heads/<branch>, created = the step's committer date (landing time),
+/// size = number of commits that landed (payload size, also counting commits that are already
+/// in the database), commits = the ones handled by this clone (newest first).
+/// In the legacy one-event-per-commit mode every commit is its own push: head = the commit,
+/// before = "", ref = the remote ref, created = its author date, size = 1.
+struct OrphanPush {
+    head: String,
+    before: String,
+    ref_: String,
+    created: DateTime<Utc>,
+    size: usize,
+    commits: Vec<String>,
+}
+
+/// Go `branchName`: refs/remotes/origin/<name> or refs/heads/<name> -> <name> (anything else,
+/// e.g. HEAD, is returned unchanged).
+fn branch_name(ref_: &str) -> &str {
+    let name = ref_.strip_prefix("refs/remotes/origin/").unwrap_or(ref_);
+    name.strip_prefix("refs/heads/").unwrap_or(name)
+}
+
+/// Go `pushRef`: the payload ref of pushes scanned from `ref_`: refs/heads/<name> for a remote
+/// branch, the ref itself otherwise (the HEAD fallback).
+fn push_ref(ref_: &str) -> String {
+    if ref_.starts_with("refs/remotes/origin/") {
+        format!("refs/heads/{}", branch_name(ref_))
+    } else {
+        ref_.to_string()
+    }
+}
+
 /// Go `restoreOrphanRepo`: returns (repos processed, commits checked,
 /// commits restored, restored event ids) or the counts so far plus the error.
+/// `repo` is the clone directory name, `name` the repo name the restored rows
+/// are attributed to (the current name; differs for historical aliases).
 #[allow(clippy::too_many_arguments)]
 fn restore_orphan_repo(
     ctx: &Ctx,
     con: &PgConn,
     db: &str,
     repo: &str,
+    name: &str,
     maybe_hide: &MaybeHide,
     acache: &ActorCache,
     skip_set: &HashSet<String>,
@@ -1667,8 +1743,10 @@ fn restore_orphan_repo(
             dt_from = GoTime::Db(ago.fixed_offset());
         }
     }
+    let since = dt_from.utc();
 
-    // Scan the default ref only, --all would also pick upstream history reachable in fork clones.
+    // The default ref first; --all would also pick upstream history reachable in fork clones,
+    // so only `origin/*` branches whose tip moved inside the window are added.
     let default_ref = match git_default_ref(ctx, &repo_path) {
         Ok(r) if !r.is_empty() => r,
         Ok(_) => {
@@ -1684,16 +1762,86 @@ fn restore_orphan_repo(
             "HEAD".to_string()
         }
     };
+    let mut branches = vec![OrphanBranch {
+        ref_: default_ref.clone(),
+        name: branch_name(&default_ref).to_string(),
+    }];
+    if ctx.orphan_commits_all_branches {
+        match git_origin_branches(ctx, &repo_path, since) {
+            Ok(more) => {
+                for b in more {
+                    if b.ref_ != default_ref {
+                        branches.push(b);
+                    }
+                }
+            }
+            Err(berr) => {
+                printf!(
+                    "Warning: cannot list branches of {db}/{repo}: {berr}, scanning {default_ref} only\n"
+                );
+            }
+        }
+        if branches.len() > 1 && ctx.debug > 0 {
+            printf!(
+                "{db}/{repo}: scanning {} branches updated since {dt_from}\n",
+                branches.len()
+            );
+        }
+    }
 
-    let (shas, commit_dates) = git_list_commits(ctx, &repo_path, &default_ref, dt_from.utc())
-        .map_err(|e| {
-            (
-                0,
-                0,
-                0,
-                format!("gitListCommits failed for {db}/{repo}: {e}"),
-            )
-        })?;
+    // Every commit is handled once per clone: the default branch claims it first.
+    let mut pushes: Vec<OrphanPush> = Vec::new();
+    let mut shas: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for b in &branches {
+        let listed = if ctx.orphan_commits_group {
+            git_landed_commits(ctx, &repo_path, b, since)
+        } else {
+            git_listed_commits(ctx, &repo_path, &b.ref_, since)
+        };
+        let bp = match listed {
+            Ok(bp) => bp,
+            Err(lerr) => {
+                if b.ref_ == default_ref {
+                    return Err((
+                        0,
+                        0,
+                        0,
+                        format!("gitListCommits failed for {db}/{repo}: {lerr}"),
+                    ));
+                }
+                printf!(
+                    "Warning: listing commits of {db}/{repo} branch {} failed: {lerr}, skipping it\n",
+                    b.name
+                );
+                continue;
+            }
+        };
+        let (mut n_commits, mut n_pushes) = (0usize, 0usize);
+        for mut p in bp {
+            let mut kept: Vec<String> = Vec::with_capacity(p.commits.len());
+            for sha in p.commits.drain(..) {
+                if !seen.insert(sha.clone()) {
+                    continue;
+                }
+                shas.push(sha.clone());
+                kept.push(sha);
+            }
+            if kept.is_empty() {
+                continue;
+            }
+            n_commits += kept.len();
+            n_pushes += 1;
+            p.commits = kept;
+            pushes.push(p);
+        }
+        if ctx.orphan_commits_group && n_commits > 0 && ctx.debug > 0 {
+            printf!(
+                "{db}/{repo}: {}: {n_commits} commits in {n_pushes} pushes landed since {dt_from}\n",
+                b.name
+            );
+        }
+    }
 
     if shas.is_empty() {
         if ctx.debug > 0 {
@@ -1712,8 +1860,8 @@ fn restore_orphan_repo(
 
     let candidates: Vec<String> = shas
         .iter()
-        .map(|sha| normalize_sha(sha))
-        .filter(|sha| !skip_set.contains(sha))
+        .filter(|sha| !skip_set.contains(*sha))
+        .cloned()
         .collect();
 
     // Existence check is DB-wide (not per dup_repo_name): renamed repos are cloned under
@@ -1767,6 +1915,7 @@ fn restore_orphan_repo(
         .filter(|sha| !existing_set.contains(*sha))
         .cloned()
         .collect();
+    let restore_set: HashSet<&str> = to_restore.iter().map(String::as_str).collect();
 
     if to_restore.is_empty() {
         if ctx.debug > 0 {
@@ -1782,20 +1931,37 @@ fn restore_orphan_repo(
         );
     }
 
+    // Metadata of the commits to restore plus the heads of their pushes (the event actor
+    // is the head's committer, and a head may itself be in the database already).
+    let mut meta_shas: Vec<String> = to_restore.clone();
+    let mut meta_set: HashSet<String> = to_restore.iter().cloned().collect();
+    for p in &pushes {
+        if meta_set.contains(&p.head) {
+            continue;
+        }
+        if p.commits
+            .iter()
+            .any(|sha| restore_set.contains(sha.as_str()))
+        {
+            meta_set.insert(p.head.clone());
+            meta_shas.push(p.head.clone());
+        }
+    }
+
     let page_size = batch;
 
     let mut info_map: HashMap<String, CommitInfo> = HashMap::new();
     let mut i = 0usize;
-    while i < to_restore.len() {
-        let j = (i + page_size).min(to_restore.len());
-        let (batch_infos, ierr) = git_commit_info_batch(ctx, &repo_path, &to_restore[i..j]);
+    while i < meta_shas.len() {
+        let j = (i + page_size).min(meta_shas.len());
+        let (batch_infos, ierr) = git_commit_info_batch(ctx, &repo_path, &meta_shas[i..j]);
         for (sha, info) in batch_infos {
             info_map.insert(normalize_sha(&sha), info);
         }
         if let Some(ierr) = ierr {
             printf!(
                 "Warning: git_commits.sh error for {db}/{repo} batch {i}-{j}/{}: {ierr}\n",
-                to_restore.len()
+                meta_shas.len()
             );
         }
         i += page_size;
@@ -1816,12 +1982,18 @@ fn restore_orphan_repo(
     if ctx.debug > 0 {
         printf!(
             "Fetched commit metadata for {db}/{repo}: {} SHAs, {} records\n",
-            to_restore.len(),
+            meta_shas.len(),
             info_map.len()
         );
     }
 
-    let repo_id = get_repo_id(con, repo).map_err(|e| (1, n_shas, 0, e))?;
+    if name != repo && ctx.debug > 0 {
+        printf!("{db}/{repo}: attributing restored commits to {name} (current name)\n");
+    }
+    let mut repo_id = get_repo_id(con, name).map_err(|e| (1, n_shas, 0, e))?;
+    if repo_id == 0 && name != repo {
+        repo_id = get_repo_id(con, repo).map_err(|e| (1, n_shas, 0, e))?;
+    }
     if repo_id == 0 {
         if ctx.debug > 0 {
             printf!(
@@ -1855,220 +2027,292 @@ on conflict do nothing
 ";
 
     let mut n_restored = 0i64;
-    for sha in &to_restore {
-        let sha_norm = normalize_sha(sha);
-        let Some(ci) = info_map.get(&sha_norm) else {
-            if ctx.debug > 0 {
-                printf!("Warning: missing git metadata for {db}/{repo} sha {sha_norm}\n");
-            }
-            continue;
-        };
-
-        let author_name_raw = ci.author_name.replace('\0', "");
-        let author_email_raw = ci.author_email.replace('\0', "");
-        let comm_name_raw = ci.committer_name.replace('\0', "");
-        let comm_email_raw = ci.committer_email.replace('\0', "");
-        let msg_raw = ci.message.replace('\0', "");
-
-        let author_name = trunc_to_bytes(&maybe_hide.hide(&author_name_raw), 120);
-        let author_email = trunc_to_bytes(&maybe_hide.hide(&author_email_raw), 160);
-        let msg = trunc_to_bytes(&maybe_hide.hide(&msg_raw), 0xffff);
-
-        let (author_id, author_login) = lookup_actor_name_email_cached_tx(
-            ctx,
-            &mut tx,
-            acache,
-            maybe_hide,
-            &author_name_raw,
-            &author_email_raw,
-        );
-        let (comm_id, comm_login) = lookup_actor_name_email_cached_tx(
-            ctx,
-            &mut tx,
-            acache,
-            maybe_hide,
-            &comm_name_raw,
-            &comm_email_raw,
-        );
-
-        let dup_author_login = if author_login.is_empty() {
-            author_name_raw.clone()
-        } else {
-            author_login.clone()
-        };
-        let dup_author_login = trunc_to_bytes(&maybe_hide.hide(&dup_author_login), 120);
-
-        let dup_comm_login = if comm_login.is_empty() {
-            String::new()
-        } else {
-            trunc_to_bytes(&maybe_hide.hide(&comm_login), 120)
-        };
-
-        let Some(&created_at) = commit_dates.get(&sha_norm) else {
-            printf!("Warning: missing commit date for {db}/{repo} sha {sha_norm}, skipping\n");
-            continue;
-        };
-        // Claim late: an un-restorable alias must not block a valid one.
-        {
-            let mut claimed = claimed_shas.lock().unwrap_or_else(|p| p.into_inner());
-            if !claimed.insert(sha_norm.clone()) {
+    for push in &pushes {
+        // Commits of this push that can be restored: not in the database, with git metadata,
+        // not restored by another clone meanwhile (claim late: an un-restorable alias must not
+        // block a valid one).
+        let mut todo: Vec<&str> = Vec::with_capacity(push.commits.len());
+        for sha in &push.commits {
+            if !restore_set.contains(sha.as_str()) {
                 continue;
             }
+            if !info_map.contains_key(sha) {
+                if ctx.debug > 0 {
+                    printf!("Warning: missing git metadata for {db}/{repo} sha {sha}\n");
+                }
+                continue;
+            }
+            todo.push(sha);
         }
-        let event_id = hash::negative_artificial_id(&["PushEvent", repo, &sha_norm]);
-        match orphan_event_conflict(&mut tx, event_id, repo, &sha_norm, created_at) {
-            Ok(false) => {}
-            Ok(true) => continue,
+        if todo.is_empty() {
+            continue;
+        }
+        let Some(hi) = info_map.get(&push.head) else {
+            if ctx.debug > 0 {
+                printf!(
+                    "Warning: missing git metadata for {db}/{repo} push head {}, skipping {} commits\n",
+                    push.head,
+                    todo.len()
+                );
+            }
+            continue;
+        };
+        let claimed: Vec<&str> = {
+            let mut guard = claimed_shas.lock().unwrap_or_else(|p| p.into_inner());
+            todo.iter()
+                .copied()
+                .filter(|sha| guard.insert((*sha).to_string()))
+                .collect()
+        };
+        if claimed.is_empty() {
+            continue;
+        }
+
+        // The event actor: GHA's pusher - the committer of the step commit, or its author when
+        // GitHub's web-flow identity committed it (UI merges); the legacy shape uses the author.
+        let mut actor_name_raw = hi.committer_name.replace('\0', "");
+        let mut actor_email_raw = hi.committer_email.replace('\0', "");
+        if !ctx.orphan_commits_group
+            || actor_email_raw
+                .trim()
+                .eq_ignore_ascii_case("noreply@github.com")
+        {
+            actor_name_raw = hi.author_name.replace('\0', "");
+            actor_email_raw = hi.author_email.replace('\0', "");
+        }
+        let (actor_id, actor_login) = lookup_actor_name_email_cached_tx(
+            ctx,
+            &mut tx,
+            acache,
+            maybe_hide,
+            &actor_name_raw,
+            &actor_email_raw,
+        );
+        let dup_actor_login = if actor_login.is_empty() {
+            actor_name_raw.clone()
+        } else {
+            actor_login.clone()
+        };
+        let dup_actor_login = trunc_to_bytes(&maybe_hide.hide(&dup_actor_login), 120);
+
+        let mut created_at = push.created;
+        let event_id = hash::negative_artificial_id(&["PushEvent", name, &push.head]);
+        match orphan_event_check(&mut tx, event_id, name, &push.head) {
+            Ok(EventCheck::Conflict) => continue,
+            Ok(EventCheck::Exists(existing_dt)) => {
+                // The same push is already there (a legacy one-event-per-commit row or an
+                // earlier run) - its remaining commits join the existing event.
+                created_at = existing_dt;
+            }
+            Ok(EventCheck::Free) => {
+                if let Err(err) = tx.exec(
+                    ins_event_sql,
+                    &[
+                        SqlArg::from(event_id),
+                        SqlArg::from("PushEvent"),
+                        SqlArg::from(actor_id),
+                        SqlArg::from(repo_id),
+                        SqlArg::from(created_at),
+                        SqlArg::from(dup_actor_login.as_str()),
+                        SqlArg::from(name),
+                    ],
+                ) {
+                    printf!(
+                        "Warning: insert gha_events failed (db={db}, repo={repo}, sha={}): {err}\n",
+                        push.head
+                    );
+                    continue;
+                }
+                if let Err(err) = tx.exec(
+                    ins_payload_sql,
+                    &[
+                        SqlArg::from(event_id),
+                        SqlArg::from(push.size as i64),
+                        SqlArg::from(push.ref_.as_str()),
+                        SqlArg::from(push.head.as_str()),
+                        SqlArg::from(push.before.as_str()),
+                        SqlArg::from(dup_actor_login.as_str()),
+                        SqlArg::from(repo_id),
+                        SqlArg::from(name),
+                        SqlArg::from("PushEvent"),
+                        SqlArg::from(created_at),
+                    ],
+                ) {
+                    printf!(
+                        "Warning: insert gha_payloads failed (db={db}, repo={repo}, sha={}): {err}\n",
+                        push.head
+                    );
+                    continue;
+                }
+            }
             Err(cerr) => {
                 printf!(
-                    "Warning: event id check failed (db={db}, repo={repo}, sha={sha_norm}): {cerr}\n"
+                    "Warning: event id check failed (db={db}, repo={repo}, sha={}): {cerr}\n",
+                    push.head
                 );
                 continue;
             }
         }
-
-        if let Err(err) = tx.exec(
-            ins_event_sql,
-            &[
-                SqlArg::from(event_id),
-                SqlArg::from("PushEvent"),
-                SqlArg::from(author_id),
-                SqlArg::from(repo_id),
-                SqlArg::from(created_at),
-                SqlArg::from(dup_author_login.as_str()),
-                SqlArg::from(repo),
-            ],
-        ) {
+        if ctx.orphan_commits_group && ctx.debug > 0 {
             printf!(
-                "Warning: insert gha_events failed (db={db}, repo={repo}, sha={sha_norm}): {err}\n"
+                "{db}/{repo}: {} push {}: restoring {} of {} commits\n",
+                branch_name(&push.ref_),
+                push.head,
+                claimed.len(),
+                push.size
             );
-            continue;
         }
 
-        if let Err(err) = tx.exec(
-            ins_payload_sql,
-            &[
-                SqlArg::from(event_id),
-                SqlArg::from(1i64),
-                SqlArg::from(default_ref.as_str()),
-                SqlArg::from(sha_norm.as_str()),
-                SqlArg::from(""),
-                SqlArg::from(dup_author_login.as_str()),
-                SqlArg::from(repo_id),
-                SqlArg::from(repo),
-                SqlArg::from("PushEvent"),
-                SqlArg::from(created_at),
-            ],
-        ) {
-            printf!(
-                "Warning: insert gha_payloads failed (db={db}, repo={repo}, sha={sha_norm}): {err}\n"
-            );
-            continue;
-        }
+        let mut n_push = 0i64;
+        for sha_norm in claimed {
+            let ci = &info_map[sha_norm];
 
-        let comm_role_name = trunc_to_bytes(&maybe_hide.hide(&comm_name_raw), 160);
-        let comm_role_email = trunc_to_bytes(&maybe_hide.hide(&comm_email_raw), 160);
+            let author_name_raw = ci.author_name.replace('\0', "");
+            let author_email_raw = ci.author_email.replace('\0', "");
+            let comm_name_raw = ci.committer_name.replace('\0', "");
+            let comm_email_raw = ci.committer_email.replace('\0', "");
+            let msg_raw = ci.message.replace('\0', "");
 
-        if let Err(err) = tx.exec(
-            ins_commit_sql,
-            &[
-                SqlArg::from(sha_norm.as_str()),
-                SqlArg::from(event_id),
-                SqlArg::from(author_name.as_str()),
-                SqlArg::from(msg.as_str()),
-                SqlArg::from(author_id),
-                SqlArg::from(dup_author_login.as_str()),
-                SqlArg::from(repo_id),
-                SqlArg::from(repo),
-                SqlArg::from("PushEvent"),
-                SqlArg::from(created_at),
-                SqlArg::from(author_id),
-                SqlArg::from(comm_id),
-                SqlArg::from(dup_author_login.as_str()),
-                SqlArg::from(dup_comm_login.as_str()),
-                SqlArg::from(author_email.as_str()),
-                SqlArg::from(comm_role_name.as_str()),
-                SqlArg::from(comm_role_email.as_str()),
-            ],
-        ) {
-            printf!(
-                "Warning: insert gha_commits failed (db={db}, repo={repo}, sha={sha_norm}): {err}\n"
-            );
-            continue;
-        }
+            let author_name = trunc_to_bytes(&maybe_hide.hide(&author_name_raw), 120);
+            let author_email = trunc_to_bytes(&maybe_hide.hide(&author_email_raw), 160);
+            let msg = trunc_to_bytes(&maybe_hide.hide(&msg_raw), 0xffff);
 
-        let ev = PushEvent {
-            event_id,
-            actor_id: 0,
-            actor_login: String::new(),
-            repo_id,
-            repo_name: repo.to_string(),
-            created_at: created_at.fixed_offset(),
-            head: String::new(),
-            before: String::new(),
-            ref_: String::new(),
-            push_id: None,
-            size: None,
-            cnt: 0,
-        };
-        if INSERT_AUTHOR_ROLE {
-            if let Err(err) = insert_roles(
+            let (author_id, author_login) = lookup_actor_name_email_cached_tx(
+                ctx,
                 &mut tx,
-                &sha_norm,
-                &ev,
-                "Author",
-                author_id,
-                &author_login,
-                &trunc_to_bytes(&maybe_hide.hide(&author_name_raw), 160),
-                &trunc_to_bytes(&maybe_hide.hide(&author_email_raw), 160),
+                acache,
                 maybe_hide,
+                &author_name_raw,
+                &author_email_raw,
+            );
+            let (comm_id, comm_login) = lookup_actor_name_email_cached_tx(
+                ctx,
+                &mut tx,
+                acache,
+                maybe_hide,
+                &comm_name_raw,
+                &comm_email_raw,
+            );
+
+            let dup_author_login = if author_login.is_empty() {
+                author_name_raw.clone()
+            } else {
+                author_login.clone()
+            };
+            let dup_author_login = trunc_to_bytes(&maybe_hide.hide(&dup_author_login), 120);
+
+            let dup_comm_login = if comm_login.is_empty() {
+                String::new()
+            } else {
+                trunc_to_bytes(&maybe_hide.hide(&comm_login), 120)
+            };
+
+            let comm_role_name = trunc_to_bytes(&maybe_hide.hide(&comm_name_raw), 160);
+            let comm_role_email = trunc_to_bytes(&maybe_hide.hide(&comm_email_raw), 160);
+
+            if let Err(err) = tx.exec(
+                ins_commit_sql,
+                &[
+                    SqlArg::from(sha_norm),
+                    SqlArg::from(event_id),
+                    SqlArg::from(author_name.as_str()),
+                    SqlArg::from(msg.as_str()),
+                    SqlArg::from(actor_id),
+                    SqlArg::from(dup_actor_login.as_str()),
+                    SqlArg::from(repo_id),
+                    SqlArg::from(name),
+                    SqlArg::from("PushEvent"),
+                    SqlArg::from(created_at),
+                    SqlArg::from(author_id),
+                    SqlArg::from(comm_id),
+                    SqlArg::from(dup_author_login.as_str()),
+                    SqlArg::from(dup_comm_login.as_str()),
+                    SqlArg::from(author_email.as_str()),
+                    SqlArg::from(comm_role_name.as_str()),
+                    SqlArg::from(comm_role_email.as_str()),
+                ],
             ) {
                 printf!(
-                    "Warning: insert Author role failed (db={db}, repo={repo}, sha={sha_norm}): {err}\n"
+                    "Warning: insert gha_commits failed (db={db}, repo={repo}, sha={sha_norm}): {err}\n"
                 );
+                continue;
             }
-        }
-        if INSERT_COMMITTER_ROLE {
-            if let Err(err) = insert_roles(
-                &mut tx,
-                &sha_norm,
-                &ev,
-                "Committer",
-                comm_id,
-                &comm_login,
-                &comm_role_name,
-                &comm_role_email,
-                maybe_hide,
-            ) {
-                printf!(
-                    "Warning: insert Committer role failed (db={db}, repo={repo}, sha={sha_norm}): {err}\n"
-                );
-            }
-        }
-        for tr in parse_trailers(ctx, &msg_raw) {
-            let (t_id, t_login) = lookup_actor_name_email_cached_tx(
-                ctx, &mut tx, acache, maybe_hide, &tr.name, &tr.email,
-            );
-            if let Err(err) = insert_roles(
-                &mut tx,
-                &sha_norm,
-                &ev,
-                &tr.role,
-                t_id,
-                &t_login,
-                &trunc_to_bytes(&maybe_hide.hide(&tr.name), 160),
-                &trunc_to_bytes(&maybe_hide.hide(&tr.email), 160),
-                maybe_hide,
-            ) {
-                printf!(
-                    "Warning: insert trailer role failed (db={db}, repo={repo}, sha={sha_norm}, role={}): {err}\n",
-                    tr.role
-                );
-            }
-        }
 
-        n_restored += 1;
-        eids.push(event_id);
+            let ev = PushEvent {
+                event_id,
+                actor_id: 0,
+                actor_login: String::new(),
+                repo_id,
+                repo_name: name.to_string(),
+                created_at: created_at.fixed_offset(),
+                head: String::new(),
+                before: String::new(),
+                ref_: String::new(),
+                push_id: None,
+                size: None,
+                cnt: 0,
+            };
+            if INSERT_AUTHOR_ROLE {
+                if let Err(err) = insert_roles(
+                    &mut tx,
+                    sha_norm,
+                    &ev,
+                    "Author",
+                    author_id,
+                    &author_login,
+                    &trunc_to_bytes(&maybe_hide.hide(&author_name_raw), 160),
+                    &trunc_to_bytes(&maybe_hide.hide(&author_email_raw), 160),
+                    maybe_hide,
+                ) {
+                    printf!(
+                        "Warning: insert Author role failed (db={db}, repo={repo}, sha={sha_norm}): {err}\n"
+                    );
+                }
+            }
+            if INSERT_COMMITTER_ROLE {
+                if let Err(err) = insert_roles(
+                    &mut tx,
+                    sha_norm,
+                    &ev,
+                    "Committer",
+                    comm_id,
+                    &comm_login,
+                    &comm_role_name,
+                    &comm_role_email,
+                    maybe_hide,
+                ) {
+                    printf!(
+                        "Warning: insert Committer role failed (db={db}, repo={repo}, sha={sha_norm}): {err}\n"
+                    );
+                }
+            }
+            for tr in parse_trailers(ctx, &msg_raw) {
+                let (t_id, t_login) = lookup_actor_name_email_cached_tx(
+                    ctx, &mut tx, acache, maybe_hide, &tr.name, &tr.email,
+                );
+                if let Err(err) = insert_roles(
+                    &mut tx,
+                    sha_norm,
+                    &ev,
+                    &tr.role,
+                    t_id,
+                    &t_login,
+                    &trunc_to_bytes(&maybe_hide.hide(&tr.name), 160),
+                    &trunc_to_bytes(&maybe_hide.hide(&tr.email), 160),
+                    maybe_hide,
+                ) {
+                    printf!(
+                        "Warning: insert trailer role failed (db={db}, repo={repo}, sha={sha_norm}, role={}): {err}\n",
+                        tr.role
+                    );
+                }
+            }
+            n_push += 1;
+        }
+        if n_push > 0 {
+            n_restored += n_push;
+            eids.push(event_id);
+        }
     }
 
     if let Err(err) = tx.commit() {
@@ -2095,6 +2339,78 @@ fn select_skip_commits(con: &PgConn) -> Result<HashSet<String>, PgError> {
     }
     rows.err()?;
     let _ = rows.close();
+    Ok(out)
+}
+
+/// Go `selectRepoAliases`: historical repo name -> current name for
+/// repositories that were renamed.
+///
+/// Derived from data, not from `gha_repos.alias` (set once at project setup,
+/// it goes stale after later renames): for every `gha_repos` (id, name) row
+/// the newest native GHA event (0 < id < 2^48, so artificial rows written by
+/// get_repos/ghapi2db never influence the choice; index
+/// (repo_id, dup_repo_name, created_at)) is looked up, the current name of a
+/// repository id is the name with the newest such event and every other name
+/// of that id maps to it. A name that is current for one id and historical
+/// for another one is ambiguous and never mapped.
+fn select_repo_aliases(con: &PgConn) -> Result<HashMap<String, String>, PgError> {
+    struct Named {
+        name: String,
+        last: Option<(DateTime<FixedOffset>, i64)>,
+    }
+    let mut out: HashMap<String, String> = HashMap::new();
+    let mut rows = con.query(
+        "select r.id, r.name, n.created_at, n.id from gha_repos r left join lateral (\
+         select e.created_at, e.id from gha_events e where e.repo_id = r.id and e.dup_repo_name = r.name \
+         and e.id > 0 and e.id < 281474976710656 order by e.created_at desc, e.id desc limit 1) n on true",
+        &[],
+    )?;
+    let mut by_id: HashMap<i64, Vec<Named>> = HashMap::new();
+    while rows.next() {
+        let mut repo_id = 0i64;
+        let mut name = String::new();
+        let mut created_at: Option<DateTime<FixedOffset>> = None;
+        let mut event_id: Option<i64> = None;
+        rows.scan(&mut [&mut repo_id, &mut name, &mut created_at, &mut event_id])?;
+        by_id.entry(repo_id).or_default().push(Named {
+            name,
+            last: created_at.map(|t| (t, event_id.unwrap_or(0))),
+        });
+    }
+    rows.err()?;
+    let _ = rows.close();
+
+    let mut ambiguous: HashSet<String> = HashSet::new();
+    for names in by_id.values() {
+        if names.len() < 2 {
+            continue;
+        }
+        let Some(current) = names
+            .iter()
+            .filter(|n| n.last.is_some())
+            .max_by_key(|n| n.last)
+        else {
+            continue;
+        };
+        for n in names.iter().filter(|n| n.name != current.name) {
+            if let Some(prev) = out.get(&n.name) {
+                if prev != &current.name {
+                    ambiguous.insert(n.name.clone());
+                }
+            }
+            out.insert(n.name.clone(), current.name.clone());
+        }
+    }
+    for (name, current) in &out {
+        if out.contains_key(current) {
+            // the current name of one id is a historical name of another one
+            ambiguous.insert(name.clone());
+            ambiguous.insert(current.clone());
+        }
+    }
+    for name in &ambiguous {
+        out.remove(name);
+    }
     Ok(out)
 }
 
@@ -2152,6 +2468,203 @@ fn git_list_commits(
     Ok((shas, dates))
 }
 
+/// Go `gitListedCommits`: the legacy listing ([`git_list_commits`]: commits whose committer
+/// date is inside the window, day granularity) as one-commit pushes: head = the commit,
+/// created = its author date.
+fn git_listed_commits(
+    ctx: &Ctx,
+    repo_path: &str,
+    ref_: &str,
+    since: DateTime<Utc>,
+) -> Result<Vec<OrphanPush>, String> {
+    let (shas, dates) = git_list_commits(ctx, repo_path, ref_, since)?;
+    let mut pushes: Vec<OrphanPush> = Vec::with_capacity(shas.len());
+    for sha in shas {
+        let sha_norm = normalize_sha(&sha);
+        let Some(&dt) = dates.get(&sha_norm) else {
+            printf!("Warning: missing commit date for {repo_path} sha {sha_norm}, skipping\n");
+            continue;
+        };
+        pushes.push(OrphanPush {
+            head: sha_norm.clone(),
+            before: String::new(),
+            ref_: ref_.to_string(),
+            created: dt,
+            size: 1,
+            commits: vec![sha_norm],
+        });
+    }
+    Ok(pushes)
+}
+
+/// Go `gitOriginBranches`: `refs/remotes/origin/*` branches (sorted by name, `origin/HEAD`
+/// excluded) whose tip's committer date is after `since`.
+fn git_origin_branches(
+    ctx: &Ctx,
+    repo_path: &str,
+    since: DateTime<Utc>,
+) -> Result<Vec<OrphanBranch>, String> {
+    let out = exec::exec_command(
+        ctx,
+        &[
+            "git".to_string(),
+            "-C".to_string(),
+            repo_path.to_string(),
+            "for-each-ref".to_string(),
+            "--format=%(refname) %(committerdate:unix)".to_string(),
+            "refs/remotes/origin/".to_string(),
+        ],
+        &no_env(),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut branches: Vec<OrphanBranch> = Vec::new();
+    for line in out.split('\n') {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() != 2
+            || fields[0] == "refs/remotes/origin/HEAD"
+            || !fields[0].starts_with("refs/remotes/origin/")
+        {
+            continue;
+        }
+        let Ok(ts) = fields[1].parse::<i64>() else {
+            continue;
+        };
+        if ts <= since.timestamp() {
+            continue;
+        }
+        branches.push(OrphanBranch {
+            ref_: fields[0].to_string(),
+            name: branch_name(fields[0]).to_string(),
+        });
+    }
+    Ok(branches)
+}
+
+/// Go `gitLandedCommits`: commits that became reachable from `branch` after `since`, grouped
+/// by the first-parent step that brought them in (the GHA PushEvent shape). The boundary is
+/// the branch's first-parent tip as of `since` (`git rev-list -1 --first-parent --before=…`);
+/// when there is none (young repository) everything reachable from the branch landed inside
+/// the window. Pushes are returned oldest first, commits inside a push in `git log` order
+/// (newest first).
+fn git_landed_commits(
+    ctx: &Ctx,
+    repo_path: &str,
+    branch: &OrphanBranch,
+    since: DateTime<Utc>,
+) -> Result<Vec<OrphanPush>, String> {
+    let git = |args: &[&str]| -> Result<String, String> {
+        let mut argv = vec!["git".to_string(), "-C".to_string(), repo_path.to_string()];
+        argv.extend(args.iter().map(|a| a.to_string()));
+        exec::exec_command(ctx, &argv, &no_env()).map_err(|e| e.to_string())
+    };
+
+    let out = git(&[
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &format!("{}^{{commit}}", branch.ref_),
+    ])?;
+    let tip = normalize_sha(out.trim());
+    if !is_valid_non_zero_sha40(&tip) {
+        return Err(format!("cannot resolve {}: {:?}", branch.ref_, out.trim()));
+    }
+
+    let out = git(&[
+        "rev-list",
+        "-1",
+        "--first-parent",
+        &format!("--before=@{}", since.timestamp()),
+        &branch.ref_,
+    ])?;
+    let boundary = normalize_sha(out.trim());
+    let range_spec = if is_valid_non_zero_sha40(&boundary) {
+        if boundary == tip {
+            return Ok(Vec::new());
+        }
+        format!("{boundary}..{}", branch.ref_)
+    } else {
+        branch.ref_.clone()
+    };
+
+    let out = git(&["log", "--format=%H %P %ct", &range_spec])?;
+    struct Landed {
+        parents: Vec<String>,
+        created: DateTime<Utc>,
+        order: usize,
+    }
+    let mut commits: HashMap<String, Landed> = HashMap::new();
+    for line in out.split('\n') {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 2 || !is_valid_non_zero_sha40(fields[0]) {
+            continue;
+        }
+        let Ok(ts) = fields[fields.len() - 1].parse::<i64>() else {
+            continue;
+        };
+        let Some(created) = Utc.timestamp_opt(ts, 0).single() else {
+            continue;
+        };
+        let parents: Vec<String> = fields[1..fields.len() - 1]
+            .iter()
+            .filter(|p| is_valid_non_zero_sha40(p))
+            .map(|p| normalize_sha(p))
+            .collect();
+        let order = commits.len();
+        commits.insert(
+            normalize_sha(fields[0]),
+            Landed {
+                parents,
+                created,
+                order,
+            },
+        );
+    }
+    if !commits.contains_key(&tip) {
+        return Ok(Vec::new());
+    }
+
+    // First-parent steps from the tip down to the boundary, oldest first.
+    let mut steps: Vec<String> = Vec::new();
+    let mut sha = tip.clone();
+    while let Some(c) = commits.get(&sha) {
+        steps.push(sha.clone());
+        match c.parents.first() {
+            Some(p) => sha = p.clone(),
+            None => break,
+        }
+    }
+    steps.reverse();
+
+    // A commit belongs to the oldest step it is reachable from: `<previous step>..<step>`.
+    let mut assigned: HashSet<String> = HashSet::with_capacity(commits.len());
+    let mut pushes: Vec<OrphanPush> = Vec::with_capacity(steps.len());
+    for step in &steps {
+        let mut group: Vec<String> = Vec::new();
+        let mut stack: Vec<String> = vec![step.clone()];
+        while let Some(sha) = stack.pop() {
+            let Some(c) = commits.get(&sha) else {
+                continue;
+            };
+            if !assigned.insert(sha.clone()) {
+                continue;
+            }
+            group.push(sha);
+            stack.extend(c.parents.iter().cloned());
+        }
+        group.sort_by_key(|sha| commits[sha].order);
+        let step_info = &commits[step];
+        pushes.push(OrphanPush {
+            head: step.clone(),
+            before: step_info.parents.first().cloned().unwrap_or_default(),
+            ref_: push_ref(&branch.ref_),
+            created: step_info.created,
+            size: group.len(),
+            commits: group,
+        });
+    }
+    Ok(pushes)
+}
+
 /// Go `gitDefaultRef`: `git symbolic-ref refs/remotes/origin/HEAD`.
 fn git_default_ref(ctx: &Ctx, repo_path: &str) -> Result<String, String> {
     let out = exec::exec_command(
@@ -2172,16 +2685,27 @@ fn git_default_ref(ctx: &Ctx, repo_path: &str) -> Result<String, String> {
     Ok(ref_.to_string())
 }
 
-/// Go `orphanEventConflict`: true when `event_id` already exists for a
-/// DIFFERENT event (hash collision): full identity check: type, repo,
-/// created_at and payload head (commit sha) when present.
-fn orphan_event_conflict(
+/// Result of [`orphan_event_check`].
+enum EventCheck {
+    /// No row with this id yet.
+    Free,
+    /// The same push already has a row (its `created_at`).
+    Exists(DateTime<Utc>),
+    /// A different event owns the id (hash collision).
+    Conflict,
+}
+
+/// Go `orphanEventCheck`: how `event_id` relates to the push (`repo`, `sha`): the same push
+/// already has a row (an earlier run or a legacy one-event-per-commit row; its created_at is
+/// returned so the remaining commits join it), or a different event owns the id (type, repo or
+/// payload head differ). created_at is not part of the identity: the legacy shape stamped the
+/// author date, the push shape stamps the landing time.
+fn orphan_event_check(
     tx: &mut PgTx<'_>,
     event_id: i64,
     repo: &str,
     sha: &str,
-    created_at: DateTime<Utc>,
-) -> Result<bool, PgError> {
+) -> Result<EventCheck, PgError> {
     let mut e_type = String::new();
     let mut e_repo = String::new();
     let mut e_dt = DateTime::<FixedOffset>::default();
@@ -2194,26 +2718,36 @@ fn orphan_event_conflict(
         .scan(&mut [&mut e_type, &mut e_repo, &mut e_dt, &mut head])
     {
         Ok(()) => {}
-        Err(PgError::NoRows) => return Ok(false),
+        Err(PgError::NoRows) => return Ok(EventCheck::Free),
         Err(e) => return Err(e),
     }
-    if e_type != "PushEvent"
-        || e_repo != repo
-        || e_dt.with_timezone(&Utc) != created_at
-        || head.as_deref() != Some(sha)
-    {
+    if e_type != "PushEvent" || e_repo != repo || head.as_deref() != Some(sha) {
         printf!(
             "orphan event id {event_id} conflict: existing ({e_type}, {e_repo}, {}), skipping\n",
             go_time_string(&e_dt)
         );
-        return Ok(true);
+        return Ok(EventCheck::Conflict);
     }
-    Ok(false)
+    Ok(EventCheck::Exists(e_dt.with_timezone(&Utc)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn branch_names_and_push_refs() {
+        assert_eq!(branch_name("refs/remotes/origin/main"), "main");
+        assert_eq!(
+            branch_name("refs/remotes/origin/release-1.2"),
+            "release-1.2"
+        );
+        assert_eq!(branch_name("refs/heads/main"), "main");
+        assert_eq!(branch_name("HEAD"), "HEAD");
+        assert_eq!(push_ref("refs/remotes/origin/main"), "refs/heads/main");
+        assert_eq!(push_ref("HEAD"), "HEAD");
+        assert_eq!(push_ref("refs/heads/x"), "refs/heads/x");
+    }
 
     #[test]
     fn sha_helpers() {
