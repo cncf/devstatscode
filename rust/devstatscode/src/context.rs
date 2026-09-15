@@ -402,6 +402,8 @@ pub struct Ctx {
     pub skip_api_repo_stats: bool,
     /// From GHA2DB_GHAPISKIPREPOEVENTS, ghapi2db tool, if set then tool is skipping the repository events feed pass (GET /repos/{owner}/{repo}/events written with the gha2db writer: fills the events GH Archive missed)
     pub skip_api_repo_events: bool,
+    /// From GHA2DB_GHAPISKIPISSUESPRS, ghapi2db tool, if set then tool is skipping the issues/PRs sweep pass (fills the stub gha_pull_requests rows GH Archive delivers since 2024-10 with GET /pulls/{n} objects and synthesizes opened/closed events for the issues and PRs GH Archive missed)
+    pub skip_api_issues_prs: bool,
     /// From GHA2DB_GHAPI_RECENT_REPOS_ONLY, ghapi2db tool, when set the API passes only process repositories with gha_events rows in the recent repos range (legacy scope, no heartbeat), default: every gha_repos repository (one current name per id) gated per pass by a GraphQL heartbeat
     pub ghapi_all_repos: bool,
     /// From GHA2DB_GETREPOSSKIP, get_repos tool, if set then tool does nothing
@@ -687,6 +689,7 @@ impl Ctx {
         self.skip_api_stars = env_set("GHA2DB_GHAPISKIPSTARS");
         self.skip_api_repo_stats = env_set("GHA2DB_GHAPISKIPREPOSTATS");
         self.skip_api_repo_events = env_set("GHA2DB_GHAPISKIPREPOEVENTS");
+        self.skip_api_issues_prs = env_set("GHA2DB_GHAPISKIPISSUESPRS");
         self.ghapi_all_repos = !env_set("GHA2DB_GHAPI_RECENT_REPOS_ONLY");
         self.ghapi_error_is_fatal = env_set("GHA2DB_GHAPI_ERROR_FATAL");
         self.auto_fetch_commits = !env_set("GHA2DB_NO_AUTOFETCHCOMMITS");
@@ -1217,6 +1220,7 @@ impl Ctx {
             ("SkipAPIStars", self.skip_api_stars.to_string()),
             ("SkipAPIRepoStats", self.skip_api_repo_stats.to_string()),
             ("SkipAPIRepoEvents", self.skip_api_repo_events.to_string()),
+            ("SkipAPIIssuesPRs", self.skip_api_issues_prs.to_string()),
             ("GHAPIAllRepos", self.ghapi_all_repos.to_string()),
             ("SkipGetRepos", self.skip_get_repos.to_string()),
             ("CSVFile", self.csv_file.clone()),
@@ -1760,7 +1764,7 @@ mod tests {
         },
         Case {
             name: "Setting skip GHAPI and GetRepos",
-            env: &[("GHA2DB_GETREPOSSKIP", "1"), ("GHA2DB_GHAPISKIP", "1"), ("GHA2DB_GHAPISKIPEVENTS", "1"), ("GHA2DB_GHAPISKIPISSUES", "1"), ("GHA2DB_GHAPISKIPPRS", "1"), ("GHA2DB_GHAPISKIPCOMMITS", "1"), ("GHA2DB_GHAPISKIPLICENSES", "1"), ("GHA2DB_GHAPIFORCELICENSES", "1"), ("GHA2DB_GHAPISKIPLANGS", "1"), ("GHA2DB_GHAPIFORCELANGS", "1"), ("GHA2DB_GHAPISKIPCOMMENTS", "1"), ("GHA2DB_GHAPISKIPREVIEWS", "1"), ("GHA2DB_GHAPISKIPFORKS", "1"), ("GHA2DB_GHAPISKIPRELEASES", "1"), ("GHA2DB_GHAPISKIPSTARS", "1"), ("GHA2DB_GHAPISKIPREPOSTATS", "1"), ("GHA2DB_GHAPISKIPREPOEVENTS", "1"), ("GHA2DB_GHAPI_ERROR_FATAL", "1"), ("GHA2DB_NO_AUTOFETCHCOMMITS", "1")],
+            env: &[("GHA2DB_GETREPOSSKIP", "1"), ("GHA2DB_GHAPISKIP", "1"), ("GHA2DB_GHAPISKIPEVENTS", "1"), ("GHA2DB_GHAPISKIPISSUES", "1"), ("GHA2DB_GHAPISKIPPRS", "1"), ("GHA2DB_GHAPISKIPCOMMITS", "1"), ("GHA2DB_GHAPISKIPLICENSES", "1"), ("GHA2DB_GHAPIFORCELICENSES", "1"), ("GHA2DB_GHAPISKIPLANGS", "1"), ("GHA2DB_GHAPIFORCELANGS", "1"), ("GHA2DB_GHAPISKIPCOMMENTS", "1"), ("GHA2DB_GHAPISKIPREVIEWS", "1"), ("GHA2DB_GHAPISKIPFORKS", "1"), ("GHA2DB_GHAPISKIPRELEASES", "1"), ("GHA2DB_GHAPISKIPSTARS", "1"), ("GHA2DB_GHAPISKIPREPOSTATS", "1"), ("GHA2DB_GHAPISKIPREPOEVENTS", "1"), ("GHA2DB_GHAPISKIPISSUESPRS", "1"), ("GHA2DB_GHAPI_ERROR_FATAL", "1"), ("GHA2DB_NO_AUTOFETCHCOMMITS", "1")],
             set: |c| {
                 c.skip_get_repos = true;
                 c.skip_ghapi = true;
@@ -1779,6 +1783,7 @@ mod tests {
                 c.skip_api_stars = true;
                 c.skip_api_repo_stats = true;
                 c.skip_api_repo_events = true;
+                c.skip_api_issues_prs = true;
                 c.ghapi_error_is_fatal = true;
                 c.auto_fetch_commits = false;
             },
@@ -2574,7 +2579,7 @@ mod tests {
         assert!(s.contains(" MaxRunDuration:map[] "), "{}", s);
         assert!(
             s.contains(
-                " SkipAPIStars:false SkipAPIRepoStats:false SkipAPIRepoEvents:false GHAPIAllRepos:true SkipGetRepos:false "
+                " SkipAPIStars:false SkipAPIRepoStats:false SkipAPIRepoEvents:false SkipAPIIssuesPRs:false GHAPIAllRepos:true SkipGetRepos:false "
             ),
             "{}",
             s

@@ -4,21 +4,214 @@
 use crate::gha::{
     actor_id_or_nil, actor_login_or_nil, comment_id_or_nil, forkee_id_or_nil, issue_id_or_nil,
     milestone_id_or_nil, org_id_or_nil, org_login_or_nil, pull_request_id_or_nil,
-    release_id_or_nil, Actor, Event, EventOld, Forkee, GhaTime, Org, PullRequest, Repo, Team,
+    release_id_or_nil, Actor, Event, EventOld, Forkee, GhaTime, Issue, Org, PullRequest, Repo,
+    Team,
 };
 use crate::hash::hash_strings;
 use crate::pg::api::{
     bool_or_nil, clean_utf8, exec_sql_tx_with_err, exec_sql_with_err, first_int_or_nil,
-    insert_ignore, int_or_nil, n_values, string_or_nil, trunc_string_or_nil, trunc_to_bytes,
+    insert_ignore, int_or_nil, n_value, n_values, query_sql_with_err, string_or_nil,
+    trunc_string_or_nil, trunc_to_bytes,
 };
 use crate::pg::{PgConn, PgTx, SqlArg};
 use crate::{fatal_on_err, fatalf, Ctx};
+use chrono::{DateTime, Utc};
 
 use super::db::{
     event_exists_collision, find_org_id_or_nil, find_repo_from_name_and_org, gha_actor, gha_branch,
-    gha_comment, gha_commits_roles, gha_forkee, gha_forkee_old, gha_milestone, gha_org, gha_pages,
-    gha_release, gha_repo, gha_review, lookup_actor, lookup_label, Db, MaybeHide,
+    gha_comment, gha_commits_roles, gha_forkee, gha_forkee_old, gha_milestone_insert, gha_org,
+    gha_pages, gha_release, gha_repo, gha_review, lookup_actor, lookup_label, Db, MaybeHide,
 };
+
+/// Go `ghaIssue`: a single GHA issue (its user/assignee(s), milestone,
+/// labels and assignee connections).
+#[allow(clippy::too_many_arguments)]
+pub fn gha_issue(
+    tx: &mut PgTx<'_>,
+    ctx: &Ctx,
+    payload_issue: Option<&Issue>,
+    event_id: &str,
+    actor: &Actor,
+    repo: &Repo,
+    e_type: &str,
+    e_created_at: GhaTime,
+    maybe_hide: MaybeHide<'_>,
+) {
+    gha_issue_insert(
+        tx,
+        ctx,
+        payload_issue,
+        event_id,
+        actor,
+        repo,
+        e_type,
+        e_created_at,
+        maybe_hide,
+        false,
+    );
+}
+
+/// Go `ghaIssueInsert`: [`gha_issue`], insert-ignore the milestone and
+/// assignee connection rows when they may already exist for the event: the
+/// stub upgrade (`ghapi2db issues prs`) writes the pull request's milestone
+/// row for the same event before attaching the issue row, and both objects
+/// share the milestone.
+#[allow(clippy::too_many_arguments)]
+pub fn gha_issue_insert(
+    tx: &mut PgTx<'_>,
+    ctx: &Ctx,
+    payload_issue: Option<&Issue>,
+    event_id: &str,
+    actor: &Actor,
+    repo: &Repo,
+    e_type: &str,
+    e_created_at: GhaTime,
+    maybe_hide: MaybeHide<'_>,
+    ignore: bool,
+) {
+    let issue = match payload_issue {
+        Some(issue) => issue,
+        None => return,
+    };
+
+    // Create Event (milestone rows carry the event's columns)
+    let ev = Event {
+        actor: actor.clone(),
+        repo: repo.clone(),
+        type_: e_type.to_string(),
+        created_at: e_created_at,
+        ..Event::default()
+    };
+
+    // user, assignee
+    gha_actor(tx, ctx, &issue.user, maybe_hide);
+    if let Some(assignee) = &issue.assignee {
+        gha_actor(tx, ctx, assignee, maybe_hide);
+    }
+
+    // issue
+    let iid = issue.id;
+    let is_pr = issue.pull_request.is_some();
+    exec_sql_tx_with_err(
+        tx,
+        ctx,
+        &format!(
+            "insert into gha_issues(\
+             id, event_id, assignee_id, body, closed_at, comments, created_at, \
+             locked, milestone_id, number, state, title, updated_at, user_id, \
+             dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, \
+             dup_user_login, is_pull_request) {}",
+            n_values(22)
+        ),
+        &[
+            SqlArg::Int(iid),
+            SqlArg::from(event_id),
+            actor_id_or_nil(issue.assignee.as_ref()),
+            trunc_string_or_nil(issue.body.as_deref(), 0xffff),
+            SqlArg::from(issue.closed_at),
+            SqlArg::Int(issue.comments),
+            SqlArg::from(issue.created_at),
+            SqlArg::Bool(issue.locked),
+            milestone_id_or_nil(issue.milestone.as_ref()),
+            SqlArg::Int(issue.number),
+            SqlArg::from(&issue.state),
+            SqlArg::Str(clean_utf8(&issue.title)),
+            SqlArg::from(issue.updated_at),
+            SqlArg::Int(issue.user.id),
+            SqlArg::Int(actor.id),
+            SqlArg::Str(maybe_hide(&actor.login)),
+            SqlArg::Int(repo.id),
+            SqlArg::from(&repo.name),
+            SqlArg::from(e_type),
+            SqlArg::from(e_created_at),
+            SqlArg::Str(maybe_hide(&issue.user.login)),
+            SqlArg::Bool(is_pr),
+        ],
+    );
+
+    // milestone
+    if let Some(milestone) = &issue.milestone {
+        gha_milestone_insert(tx, ctx, event_id, milestone, &ev, maybe_hide, ignore);
+    }
+
+    let assignee_query = format!(
+        "into gha_issues_assignees(issue_id, event_id, assignee_id) {}",
+        n_values(3)
+    );
+    let assignee_query = if ignore {
+        insert_ignore(&assignee_query)
+    } else {
+        format!("insert {assignee_query}")
+    };
+    let p_aid = issue.assignee.as_ref().map(|a| a.id);
+    for assignee in &issue.assignees {
+        let aid = assignee.id;
+        if Some(aid) == p_aid {
+            continue;
+        }
+
+        // assignee
+        gha_actor(tx, ctx, assignee, maybe_hide);
+
+        // issue-assignee connection
+        exec_sql_tx_with_err(
+            tx,
+            ctx,
+            &assignee_query,
+            &[SqlArg::Int(iid), SqlArg::from(event_id), SqlArg::Int(aid)],
+        );
+    }
+
+    // labels
+    for label in &issue.labels {
+        let lid = match label.id {
+            Some(id) => id,
+            None => lookup_label(tx, ctx, &trunc_to_bytes(&label.name, 160), &label.color),
+        };
+
+        // label
+        exec_sql_tx_with_err(
+            tx,
+            ctx,
+            &insert_ignore(&format!(
+                "into gha_labels(id, name, color, is_default) {}",
+                n_values(4)
+            )),
+            &[
+                SqlArg::Int(lid),
+                SqlArg::Str(trunc_to_bytes(&label.name, 160)),
+                SqlArg::from(&label.color),
+                bool_or_nil(label.default),
+            ],
+        );
+
+        // issue-label connection
+        exec_sql_tx_with_err(
+            tx,
+            ctx,
+            &insert_ignore(&format!(
+                "into gha_issues_labels(issue_id, event_id, label_id, \
+                 dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, \
+                 dup_issue_number, dup_label_name\
+                 ) {}",
+                n_values(11)
+            )),
+            &[
+                SqlArg::Int(iid),
+                SqlArg::from(event_id),
+                SqlArg::Int(lid),
+                SqlArg::Int(actor.id),
+                SqlArg::Str(maybe_hide(&actor.login)),
+                SqlArg::Int(repo.id),
+                SqlArg::from(&repo.name),
+                SqlArg::from(e_type),
+                SqlArg::from(e_created_at),
+                SqlArg::Int(issue.number),
+                SqlArg::from(&label.name),
+            ],
+        );
+    }
+}
 
 /// Go `ghaPullRequest` (PR, its branches/forkees, milestone, assignees and
 /// requested reviewers).
@@ -86,8 +279,11 @@ pub fn gha_pull_request(
     }
 
     // milestone
+    // insert-ignore: an API-synthesized event (ghapi2db issues prs pass) carries
+    // the pull request and its issue view in one payload and `gha_issue` has just
+    // written the same milestone for this event
     if let Some(milestone) = &pr.milestone {
-        gha_milestone(tx, ctx, event_id, milestone, &ev, maybe_hide);
+        gha_milestone_insert(tx, ctx, event_id, milestone, &ev, maybe_hide, true);
     }
 
     // pull_request
@@ -200,6 +396,257 @@ fn pr_assignees(pr: &PullRequest) -> Vec<&Actor> {
         }
     }
     assignees
+}
+
+/// Go `StubCreatedAtCut`: gha_pull_requests rows written from GitHub's
+/// stubbed pull request objects (only url/id/number/base/head: since
+/// 2024-10-17 in PullRequestEvent payloads, since 2025-10-09 in
+/// PullRequestReview{,Comment}Event ones) carry the zero created_at
+/// (0001-01-01); a created_at before this cut marks such a stub row.
+pub const STUB_CREATED_AT_CUT: &str = "1900-01-01";
+
+/// Go `UpgradePullRequestStubs`: fill the stub rows of a pull request with
+/// its current API object: every value column except the event-time
+/// base_sha/head_sha, plus the milestone, assignee and requested reviewer
+/// rows (and actor upserts) for those event ids. When `issue` is given (the
+/// caller found no gha_issues row for the pull request) one gha_issues row is
+/// attached to the newest upgraded event.
+///
+/// Returns the upgraded event ids (none when the pull request has no stub
+/// rows) and whether the issue row was attached.
+pub fn upgrade_pull_request_stubs(
+    db: &PgConn,
+    ctx: &Ctx,
+    pr: &PullRequest,
+    issue: Option<&Issue>,
+    maybe_hide: MaybeHide<'_>,
+) -> (Vec<i64>, bool) {
+    struct StubRow {
+        event_id: i64,
+        actor_id: i64,
+        actor_login: String,
+        repo_id: i64,
+        repo_name: String,
+        e_type: String,
+        created_at: DateTime<Utc>,
+    }
+    let mut stubs: Vec<StubRow> = Vec::new();
+    let mut rows = query_sql_with_err(
+        db,
+        ctx,
+        &format!(
+            "select event_id, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at \
+             from gha_pull_requests where id = {} and created_at < '{}' order by dup_created_at, event_id",
+            n_value(1),
+            STUB_CREATED_AT_CUT
+        ),
+        &[SqlArg::Int(pr.id)],
+    );
+    while rows.next() {
+        let mut st = StubRow {
+            event_id: 0,
+            actor_id: 0,
+            actor_login: String::new(),
+            repo_id: 0,
+            repo_name: String::new(),
+            e_type: String::new(),
+            created_at: DateTime::<Utc>::UNIX_EPOCH,
+        };
+        fatal_on_err(rows.scan(&mut [
+            &mut st.event_id,
+            &mut st.actor_id,
+            &mut st.actor_login,
+            &mut st.repo_id,
+            &mut st.repo_name,
+            &mut st.e_type,
+            &mut st.created_at,
+        ]));
+        stubs.push(st);
+    }
+    fatal_on_err(rows.err());
+    fatal_on_err(rows.close());
+    if stubs.is_empty() {
+        return (Vec::new(), false);
+    }
+
+    let mut tx = fatal_on_err(db.begin());
+
+    // user, merged_by, assignee
+    gha_actor(&mut tx, ctx, &pr.user, maybe_hide);
+    if let Some(merged_by) = &pr.merged_by {
+        gha_actor(&mut tx, ctx, merged_by, maybe_hide);
+    }
+    if let Some(assignee) = &pr.assignee {
+        gha_actor(&mut tx, ctx, assignee, maybe_hide);
+    }
+
+    let mut event_ids = Vec::with_capacity(stubs.len());
+    for st in &stubs {
+        let eid = st.event_id.to_string();
+        exec_sql_tx_with_err(
+            &mut tx,
+            ctx,
+            &format!(
+                "update gha_pull_requests set \
+                 user_id = {}, merged_by_id = {}, assignee_id = {}, milestone_id = {}, \
+                 state = {}, locked = {}, title = {}, body = {}, \
+                 created_at = {}, updated_at = {}, closed_at = {}, merged_at = {}, \
+                 merge_commit_sha = {}, merged = {}, mergeable = {}, rebaseable = {}, \
+                 mergeable_state = {}, comments = {}, review_comments = {}, \
+                 maintainer_can_modify = {}, commits = {}, additions = {}, \
+                 deletions = {}, changed_files = {}, dup_user_login = {}, \
+                 dupn_merged_by_login = {} where id = {} and event_id = {}",
+                n_value(1),
+                n_value(2),
+                n_value(3),
+                n_value(4),
+                n_value(5),
+                n_value(6),
+                n_value(7),
+                n_value(8),
+                n_value(9),
+                n_value(10),
+                n_value(11),
+                n_value(12),
+                n_value(13),
+                n_value(14),
+                n_value(15),
+                n_value(16),
+                n_value(17),
+                n_value(18),
+                n_value(19),
+                n_value(20),
+                n_value(21),
+                n_value(22),
+                n_value(23),
+                n_value(24),
+                n_value(25),
+                n_value(26),
+                n_value(27),
+                n_value(28),
+            ),
+            &[
+                SqlArg::Int(pr.user.id),
+                actor_id_or_nil(pr.merged_by.as_ref()),
+                actor_id_or_nil(pr.assignee.as_ref()),
+                milestone_id_or_nil(pr.milestone.as_ref()),
+                SqlArg::from(&pr.state),
+                bool_or_nil(pr.locked),
+                SqlArg::Str(clean_utf8(&pr.title)),
+                trunc_string_or_nil(pr.body.as_deref(), 0xffff),
+                SqlArg::from(pr.created_at),
+                SqlArg::from(pr.updated_at),
+                SqlArg::from(pr.closed_at),
+                SqlArg::from(pr.merged_at),
+                string_or_nil(pr.merge_commit_sha.as_deref()),
+                bool_or_nil(pr.merged),
+                bool_or_nil(pr.mergeable),
+                bool_or_nil(pr.rebaseable),
+                string_or_nil(pr.mergeable_state.as_deref()),
+                int_or_nil(pr.comments),
+                int_or_nil(pr.review_comments),
+                bool_or_nil(pr.maintainer_can_modify),
+                int_or_nil(pr.commits),
+                int_or_nil(pr.additions),
+                int_or_nil(pr.deletions),
+                int_or_nil(pr.changed_files),
+                SqlArg::Str(maybe_hide(&pr.user.login)),
+                actor_login_or_nil(pr.merged_by.as_ref(), &maybe_hide),
+                SqlArg::Int(pr.id),
+                SqlArg::from(eid.as_str()),
+            ],
+        );
+
+        // the event's columns for the rows keyed by (id, event_id)
+        let ev = Event {
+            actor: Actor {
+                id: st.actor_id,
+                login: st.actor_login.clone(),
+                ..Actor::default()
+            },
+            repo: Repo {
+                id: st.repo_id,
+                name: st.repo_name.clone(),
+            },
+            type_: st.e_type.clone(),
+            created_at: GhaTime(st.created_at.fixed_offset()),
+            ..Event::default()
+        };
+
+        // milestone
+        if let Some(milestone) = &pr.milestone {
+            gha_milestone_insert(&mut tx, ctx, &eid, milestone, &ev, maybe_hide, true);
+        }
+
+        // assignees
+        for assignee in pr_assignees(pr) {
+            gha_actor(&mut tx, ctx, assignee, maybe_hide);
+            exec_sql_tx_with_err(
+                &mut tx,
+                ctx,
+                &insert_ignore(&format!(
+                    "into gha_pull_requests_assignees(pull_request_id, event_id, assignee_id) {}",
+                    n_values(3)
+                )),
+                &[
+                    SqlArg::Int(pr.id),
+                    SqlArg::from(eid.as_str()),
+                    SqlArg::Int(assignee.id),
+                ],
+            );
+        }
+
+        // requested_reviewers
+        if let Some(reviewers) = &pr.requested_reviewers {
+            for reviewer in reviewers {
+                gha_actor(&mut tx, ctx, reviewer, maybe_hide);
+                exec_sql_tx_with_err(
+                    &mut tx,
+                    ctx,
+                    &insert_ignore(&format!(
+                        "into gha_pull_requests_requested_reviewers(pull_request_id, event_id, requested_reviewer_id) {}",
+                        n_values(3)
+                    )),
+                    &[
+                        SqlArg::Int(pr.id),
+                        SqlArg::from(eid.as_str()),
+                        SqlArg::Int(reviewer.id),
+                    ],
+                );
+            }
+        }
+        event_ids.push(st.event_id);
+    }
+
+    // the pull request's issue row: attached to the newest upgraded event
+    // (insert-ignore: the pull request's milestone row for this event was written above)
+    let mut issue_attached = false;
+    if issue.is_some() {
+        let st = &stubs[stubs.len() - 1];
+        gha_issue_insert(
+            &mut tx,
+            ctx,
+            issue,
+            &st.event_id.to_string(),
+            &Actor {
+                id: st.actor_id,
+                login: st.actor_login.clone(),
+                ..Actor::default()
+            },
+            &Repo {
+                id: st.repo_id,
+                name: st.repo_name.clone(),
+            },
+            &st.e_type,
+            GhaTime(st.created_at.fixed_offset()),
+            maybe_hide,
+            true,
+        );
+        issue_attached = true;
+    }
+
+    fatal_on_err(tx.commit());
+    (event_ids, issue_attached)
 }
 
 /// Go `ghaTeam` (pre-2015 team events).
@@ -853,135 +1300,17 @@ pub fn write_to_db(db: &PgConn, ctx: &Ctx, ev: &Event, maybe_hide: MaybeHide<'_>
     );
 
     // gha_issues
-    if let Some(issue) = &pl.issue {
-        // user, assignee
-        gha_actor(&mut tx, ctx, &issue.user, maybe_hide);
-        if let Some(assignee) = &issue.assignee {
-            gha_actor(&mut tx, ctx, assignee, maybe_hide);
-        }
-
-        // issue
-        let iid = issue.id;
-        let is_pr = issue.pull_request.is_some();
-        exec_sql_tx_with_err(
-            &mut tx,
-            ctx,
-            &format!(
-                "insert into gha_issues(\
-                 id, event_id, assignee_id, body, closed_at, comments, created_at, \
-                 locked, milestone_id, number, state, title, updated_at, user_id, \
-                 dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, \
-                 dup_user_login, is_pull_request) {}",
-                n_values(22)
-            ),
-            &[
-                SqlArg::Int(iid),
-                SqlArg::from(event_id),
-                actor_id_or_nil(issue.assignee.as_ref()),
-                trunc_string_or_nil(issue.body.as_deref(), 0xffff),
-                SqlArg::from(issue.closed_at),
-                SqlArg::Int(issue.comments),
-                SqlArg::from(issue.created_at),
-                SqlArg::Bool(issue.locked),
-                milestone_id_or_nil(issue.milestone.as_ref()),
-                SqlArg::Int(issue.number),
-                SqlArg::from(&issue.state),
-                SqlArg::Str(clean_utf8(&issue.title)),
-                SqlArg::from(issue.updated_at),
-                SqlArg::Int(issue.user.id),
-                SqlArg::Int(ev.actor.id),
-                SqlArg::Str(maybe_hide(&ev.actor.login)),
-                SqlArg::Int(ev.repo.id),
-                SqlArg::from(&ev.repo.name),
-                SqlArg::from(&ev.type_),
-                SqlArg::from(ev.created_at),
-                SqlArg::Str(maybe_hide(&issue.user.login)),
-                SqlArg::Bool(is_pr),
-            ],
-        );
-
-        // milestone
-        if let Some(milestone) = &issue.milestone {
-            gha_milestone(&mut tx, ctx, event_id, milestone, ev, maybe_hide);
-        }
-
-        let p_aid = issue.assignee.as_ref().map(|a| a.id);
-        for assignee in &issue.assignees {
-            let aid = assignee.id;
-            if Some(aid) == p_aid {
-                continue;
-            }
-
-            // assignee
-            gha_actor(&mut tx, ctx, assignee, maybe_hide);
-
-            // issue-assignee connection
-            exec_sql_tx_with_err(
-                &mut tx,
-                ctx,
-                &format!(
-                    "insert into gha_issues_assignees(issue_id, event_id, assignee_id) {}",
-                    n_values(3)
-                ),
-                &[SqlArg::Int(iid), SqlArg::from(event_id), SqlArg::Int(aid)],
-            );
-        }
-
-        // labels
-        for label in &issue.labels {
-            let lid = match label.id {
-                Some(id) => id,
-                None => lookup_label(
-                    &mut tx,
-                    ctx,
-                    &trunc_to_bytes(&label.name, 160),
-                    &label.color,
-                ),
-            };
-
-            // label
-            exec_sql_tx_with_err(
-                &mut tx,
-                ctx,
-                &insert_ignore(&format!(
-                    "into gha_labels(id, name, color, is_default) {}",
-                    n_values(4)
-                )),
-                &[
-                    SqlArg::Int(lid),
-                    SqlArg::Str(trunc_to_bytes(&label.name, 160)),
-                    SqlArg::from(&label.color),
-                    bool_or_nil(label.default),
-                ],
-            );
-
-            // issue-label connection
-            exec_sql_tx_with_err(
-                &mut tx,
-                ctx,
-                &insert_ignore(&format!(
-                    "into gha_issues_labels(issue_id, event_id, label_id, \
-                     dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, \
-                     dup_issue_number, dup_label_name\
-                     ) {}",
-                    n_values(11)
-                )),
-                &[
-                    SqlArg::Int(iid),
-                    SqlArg::from(event_id),
-                    SqlArg::Int(lid),
-                    SqlArg::Int(ev.actor.id),
-                    SqlArg::Str(maybe_hide(&ev.actor.login)),
-                    SqlArg::Int(ev.repo.id),
-                    SqlArg::from(&ev.repo.name),
-                    SqlArg::from(&ev.type_),
-                    SqlArg::from(ev.created_at),
-                    SqlArg::Int(issue.number),
-                    SqlArg::from(&label.name),
-                ],
-            );
-        }
-    }
+    gha_issue(
+        &mut tx,
+        ctx,
+        pl.issue.as_ref(),
+        event_id,
+        &ev.actor,
+        &ev.repo,
+        &ev.type_,
+        ev.created_at,
+        maybe_hide,
+    );
 
     // gha_forkees
     if let Some(forkee) = &pl.forkee {

@@ -212,9 +212,9 @@ consume the REST quota (verified).
 
 | lost in GHA | metric impact (../devstats `metrics/shared`) | today | proposed source (§7) | existing tables written |
 |---|---|---|---|---|
-| `IssuesEvent` / `PullRequestEvent` (opened, closed, reopened) for the ~35–50 % of objects GHA never reports | `issues_opened`, `new_prs`, `prs_merged`, contributions/contributors (`gha_events.type in (IssuesEvent, PullRequestEvent, …)` + `actor_id`), `pr_time_to_*`, `open_issues_*` | `sync_events` repairs only objects that already had an issue event | **P1-B DONE** (events feed, native ids) + P1-C issues/PR sweep (artificial `IssuesEvent`/`PullRequestEvent` with `action` opened/closed, GHA-shaped) | `gha_events`, `gha_payloads`, `gha_issues`, `gha_pull_requests`, `gha_issues_labels/assignees`, `gha_pull_requests_*`, `gha_actors`, `gha_labels`, `gha_milestones` |
-| full PR objects (stub rows with `created_at = 0001-01-01`) | everything keyed on `gha_pull_requests.created_at/merged_at/merged_by_id/additions…` | rows fixed only when `sync_events` sees an issue event | P1-C: `/issues?since` + GraphQL 50-batch, `update` of stub rows, insert of missing ones | `gha_pull_requests`, `gha_forkees` (base/head repo) |
-| `gha_forkees` snapshots of tracked repos | `watchers.sql` ("Stars and forks by repository") | none since 2025-11 | **P1-D DONE**: one counters row per repo per run (`ghapi2db repo stats`, 0 requests from the heartbeat); P1-C still to add the PR base/head repo objects | `gha_forkees` |
+| `IssuesEvent` / `PullRequestEvent` (opened, closed, reopened) for the ~35–50 % of objects GHA never reports | `issues_opened`, `new_prs`, `prs_merged`, contributions/contributors (`gha_events.type in (IssuesEvent, PullRequestEvent, …)` + `actor_id`), `pr_time_to_*`, `open_issues_*` | `sync_events` repairs only objects that already had an issue event | **P1-B DONE** (events feed, native ids) + **P1-C DONE** (`ghapi2db issues prs`: artificial `IssuesEvent`/`PullRequestEvent` `opened`/`closed` for the objects with no row at all, GHA-shaped, ids `2^48 + 28e12/32e12 + 2·id + {0,1}`) | `gha_events`, `gha_payloads`, `gha_issues`, `gha_pull_requests`, `gha_issues_labels/assignees`, `gha_pull_requests_*`, `gha_actors`, `gha_labels`, `gha_milestones` |
+| full PR objects (stub rows with `created_at = 0001-01-01`) | everything keyed on `gha_pull_requests.created_at/merged_at/merged_by_id/additions…` | rows fixed only when `sync_events` sees an issue event | **P1-C DONE**: DB-driven stub sweep (`GET /pulls/{n}` per stub PR, every stub row upgraded in place, a `gha_issues` row attached when the PR has none) + `/issues?since` listing for the missing objects | `gha_pull_requests` (+ `_assignees`, `_requested_reviewers`), `gha_issues` (+ `_labels`, `_assignees`), `gha_milestones`, `gha_labels`, `gha_actors` |
+| `gha_forkees` snapshots of tracked repos | `watchers.sql` ("Stars and forks by repository") | none since 2025-11 | **P1-D DONE**: one counters row per repo per run (`ghapi2db repo stats`, 0 requests from the heartbeat); P1-C deliberately writes no `gha_forkees` rows (the GHA stubs carry `base`/`head` and P1-D owns the counters) | `gha_forkees` |
 | `WatchEvent` (stars) | `project_stats.sql`, `countries*.sql`, `bus_factor*.sql` (event counts by type), `Stargazers/Watchers` series | dead restore, silent 0 | **P1-B DONE**: the events feed gives real `WatchEvent`s (actor, id, time) for repos with < 300 events/day and the last ~14 h of k/k; counts via P1-D (DONE); `sync_stars` logs honestly (bug 62) | `gha_events`, `gha_payloads`, `gha_actors` |
 | `ForkEvent`, `ReleaseEvent`, `CreateEvent`, `DeleteEvent`, `MemberEvent`, `GollumEvent`, `PublicEvent`, `CommitCommentEvent` | forks/releases metrics, contributions (`CommitCommentEvent`) | forks/releases restored for recent repos | **P1-B DONE**: events feed (all types, native ids); existing restores kept as backstop | as gha2db |
 | `PushEvent.commits[]` | `commits`, `committers`, contributions, `gha_commits_roles` | `backfill_push_event_commits` (needs the stub event), `restore_orphan_commits` (default ref, commit-date window) | P2-A landing-window + P2-B all `origin/*` branches + P2-C grouping; P3-A GraphQL fallback for repos without clone | `gha_events`, `gha_payloads`, `gha_commits`, `gha_commits_roles`, `gha_commits_files` |
@@ -310,38 +310,110 @@ with the shared gha2db writer (`lib.WriteToDB` / `devstatscode::ghawriter::write
 event's **native id, actor and time stamp**, hide.csv anonymisation and the gha2db actor filters (`GHA2DB_ACTORS_FILTER`/`ALLOW`/`FORBID`) included; an id that already exists
 (GH Archive delivered it) is skipped, a different event under the same id logs the writer's
 `event id collision` line. All types are written — `PushEvent` stubs (no commits, they feed
-`backfill_push_event_commits`) and the 5-field PR stubs included. Paging stops after the last page, after a
-short page, after page 3, or once a page reaches back before `recent_dt` (everything on a fetched page is
-written regardless of age). A feed whose events carry another repository id (`org/repo` now redirects
+`backfill_push_event_commits`) and the 5-field PR stubs included. Paging follows the `Link: next` header only,
+up to page 3 (everything on a fetched page is written regardless of age) — see the "P1-B prod verification"
+note in §9 for why neither a short page nor an old event on a page may end it. A feed whose events carry
+another repository id (`org/repo` now redirects
 elsewhere) is skipped with a `WARNING` when that id is not tracked; 404/410 are silent. Restored event ids
 go to the targeted postprocess (`gha_texts`/labels/issue-PR links immediately). Summary lines:
 `ghapi2db repo events: processed N repos, P pages, checked C, restored R` and
 `ghapi2db repo events: restored events by type: ForkEvent 1, IssueCommentEvent 35, …` (sorted). Flag:
 `GHA2DB_GHAPISKIPREPOEVENTS`. Cost: ≤ 3 requests per active repo per run. Coverage: complete for every repo
 with < 300 events between two runs (~all but a handful in allprj), the newest ~300 events (3.5–14 h) for
-k/k — the schedule is fixed, so k/k keeps relying on P1-C for the rest. Tests: 8 `repo_events_*` scenarios
-in `rust/cmd/ghapi2db/tests/compat.rs` (109 total, Go and Rust byte-identical, database contents included).
+k/k — the schedule is fixed, so k/k keeps relying on P1-C for the rest. An event whose `repo` object GitHub
+blanked (`"repo": {}` — seen for a fork into a private repository) is attributed to the feed's repository
+instead of being mistaken for a redirected feed. Tests: 9 `repo_events_*` scenarios
+in `rust/cmd/ghapi2db/tests/compat.rs` (110 total, Go and Rust byte-identical, database contents included).
 
-**P1-C Issues + PRs sweep (`sync_issues_prs`).** For every repo with issue/PR activity since `recent_dt`:
-`GET /repos/{o}/{r}/issues?state=all&since=<recent_dt>&sort=updated&direction=asc&per_page=100` (issues and PRs,
-full objects). For PR numbers, GraphQL `pullRequests` by number in batches of 50 (2 points) — or `GET /pulls/{n}`
-(1 request) when fewer than ~10 — for `additions, deletions, changedFiles, commits, comments, reviewThreads,
-merged, mergedAt, mergedBy, mergeable, maintainerCanModify, headRepository/baseRepository` and label/milestone/
-assignee/requested-reviewer lists. Then per object:
-1. upsert `gha_actors` (user, closed_by, merged_by, assignees) exactly like gha2db does;
-2. if no `gha_events` row of type `IssuesEvent`/`PullRequestEvent` with `action='opened'` exists for the
-   object (any id range) → artificial `IssuesEvent`/`PullRequestEvent` `opened` at `created_at`;
-   likewise `closed` at `closed_at` (and `reopened` when `state=open` but a `closed` row exists);
-   `merged_at` goes into the `gha_pull_requests` row (metrics use `merged_at`, not an event);
-3. insert the full `gha_issues`/`gha_pull_requests` (+ `_labels`, `_assignees`, `_requested_reviewers`,
-   `gha_milestones`, `gha_labels`) rows for those artificial events, and **upgrade existing stub rows**
-   (`update … set created_at, updated_at, closed_at, merged_at, title, body, user_id, state, … where id = $1
-   and created_at = '0001-01-01'`);
-4. write `gha_forkees` rows for `base.repo` / `head.repo` of every synthesized PR event — this alone revives
-   `watchers.sql` for every repo with PR traffic.
-The existing `sync_events` stays (it produces the `labeled/closed/merged/…` issue-event history the
-`sync_issues_state` machinery needs). Cost: allprj ≈ 1 request per 100 updated objects + 2 points per 50 PRs
-(k/k busiest day ≈ 400 updated objects → 4 requests + 8 points). Flag: `GHA2DB_GHAPISKIPISSUESPRS`.
+**P1-C Issues + PRs sweep (`ghapi2db issues prs`) — DONE 2026-09-14 (Go + Rust).** What the research
+found first (prod `gha`, measured 14:35 UTC): since **2024-10-17** GitHub sends a *stubbed* `pull_request`
+object in `PullRequestEvent` payloads (only `url`, `id`, `number`, `base`, `head`; since 2025-10-09 also in PR
+review events), so gha2db writes `gha_pull_requests` rows with `created_at = 0001-01-01`, `user_id = 0`,
+`title = ''`, `state = ''` — **168,173 stub rows for 37,819 PRs on `gha`** (697k rows / 236k PRs on `allprj`),
+and **16,363 PRs on `gha` had only stub rows** — invisible to every metric keyed on `created_at`/`merged_at`/
+`state`. The pass runs right after `repo events` and before the classic `events` pass (flag
+`GHA2DB_GHAPISKIPISSUESPRS`, heartbeat gate "repository data" = every found repo, `REPO=` mode supported) and
+does two things per repository:
+1. **Stub sweep (DB-driven, no listing needed)**: `select id, number from gha_pull_requests where dup_repo_id
+   = $1 and created_at < '1900-01-01'` (by repository id, so the rows written under the historical names of a
+   renamed repository are swept too — 180 of the 168k prod stub rows live under `kubernetes-sigs/
+   nvidia-dra-driver-gpu` and `kubernetes-sigs/wg-ai-conformance`) → one `GET /repos/{o}/{r}/pulls/{n}` per stub PR; the id must match the
+   database (`WARNING: … pull request N is X on GitHub, Y in the database, skipping`); every stub row of that PR
+   is **upgraded in place** with the current object (`lib.UpgradePullRequestStubs` /
+   `ghawriter::upgrade_pull_request_stubs`: `update gha_pull_requests set …` of all columns except the GHA-
+   delivered `base_sha`/`head_sha`/event dup columns, plus `gha_pull_requests_assignees`/`_requested_reviewers`,
+   `gha_milestones` (insert-ignore), `gha_actors` upserts, hide.csv applied); when the PR has **no `gha_issues`
+   row at all** the pass also fetches `GET /issues/{n}` and attaches one `gha_issues` (+ `_labels`/`_assignees`)
+   row to the PR's newest event (`issue row attached: true`). 404/410 → skipped silently; the upgraded rows'
+   event ids go to the targeted postprocess.
+2. **Listing (only when the heartbeat shows issue/PR updates since `recent_dt`, or without a heartbeat)**:
+   `GET /repos/{o}/{r}/issues?state=all&since=<recent_dt>&sort=updated&direction=asc&per_page=100&page=N`
+   (`Link: next`, capped at 10 pages like the other restores). For every object **with no good row** — issues:
+   no `gha_issues` row by id; PRs: no `gha_pull_requests` row of `repo+number` with `created_at ≥ 1900` — the
+   pass synthesizes GHA-shaped events written with the gha2db writer (the row lookups are by repository id, any name): `IssuesEvent`/`PullRequestEvent`
+   `opened` at `created_at` by `user`, and `closed` at `closed_at` by `merged_by ?? closed_by ?? user` when the
+   object is closed (PRs are fetched with `GET /pulls/{n}` first; the payload carries both the `issue` and the
+   `pull_request` object, so both tables get rows). Ids are deterministic: `2^48 + 28e12 + 2·issue_id + {0,1}`
+   and `2^48 + 32e12 + 2·pr_id + {0,1}` (new bands, `delete_artificial.sql` still covers them) → re-runs are
+   idempotent. **Known objects are never touched here**: a later close/label/assignee change of an object the
+   DB already knows is the classic `events` pass's job (`sync_events` state fix), so no duplicate `closed`
+   rows appear. `reopened` is not synthesized (the current object is what the row carries). The synthesized
+   `opened` row carries the *current* object (state included) — the newest row wins in the metrics, exactly as
+   with GHA-delivered rows.
+Summary lines: `ghapi2db issues prs: processed N repos, P pages, checked C, restored R`, `… restored events by
+type: IssuesEvent n, PullRequestEvent m`, `… upgraded U stub rows of V pull requests, attached W issue rows`;
+`GHA2DB_DEBUG` adds `<repo>: N pull requests with stub rows`, `pull request N (ID): upgraded K stub rows, issue
+row attached: …`, `synthesized <Type> <action> <id> (<time>)`, `page P: N objects, synthesized so far R`, `no
+issue or PR updates since <recent>, listing skipped`. Cost: the first run pays one request per stub PR (~38k on
+`gha`, ~236k on `allprj` — one-off, then only the previous day's stubs: ~1,500/day on allprj) plus ≈ 1 request
+per 100 updated objects and one per missing PR. GraphQL batching was dropped: the REST object is what the
+writer needs and the stubs make the per-PR request unavoidable anyway. No `gha_forkees` rows are written
+(P1-D owns the counters; the stub already carries `base`/`head`). Tests: 9 `issues_prs_*` scenarios in
+`rust/cmd/ghapi2db/tests/compat.rs` (121 total, Go and Rust byte-identical, DB dumps included); the gha2db
+suite (60) guards the writer refactor (`gha_issue` extracted, `gha_milestone_insert(…, ignore)`,
+`gha_issue_insert(…, ignore)`). The issue-attach step must be insert-ignore for the milestone and the
+`gha_issues_assignees` rows: GitHub's issue view of a pull request carries the same milestone/assignees as the
+pull request object, and the pull request's milestone row for the newest event has just been written by the
+upgrade (the first production run died on this unique violation — bug 64 in `~/devstats-go2rust.md` §5; the
+`GET /issues/{n}` fixture of the scenarios now mirrors the live shape). The second production run exposed a
+pre-existing restore-pass limitation (bug 65): every pass picked one token per repository (the `GetRateLimits`
+hint from the pass start, refreshed every 20 repositories), fine for ≤ 10 pages per repository but fatal for a
+sweep that costs one request per stub PR — kueue's 3234 stubs drained the token and 24,627 pull requests were
+skipped as "rate limited" while 45 of the 49 tokens were untouched. Both languages now pick the token **per
+request** through a small picker (`ghClients.do()` / `GhClients::call()`). The first version of the picker used
+the `GetRateLimits` hint and did not help much: **`GET /rate_limit` no longer reflects the real usage** (measured
+2026-09-14: it reported `remaining 5000, used 0` for a token whose next real request answered 403 with
+`X-RateLimit-Remaining: 0`; another token 5000 vs 1254) — GitHub's usage counters and the `/rate_limit` view have
+drifted apart, so any strategy built on polling is blind. The picker therefore keeps a **per-token state learnt
+only from the answers** (`X-RateLimit-Remaining`/`Reset` of every response; a token never seen or past its reset
+counts as full), takes the token with the most remaining points (predictive −1 per pick so the 8 workers spread),
+excludes exhausted tokens until their reset, and when a request comes back `403 rate limit exceeded` (or the
+client's own "still exceeded until reset" pre-check fires) it marks that token exhausted and **repeats the request
+with the next token**; only when every token is exhausted does the rate-limit error reach `api_page` (wait ≤
+`GHA2DB_MAX_GHAPI_WAIT`, else skip). `/rate_limit` is polled only at the pass start and every 20 repositories for
+the progress line. Scenarios: `issues_prs_requests_rotate_through_the_tokens`,
+`issues_prs_exhausted_token_is_retried_on_the_next_one` (121 scenarios total). **Part 3 (2026-09-14 19:45
+UTC)**: the **legacy passes** had the same disease — the commits listing, `Issues.ListRepositoryEvents`,
+`PullRequests.Get`, licenses and languages all used `gcs[hint]`, the one token the drifted `/rate_limit` view
+picked at the pass start, retried it `GHA2DB_MAX_GHAPI_RETRY` times and then dropped the repository (production
+evidence at 19:41 UTC: `Rate limit (Issues.ListRepositoryEvents) for {Repo: in-toto/ITE…}` ×3 in the hourly
+`intoto` sync while the pool had 223k of 245k points left; the pre-fix daily `all` pod logged 260 `PRs: rate
+limited … skipping` lines in five minutes). Every legacy request now goes through the same picker
+(`gcp.do` / `sh.gc.call` / `pass.gc.call`); the `/rate_limit` pre-checks, budgets and the hint in the debug lines
+are unchanged, and the licenses/languages loops map the "every token exhausted" outcome to status 403
+(`responseStatus` / `response_status`) so their existing abuse-retry path is preserved. Scenarios
+`events_exhausted_token_is_retried_on_the_next_one`, `licenses_exhausted_token_is_retried_on_the_next_one`
+(new), `rate_limits_cache_polls_every_token_once` and `commits_by_sha_picks_the_token_per_request` (request
+lists updated: the picker tries every unseen token once before following the answers) — 129 scenarios total. Pull requests GitHub no longer serves (deleted/spam-cleaned; on `gha` 114 of them with 582 stub rows, e.g. `kubernetes/kubernetes#139119`, `kubernetes/k8s.io#9036`) keep their stub rows — nothing can fill them — and are re-checked at one request per run; since 2026-09-14 21:20 the sweep says `pull request N (ID): not available on GitHub, stub rows kept` in debug mode (scenario `issues_prs_deleted_pull_request_keeps_its_stub_rows`, 130 scenarios total).
+Production runs 3 and 4 then
+died on a third pre-existing writer trap (bug 67): a synthesized `PullRequestEvent` carries the issue view AND
+the pull request object in one payload, both with the same milestone, and `WriteToDB` wrote the milestone twice
+for the same event (`gha_issue` then `gha_pull_request`, neither insert-ignore) → `gha_milestones (id, event_id)`
+unique violation inside the transaction → fatal, leaving an orphan `gha_events` + `gha_payloads` pair (the event
+inserts are autocommit). The pull request writer's milestone insert is insert-ignore now in both languages (a
+real GHA PullRequestEvent never carries an issue object, gha2db output is unchanged) and the listing scenario
+gives PR 5 the milestone on both objects (one `gha_milestones` row per synthetic event asserted). Prod
+verification: see §9.
 
 **P1-D Repo counters → `gha_forkees` (`sync_repo_stats`) — DONE 2026-09-14 (Go + Rust).** A new last pass
 (`ghapi2db repo stats`, after the stars pass, before the event-id post-processing; flag
@@ -373,9 +445,19 @@ stargazer/watcher lists to repository admins on 2026-06-30), star events cannot 
 starred (`stargazerCount = 0`) is not flagged. Behaviour unchanged otherwise — same requests, no rows (real
 `WatchEvent`s now arrive through P1-B). Verified live: k/k `stargazerCount=127691`, `edges=[]`, no error.
 
-**P1-F Conditional requests.** In-process ETag map for the paged endpoints (repeated pages inside one run)
-and `If-None-Match` for `/repos/{o}/{r}/events` — `304`s are free. Persisting ETags across the daily runs
-would need a file on a PVC (ghapi2db pods have no repo PVC) → not in v1.
+**P1-F Conditional requests — SKIPPED 2026-09-14 (decision, no code).** Checked every REST call site of the
+finished passes for a URL requested twice inside one run — there is none: the heartbeat is GraphQL (no ETags),
+`repo stats` takes its counters from the heartbeat (0 requests), the `/events`, `/issues?since`, `/pulls`,
+`/forks`, `/releases`, `/issues/events`, `/issues/comments`, `/pulls/comments` lists are paged once per
+repository, the P1-C stub sweep fetches every stub PR once (`GET /pulls/{n}`, then the row is good and the
+`since` sweep does not fetch it again), the legacy `sync_events` pass memoizes its `PullRequests.Get` per issue
+id (Go `prs[cfg.IssueID]`, Rust identical) and the by-SHA commits step works on distinct SHAs. An in-process
+ETag map would therefore never see a `304`. Cross-run `If-None-Match` (the only case that saves quota: ≤ 3
+`/events` pages per idle repository and run) needs the ETags to survive between runs — ghapi2db pods have no
+PVC and a table/column for them is out of scope (no schema changes) → not doable in v1. The pool is not the
+constraint any more either: a kubernetes run costs ≈ 130 list pages + 9 GraphQL queries + ≤ 3 × active repos
+feed pages, the daily `allprj` run ≈ 40–50k requests, against 245k requests/h (§8). Revisit only if a
+persistent ETag store becomes available.
 
 ### 7.2 Phase 2 — `get_repos` (Go + Rust) — **IMPLEMENTED 2026-09-14** (P2-A/B/C; P2-D = bug 61, fixed earlier)
 
@@ -442,15 +524,46 @@ valid.
 **P2-D Alias attribution fix (bug candidate 61, Go + Rust).** Resolve each `repo_id` to its current name before
 restoring; skip historical-alias clones when the current-name clone exists. **DONE** (see §10, bug 61).
 
-### 7.3 Phase 3 — later / optional
+### 7.3 Phase 3 — later / optional — **decided 2026-09-14** (P3-B implemented, the rest documented below)
 
 * **P3-A** `ghapi2db` GraphQL all-branch commit restore for repos without a PVC clone (same shape as P2, 1
   point per branch page) — only if projects exist where `get_repos` cannot clone.
+  **MOOT (skipped)**: every project runs `get_repos` on its own PVC clone set (`devstats-helm` `getRepos`
+  CronJobs / the daily `all` run), P2 restores orphan commits of **all** `origin/*` branches there, and the
+  P3-B by-SHA step enriches whatever arrives id-less; no project without clones exists.
 * **P3-B** extend `sync_commits` enrichment to all branches / to restored rows (`author.user.databaseId`
   from GraphQL history is cheaper than one REST call per commit).
+  **IMPLEMENTED 2026-09-14 (Go + Rust)** as a by-SHA step of the commits pass: after the listing, every
+  repository fetches its recent (`dup_created_at >= recentDt`) `gha_commits` rows whose `author_id` or
+  `committer_id` is 0/NULL one by one with `GET /repos/{o}/{r}/commits/{sha}?per_page=1` (distinct SHAs, newest
+  first, `maxCommitsBySHA` = 1000 per repository and run) through the answer-driven token picker (bug 65) and
+  `apiPage` (rate-limit skip, abuse backoff, 404/410 → `Warning: commit not found`), and runs the same
+  `processCommit` enrichment; skipped in `DTFROM`/`DTTO` mode; summary `GH Commits by SHA API calls: N, id-less
+  commits: M, with author: A, with committer: C`. REST by SHA instead of GraphQL history: the id-less rows are
+  known by SHA (from `get_repos`), a GraphQL history walk would have to find them across all branches first;
+  measured 2026-09-14 on prod: `gha` 0 id-less commits in 26 h (kubernetes commits arrive via `get_repos` at
+  03:04 and the listing enriches them), `allprj` 142 rows / 141 SHAs / 23 repos per 26 h (5–12 % of the
+  day's commits), yield of the by-SHA fetch ≈ 12–17 % (most are bot/no-user e-mails, which stay id-less and
+  are re-fetched while inside the window — ≤ 2× with daily runs; accepted). Budget ≈ 140–400 requests/day on
+  `allprj`, 0–5 on `gha`.
 * **P3-C** `gha_comments`/`gha_reviews` restore already exists; add `gha_issues` row creation when a restored
   comment references an issue that has no `gha_issues` row (cheap: the issue object is in the P1-C sweep).
-* **P3-D** timeline API only as a manual repair tool (`REPO=` + issue number).
+  **COVERED BY P1-C (no separate code)**: a comment bumps the issue's `updated_at`, so the `since` sweep of
+  `ghapi2db issues prs` sees the issue in the same run and writes the missing `gha_issues` row (and the
+  `gha_pull_requests` row + `attached issue rows` for PRs) before/independently of the comment restore.
+* **P3-D** timeline API only as a manual repair tool (`REPO=` + issue number). **SKIPPED**: nothing in the
+  gap map needs the timeline endpoint after P1-B/P1-C (labels/milestones/assignees come with the issue object,
+  opened/closed/reopened are synthesized by P1-C, the rest from `/issues/events`); a manual repair is one
+  `GHA2DB_DEBUG=1 REPO=org/repo ghapi2db` run of the existing passes.
+* **P3-E** (found 2026-09-14, see §9 "P1-B prod verification") id-wrap mitigation in the shared gha2db writer:
+  when a native event's id already exists **and** the stored event is a different one created more than a year
+  earlier, write the new event under a derived id (e.g. `id + 2^47`, an otherwise unused range: native
+  `< 2^47`, artificial `≥ 2^48`, restored `< 0`) instead of dropping it — same for gha2db on the archives and
+  for the `repo events` pass. Needs a decision on the id range first; the drop is logged today.
+  **DEFERRED (not implemented)**: measured loss 8 of 15,810 feed events (≈ 0.05 %, pre-existing and identical
+  for gha2db on the archives); a derived-id range would change the meaning of "native = `0 < id < 2^48`" that
+  the whole code base (and the bug-68 resolver) relies on — a data-model decision for the project owner, not a
+  bug fix. The `event id collision` warning stays so the rate can be watched.
 
 ---
 
@@ -460,8 +573,9 @@ restoring; skip historical-alias clones when the current-name clone exists. **DO
 |---|---|---|
 | P1-A heartbeat (implemented: 50 repos/query, 2 points each) | 9 GraphQL queries, ≈ 18 points | 229 queries, ≈ 460 points |
 | P1-B events feed (DONE) | ≤ 240 requests | ≤ 8,550 requests (3 × active repos) |
-| P1-C issues/PR sweep | ≈ 30 requests + ≈ 40 points | ≈ 1,500 requests + ≈ 1,000 points |
+| P1-C issues/PR sweep (DONE) | first run ≈ 38k requests (one per stub PR), then ≈ 30–100/day | first run ≈ 236k requests (≈ 1 h of the pool), then ≈ 1,500–2,000/day |
 | P1-D counters (DONE) | 0 requests (heartbeat), 1 per repo without heartbeat | 0 requests (heartbeat) |
+| P3-B commits by SHA (DONE) | ≈ 0–5 requests | ≈ 140–400 requests (one per recent id-less commit, ≤ 1000/repo) |
 | existing passes | unchanged | unchanged |
 
 Pool: 49 tokens × 5,000 = 245,000 REST requests/h and 245,000 GraphQL points/h; `304`s are free. The
@@ -470,6 +584,29 @@ waiting logic so the run only stretches when the pool is exhausted by other proj
 
 ## 9. Risks and open points
 
+* **Bug 68 data repair (2026-09-14, DONE 18:57–21:34 UTC).** After deploying the fix the artificial (`id ≥ 2^48`)
+  and negative (star) events of the affected names — and their child rows (`dup_repo_id`/`repo_id` in 18
+  tables) — were re-pointed from the placeholder ids to the live ids on every production DB (strict rule: only
+  synthetic rows newer than both the placeholder's last and the live id's first native event; pairs whose live id
+  has no native events and slash-less names skipped; idempotent, re-run as a mop-up on `allprj` after the daily
+  run): **183 name/id pairs, 5,407,795 events** — `allprj` 71 pairs / 2,784,192 (k/k 2,311,508), `gha` 4 /
+  2,028,393 (k/k 2,026,994), istio 131,308, linkerd 98,388, helm 93,969, volcano 49,346, `allcdf` 16 / 47,951,
+  kubevirt 25,631, spinnaker 24,951, … ; every DB ended with 0 rows left. The placeholder `gha_repos` rows and their
+  real 2015 events were kept; native events were never affected (gha2db stamps the event's own id). The ~170
+  child rows per DB that still disagree with their event's `repo_id` are pre-existing legacy-`sync_events` rows
+  of issues transferred between repositories (2018–2020, e.g. `kubernetes/sig-release#908`) and were left alone.
+  After the repair the P1-C sweep found and upgraded the 4140 k/k stub pull requests it had missed (run 6); the
+  114 stub pull requests still on `gha` are deleted on GitHub (404).
+* **P1-C one-time backlog on `allprj` (2026-09-14 21:44 – 2026-09-15 00:38 UTC, one-off Job, ISSUESPRS pass
+  only, 16 CPUs).** `processed 7708 repos, 1359 pages, checked 246074, restored 5521`, **`upgraded 694615 stub rows
+  of 235400 pull requests, attached 54098 issue rows`**, targeted postprocess for 700,136 event ids in 8 min;
+  `Time: 2h54m8s`; 0 rate-limit waits, 0 DB errors, ~20k requests per hour of the 225k/h pool. allprj stub rows
+  670,975 (225,908 PRs) → 2,071 (890 PRs), the residue being: repos whose id has no `gha_repos` row any more
+  (left the `all` scope, e.g. `containers/podman-desktop-extension-ai-lab`, `fluent-plugins-nursery/*` — 856 rows /
+  434 PRs; the sweep is scoped to `gha_repos` on purpose), PRs GitHub deleted (404), the ambiguous-name repos
+  skipped with the `resolves to … but is tracked as id …` WARNING (renamed repos answering 301), and stubs the
+  hourly syncs created after the sweep had passed their repo — the daily `all` run picks the last class up. The
+  daily cost estimate above holds: after the backlog the per-run stub count is only the previous day's.
 * **Metric semantics.** Synthesized `IssuesEvent`/`PullRequestEvent` rows *are* counted as contributions — that
   is the intent (they represent real activity GHA dropped), and it is how 2021–2023 data looked. Audits can
   separate them via the id range / `gha_payloads.action`.
@@ -482,6 +619,37 @@ waiting logic so the run only stretches when the pool is exhausted by other proj
   Go and Rust one-off Jobs with all other passes skipped, the same counters (modulo GitHub drift between the
   runs), the second run reports `refreshed` for every repo; `watchers_by_alias.sql`-style query returns the
   new snapshots.
+* **P1-B prod verification (2026-09-14, kubernetes)** — the first live run (`g2r-p1b-feed-rust`, 13:46 UTC:
+  `processed 360 repos, 360 pages, checked 15810, restored 14609`, i.e. **92 % of the feed events were missing
+  from the DB**; the DB went from 0 to 2,447 native events after the 03:00 GH Archive cut, 834 comments, no
+  duplicate ids) exposed three facts about today's GitHub events API, verified with direct probes:
+  1. **The feed is ordered by id, not by time, and GitHub filters it *after* paginating**: k/k answered 96/94/84
+     events on its three pages while `Link: next` was present, and page 1 held prow-bot `PullRequestEvent`s
+     (`assigned`/`labeled`/`unlabeled`) whose `created_at` lies months back (2026-06-02 on a 2026-09-14 page —
+     GitHub stamps those with the PR's date). The original stop rules (short page, or a page reaching back
+     before `recent_dt`) therefore ended every repo after page 1 (360 repos = 360 pages). **Fixed the same day
+     in Go and Rust: only `Link: next` decides, capped at 3 pages**; the paging scenario was rewritten to mirror
+     the live shape (`repo_events_paging_follows_the_link_header_and_caps_at_three_pages`).
+  2. **GitHub event ids wrapped in 2025.** Native GH Archive ids grew monotonically to 55.8e9 (2025), but the
+     2026 events carry ids in two families — ~1.49e10 (issue/PR/comment/review events) and ~2.1e10
+     (`CreateEvent`/`PushEvent`/`DeleteEvent`) — which overlap the 2021-01 and 2022 ranges (`select
+     date_trunc('year', created_at), min(id), max(id) from gha_events where 0 < id and id < 2^48`). Consequence
+     for *every* writer of native ids (gha2db on the archives as much as this pass): a new event whose id equals
+     an old one is dropped with the writer's `event id collision` line (8 of 15,810 feed events here, ~0.05 %;
+     denser DBs like `allprj` lose proportionally more). Pre-existing, GitHub-side; a mitigation (write the
+     colliding event under a derived id when the stored event is years apart) is listed as optional P3-E above.
+  3. Restored events reach back as far as the feed does (`kubernetes/website`: 2025-03; small repos: whole
+     months) — intended, GH Archive never delivered them and the ids/time stamps are native.
+  4. The second run (paging fixed: `processed 360 repos, 605 pages, checked 36372, restored 19402`, k/k 3 pages
+     of 91/97/84) showed a `ForkEvent` with an empty `repo` object (`"repo": {}` — the forkee is a private
+     repository) on `kubernetes-sigs/aws-load-balancer-controller`; the "feed belongs to another repository"
+     guard mistook it for a redirect and dropped the rest of that feed. Fixed the same day (Go + Rust): such an
+     event is attributed to the feed's repository (debug line `… has no repository object, attributed to the
+     feed's repository`), scenario `repo_events_without_a_repository_object_are_attributed_to_the_feed`. gha2db
+     never wrote these from the archives (its org/repo name filter rejects the empty name), so they are a net
+     gain here.
+  The targeted postprocess for the 14,609 ids took 3 min 16 s (`postprocess_issues_prs_ids.sql`) — fine for the
+  daily kubernetes run; on `allprj` the one-off backlog sweep's postprocess for 700,136 ids took 8 min (§9).
 * **Compat tests**: the Go⇄Rust scenarios must keep running with the new passes disabled (they compare against
   Go); new Rust-only tests use the fake GitHub server (`rust/compat/src/github.rs`) with recorded fixtures for
   `/events`, `/issues?since`, GraphQL batches, and git fixtures with merge-based histories and release branches
@@ -498,6 +666,12 @@ waiting logic so the run only stretches when the pool is exhausted by other proj
 |---|---|---|---|
 | 61 | `get_repos` `restore_orphan_repo` (Go + Rust) | restored commits of renamed repos attributed to the oldest alias (`GoogleCloudPlatform/kubernetes` for all 399 k/k rows since 2026-08) | **FIXED 2026-09-14**: current name per `repo_id` is *derived from data* (the name with the newest native GHA event, `0 < id < 2^48`) — NOT from `gha_repos.alias`, which is set once at project init and is stale project-wide (e.g. `kubernetes-sigs/kubespray` → dead `kubernetes-incubator/kubespray`); historical clones are skipped when the current clone exists, otherwise attributed to the current name; ambiguous names (current for one id, historical for another — `repo_groups.sql` hack `downloadkubernetes → kubernetes/kubernetes`) are ignored. Existing rows repaired on prod (96,420 orphan + 825,444 ghapi2db + 22,554 star events renamed, 621 duplicate star events deleted) and test. P1-A must use the same derived rule. |
 | 62 | `ghapi2db` `restore_stars_repo` (Go + Rust) | reported `restored 0 / checked 0` although the lists are gone (404/empty) — silent data loss since 2026-07 | **FIXED 2026-09-14**: detect via `stargazerCount > 0` + empty page and log "unavailable" (P1-E) |
+| 63 | `ghapi2db` restore passes (Go + Rust) | `repo_id`/`org_id` resolved only from `gha_events` → a repository GHA never delivered an event for was skipped with `no existing repo_id` | **FIXED 2026-09-14**: fall back to `gha_repos` (P1-A) |
+| 64 | `ghapi2db issues prs` issue-attach step (Go + Rust) | `gha_milestones`/`gha_issues_assignees` unique violation when the issue view of a PR is attached to an event whose PR rows were just upgraded | **FIXED 2026-09-14**: insert-ignore for those rows (§7.1 P1-C) |
+| 65 | `ghapi2db` restore passes (Go + Rust) | one token per repository → a per-PR sweep drained it and skipped the rest as "rate limited"; `GET /rate_limit` no longer reflects real usage | **FIXED 2026-09-14**: per-request answer-driven token picker (`ghClients.do` / `GhClients::call`, §7.1 P1-C); part 3: the legacy passes (commits listing, repository events, PR get, licenses, languages) go through the same picker instead of the one `/rate_limit`-hinted token |
+| 66 | `ghapi2db` `processCommit` (Go + Rust) | `gha_actors_emails`/`gha_actors_names` rows recorded for actor id 0 when GitHub attaches no user to a commit (3788/6648 rows on prod `gha`, useless — nothing joins actor 0) | **FIXED 2026-09-14** with P3-B: the identity upserts are skipped when the author/committer id is 0 (Go + Rust, compat `commits_author_name_mismatch_and_missing_users` + `commits_by_sha_*`) |
+| 67 | gha2db writer `ghaPullRequest`/`gha_pull_request` (Go + Rust) | a synthesized `PullRequestEvent` with a milestone (payload carries the issue view AND the pull request) wrote the milestone twice → unique violation → fatal, orphan event rows | **FIXED 2026-09-14**: milestone insert-ignore in the pull request writer (§7.1 P1-C) |
+| 68 | lib `ArtificialEvent`/`ArtificialPREvent`/`ghMilestone` + `ghapi2db` `repoIDs()` (Go + Rust) | the repository id of a name was `max(repo_id)` over its events → the placeholder id 40511817 for `kubernetes/kubernetes` (one 2015 `CreateEvent`) instead of the real 20580498, self-reinforcing since 2016-12 (2.03M artificial k/k events under it in `gha`, 2.31M in `allprj`; also nfd 410, sig-windows-dev-tools 1276, randfill 21, ~100 `allprj` names, 17 `allcdf`, 1 `akri`) → the P1-C stub sweep keyed on the wrong id (`0 pull requests with stub rows`, 28k stub rows left), presence checks and P1-C/P1-D snapshots under the wrong id | **FIXED 2026-09-14**: `CurrentRepoID`/`current_repo_id` (newest native event under the name wins, cached, bound as a parameter at every artificial insert; `repoIDs()` uses it); compat `repo_ids_artificial_events_use_the_current_id`, `repo_ids_stub_sweep_uses_the_current_id`, `repo_ids_restore_uses_the_current_id`; prod rows re-pointed to the live ids (§9) |
 | – | `get_repos` orphan window semantics | design limitation, not a bug (P2-A/B) | Rust-only extension |
 
 ## 11. Evidence / reproduction

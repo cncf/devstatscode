@@ -34,8 +34,13 @@ type restoreStats struct {
 	// sources); forks/releases/stars restores add no gha_texts/labels/issue-PR-link rows,
 	// so they are counted but never collected here (they must not trigger a postprocess)
 	eids []int64
-	// restored events per GHA event type - repo events feed only
+	// restored events per GHA event type - repo events feed and issues/PRs sweep
 	types map[string]int
+	// issues/PRs sweep: upgraded stub gha_pull_requests rows, the pull requests they belong to,
+	// gha_issues rows attached to pull requests that had none
+	stubRows  int
+	stubPRs   int
+	issueRows int
 }
 
 // addType - count one restored event of the given type
@@ -74,6 +79,9 @@ func (st *restoreStats) merge(o restoreStats) {
 	st.restored += o.restored
 	st.pages += o.pages
 	st.unavailable += o.unavailable
+	st.stubRows += o.stubRows
+	st.stubPRs += o.stubPRs
+	st.issueRows += o.issueRows
 	if !o.minDt.IsZero() {
 		st.mark(o.minDt)
 	}
@@ -89,7 +97,134 @@ func (st *restoreStats) merge(o restoreStats) {
 	}
 }
 
-type restoreRepoFunc func(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats)
+type restoreRepoFunc func(gctx context.Context, gc *ghClients, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats)
+
+// ghClients - the GitHub clients (one per token) of a restore pass. do() picks the client for every single
+// request (bug 65: one client per repository exhausted its token on a repository needing thousands of requests
+// - the P1-C stub sweep - and skipped the rest of it while the other tokens were idle) by the rate limits
+// observed in the responses (X-RateLimit-Remaining/Reset): GET /rate_limit no longer reflects the real usage
+// (2026-09: it reported 5000 remaining for tokens whose responses said 0), so a token is only trusted after its
+// first answer; one answering "rate limit exceeded" is not used again before its reset and the request is
+// repeated with the next token - the rate limit error reaches the caller only when every token is exhausted.
+type ghClients struct {
+	gctx context.Context
+	ctx  *lib.Ctx
+	gcs  []*github.Client
+	mtx  sync.Mutex
+	seen []tokenState
+}
+
+// tokenState - the rate limit of one token as seen in its last response
+type tokenState struct {
+	known     bool
+	remaining int
+	reset     time.Time
+}
+
+// unknownRemaining - a token not seen yet (or past its reset) counts as full
+const unknownRemaining = 1 << 30
+
+func newGHClients(gctx context.Context, ctx *lib.Ctx, gcs []*github.Client) *ghClients {
+	return &ghClients{gctx: gctx, ctx: ctx, gcs: gcs, seen: make([]tokenState, len(gcs))}
+}
+
+// pick - the index of the client with the most remaining points (never seen = full), -1 when every token is
+// exhausted (then the soonest reset); the picked token's remaining is decremented so concurrent requests spread
+func (g *ghClients) pick() (int, time.Time) {
+	now := time.Now()
+	g.mtx.Lock()
+	defer g.mtx.Unlock()
+	best, bestRem := -1, -1
+	var soonest time.Time
+	for i := range g.gcs {
+		st := &g.seen[i]
+		rem := unknownRemaining
+		if st.known && st.reset.After(now) {
+			rem = st.remaining
+		}
+		if rem <= 0 {
+			if soonest.IsZero() || st.reset.Before(soonest) {
+				soonest = st.reset
+			}
+			continue
+		}
+		if rem > bestRem {
+			best, bestRem = i, rem
+		}
+	}
+	if best >= 0 && bestRem != unknownRemaining {
+		g.seen[best].remaining--
+	}
+	return best, soonest
+}
+
+// observe - record the rate limit seen in a response of the client i (exhausted: remaining 0 until reset)
+func (g *ghClients) observe(i int, rate github.Rate, exhausted bool) {
+	reset := rate.Reset.Time
+	if exhausted && !reset.After(time.Now()) {
+		// no usable reset in the answer: leave the token alone for a minute
+		reset = time.Now().Add(time.Minute)
+	}
+	g.mtx.Lock()
+	defer g.mtx.Unlock()
+	g.seen[i] = tokenState{known: true, remaining: rate.Remaining, reset: reset}
+	if exhausted {
+		g.seen[i].remaining = 0
+	}
+}
+
+// do - runs call with the picked client, moving to the next token on "rate limit exceeded"
+func (g *ghClients) do(call func(cl *github.Client) (*github.Response, error)) (*github.Response, error) {
+	for {
+		idx, soonest := g.pick()
+		if idx < 0 {
+			return nil, &github.RateLimitError{
+				Rate:    github.Rate{Reset: github.Timestamp{Time: soonest}},
+				Message: fmt.Sprintf("all %d tokens exhausted until %v", len(g.gcs), soonest),
+			}
+		}
+		resp, err := call(g.gcs[idx])
+		var rle *github.RateLimitError
+		if err != nil && errors.As(err, &rle) {
+			g.observe(idx, rle.Rate, true)
+			if g.ctx.GitHubDebug > 0 {
+				lib.Printf("token %d exhausted until %v (%d tokens left)\n", idx, rle.Rate.Reset.Time, g.available())
+			}
+			continue
+		}
+		if resp != nil && resp.Rate.Limit > 0 {
+			g.observe(idx, resp.Rate, false)
+		}
+		return resp, err
+	}
+}
+
+// responseStatus - the HTTP status of a do() outcome: the response's, 403 when every token was exhausted (do()
+// returns no response then, only the rate limit error), 0 when there is no response for another reason
+func responseStatus(resp *github.Response, err error) int {
+	if resp != nil {
+		return resp.StatusCode
+	}
+	var rle *github.RateLimitError
+	if errors.As(err, &rle) {
+		return http.StatusForbidden
+	}
+	return 0
+}
+
+// available - the number of tokens not known to be exhausted
+func (g *ghClients) available() int {
+	now := time.Now()
+	g.mtx.Lock()
+	defer g.mtx.Unlock()
+	n := 0
+	for _, st := range g.seen {
+		if !st.known || !st.reset.After(now) || st.remaining > 0 {
+			n++
+		}
+	}
+	return n
+}
 
 func numberFromURL(url *string) int {
 	if url == nil {
@@ -136,31 +271,20 @@ func starPresent(c *sql.DB, ctx *lib.Ctx, actorID int64, orgRepo string, starred
 	return present
 }
 
-// repoIDs - repository id (0 when unknown) and organization id (nil when none):
-// from the repository's events, else (no events yet - a GHA gap) from gha_repos
+// repoIDs - repository id (0 when unknown) and organization id (nil when none): the current id of
+// the name (lib.CurrentRepoID, bug 68: not max(repo_id), which returned a placeholder id for
+// kubernetes/kubernetes), from gha_repos when the repository has no events yet (a GHA gap)
 func repoIDs(c *sql.DB, ctx *lib.Ctx, orgRepo string) (repoID int64, orgID interface{}) {
-	queries := []string{
-		"select coalesce(max(repo_id), 0), max(org_id) from gha_events where dup_repo_name = " + lib.NValue(1),
-		"select coalesce(max(id), 0), max(org_id) from gha_repos where name = " + lib.NValue(1),
-	}
-	for i, query := range queries {
-		rows := lib.QuerySQLWithErr(c, ctx, query, orgRepo)
-		var oid *int64
-		for rows.Next() {
-			lib.FatalOnError(rows.Scan(&repoID, &oid))
-		}
-		lib.FatalOnError(rows.Err())
-		lib.FatalOnError(rows.Close())
-		if repoID <= 0 {
-			continue
-		}
-		if oid != nil {
-			orgID = *oid
-		}
-		if i > 0 && ctx.Debug > 0 {
-			lib.Printf("%s: no events, using gha_repos id %d\n", orgRepo, repoID)
-		}
+	rid, oid, native, ok := lib.CurrentRepoID(c, ctx, orgRepo)
+	if !ok {
 		return
+	}
+	repoID = rid
+	if oid != nil {
+		orgID = *oid
+	}
+	if !native && ctx.Debug > 0 {
+		lib.Printf("%s: no events, using gha_repos id %d\n", orgRepo, repoID)
 	}
 	return
 }
@@ -267,6 +391,7 @@ func restorePass(ctx *lib.Ctx, pass apiPass, process restoreRepoFunc) restoreSta
 		mtx.Unlock()
 		lib.ProgressInfo(processed, nRepos, dtStart, &lastTime, freq, msg)
 	}
+	clients := newGHClients(gctx, ctx, gcs)
 	processRepo := func(ch chan struct{}, orgRepo string) {
 		defer func() {
 			if ch != nil {
@@ -284,10 +409,7 @@ func restorePass(ctx *lib.Ctx, pass apiPass, process restoreRepoFunc) restoreSta
 			return
 		}
 		stats := restoreStats{}
-		mtx.Lock()
-		cl := gcs[hint]
-		mtx.Unlock()
-		process(gctx, cl, c, ctx, ary[0], ary[1], orgRepo, repoID, orgID, recentDt, maybeHide, &stats)
+		process(gctx, clients, c, ctx, ary[0], ary[1], orgRepo, repoID, orgID, recentDt, maybeHide, &stats)
 		mtx.Lock()
 		total.merge(stats)
 		mtx.Unlock()
@@ -331,7 +453,7 @@ func restorePass(ctx *lib.Ctx, pass apiPass, process restoreRepoFunc) restoreSta
 	return total
 }
 
-func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
+func restoreCommentsRepo(gctx context.Context, gc *ghClients, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
 	sort := "updated"
 	direction := "asc"
 	opt := &github.IssueListCommentsOptions{Sort: &sort, Direction: &direction, Since: &recentDt}
@@ -339,7 +461,11 @@ func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 	for page := 1; page <= restorePageCap; page++ {
 		opt.Page = page
 		more := apiPage(ctx, orgRepo+" issue comments", func() (*github.Response, bool, error) {
-			comments, resp, err := gc.Issues.ListComments(gctx, org, repo, 0, opt)
+			var comments []*github.IssueComment
+			resp, err := gc.do(func(cl *github.Client) (r *github.Response, e error) {
+				comments, r, e = cl.Issues.ListComments(gctx, org, repo, 0, opt)
+				return
+			})
 			if err != nil || resp == nil || resp.StatusCode >= 400 {
 				return resp, false, err
 			}
@@ -370,7 +496,11 @@ func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 	for page := 1; page <= restorePageCap; page++ {
 		popt.Page = page
 		more := apiPage(ctx, orgRepo+" review comments", func() (*github.Response, bool, error) {
-			comments, resp, err := gc.PullRequests.ListComments(gctx, org, repo, 0, popt)
+			var comments []*github.PullRequestComment
+			resp, err := gc.do(func(cl *github.Client) (r *github.Response, e error) {
+				comments, r, e = cl.PullRequests.ListComments(gctx, org, repo, 0, popt)
+				return
+			})
 			if err != nil || resp == nil || resp.StatusCode >= 400 {
 				return resp, false, err
 			}
@@ -400,7 +530,10 @@ func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 	copt := &github.ListOptions{PerPage: 100, Page: 1}
 	last := 1
 	apiPage(ctx, orgRepo+" commit comments last page", func() (*github.Response, bool, error) {
-		_, resp, err := gc.Repositories.ListComments(gctx, org, repo, copt)
+		resp, err := gc.do(func(cl *github.Client) (r *github.Response, e error) {
+			_, r, e = cl.Repositories.ListComments(gctx, org, repo, copt)
+			return
+		})
 		if err != nil || resp == nil || resp.StatusCode >= 400 {
 			return resp, false, err
 		}
@@ -413,7 +546,11 @@ func restoreCommentsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx
 		copt.Page = page
 		anyRecent := false
 		ok := apiPage(ctx, orgRepo+" commit comments", func() (*github.Response, bool, error) {
-			comments, resp, err := gc.Repositories.ListComments(gctx, org, repo, copt)
+			var comments []*github.RepositoryComment
+			resp, err := gc.do(func(cl *github.Client) (r *github.Response, e error) {
+				comments, r, e = cl.Repositories.ListComments(gctx, org, repo, copt)
+				return
+			})
 			if err != nil || resp == nil || resp.StatusCode >= 400 {
 				return resp, false, err
 			}
@@ -600,7 +737,7 @@ func ghGraphQLStargazers(gctx context.Context, ctx *lib.Ctx, tokens []string, or
 	return
 }
 
-func restoreStarsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
+func restoreStarsRepo(gctx context.Context, gc *ghClients, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
 	tokens := ghTokens(ctx)
 	if len(tokens) == 0 {
 		lib.Printf("%s: stars restore needs GHA2DB_GITHUB_OAUTH token(s), skipping\n", orgRepo)
@@ -645,7 +782,7 @@ func restoreStarsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *l
 		before = prev
 	}
 }
-func restoreReviewsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
+func restoreReviewsRepo(gctx context.Context, gc *ghClients, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
 	prNumbers := []int{}
 	opt := &github.PullRequestListOptions{State: "all", Sort: "updated", Direction: "desc"}
 	opt.PerPage = 100
@@ -653,7 +790,11 @@ func restoreReviewsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx 
 		opt.Page = page
 		older := false
 		more := apiPage(ctx, orgRepo+" PRs", func() (*github.Response, bool, error) {
-			prs, resp, err := gc.PullRequests.List(gctx, org, repo, opt)
+			var prs []*github.PullRequest
+			resp, err := gc.do(func(cl *github.Client) (r *github.Response, e error) {
+				prs, r, e = cl.PullRequests.List(gctx, org, repo, opt)
+				return
+			})
 			if err != nil || resp == nil || resp.StatusCode >= 400 {
 				return resp, false, err
 			}
@@ -679,7 +820,11 @@ func restoreReviewsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx 
 		for page := 1; page <= restorePageCap; page++ {
 			ropt.Page = page
 			more := apiPage(ctx, fmt.Sprintf("%s#%d reviews", orgRepo, number), func() (*github.Response, bool, error) {
-				reviews, resp, err := gc.PullRequests.ListReviews(gctx, org, repo, number, ropt)
+				var reviews []*github.PullRequestReview
+				resp, err := gc.do(func(cl *github.Client) (r *github.Response, e error) {
+					reviews, r, e = cl.PullRequests.ListReviews(gctx, org, repo, number, ropt)
+					return
+				})
 				if err != nil || resp == nil || resp.StatusCode >= 400 {
 					return resp, false, err
 				}
@@ -708,14 +853,18 @@ func restoreReviewsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx 
 	}
 }
 
-func restoreForksRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
+func restoreForksRepo(gctx context.Context, gc *ghClients, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
 	opt := &github.RepositoryListForksOptions{Sort: "newest"}
 	opt.PerPage = 100
 	for page := 1; page <= restorePageCap; page++ {
 		opt.Page = page
 		older := false
 		more := apiPage(ctx, orgRepo+" forks", func() (*github.Response, bool, error) {
-			forks, resp, err := gc.Repositories.ListForks(gctx, org, repo, opt)
+			var forks []*github.Repository
+			resp, err := gc.do(func(cl *github.Client) (r *github.Response, e error) {
+				forks, r, e = cl.Repositories.ListForks(gctx, org, repo, opt)
+				return
+			})
 			if err != nil || resp == nil || resp.StatusCode >= 400 {
 				return resp, false, err
 			}
@@ -747,13 +896,17 @@ func restoreForksRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *l
 	}
 }
 
-func restoreReleasesRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
+func restoreReleasesRepo(gctx context.Context, gc *ghClients, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
 	opt := &github.ListOptions{PerPage: 100}
 	for page := 1; page <= restorePageCap; page++ {
 		opt.Page = page
 		older := false
 		more := apiPage(ctx, orgRepo+" releases", func() (*github.Response, bool, error) {
-			rels, resp, err := gc.Repositories.ListReleases(gctx, org, repo, opt)
+			var rels []*github.RepositoryRelease
+			resp, err := gc.do(func(cl *github.Client) (r *github.Response, e error) {
+				rels, r, e = cl.Repositories.ListReleases(gctx, org, repo, opt)
+				return
+			})
 			if err != nil || resp == nil || resp.StatusCode >= 400 {
 				return resp, false, err
 			}

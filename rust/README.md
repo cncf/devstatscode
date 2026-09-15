@@ -34,7 +34,7 @@ the difference.
 | `annotations` | `cmd/annotations` | `cmd/annotations` | 5 / 73 (PostgreSQL + git) |
 | `get_repos`  | `cmd/get_repos`   | `cmd/get_repos`   | 3 / 117 (PostgreSQL + git) |
 | `sync_issues` | `cmd/sync_issues` | `cmd/sync_issues` | 10 / 53 (PostgreSQL + fake GitHub API) |
-| `ghapi2db`   | `cmd/ghapi2db`    | `cmd/ghapi2db`    | 109 (PostgreSQL + fake GitHub REST/GraphQL API) |
+| `ghapi2db`   | `cmd/ghapi2db`    | `cmd/ghapi2db`    | 121 (PostgreSQL + fake GitHub REST/GraphQL API) |
 | `gha2db`     | `cmd/gha2db`      | `cmd/gha2db`      | 5 (+9 lib) / 60 (PostgreSQL + fake GH Archive) |
 | `api`        | `cmd/api`         | `cmd/api`         | 10 / 17 scenarios ≈ 330 requests (HTTP servers + PostgreSQL) |
 
@@ -1231,13 +1231,92 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     is ordered by id — which is no longer monotonic in time — and filtered
     after pagination (a "full" page holds 84–96 events while more follow), so
     neither a short page nor an old event on a page ends it; every event of a
-    fetched page is written, months-old ones included. A feed carrying an
-    untracked repository id is skipped with a
-    `WARNING`, 404/410 silently. Restored ids go to the targeted postprocess.
+    fetched page is written, months-old ones included. An event whose `repo`
+    object GitHub blanked (a fork into a private repository) is attributed to
+    the feed's repository; a feed carrying an untracked repository id is
+    skipped with a `WARNING`, 404/410 silently. Restored ids go to the
+    targeted postprocess.
     Summary: `ghapi2db repo events: processed N repos, P pages, checked C,
     restored R` + `… restored events by type: ForkEvent 1, IssuesEvent 3, …`
     (sorted); with `GHA2DB_DEBUG`: `… restored <type> <id> (<time>)` and
     `… page N: E events, oldest <time>, restored so far R` per repo.
+  * Issues and pull requests sweep (2026-09-14, Go and Rust alike — gaps
+    report P1-C): a pass `ghapi2db issues prs` (`GHA2DB_GHAPISKIPISSUESPRS`
+    disables it) running right after `repo events` and before the classic
+    `events` pass, for every repository the heartbeat finds (`REPO=` mode
+    too). Since 2024-10-17 GitHub ships a 5-field `pull_request` stub
+    (`url`, `id`, `number`, `base`, `head`) in `PullRequestEvent` payloads, so
+    gha2db leaves `gha_pull_requests` rows with `created_at = 0001-01-01`
+    (168k rows / 38k PRs on the kubernetes DB, 16k PRs stub-only). The pass
+    first sweeps those rows from the database (`created_at < 1900-01-01`, by
+    repository id — rows written under the historical names of a renamed
+    repository included): one `GET /repos/{o}/{r}/pulls/{n}` per stub PR (the id must match, else
+    `WARNING: … pull request N is X on GitHub, Y in the database, skipping`),
+    every stub row of the PR is upgraded in place with the current object
+    (`ghawriter::upgrade_pull_request_stubs` / `lib.UpgradePullRequestStubs`
+    — all columns except the GHA-delivered `base_sha`/`head_sha`, plus
+    assignees, requested reviewers, milestone insert-ignore, actor upserts,
+    hide.csv), and when the PR has no `gha_issues` row at all `GET
+    /issues/{n}` attaches one to its newest event (`gha_issue_insert(…,
+    ignore = true)`: the issue view of a PR carries the PR's milestone and
+    assignees, whose rows for that event were just written — bug 64). Every
+    request of a restore pass goes through `GhClients::call()` / Go
+    `ghClients.do()`, which takes the token with the most remaining points
+    **as seen in the `X-RateLimit-*` headers of the answers** (`GET
+    /rate_limit` no longer reflects the real usage — it reported 5000 for
+    tokens whose answers said 0), excludes exhausted tokens until their reset
+    and repeats a "rate limit exceeded" request with the next token — the
+    old one-token-per-repository choice drained a single token in ~4 min on
+    a sweep costing one request per stub PR and skipped the rest of the
+    repository as "rate limited" while 45 of 49 tokens were idle (bug 65,
+    `issues_prs_requests_rotate_through_the_tokens`,
+    `issues_prs_exhausted_token_is_retried_on_the_next_one`). Then,
+    only when the
+    heartbeat shows issue/PR updates since the recent date (or without a
+    heartbeat), it lists `GET /repos/{o}/{r}/issues?state=all&since=<recent>
+    &sort=updated&direction=asc&per_page=100` (`Link: next`, 10-page cap) and
+    for every object **the database does not know** (issues: no `gha_issues`
+    row by id; PRs: no non-stub `gha_pull_requests` row of repo id + number)
+    writes
+    GHA-shaped events with the gha2db writer: `IssuesEvent`/`PullRequestEvent`
+    `opened` at `created_at` by the author and `closed` at `closed_at` by
+    `merged_by ?? closed_by ?? user` (PRs fetched with `GET /pulls/{n}`; the
+    payload carries both the issue and the pull request object, so the
+    pull request writer's milestone insert is insert-ignore — both objects
+    carry the same milestone and the issue writer has just written it for
+    the event; bug 67). Ids are
+    deterministic (`2^48 + 28e12 + 2·issue_id + {0,1}`, `2^48 + 32e12 +
+    2·pr_id + {0,1}` — `delete_artificial.sql` covers them), so re-runs are
+    idempotent; known objects are left to the `events` pass (state fixes),
+    `reopened` is not synthesized. Restored and upgraded event ids go to the
+    targeted postprocess. Summary: `ghapi2db issues prs: processed N repos, P
+    pages, checked C, restored R` + `… restored events by type: …` + `…
+    upgraded U stub rows of V pull requests, attached W issue rows`; with
+    `GHA2DB_DEBUG`: `… N pull requests with stub rows`, `… pull request N (ID):
+    upgraded K stub rows, issue row attached: true|false`, `… synthesized
+    <type> <action> <id> (<time>)`, `… page P: N objects, synthesized so far
+    R`, `… no issue or PR updates since <recent>, listing skipped`.
+  * Commits by SHA (2026-09-14, Go and Rust alike — gaps report P3-B): the
+    commits pass enriches only what `Repositories.ListCommits` returns — the
+    default branch inside the autofetch window — so `gha_commits` rows
+    restored by `get_repos` from other branches or with older dates (`author_id`
+    / `committer_id` 0 or NULL; 5–12 % of a day's commits on `allprj`) stayed
+    without GitHub ids. After the listing, every repository now fetches its
+    recent (`dup_created_at >= recentDt`) id-less commits one by one with
+    `GET /repos/{o}/{r}/commits/{sha}?per_page=1` (distinct SHAs, newest first,
+    `maxCommitsBySHA` = 1000 per repository and run — `… more than 1000 recent
+    commits without author/committer id, fetching the newest 1000 by SHA` —
+    with `GHA2DB_DEBUG` `… N recent commits without author/committer id,
+    fetching by SHA`) through the answer-driven token picker (bug 65) and the
+    restore passes' error handling (`… commit <sha>: rate limited, reset in …,
+    skipping`, `Warning: commit not found: <repo> <sha>` on 404/410) and runs
+    the same `processCommit` enrichment on the answer; skipped in
+    `DTFROM`/`DTTO` mode. Summary line `GH Commits by SHA API calls: N,
+    id-less commits: M, with author: A, with committer: C`. On the way bug 66
+    was fixed: `processCommit` recorded `gha_actors_emails`/`gha_actors_names`
+    rows under actor id **0** for every commit GitHub attaches no user to
+    (3788/6648 rows on prod `gha`); the identity upserts are now skipped for
+    a missing author/committer id.
   * `GHA2DB_GHAPI_RATE_LIMITS_CACHE` (new, in Go and Rust, default `5`, `0`
     disables): `GetRateLimits`/`get_rate_limits` polls all tokens
     **concurrently** (was: one sequential `/rate_limit` round trip per token
@@ -1255,7 +1334,7 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `sync_issues` run with the cache disabled (so the asserted `/rate_limit`
     request counts stay deterministic) plus five `rate_limits_cache_*`
     scenarios with it enabled.
-  * Go⇄Rust tests: `cmd/ghapi2db/tests/compat.rs` — 109 scenarios, each side on
+  * Go⇄Rust tests: `cmd/ghapi2db/tests/compat.rs` — 130 scenarios, each side on
     a scratch database (`full_structure.sql` + seeded events/repos/actors)
     against its own scripted fake GitHub REST + GraphQL server: skip-all;
     licenses (found / not found / already set / force / debug `Stringify`
@@ -1274,7 +1353,9 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     every call); commits (autofetch range,
     no `gha_commits`, no autofetch, `DTFROM`/`DTTO`, author name mismatch and
     missing users, shared affiliations DB, hidden actors, paging and progress,
-    error paths, MT); restores (all three comment kinds, targeted postprocess,
+    error paths, MT, by-SHA enrichment of id-less commits incl. the
+    per-request token pick, all-tokens-exhausted skip and the 1000-per-repo
+    cap); restores (all three comment kinds, targeted postprocess,
     raw-event reuse incl. ambiguous / unverifiable candidates, backwards
     commit-comment walk, paging, idempotent rerun, malformed / id-less repos,
     404/410/500/rate-limit/abuse/hangup/unreachable-API paths, plain 403
@@ -1296,17 +1377,28 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     across runs and renames, in-place upgrade of GHA stub rows, the newest
     event under any name as the anchor incl. artificial ids, `REPO=` / legacy
     scope / unknown heartbeat → `GET /repos/{o}/{r}` with go-github's `Accept`
-    header, untracked id warning and 404 → unavailable); repo events (8
+    header, untracked id warning and 404 → unavailable); repo events (9
     `repo_events_*` scenarios: a mixed six-type page written with native ids
     into `gha_events`/`gha_issues`/`gha_issues_labels`/`gha_comments`/
-    `gha_pull_requests`/`gha_forkees`/`gha_payloads`/`gha_actors`, the short
-    page ending the feed, a second run finding everything present plus an
-    `event id collision`, paging across 3 pages of 100 with the recent-date
-    stop and the 3-page cap, an untracked feed id and a 404, `REPO=` with
+    `gha_pull_requests`/`gha_forkees`/`gha_payloads`/`gha_actors`, a page
+    without `Link: next` ending the feed, a second run finding everything
+    present plus an `event id collision`, paging that follows `Link: next`
+    through short (96/94/84) pages holding a 2010 event and stops at the
+    3-page cap, an untracked feed id and a 404, an event with an empty `repo`
+    object attributed to the feed's repository, `REPO=` with
     hide.csv anonymisation, the gha2db actor filters
     (`GHA2DB_ACTORS_FILTER/ALLOW/FORBID`), the heartbeat "no activity" gate
     incl. the star-count signal, and the targeted postprocess filling
-    `gha_texts` from the restored ids). Compared: exit
+    `gha_texts` from the restored ids); issues/PRs sweep (9 `issues_prs_*`
+    scenarios: stub rows upgraded from `GET /pulls/{n}` with the issue row
+    attached and no synthetic events, a listing synthesizing unknown issues
+    and PRs (opened/closed rows in the new id bands, payloads, labels,
+    assignees, reviewers, milestone), an idempotent second run leaving known
+    objects alone, rows under a renamed repository's historical name found
+    by repository id, the heartbeat gate skipping quiet listings while the
+    stub sweep still runs, hidden actors and the actor filters, id mismatch /
+    404 / id-less / unparsable objects, `Link: next` paging, and the targeted
+    postprocess). Compared: exit
     code, stdout (durations, now-derived ids and timestamps, API URL and binary
     path masked; multiset for MT and where Go's map order shows), `Error:`
     stderr lines, the full database contents and the API request log (method,
@@ -1701,6 +1793,47 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
   `commits_unknown_sha_ensures_actors[_in_shared_affiliations_db]`. The
   existing dangling rows were repaired in place (the GitHub user looked up by
   id and inserted exactly like `InsertActorTx` would have), not deleted.
+* Bugs 61–68 (2026-09-14, all Go and Rust alike, found while implementing
+  the GHA-gap items of `docs/ghapi2db-gha-gaps.md` — details in its §10):
+  61 `get_repos` `restore_orphan_repo` attributed the restored commits of a
+  renamed repository to its oldest alias (now the current name is derived
+  from the data: the name of the newest native GHA event per repo id;
+  existing rows repaired on prod and test); 62 the stars restore reported
+  `restored 0 / checked 0` although GitHub returned nothing (404/empty) —
+  silent data loss since 2026-07, now detected via `stargazerCount > 0` and
+  logged as "unavailable"; 63 restore passes resolved `repo_id`/`org_id` from `gha_events`
+  only, so a repository without events yet got `repo_id` 0 (now falls back to
+  `gha_repos`); 64 the `issues prs` issue-attach step re-inserted the
+  milestone of an event whose PR object had just written it (unique
+  violation, insert-ignore now); 65 (two parts) one token was used per
+  repository for a whole listing and the token choice trusted `GET
+  /rate_limit`, which no longer reflects the real usage — the picker is now
+  answer-driven per request (`ghClients.do`/`GhClients::call`: a token
+  answering "rate limit exceeded" is marked exhausted until its reset and the
+  request repeats with the next one at once; part 3: the legacy passes —
+  commits listing, repository events, PR get, licenses, languages — go
+  through the same picker instead of the one `/rate_limit`-hinted token they
+  retried and then dropped the repository on); 66 `processCommit` identity
+  rows for actor id 0 (see "Commits by SHA" above); 67 the gha2db
+  `PullRequestEvent` writer inserted the milestone twice for a payload
+  carrying both the issue and the pull request object (a pre-existing writer
+  trap the archives never triggered — insert-ignore now, the two orphan
+  synthetic events it left on prod `gha` were deleted so the PRs are
+  re-synthesized); 68 the lib's artificial event rows (`ArtificialEvent`,
+  `ArtificialPREvent`, `ghMilestone`) and `ghapi2db`'s `repoIDs()` resolved
+  the repository id of a name with `max(repo_id)` over its events — for
+  `kubernetes/kubernetes` that is the placeholder id 40511817 (one
+  `CreateEvent` from 2015) rather than the real 20580498, and once an
+  artificial event carried it the rule kept picking it (2M k/k artificial
+  events under the placeholder on prod; the P1-C stub sweep found `0 pull
+  requests with stub rows` for k/k). Now `CurrentRepoID`/`current_repo_id`
+  picks, among the `gha_repos` ids of the name, the one with the newest
+  native event under that name (the `GetTrackedRepos` rule; ids without
+  native events after, ties → highest id, no `gha_repos` row → legacy
+  `max(repo_id)`), cached per process, and the resolved id/org id are bound
+  as parameters instead of the per-insert subselect (compat `repo_ids_*`,
+  3 scenarios seeding one name under two ids; the misplaced prod rows were
+  re-pointed to the live ids).
 
 ### Rust-only bugs found after go-live (Go was correct)
 

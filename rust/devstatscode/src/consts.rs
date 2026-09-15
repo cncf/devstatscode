@@ -43,6 +43,10 @@ pub const ARTIFICIAL_REVIEW_ID_BASE: i64 = ARTIFICIAL_ID_BASE + 16_000_000_000_0
 pub const ARTIFICIAL_FORK_ID_BASE: i64 = ARTIFICIAL_ID_BASE + 20_000_000_000_000;
 /// API-restored releases.
 pub const ARTIFICIAL_RELEASE_ID_BASE: i64 = ARTIFICIAL_ID_BASE + 24_000_000_000_000;
+/// Synthesized issue lifecycle events: `+ 2*id + 0` opened, `+ 2*id + 1` closed.
+pub const ARTIFICIAL_ISSUE_ID_BASE: i64 = ARTIFICIAL_ID_BASE + 28_000_000_000_000;
+/// Synthesized pull request lifecycle events: `+ 2*id + 0` opened, `+ 2*id + 1` closed.
+pub const ARTIFICIAL_PR_ID_BASE: i64 = ARTIFICIAL_ID_BASE + 32_000_000_000_000;
 /// Event ids >= this are 'sync' events; artificial sub-bands must stay below.
 pub const SYNC_EVENT_ID_THRESHOLD: i64 = 329_900_000_000_000;
 
@@ -98,6 +102,8 @@ mod tests {
             ARTIFICIAL_REVIEW_ID_BASE,
             ARTIFICIAL_FORK_ID_BASE,
             ARTIFICIAL_RELEASE_ID_BASE,
+            ARTIFICIAL_ISSUE_ID_BASE,
+            ARTIFICIAL_PR_ID_BASE,
         ] {
             assert!(base > ARTIFICIAL_ID_BASE);
             assert!(base + 4_000_000_000_000 <= SYNC_EVENT_ID_THRESHOLD);

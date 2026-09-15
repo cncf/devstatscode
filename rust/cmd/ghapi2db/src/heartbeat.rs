@@ -34,6 +34,7 @@ pub enum ApiPass {
     Stars,
     RepoStats,
     RepoEvents,
+    IssuesPrs,
 }
 
 impl ApiPass {
@@ -49,6 +50,7 @@ impl ApiPass {
             ApiPass::Stars => "ghapi2db stars restore",
             ApiPass::RepoStats => "ghapi2db repo stats",
             ApiPass::RepoEvents => "ghapi2db repo events",
+            ApiPass::IssuesPrs => "ghapi2db issues prs",
         }
     }
 
@@ -65,6 +67,7 @@ impl ApiPass {
             ApiPass::Stars => "star changes",
             ApiPass::RepoStats => "repository data",
             ApiPass::RepoEvents => "activity",
+            ApiPass::IssuesPrs => "repository data",
         }
     }
 }
@@ -155,6 +158,9 @@ impl RepoHeartbeat {
                     || since(self.release_at, recent_dt)
                     || self.active(ApiPass::Stars, recent_dt)
             }
+            // the stub sweep is database-driven (a repository without stub rows costs one query),
+            // the listing part gates itself on issue or PR updates
+            ApiPass::IssuesPrs => true,
         }
     }
 }
@@ -851,7 +857,7 @@ fn api_counters(repo: &Repository) -> Option<RepoCounters> {
 
 /// Go `heartbeatOf`: the heartbeat of a repository, `None` when no heartbeat
 /// was evaluated (single repository mode, legacy scope).
-fn heartbeat_of(org_repo: &str) -> Option<RepoHeartbeat> {
+pub fn heartbeat_of(org_repo: &str) -> Option<RepoHeartbeat> {
     let guard = scope_cell().lock().unwrap_or_else(|p| p.into_inner());
     guard
         .as_ref()

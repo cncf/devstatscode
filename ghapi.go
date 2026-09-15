@@ -476,7 +476,7 @@ func ghActor(con *sql.Tx, ctx *Ctx, actor *github.User, maybeHide func(string) s
 // milestone: the milestone to insert - the issue's one for artificial issue events,
 // the PR's one for artificial PR events (they can differ: the two API payloads are
 // fetched separately and the PR payload can carry a milestone the issue payload lacks).
-func ghMilestone(con *sql.Tx, ctx *Ctx, eid int64, ic *IssueConfig, milestone *github.Milestone, maybeHide func(string) string) {
+func ghMilestone(con *sql.Tx, ctx *Ctx, eid int64, ic *IssueConfig, repoID int64, milestone *github.Milestone, maybeHide func(string) string) {
 	// Defensive no-op for current callers: ArtificialEvent/ArtificialPREvent already skipped
 	// (GHA2DB_GHAPIALLOWINSERTFAIL) or ghost-reassigned actor-less events before calling here.
 	// Kept because the code below dereferences ev.Actor directly - protects any future caller.
@@ -495,7 +495,7 @@ func ghMilestone(con *sql.Tx, ctx *Ctx, eid int64, ic *IssueConfig, milestone *g
 					"dupn_creator_login) values("+
 					"%s, %s, %s, %s, %s, %s, "+
 					"%s, %s, %s, %s, %s, %s, %s, "+
-					"%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s, "+
+					"%s, %s, %s, %s, %s, %s, "+
 					"%s)",
 				NValue(1),
 				NValue(2),
@@ -535,7 +535,7 @@ func ghMilestone(con *sql.Tx, ctx *Ctx, eid int64, ic *IssueConfig, milestone *g
 			milestone.UpdatedAt,
 			ev.Actor.ID,
 			maybeHide(*ev.Actor.Login),
-			ic.Repo,
+			repoID,
 			ic.Repo,
 			ic.EventType,
 			ic.CreatedAt,
@@ -640,6 +640,92 @@ func GetTrackedRepos(c *sql.DB, ctx *Ctx) (repos []string, ids map[string][]int6
 	return
 }
 
+// repoIDByNameCache - CurrentRepoID answers per process (the data does not change under a run)
+var repoIDByNameCache sync.Map
+
+// CurrentRepoID - the repository id (and organization id, nil when none) behind a repository name.
+// GH Archive lists some names under several ids (a placeholder repository created before a transfer,
+// a fork that took over a name, id-less rows): the current id is the one whose newest native event
+// (0 < id < 2^48) under that name is the newest - the same rule GetTrackedRepos uses for the current
+// name of an id; ids without native events come after those with, ties go to the highest id.
+// native=false: the id comes from gha_repos alone (no native event under the name yet).
+// Names without a gha_repos row fall back to the events (highest repo_id). Returns ok=false when the
+// name is unknown to both. Bug 68: `max(repo_id)` picked the placeholder id 40511817 for
+// kubernetes/kubernetes (one CreateEvent from 2015) over the real 20580498, and once an artificial
+// event carried it, `max` kept returning it - 2M artificial events ended up under the placeholder.
+func CurrentRepoID(c *sql.DB, ctx *Ctx, name string) (repoID int64, orgID *int64, native, ok bool) {
+	type cached struct {
+		repoID int64
+		orgID  *int64
+		native bool
+		ok     bool
+	}
+	if v, hit := repoIDByNameCache.Load(name); hit {
+		cv := v.(cached)
+		return cv.repoID, cv.orgID, cv.native, cv.ok
+	}
+	// The lateral subquery walks events_repo_name_created_at_idx backwards: cheap unless the id
+	// carries millions of artificial events (the bug 68 placeholder before its repair), and then
+	// once per process per name
+	queries := []string{
+		"select r.id, coalesce(n.org_id, r.org_id), n.created_at is not null from gha_repos r left join lateral (" +
+			"select e.created_at, e.org_id from gha_events e where e.repo_id = r.id and e.dup_repo_name = r.name " +
+			"and e.id > 0 and e.id < 281474976710656 order by e.created_at desc limit 1) n on true " +
+			"where r.name = " + NValue(1) + " order by n.created_at desc nulls last, r.id desc limit 1",
+		"select max(repo_id), max(org_id), true from gha_events where dup_repo_name = " + NValue(1),
+	}
+	for _, query := range queries {
+		rows := QuerySQLWithErr(c, ctx, query, name)
+		var (
+			rid sql.NullInt64
+			oid sql.NullInt64
+			nat bool
+		)
+		for rows.Next() {
+			FatalOnError(rows.Scan(&rid, &oid, &nat))
+		}
+		FatalOnError(rows.Err())
+		FatalOnError(rows.Close())
+		if !rid.Valid {
+			continue
+		}
+		repoID, native, ok = rid.Int64, nat, true
+		if oid.Valid {
+			o := oid.Int64
+			orgID = &o
+		}
+		break
+	}
+	if ok && orgID == nil {
+		rows := QuerySQLWithErr(c, ctx, "select max(org_id) from gha_events where dup_repo_name = "+NValue(1), name)
+		var oid sql.NullInt64
+		for rows.Next() {
+			FatalOnError(rows.Scan(&oid))
+		}
+		FatalOnError(rows.Err())
+		FatalOnError(rows.Close())
+		if oid.Valid {
+			o := oid.Int64
+			orgID = &o
+		}
+	}
+	repoIDByNameCache.Store(name, cached{repoID: repoID, orgID: orgID, native: native, ok: ok})
+	return
+}
+
+// artificialRepoIDs - repo id (-1 when unknown, the legacy marker) and org id (nil when none)
+// for the artificial events of a repository name
+func artificialRepoIDs(c *sql.DB, ctx *Ctx, name string) (int64, interface{}) {
+	repoID, orgID, _, ok := CurrentRepoID(c, ctx, name)
+	if !ok {
+		return -1, nil
+	}
+	if orgID == nil {
+		return repoID, nil
+	}
+	return repoID, *orgID
+}
+
 // DeleteArtificialPREvent - create artificial API event (but from the past)
 func DeleteArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 	if ctx.SkipPDB {
@@ -696,6 +782,9 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 	ghEnsureEventActor(cfg)
 	actor := event.Actor
 
+	// Repository id (bug 68: the current id of the name, not max(repo_id)) and organization id
+	repoID, orgID := artificialRepoIDs(c, ctx, cfg.Repo)
+
 	// Start transaction
 	tc, err := c.Begin()
 	FatalOnError(err)
@@ -722,7 +811,7 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 	}
 
 	if pr.Milestone != nil {
-		ghMilestone(tc, ctx, eventID, cfg, pr.Milestone, maybeHide)
+		ghMilestone(tc, ctx, eventID, cfg, repoID, pr.Milestone, maybeHide)
 	}
 
 	prid := *pr.ID
@@ -743,7 +832,7 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 					"%s, %s, %s, %s, %s, %s, %s, %s, "+
 					"%s, %s, %s, %s, %s, "+
 					"%s, %s, %s, %s, %s, "+
-					"%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s, "+
+					"%s, %s, %s, %s, %s, %s, "+
 					// "%s, %s, %s)",
 					"%s, %s)",
 				NValue(1),
@@ -812,7 +901,7 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 			IntOrNil(pr.ChangedFiles),
 			actor.ID,
 			ghActorLoginOrNil(actor, maybeHide),
-			cfg.Repo,
+			repoID,
 			cfg.Repo,
 			eType,
 			eCreatedAt,
@@ -833,10 +922,10 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 					"id, type, actor_id, repo_id, created_at, "+
 					// "dup_actor_login, dup_repo_name, org_id, forkee_id) "+
 					"dup_actor_login, dup_repo_name, org_id) "+
-					// "values(%s, %s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), true, %s, "+
-					"values(%s, %s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, "+
-					// "%s, %s, (select max(org_id) from gha_events where dup_repo_name = %s), null)",
-					"%s, %s, (select max(org_id) from gha_events where dup_repo_name = %s))",
+					// "values(%s, %s, %s, %s, true, %s, "+
+					"values(%s, %s, %s, %s, %s, "+
+					// "%s, %s, %s, null)",
+					"%s, %s, %s)",
 				NValue(1),
 				NValue(2),
 				NValue(3),
@@ -851,11 +940,11 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 			eventID,
 			cfg.EventType,
 			ghActorIDOrNil(event.Actor),
-			cfg.Repo,
+			repoID,
 			eCreatedAt,
 			ghActorLoginOrNil(event.Actor, maybeHide),
 			cfg.Repo,
-			cfg.Repo,
+			orgID,
 		}...,
 	)
 
@@ -878,8 +967,8 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 					"%s, %s, null, null, "+
 					// "null, %s, null, null, null, "+
 					"%s, null, null, null, "+
-					// "%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s)",
-					"%s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s)",
+					// "%s, %s, %s, %s, %s, %s)",
+					"%s, %s, %s, %s, %s)",
 				NValue(1),
 				NValue(2),
 				NValue(3),
@@ -901,7 +990,7 @@ func ArtificialPREvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig, pr *github.PullReq
 			issue.Number,
 			// ghActorIDOrNil(event.Actor),
 			ghActorLoginOrNil(event.Actor, maybeHide),
-			cfg.Repo,
+			repoID,
 			cfg.Repo,
 			cfg.EventType,
 			eCreatedAt,
@@ -1033,6 +1122,9 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 	}
 	ghEnsureEventActor(cfg)
 
+	// Repository id (bug 68: the current id of the name, not max(repo_id)) and organization id
+	repoID, orgID := artificialRepoIDs(c, ctx, cfg.Repo)
+
 	// Start transaction
 	tc, err := c.Begin()
 	FatalOnError(err)
@@ -1062,7 +1154,7 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 					"dup_user_login, is_pull_request) "+
 					"values(%s, %s, %s, %s, %s, %s, %s, "+
 					"%s, %s, %s, %s, %s, %s, %s, "+
-					"%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s, "+
+					"%s, %s, %s, %s, %s, %s, "+
 					// "%s, %s, %s) ",
 					"%s, %s) ",
 				NValue(1),
@@ -1107,7 +1199,7 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 			ghActorIDOrNil(issue.User),
 			ghActorIDOrNil(event.Actor),
 			ghActorLoginOrNil(event.Actor, maybeHide),
-			cfg.Repo,
+			repoID,
 			cfg.Repo,
 			cfg.EventType,
 			now,
@@ -1119,7 +1211,7 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 
 	// Create Milestone if new event and milestone non-null
 	if issue.Milestone != nil {
-		ghMilestone(tc, ctx, eventID, cfg, issue.Milestone, maybeHide)
+		ghMilestone(tc, ctx, eventID, cfg, repoID, issue.Milestone, maybeHide)
 	}
 
 	// Create artificial event
@@ -1133,10 +1225,10 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 					"id, type, actor_id, repo_id, created_at, "+
 					// "dup_actor_login, dup_repo_name, org_id, forkee_id) "+
 					"dup_actor_login, dup_repo_name, org_id) "+
-					// "values(%s, %s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), true, %s, "+
-					"values(%s, %s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, "+
-					// "%s, %s, (select max(org_id) from gha_events where dup_repo_name = %s), null)",
-					"%s, %s, (select max(org_id) from gha_events where dup_repo_name = %s))",
+					// "values(%s, %s, %s, %s, true, %s, "+
+					"values(%s, %s, %s, %s, %s, "+
+					// "%s, %s, %s, null)",
+					"%s, %s, %s)",
 				NValue(1),
 				NValue(2),
 				NValue(3),
@@ -1151,11 +1243,11 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 			eventID,
 			cfg.EventType,
 			ghActorIDOrNil(event.Actor),
-			cfg.Repo,
+			repoID,
 			now,
 			ghActorLoginOrNil(event.Actor, maybeHide),
 			cfg.Repo,
-			cfg.Repo,
+			orgID,
 		}...,
 	)
 
@@ -1178,8 +1270,8 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 					"%s, null, null, null, "+
 					// "null, %s, null, null, null, "+
 					"%s, null, null, null, "+
-					// "%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s)",
-					"%s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, %s, %s)",
+					// "%s, %s, %s, %s, %s, %s)",
+					"%s, %s, %s, %s, %s)",
 				NValue(1),
 				NValue(2),
 				NValue(3),
@@ -1199,7 +1291,7 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 			issue.Number,
 			// ghActorIDOrNil(event.Actor),
 			ghActorLoginOrNil(event.Actor, maybeHide),
-			cfg.Repo,
+			repoID,
 			cfg.Repo,
 			cfg.EventType,
 			now,
@@ -1217,7 +1309,7 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 						"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, "+
 						"dup_type, dup_created_at, dup_issue_number, dup_label_name) "+
 						"values(%s, %s, %s, "+
-						"%s, %s, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = %s), %s, "+
+						"%s, %s, %s, %s, "+
 						"%s, %s, %s, %s)",
 					NValue(1),
 					NValue(2),
@@ -1238,7 +1330,7 @@ func ArtificialEvent(c *sql.DB, ctx *Ctx, cfg *IssueConfig) (err error) {
 				labelID,
 				ghActorIDOrNil(event.Actor),
 				ghActorLoginOrNil(event.Actor, maybeHide),
-				cfg.Repo,
+				repoID,
 				cfg.Repo,
 				cfg.EventType,
 				now,

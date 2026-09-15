@@ -100,6 +100,14 @@ const ArtificialForkIDBase int64 = ArtificialIDBase + 20000000000000
 // ArtificialReleaseIDBase - API-restored releases
 const ArtificialReleaseIDBase int64 = ArtificialIDBase + 24000000000000
 
+// ArtificialIssueIDBase - API-synthesized issue lifecycle events (ghapi2db issues prs pass):
+// ArtificialIssueIDBase + 2*issue_id + 0 (opened), + 1 (closed)
+const ArtificialIssueIDBase int64 = ArtificialIDBase + 28000000000000
+
+// ArtificialPRIDBase - API-synthesized pull request lifecycle events (ghapi2db issues prs pass):
+// ArtificialPRIDBase + 2*pull_request_id + 0 (opened), + 1 (closed)
+const ArtificialPRIDBase int64 = ArtificialIDBase + 32000000000000
+
 // SyncEventIDThreshold - event ids >= this are 'sync' events; artificial sub-bands must stay below
 const SyncEventIDThreshold int64 = 329900000000000
 

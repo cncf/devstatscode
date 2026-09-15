@@ -124,6 +124,7 @@ type Ctx struct {
 	SkipAPIStars             bool                         // From GHA2DB_GHAPISKIPSTARS, ghapi2db tool, if set then tool is skipping GH API stars (WatchEvent) restore
 	SkipAPIRepoStats         bool                         // From GHA2DB_GHAPISKIPREPOSTATS, ghapi2db tool, if set then tool is skipping the repository counters snapshots (gha_forkees rows: stars, forks, open issues per tracked repository)
 	SkipAPIRepoEvents        bool                         // From GHA2DB_GHAPISKIPREPOEVENTS, ghapi2db tool, if set then tool is skipping the repository events feed pass (GET /repos/{owner}/{repo}/events written with the gha2db writer: fills the events GH Archive missed)
+	SkipAPIIssuesPRs         bool                         // From GHA2DB_GHAPISKIPISSUESPRS, ghapi2db tool, if set then tool is skipping the issues/PRs sweep pass (fills the stub gha_pull_requests rows GH Archive delivers since 2024-10 with GET /pulls/{n} objects and synthesizes opened/closed events for the issues and PRs GH Archive missed)
 	GHAPIAllRepos            bool                         // From GHA2DB_GHAPI_RECENT_REPOS_ONLY, ghapi2db tool, when set the API passes only process repositories with gha_events rows in the recent repos range (legacy scope, no heartbeat), default: every gha_repos repository (one current name per id) gated per pass by a GraphQL heartbeat
 	SkipGetRepos             bool                         // From GHA2DB_GETREPOSSKIP, get_repos tool, if set then tool does nothing
 	CSVFile                  string                       // From GHA2DB_CSVOUT, runq tool, if set, saves result in this file
@@ -402,6 +403,7 @@ func (ctx *Ctx) Init() {
 	ctx.SkipAPIStars = os.Getenv("GHA2DB_GHAPISKIPSTARS") != ""
 	ctx.SkipAPIRepoStats = os.Getenv("GHA2DB_GHAPISKIPREPOSTATS") != ""
 	ctx.SkipAPIRepoEvents = os.Getenv("GHA2DB_GHAPISKIPREPOEVENTS") != ""
+	ctx.SkipAPIIssuesPRs = os.Getenv("GHA2DB_GHAPISKIPISSUESPRS") != ""
 	ctx.GHAPIAllRepos = os.Getenv("GHA2DB_GHAPI_RECENT_REPOS_ONLY") == ""
 	ctx.GHAPIErrorIsFatal = os.Getenv("GHA2DB_GHAPI_ERROR_FATAL") != ""
 	ctx.AutoFetchCommits = os.Getenv("GHA2DB_NO_AUTOFETCHCOMMITS") == ""
@@ -1040,6 +1042,7 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		SkipAPIStars:             ctx.SkipAPIStars,
 		SkipAPIRepoStats:         ctx.SkipAPIRepoStats,
 		SkipAPIRepoEvents:        ctx.SkipAPIRepoEvents,
+		SkipAPIIssuesPRs:         ctx.SkipAPIIssuesPRs,
 		GHAPIAllRepos:            ctx.GHAPIAllRepos,
 		AutoFetchCommits:         ctx.AutoFetchCommits,
 		GHAPIErrorIsFatal:        ctx.GHAPIErrorIsFatal,

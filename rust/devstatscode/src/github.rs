@@ -988,6 +988,25 @@ impl<T> ApiResult<T> {
     }
 }
 
+impl<T> From<Result<(T, Response), Error>> for ApiResult<T> {
+    /// The `Result` shape of the typed calls as an `ApiResult` (an error
+    /// carries no response there).
+    fn from(r: Result<(T, Response), Error>) -> Self {
+        match r {
+            Ok((v, resp)) => ApiResult {
+                value: Some(v),
+                response: Some(resp),
+                error: None,
+            },
+            Err(e) => ApiResult {
+                value: None,
+                response: None,
+                error: Some(e),
+            },
+        }
+    }
+}
+
 const CATEGORY_CORE: usize = 0;
 const CATEGORY_SEARCH: usize = 1;
 
@@ -1597,6 +1616,40 @@ impl Client {
         )
     }
 
+    /// `GET /repos/{owner}/{repo}/issues?state=all&since=T&sort=updated&direction=asc&per_page=N&page=M`
+    /// as raw JSON objects (issues and pull requests, GHA payload shaped; Go:
+    /// `NewRequest` + `Do` into `[]json.RawMessage`).
+    pub fn issues_list_by_repo_raw(
+        &self,
+        owner: &str,
+        repo: &str,
+        since: &str,
+        per_page: i64,
+        page: i64,
+    ) -> ApiResult<Vec<Box<serde_json::value::RawValue>>> {
+        self.do_json_full(
+            "GET",
+            &format!("repos/{owner}/{repo}/issues"),
+            &[
+                ("state".to_string(), "all".to_string()),
+                ("since".to_string(), since.to_string()),
+                ("sort".to_string(), "updated".to_string()),
+                ("direction".to_string(), "asc".to_string()),
+                ("per_page".to_string(), per_page.to_string()),
+                ("page".to_string(), page.to_string()),
+            ],
+            None,
+            None,
+            false,
+        )
+    }
+
+    /// `GET {path}` as one raw JSON object (Go: `NewRequest` + `Do` into a
+    /// `json.RawMessage`), for the `/pulls/{n}` and `/issues/{n}` objects.
+    pub fn get_raw(&self, path: &str) -> ApiResult<Box<serde_json::value::RawValue>> {
+        self.do_json_full("GET", path, &[], None, None, false)
+    }
+
     /// go-github `Repositories.License`.
     pub fn repositories_license(&self, owner: &str, repo: &str) -> ApiResult<RepositoryLicense> {
         self.do_json_full(
@@ -1620,6 +1673,24 @@ impl Client {
             "GET",
             &format!("repos/{owner}/{repo}/commits"),
             &opts.query(),
+            None,
+            None,
+            false,
+        )
+    }
+
+    /// go-github `Repositories.GetCommit` with `ListOptions{PerPage: 1}`:
+    /// one commit by SHA, the files list cut to one entry (not needed).
+    pub fn repositories_get_commit(
+        &self,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+    ) -> ApiResult<RepositoryCommit> {
+        self.do_json_full(
+            "GET",
+            &format!("repos/{owner}/{repo}/commits/{sha}"),
+            &[("per_page".to_string(), "1".to_string())],
             None,
             None,
             false,
@@ -2259,6 +2330,37 @@ mod tests {
         assert_eq!(resolve_location("http://h", "x/"), "http://h/x/");
     }
 
+    /// Reads one HTTP request (headers plus a `Content-Length` body) off `s`
+    /// so that closing the socket afterwards is a clean FIN (the client sees
+    /// EOF), not an RST caused by unread data (a connection reset, which the
+    /// replay logic rightly takes as "nothing was written").
+    fn read_request(s: &mut std::net::TcpStream) {
+        let mut req = Vec::new();
+        let mut buf = [0u8; 8192];
+        let mut body_len = None;
+        loop {
+            let n = match s.read(&mut buf) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            req.extend_from_slice(&buf[..n]);
+            if body_len.is_none() {
+                if let Some(end) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&req[..end]).to_ascii_lowercase();
+                    let len = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    body_len = Some(end + 4 + len);
+                }
+            }
+            if body_len.is_some_and(|l| req.len() >= l) {
+                return;
+            }
+        }
+    }
+
     /// A server that reads each request and, for the first `hangups`
     /// connections, closes without answering; later connections get `body`.
     fn serve_hanging_up(hangups: usize, body: &str) -> (String, Arc<Mutex<usize>>) {
@@ -2272,8 +2374,7 @@ mod tests {
             loop {
                 let (mut s, _) = listener.accept().unwrap();
                 *seen.lock().unwrap() += 1;
-                let mut buf = [0u8; 8192];
-                let _ = s.read(&mut buf);
+                read_request(&mut s);
                 n += 1;
                 if n <= hangups {
                     drop(s);

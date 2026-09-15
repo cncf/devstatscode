@@ -26,13 +26,16 @@ const (
 )
 
 // feedPage - one page of the repository events feed as raw JSON objects
-func feedPage(gctx context.Context, gc *github.Client, org, repo string, page int) ([]json.RawMessage, *github.Response, error) {
-	req, err := gc.NewRequest("GET", fmt.Sprintf("repos/%s/%s/events?per_page=%d&page=%d", org, repo, feedPerPage, page), nil)
-	if err != nil {
-		return nil, nil, err
-	}
+func feedPage(gctx context.Context, gc *ghClients, org, repo string, page int) ([]json.RawMessage, *github.Response, error) {
 	var events []json.RawMessage
-	resp, err := gc.Do(gctx, req, &events)
+	resp, err := gc.do(func(cl *github.Client) (*github.Response, error) {
+		req, err := cl.NewRequest("GET", fmt.Sprintf("repos/%s/%s/events?per_page=%d&page=%d", org, repo, feedPerPage, page), nil)
+		if err != nil {
+			return nil, err
+		}
+		events = nil
+		return cl.Do(gctx, req, &events)
+	})
 	if err != nil {
 		return nil, resp, err
 	}
@@ -40,7 +43,7 @@ func feedPage(gctx context.Context, gc *github.Client, org, repo string, page in
 }
 
 // restoreRepoEventsRepo - write the events of one repository's feed with the gha2db writer
-func restoreRepoEventsRepo(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, shas map[string]string, stats *restoreStats) {
+func restoreRepoEventsRepo(gctx context.Context, gc *ghClients, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, shas map[string]string, stats *restoreStats) {
 	name := passRepoEvents.label()
 	for page := 1; page <= feedMaxPages; page++ {
 		var (
@@ -66,6 +69,14 @@ func restoreRepoEventsRepo(gctx context.Context, gc *github.Client, c *sql.DB, c
 			if err := jsoniter.Unmarshal(raw, &ev); err != nil {
 				lib.Printf("WARNING: %s: %s: cannot unmarshal a feed event: %v, skipping the feed\n", name, orgRepo, err)
 				return
+			}
+			if ev.Repo.ID == 0 && ev.Repo.Name == "" {
+				// GitHub blanks the repository object of some events (a fork into a private
+				// repository for example) - they are still this repository's events
+				ev.Repo.ID, ev.Repo.Name = int(repoID), orgRepo
+				if ctx.Debug > 0 {
+					lib.Printf("%s: %s: %s %s has no repository object, attributed to the feed's repository\n", name, orgRepo, ev.Type, ev.ID)
+				}
 			}
 			if int64(ev.Repo.ID) != repoID && !trackedRepo(c, ctx, orgRepo, int64(ev.Repo.ID)) {
 				lib.Printf("WARNING: %s: %s: the feed belongs to %s (id %d) which is not tracked, skipping\n", name, orgRepo, ev.Repo.Name, ev.Repo.ID)
@@ -108,7 +119,7 @@ func restoreRepoEventsRepo(gctx context.Context, gc *github.Client, c *sql.DB, c
 // syncRepoEvents - repository events feed pass
 func syncRepoEvents(ctx *lib.Ctx) restoreStats {
 	shas := lib.GetHidden(ctx, lib.HideCfgFile)
-	return restorePass(ctx, passRepoEvents, func(gctx context.Context, gc *github.Client, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
+	return restorePass(ctx, passRepoEvents, func(gctx context.Context, gc *ghClients, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
 		restoreRepoEventsRepo(gctx, gc, c, ctx, org, repo, orgRepo, repoID, shas, stats)
 	})
 }

@@ -67,22 +67,28 @@ func ghaOrg(db *sql.DB, ctx *Ctx, org *Org) {
 	}
 }
 
-// Inserts single GHA Milestone
-func ghaMilestone(con *sql.Tx, ctx *Ctx, eid string, milestone *Milestone, ev *Event, maybeHide func(string) string) {
+// ghaMilestoneInsert - inserts single GHA Milestone, insert-ignore when the (id, event_id) row may already exist
+func ghaMilestoneInsert(con *sql.Tx, ctx *Ctx, eid string, milestone *Milestone, ev *Event, maybeHide func(string) string, ignore bool) {
 	// creator
 	if milestone.Creator != nil {
 		ghaActor(con, ctx, milestone.Creator, maybeHide)
 	}
 
 	// gha_milestones
+	query := "into gha_milestones(" +
+		"id, event_id, closed_at, closed_issues, created_at, creator_id, " +
+		"description, due_on, number, open_issues, state, title, updated_at, " +
+		"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, " +
+		"dupn_creator_login) " + NValues(20)
+	if ignore {
+		query = InsertIgnore(query)
+	} else {
+		query = "insert " + query
+	}
 	ExecSQLTxWithErr(
 		con,
 		ctx,
-		"insert into gha_milestones("+
-			"id, event_id, closed_at, closed_issues, created_at, creator_id, "+
-			"description, due_on, number, open_issues, state, title, updated_at, "+
-			"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-			"dupn_creator_login) "+NValues(20),
+		query,
 		AnyArray{
 			milestone.ID,
 			eid,
@@ -956,6 +962,144 @@ func ghaRelease(con *sql.Tx, ctx *Ctx, payloadRelease *Release, eventID string, 
 
 // gha_pull_requests
 // Table details and analysis in `analysis/analysis.txt` and `analysis/pull_request_*.json`
+// Inserts single GHA Issue (its user/assignee(s), milestone, labels and assignee connections)
+// Table details and analysis in `analysis/analysis.txt` and `analysis/issue_*.json`
+func ghaIssue(con *sql.Tx, ctx *Ctx, payloadIssue *Issue, eventID string, actor *Actor, repo *Repo, eType string, eCreatedAt time.Time, maybeHide func(string) string) {
+	ghaIssueInsert(con, ctx, payloadIssue, eventID, actor, repo, eType, eCreatedAt, maybeHide, false)
+}
+
+// ghaIssueInsert - ghaIssue, insert-ignore the milestone and assignee connection rows when they
+// may already exist for the event: the stub upgrade (ghapi2db issues prs) writes the pull request's
+// milestone row for the same event before attaching the issue row, and both objects share the milestone.
+func ghaIssueInsert(con *sql.Tx, ctx *Ctx, payloadIssue *Issue, eventID string, actor *Actor, repo *Repo, eType string, eCreatedAt time.Time, maybeHide func(string) string, ignore bool) {
+	if payloadIssue == nil {
+		return
+	}
+
+	// Create Event (milestone rows carry the event's columns)
+	ev := Event{Actor: *actor, Repo: *repo, Type: eType, CreatedAt: eCreatedAt}
+
+	issue := *payloadIssue
+
+	// user, assignee
+	ghaActor(con, ctx, &issue.User, maybeHide)
+	if issue.Assignee != nil {
+		ghaActor(con, ctx, issue.Assignee, maybeHide)
+	}
+
+	// issue
+	iid := issue.ID
+	isPR := false
+	if issue.PullRequest != nil {
+		isPR = true
+	}
+	ExecSQLTxWithErr(
+		con,
+		ctx,
+		"insert into gha_issues("+
+			"id, event_id, assignee_id, body, closed_at, comments, created_at, "+
+			"locked, milestone_id, number, state, title, updated_at, user_id, "+
+			"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
+			// "dup_user_login, dupn_assignee_login, is_pull_request) "+NValues(23),
+			"dup_user_login, is_pull_request) "+NValues(22),
+		AnyArray{
+			iid,
+			eventID,
+			ActorIDOrNil(issue.Assignee),
+			TruncStringOrNil(issue.Body, 0xffff),
+			TimeOrNil(issue.ClosedAt),
+			issue.Comments,
+			issue.CreatedAt,
+			issue.Locked,
+			MilestoneIDOrNil(issue.Milestone),
+			issue.Number,
+			issue.State,
+			CleanUTF8(issue.Title),
+			issue.UpdatedAt,
+			issue.User.ID,
+			actor.ID,
+			maybeHide(actor.Login),
+			repo.ID,
+			repo.Name,
+			eType,
+			eCreatedAt,
+			maybeHide(issue.User.Login),
+			// ActorLoginOrNil(issue.Assignee, maybeHide),
+			isPR,
+		}...,
+	)
+
+	// milestone
+	if issue.Milestone != nil {
+		ghaMilestoneInsert(con, ctx, eventID, issue.Milestone, &ev, maybeHide, ignore)
+	}
+
+	assigneeQuery := "into gha_issues_assignees(issue_id, event_id, assignee_id) " + NValues(3)
+	if ignore {
+		assigneeQuery = InsertIgnore(assigneeQuery)
+	} else {
+		assigneeQuery = "insert " + assigneeQuery
+	}
+	pAid := ActorIDOrNil(issue.Assignee)
+	for _, assignee := range issue.Assignees {
+		aid := assignee.ID
+		if aid == pAid {
+			continue
+		}
+
+		// assignee
+		ghaActor(con, ctx, &assignee, maybeHide)
+
+		// issue-assignee connection
+		ExecSQLTxWithErr(
+			con,
+			ctx,
+			assigneeQuery,
+			AnyArray{iid, eventID, aid}...,
+		)
+	}
+
+	// labels
+	for _, label := range issue.Labels {
+		lid := IntOrNil(label.ID)
+		if lid == nil {
+			lid = lookupLabel(con, ctx, TruncToBytes(label.Name, 160), label.Color)
+		}
+
+		// label
+		ExecSQLTxWithErr(
+			con,
+			ctx,
+			InsertIgnore("into gha_labels(id, name, color, is_default) "+NValues(4)),
+			AnyArray{lid, TruncToBytes(label.Name, 160), label.Color, BoolOrNil(label.Default)}...,
+		)
+
+		// issue-label connection
+		ExecSQLTxWithErr(
+			con,
+			ctx,
+			InsertIgnore(
+				"into gha_issues_labels(issue_id, event_id, label_id, "+
+					"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
+					"dup_issue_number, dup_label_name"+
+					") "+NValues(11)),
+			AnyArray{
+				iid,
+				eventID,
+				lid,
+				actor.ID,
+				maybeHide(actor.Login),
+				repo.ID,
+				repo.Name,
+				eType,
+				eCreatedAt,
+				issue.Number,
+				label.Name,
+			}...,
+		)
+	}
+}
+
 func ghaPullRequest(con *sql.Tx, ctx *Ctx, payloadPullRequest *PullRequest, eventID string, actor *Actor, repo *Repo, eType string, eCreatedAt time.Time, forkeeIDsToSkip []int, maybeHide func(string) string) {
 	if payloadPullRequest == nil {
 		return
@@ -996,8 +1140,10 @@ func ghaPullRequest(con *sql.Tx, ctx *Ctx, payloadPullRequest *PullRequest, even
 	}
 
 	// milestone
+	// insert-ignore: an API-synthesized event (ghapi2db issues prs pass) carries the pull request
+	// and its issue view in one payload and ghaIssue has just written the same milestone for this event
 	if pr.Milestone != nil {
-		ghaMilestone(con, ctx, eventID, pr.Milestone, &ev, maybeHide)
+		ghaMilestoneInsert(con, ctx, eventID, pr.Milestone, &ev, maybeHide, true)
 	}
 
 	// pull_request
@@ -1057,24 +1203,7 @@ func ghaPullRequest(con *sql.Tx, ctx *Ctx, payloadPullRequest *PullRequest, even
 
 	// Arrays: actors: assignees, requested_reviewers
 	// assignees
-	var assignees []Actor
-
-	prAid := ActorIDOrNil(pr.Assignee)
-	if pr.Assignee != nil {
-		assignees = append(assignees, *pr.Assignee)
-	}
-
-	if pr.Assignees != nil {
-		for _, assignee := range *pr.Assignees {
-			aid := assignee.ID
-			if aid == prAid {
-				continue
-			}
-			assignees = append(assignees, assignee)
-		}
-	}
-
-	for _, assignee := range assignees {
+	for _, assignee := range prAssignees(&pr) {
 		// assignee
 		ghaActor(con, ctx, &assignee, maybeHide)
 
@@ -1102,6 +1231,168 @@ func ghaPullRequest(con *sql.Tx, ctx *Ctx, payloadPullRequest *PullRequest, even
 			)
 		}
 	}
+}
+
+// prAssignees - the pull request's assignee followed by its assignees list (without the assignee itself)
+func prAssignees(pr *PullRequest) (assignees []Actor) {
+	prAid := ActorIDOrNil(pr.Assignee)
+	if pr.Assignee != nil {
+		assignees = append(assignees, *pr.Assignee)
+	}
+	if pr.Assignees != nil {
+		for _, assignee := range *pr.Assignees {
+			aid := assignee.ID
+			if aid == prAid {
+				continue
+			}
+			assignees = append(assignees, assignee)
+		}
+	}
+	return
+}
+
+// StubCreatedAtCut - gha_pull_requests rows written from GitHub's stubbed pull request objects (only
+// url/id/number/base/head: since 2024-10-17 in PullRequestEvent payloads, since 2025-10-09 in
+// PullRequestReview{,Comment}Event ones) carry the zero created_at (0001-01-01); a created_at before
+// this cut marks such a stub row
+const StubCreatedAtCut = "1900-01-01"
+
+// UpgradePullRequestStubs - fill the stub rows of a pull request with its current API object: every value
+// column except the event-time base_sha/head_sha, plus the milestone, assignee and requested reviewer rows
+// (and actor upserts) for those event ids. When issue is not nil (the caller found no gha_issues row for the
+// pull request) one gha_issues row is attached to the newest upgraded event.
+// Returns the upgraded event ids (none when the pull request has no stub rows) and whether the issue row was attached.
+func UpgradePullRequestStubs(db *sql.DB, ctx *Ctx, pr *PullRequest, issue *Issue, maybeHide func(string) string) (eventIDs []int64, issueAttached bool) {
+	type stubRow struct {
+		eventID    int64
+		actorID    int64
+		actorLogin string
+		repoID     int64
+		repoName   string
+		eType      string
+		createdAt  time.Time
+	}
+	var stubs []stubRow
+	rows := QuerySQLWithErr(
+		db,
+		ctx,
+		"select event_id, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at "+
+			"from gha_pull_requests where id = "+NValue(1)+" and created_at < '"+StubCreatedAtCut+"' order by dup_created_at, event_id",
+		pr.ID,
+	)
+	for rows.Next() {
+		var st stubRow
+		FatalOnError(rows.Scan(&st.eventID, &st.actorID, &st.actorLogin, &st.repoID, &st.repoName, &st.eType, &st.createdAt))
+		stubs = append(stubs, st)
+	}
+	FatalOnError(rows.Err())
+	FatalOnError(rows.Close())
+	if len(stubs) == 0 {
+		return
+	}
+
+	con, err := db.Begin()
+	FatalOnError(err)
+
+	// user, merged_by, assignee
+	ghaActor(con, ctx, &pr.User, maybeHide)
+	if pr.MergedBy != nil {
+		ghaActor(con, ctx, pr.MergedBy, maybeHide)
+	}
+	if pr.Assignee != nil {
+		ghaActor(con, ctx, pr.Assignee, maybeHide)
+	}
+
+	for _, st := range stubs {
+		eid := strconv.FormatInt(st.eventID, 10)
+		ExecSQLTxWithErr(
+			con,
+			ctx,
+			"update gha_pull_requests set "+
+				"user_id = "+NValue(1)+", merged_by_id = "+NValue(2)+", assignee_id = "+NValue(3)+", milestone_id = "+NValue(4)+", "+
+				"state = "+NValue(5)+", locked = "+NValue(6)+", title = "+NValue(7)+", body = "+NValue(8)+", "+
+				"created_at = "+NValue(9)+", updated_at = "+NValue(10)+", closed_at = "+NValue(11)+", merged_at = "+NValue(12)+", "+
+				"merge_commit_sha = "+NValue(13)+", merged = "+NValue(14)+", mergeable = "+NValue(15)+", rebaseable = "+NValue(16)+", "+
+				"mergeable_state = "+NValue(17)+", comments = "+NValue(18)+", review_comments = "+NValue(19)+", "+
+				"maintainer_can_modify = "+NValue(20)+", commits = "+NValue(21)+", additions = "+NValue(22)+", "+
+				"deletions = "+NValue(23)+", changed_files = "+NValue(24)+", dup_user_login = "+NValue(25)+", "+
+				"dupn_merged_by_login = "+NValue(26)+" where id = "+NValue(27)+" and event_id = "+NValue(28),
+			AnyArray{
+				pr.User.ID,
+				ActorIDOrNil(pr.MergedBy),
+				ActorIDOrNil(pr.Assignee),
+				MilestoneIDOrNil(pr.Milestone),
+				pr.State,
+				BoolOrNil(pr.Locked),
+				CleanUTF8(pr.Title),
+				TruncStringOrNil(pr.Body, 0xffff),
+				pr.CreatedAt,
+				pr.UpdatedAt,
+				TimeOrNil(pr.ClosedAt),
+				TimeOrNil(pr.MergedAt),
+				StringOrNil(pr.MergeCommitSHA),
+				BoolOrNil(pr.Merged),
+				BoolOrNil(pr.Mergeable),
+				BoolOrNil(pr.Rebaseable),
+				StringOrNil(pr.MergeableState),
+				IntOrNil(pr.Comments),
+				IntOrNil(pr.ReviewComments),
+				BoolOrNil(pr.MaintainerCanModify),
+				IntOrNil(pr.Commits),
+				IntOrNil(pr.Additions),
+				IntOrNil(pr.Deletions),
+				IntOrNil(pr.ChangedFiles),
+				maybeHide(pr.User.Login),
+				ActorLoginOrNil(pr.MergedBy, maybeHide),
+				pr.ID,
+				eid,
+			}...,
+		)
+
+		// the event's columns for the rows keyed by (id, event_id)
+		ev := Event{Actor: Actor{ID: int(st.actorID), Login: st.actorLogin}, Repo: Repo{ID: int(st.repoID), Name: st.repoName}, Type: st.eType, CreatedAt: st.createdAt}
+
+		// milestone
+		if pr.Milestone != nil {
+			ghaMilestoneInsert(con, ctx, eid, pr.Milestone, &ev, maybeHide, true)
+		}
+
+		// assignees
+		for _, assignee := range prAssignees(pr) {
+			ghaActor(con, ctx, &assignee, maybeHide)
+			ExecSQLTxWithErr(
+				con,
+				ctx,
+				InsertIgnore("into gha_pull_requests_assignees(pull_request_id, event_id, assignee_id) "+NValues(3)),
+				AnyArray{pr.ID, eid, assignee.ID}...,
+			)
+		}
+
+		// requested_reviewers
+		if pr.RequestedReviewers != nil {
+			for _, reviewer := range *pr.RequestedReviewers {
+				ghaActor(con, ctx, &reviewer, maybeHide)
+				ExecSQLTxWithErr(
+					con,
+					ctx,
+					InsertIgnore("into gha_pull_requests_requested_reviewers(pull_request_id, event_id, requested_reviewer_id) "+NValues(3)),
+					AnyArray{pr.ID, eid, reviewer.ID}...,
+				)
+			}
+		}
+		eventIDs = append(eventIDs, st.eventID)
+	}
+
+	// the pull request's issue row: attached to the newest upgraded event
+	if issue != nil {
+		st := stubs[len(stubs)-1]
+		// insert-ignore: the pull request's milestone row for this event was written above
+		ghaIssueInsert(con, ctx, issue, strconv.FormatInt(st.eventID, 10), &Actor{ID: int(st.actorID), Login: st.actorLogin}, &Repo{ID: int(st.repoID), Name: st.repoName}, st.eType, st.createdAt, maybeHide, true)
+		issueAttached = true
+	}
+
+	FatalOnError(con.Commit())
+	return
 }
 
 // gha_teams
@@ -1620,122 +1911,7 @@ func WriteToDB(db *sql.DB, ctx *Ctx, ev *Event, shas map[string]string) int {
 	ghaComment(con, ctx, pl.Comment, eventID, &ev.Actor, &ev.Repo, ev.Type, ev.CreatedAt, maybeHide)
 
 	// gha_issues
-	// Table details and analysis in `analysis/analysis.txt` and `analysis/issue_*.json`
-	if pl.Issue != nil {
-		issue := *pl.Issue
-
-		// user, assignee
-		ghaActor(con, ctx, &issue.User, maybeHide)
-		if issue.Assignee != nil {
-			ghaActor(con, ctx, issue.Assignee, maybeHide)
-		}
-
-		// issue
-		iid := issue.ID
-		isPR := false
-		if issue.PullRequest != nil {
-			isPR = true
-		}
-		ExecSQLTxWithErr(
-			con,
-			ctx,
-			"insert into gha_issues("+
-				"id, event_id, assignee_id, body, closed_at, comments, created_at, "+
-				"locked, milestone_id, number, state, title, updated_at, user_id, "+
-				"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-				// "dup_user_login, dupn_assignee_login, is_pull_request) "+NValues(23),
-				"dup_user_login, is_pull_request) "+NValues(22),
-			AnyArray{
-				iid,
-				eventID,
-				ActorIDOrNil(issue.Assignee),
-				TruncStringOrNil(issue.Body, 0xffff),
-				TimeOrNil(issue.ClosedAt),
-				issue.Comments,
-				issue.CreatedAt,
-				issue.Locked,
-				MilestoneIDOrNil(issue.Milestone),
-				issue.Number,
-				issue.State,
-				CleanUTF8(issue.Title),
-				issue.UpdatedAt,
-				issue.User.ID,
-				ev.Actor.ID,
-				maybeHide(ev.Actor.Login),
-				ev.Repo.ID,
-				ev.Repo.Name,
-				ev.Type,
-				ev.CreatedAt,
-				maybeHide(issue.User.Login),
-				// ActorLoginOrNil(issue.Assignee, maybeHide),
-				isPR,
-			}...,
-		)
-
-		// milestone
-		if issue.Milestone != nil {
-			ghaMilestone(con, ctx, eventID, issue.Milestone, ev, maybeHide)
-		}
-
-		pAid := ActorIDOrNil(issue.Assignee)
-		for _, assignee := range issue.Assignees {
-			aid := assignee.ID
-			if aid == pAid {
-				continue
-			}
-
-			// assignee
-			ghaActor(con, ctx, &assignee, maybeHide)
-
-			// issue-assignee connection
-			ExecSQLTxWithErr(
-				con,
-				ctx,
-				"insert into gha_issues_assignees(issue_id, event_id, assignee_id) "+NValues(3),
-				AnyArray{iid, eventID, aid}...,
-			)
-		}
-
-		// labels
-		for _, label := range issue.Labels {
-			lid := IntOrNil(label.ID)
-			if lid == nil {
-				lid = lookupLabel(con, ctx, TruncToBytes(label.Name, 160), label.Color)
-			}
-
-			// label
-			ExecSQLTxWithErr(
-				con,
-				ctx,
-				InsertIgnore("into gha_labels(id, name, color, is_default) "+NValues(4)),
-				AnyArray{lid, TruncToBytes(label.Name, 160), label.Color, BoolOrNil(label.Default)}...,
-			)
-
-			// issue-label connection
-			ExecSQLTxWithErr(
-				con,
-				ctx,
-				InsertIgnore(
-					"into gha_issues_labels(issue_id, event_id, label_id, "+
-						"dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, "+
-						"dup_issue_number, dup_label_name"+
-						") "+NValues(11)),
-				AnyArray{
-					iid,
-					eventID,
-					lid,
-					ev.Actor.ID,
-					maybeHide(ev.Actor.Login),
-					ev.Repo.ID,
-					ev.Repo.Name,
-					ev.Type,
-					ev.CreatedAt,
-					issue.Number,
-					label.Name,
-				}...,
-			)
-		}
-	}
+	ghaIssue(con, ctx, pl.Issue, eventID, &ev.Actor, &ev.Repo, ev.Type, ev.CreatedAt, maybeHide)
 
 	// gha_forkees
 	if pl.Forkee != nil {

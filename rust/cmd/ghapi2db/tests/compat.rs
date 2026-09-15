@@ -82,7 +82,7 @@ static NOW: LazyLock<Regex> = LazyLock::new(|| {
 /// The `recent` dates (`HourStart(now) - 10 years`, so 2016) after their
 /// markers: `recent date: …`, `Repos to process from …:`, `] < …:`.
 static RECENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(recent date: |Repos to process from |\] < |active since |\(no [A-Za-z ]+ since )\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? [+-]\d{4} [A-Za-z0-9+-]+")
+    Regex::new(r"(recent date: |Repos to process from |\] < |active since |\(no [A-Za-z ]+ since |updates since )\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? [+-]\d{4} [A-Za-z0-9+-]+")
         .unwrap()
 });
 /// `since=2016-…Z` query parameters derived from the recent date.
@@ -789,6 +789,7 @@ enum Pass {
     Stars,
     RepoStats,
     RepoEvents,
+    IssuesPrs,
     All,
 }
 
@@ -804,6 +805,7 @@ const SKIP_VARS: &[(Pass, &str)] = &[
     (Pass::Stars, "GHA2DB_GHAPISKIPSTARS"),
     (Pass::RepoStats, "GHA2DB_GHAPISKIPREPOSTATS"),
     (Pass::RepoEvents, "GHA2DB_GHAPISKIPREPOEVENTS"),
+    (Pass::IssuesPrs, "GHA2DB_GHAPISKIPISSUESPRS"),
 ];
 
 type Setup = Box<dyn Fn(&FakeGitHub) + Send + Sync>;
@@ -2439,6 +2441,114 @@ fn events_abuse_then_ok() {
 }
 
 #[test]
+fn events_exhausted_token_is_retried_on_the_next_one() {
+    // Bug 65 part 2: the legacy passes picked one token from the `/rate_limit`
+    // hint and, since that view no longer reflects the real usage, kept
+    // hitting an exhausted token until `GHA2DB_MAX_GHAPI_RETRY` and dropped
+    // the repository (`Rate limit (Issues.ListRepositoryEvents) for …` ×N on
+    // prod). They go through the answer-driven picker now: tok1 answers
+    // "rate limit exceeded", the page is repeated with tok2 at once - no
+    // rate-limit line, no lost retry, one API call counted per answer.
+    let issue = IssueSpec::new(7001, 1);
+    let sides = check(
+        Case::new("ev_stale_tok", Pass::Events)
+            .env("GHA2DB_GITHUB_DEBUG", "1")
+            .oauth(Some("tok1,tok2"))
+            .setup(move |gh| {
+                gh.set_rate(Some("tok1"), 5000, 4000, 3600);
+                gh.set_rate(Some("tok2"), 5000, 3000, 3600);
+                gh.get(
+                    &events_path(REPO),
+                    vec![
+                        Scripted::rate_limited(5000, 3600),
+                        Scripted::ok(&json!([issue_event(
+                            5001,
+                            Some("closed"),
+                            (11, "alice"),
+                            "2020-05-01T10:00:00Z",
+                            Some(&issue)
+                        )])),
+                    ],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "token 0 exhausted until <now> (1 tokens left)");
+        s.expect_line(0, "GH Repo Events/PRs API calls: 1");
+        assert!(
+            !s.lines(0)
+                .iter()
+                .any(|l| l.starts_with("Rate limit (") || l.contains("API limit reached")),
+            "{:#?}",
+            s.lines(0)
+        );
+        let api: Vec<String> = s
+            .requests()
+            .into_iter()
+            .filter(|r| !r.starts_with("GET /rate_limit "))
+            .collect();
+        assert_eq!(
+            api,
+            vec![
+                format!(
+                    "GET {}?per_page=100 accept={V3_ACCEPT} auth=tok1",
+                    events_path(REPO)
+                ),
+                format!(
+                    "GET {}?per_page=100 accept={V3_ACCEPT} auth=tok2",
+                    events_path(REPO)
+                ),
+            ]
+        );
+        assert_eq!(s.count("select count(*) from gha_issues"), 1);
+    });
+}
+
+#[test]
+fn licenses_exhausted_token_is_retried_on_the_next_one() {
+    // Bug 65 part 2 for the licenses/languages passes: an exhausted token is
+    // not an "abuse" to retry on - the request moves to the next token and
+    // the license is stored on the first try.
+    let sides = check(
+        Case::new("lic_stale_tok", Pass::Licenses)
+            .env("GHA2DB_GITHUB_DEBUG", "1")
+            .oauth(Some("tok1,tok2"))
+            .setup(|gh| {
+                gh.set_rate(Some("tok1"), 5000, 4000, 3600);
+                gh.set_rate(Some("tok2"), 5000, 3000, 3600);
+                gh.get(
+                    "/repos/org/repo/license",
+                    vec![
+                        Scripted::rate_limited(5000, 3600),
+                        Scripted::ok(&license_json("mit", "MIT License")),
+                    ],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "token 0 exhausted until <now> (1 tokens left)");
+        s.expect_line(0, "Processed 1, found 1 licenses, 0 not found, abuses 0");
+        s.expect_no_prefix(0, "Licenses abuse detected");
+        let api: Vec<String> = s
+            .requests()
+            .into_iter()
+            .filter(|r| !r.starts_with("GET /rate_limit "))
+            .collect();
+        assert_eq!(
+            api,
+            vec![
+                format!("GET /repos/org/repo/license accept={V3_ACCEPT} auth=tok1"),
+                format!("GET /repos/org/repo/license accept={V3_ACCEPT} auth=tok2"),
+            ]
+        );
+        assert_eq!(
+            s.column("select license_key from gha_repos where name = 'org/repo'"),
+            vec!["mit".to_string()]
+        );
+    });
+}
+
+#[test]
 fn events_server_errors_exhaust_retries() {
     let sides = check(Case::new("ev_502", Pass::Events).setup(|gh| {
         gh.get(
@@ -2560,6 +2670,24 @@ fn rate_limit_requests(s: &Side, token: &str) -> usize {
         .count()
 }
 
+/// The logged requests without the `/rate_limit` polls (sorted like
+/// `Side::requests`).
+fn api_requests(s: &Side) -> Vec<String> {
+    s.requests()
+        .into_iter()
+        .filter(|r| !r.starts_with("GET /rate_limit "))
+        .collect()
+}
+
+/// Bug 65: every API call of a restore pass picks the token with the most
+/// remaining points as seen in the `X-RateLimit-*` headers of the answers
+/// (`GET /rate_limit` no longer reflects the real usage), so `/rate_limit` is
+/// only polled at the pass start (and every 20 repositories, for the progress
+/// line) - never before an API call.
+fn assert_polled_once(s: &Side, token: &str) {
+    assert_eq!(rate_limit_requests(s, token), 1, "{:#?}", s.requests());
+}
+
 #[test]
 fn rate_limits_cache_polls_every_token_once() {
     // Without the cache every API call is preceded by one `/rate_limit` call
@@ -2580,14 +2708,25 @@ fn rate_limits_cache_polls_every_token_once() {
         s.expect_line(0, "GH Repo Events/PRs API calls: 2");
         assert_eq!(rate_limit_requests(s, "tok1"), 1, "{:#?}", s.requests());
         assert_eq!(rate_limit_requests(s, "tok2"), 1, "{:#?}", s.requests());
-        // the token with more points serves both API calls
+        // the cached hint drives the pre-checks only; the requests go through
+        // the answer-driven picker (bug 65 part 2), which tries every token
+        // once before following the `X-RateLimit-Remaining` of the answers:
+        // the listing takes tok1 (none seen yet), the PR fetch the unseen tok2
         let api: Vec<String> = s
             .requests()
             .into_iter()
             .filter(|r| !r.starts_with("GET /rate_limit "))
             .collect();
-        assert_eq!(api.len(), 2, "{api:#?}");
-        assert!(api.iter().all(|r| r.ends_with(" auth=tok2")), "{api:#?}");
+        assert_eq!(
+            api,
+            vec![
+                format!(
+                    "GET {}?per_page=100 accept={V3_ACCEPT} auth=tok1",
+                    events_path(REPO)
+                ),
+                format!("GET {} accept={V3_ACCEPT} auth=tok2", pr_path(REPO, 2)),
+            ]
+        );
         // cached serves see one point less for the hinted token each time
         s.expect_prefix(
             0,
@@ -3093,6 +3232,16 @@ fn commits_date_range_from_env() {
         assert!(s.requests().iter().any(|r| r.starts_with(
             "GET /repos/org/repo/commits?per_page=100&since=2020-03-01T09%3A00%3A00Z&until=2020-03-01T13%3A00%3A00Z "
         )), "{:?}", s.requests());
+        // the by-SHA enrichment is not part of the DTFROM/DTTO debugging mode
+        s.expect_line(
+            0,
+            "GH Commits by SHA API calls: 0, id-less commits: 0, with author: 0, with committer: 0",
+        );
+        assert!(
+            !s.requests().iter().any(|r| r.contains("/commits/")),
+            "{:?}",
+            s.requests()
+        );
     });
 }
 
@@ -3130,17 +3279,277 @@ fn commits_author_name_mismatch_and_missing_users() {
                 vec!["Bob B".to_string(), "Bob B".to_string(), "bob@example.com".to_string(), "12".to_string(), "99".to_string()],
             ]
         );
-        // actor 99 (bob) inserted; emails for actor 0 (no user) recorded too
+        // actor 99 (bob) inserted; no identity rows for the placeholder actor 0
+        // (bug 66: the e-mails/names of commits GitHub attached no user to used
+        // to pile up under actor id 0), bob's e-mail/name once under the author id
         assert_eq!(
             s.query("select login, name from gha_actors where id = 99"),
             vec![vec!["bob".to_string(), "Bob B".to_string()]]
         );
         assert_eq!(
-            s.column("select email from gha_actors_emails where actor_id = 0 order by 1"),
+            s.query("select actor_id::text, email from gha_actors_emails order by 1, 2"),
+            vec![vec!["12".to_string(), "bob@example.com".to_string()]]
+        );
+        assert_eq!(
+            s.query("select actor_id::text, name from gha_actors_names order by 1, 2"),
+            vec![vec!["12".to_string(), "Bob B".to_string()]]
+        );
+    });
+}
+
+/// `GET /repos/{owner}/{repo}/commits/{sha}` of the by-SHA enrichment.
+fn commit_path(repo: &str, sha: &str) -> String {
+    format!("/repos/{repo}/commits/{sha}")
+}
+
+#[test]
+fn commits_by_sha_enriches_the_idless_commits() {
+    // P3-B: the listing covers the default branch inside the autofetch window
+    // only, so the recent gha_commits rows still without an author/committer
+    // GitHub id (other branches, dates before the window - the get_repos
+    // restored commits) are fetched one by one by SHA after it: SHA3 is
+    // enriched by the listing, SHA2 (bob, committed through the web UI) and
+    // SHA1 (no GitHub users attached - stays id-less, no actor-0 identity rows)
+    // by SHA.
+    let sides = check(
+        Case::new("cm_bysha", Pass::Commits)
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&commits_seed())
+            .setup(|gh| {
+                gh.get_ok(
+                    &commits_path(REPO),
+                    &json!([CommitSpec::new(SHA3)
+                        .author(Some((13, "carol")), "Carol C", "carol@example.com")
+                        .committer(Some((11, "alice")), "Alice A", "alice@example.com")
+                        .date("2020-03-01T12:00:00Z")
+                        .json()]),
+                );
+                gh.get_ok(
+                    &commit_path(REPO, SHA2),
+                    &CommitSpec::new(SHA2)
+                        .author(Some((12, "bob")), "Bob B", "bob@example.com")
+                        .committer(Some((19864447, "web-flow")), "GitHub", "noreply@github.com")
+                        .date("2020-03-01T11:00:00Z")
+                        .json(),
+                );
+                gh.get_ok(
+                    &commit_path(REPO, SHA1),
+                    &CommitSpec::new(SHA1)
+                        .author(None, "Alice A", "alice@example.com")
+                        .committer(None, "Alice A", "alice@example.com")
+                        .json(),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "org/repo: processing 1 commits, page 1");
+        s.expect_line(
+            0,
+            "org/repo: 2 recent commits without author/committer id, fetching by SHA",
+        );
+        s.expect_line(0, "GH Commits API calls: 1");
+        s.expect_line(
+            0,
+            "GH Commits by SHA API calls: 2, id-less commits: 2, with author: 1, with committer: 1",
+        );
+        s.expect_no_prefix(0, "Warning: commit not found");
+        assert_eq!(
+            s.query("select sha, coalesce(author_id::text, '-'), coalesce(committer_id::text, '-'), coalesce(dup_author_login, '-'), coalesce(dup_committer_login, '-'), committer_name, committer_email from gha_commits order by sha"),
             vec![
-                "alice@example.com".to_string(),
-                "noreply@github.com".to_string()
+                vec![SHA1.to_string(), "-".to_string(), "-".to_string(), "".to_string(), "".to_string(), "Alice A".to_string(), "alice@example.com".to_string()],
+                vec![SHA2.to_string(), "12".to_string(), "19864447".to_string(), "bob".to_string(), "web-flow".to_string(), "GitHub".to_string(), "noreply@github.com".to_string()],
+                vec![SHA3.to_string(), "13".to_string(), "11".to_string(), "carol".to_string(), "alice".to_string(), "Alice A".to_string(), "alice@example.com".to_string()],
             ]
+        );
+        // web-flow (unknown to gha_actors) inserted, nothing under actor 0
+        assert_eq!(
+            s.query("select login, name from gha_actors where id = 19864447"),
+            vec![vec!["web-flow".to_string(), "GitHub".to_string()]]
+        );
+        assert_eq!(
+            s.query("select actor_id::text, email from gha_actors_emails order by 1, 2"),
+            vec![
+                vec!["11".to_string(), "alice@example.com".to_string()],
+                vec!["12".to_string(), "bob@example.com".to_string()],
+                vec!["13".to_string(), "carol@example.com".to_string()],
+                vec!["19864447".to_string(), "noreply@github.com".to_string()],
+            ]
+        );
+        assert_eq!(
+            s.query("select actor_id::text, name from gha_actors_names order by 1, 2"),
+            vec![
+                vec!["11".to_string(), "Alice A".to_string()],
+                vec!["12".to_string(), "Bob B".to_string()],
+                vec!["13".to_string(), "Carol C".to_string()],
+                vec!["19864447".to_string(), "GitHub".to_string()],
+            ]
+        );
+        // one request per id-less commit, the files list cut to one entry
+        let by_sha: Vec<String> = s
+            .requests()
+            .into_iter()
+            .filter(|r| r.contains("/commits/"))
+            .collect();
+        assert_eq!(
+            by_sha,
+            vec![
+                format!(
+                    "GET {}?per_page=1 accept={V3_ACCEPT} auth=tok1",
+                    commit_path(REPO, SHA1)
+                ),
+                format!(
+                    "GET {}?per_page=1 accept={V3_ACCEPT} auth=tok1",
+                    commit_path(REPO, SHA2)
+                ),
+            ]
+        );
+    });
+}
+
+#[test]
+fn commits_by_sha_picks_the_token_per_request() {
+    // Bug 65 applies to the by-SHA fetches too: the listing took tok1 (no
+    // token seen yet), so the by-SHA fetch starts with the unseen tok2, which
+    // answers "rate limit exceeded" (while `GET /rate_limit` still shows it
+    // full) - the request is repeated with tok1 at once, nothing is skipped.
+    let seed = seed_commit(
+        SHA1,
+        1000,
+        "Alice A",
+        "alice@example.com",
+        "2020-03-01T10:00:00Z",
+    );
+    let sides = check(
+        Case::new("cm_bysha_tok", Pass::Commits)
+            .env("GHA2DB_GITHUB_DEBUG", "1")
+            .oauth(Some("tok1,tok2"))
+            .seed(&seed)
+            .setup(|gh| {
+                gh.get_ok(&commits_path(REPO), &json!([]));
+                gh.get(
+                    &commit_path(REPO, SHA1),
+                    vec![
+                        Scripted::rate_limited(5000, 3600),
+                        Scripted::ok(&CommitSpec::new(SHA1).json()),
+                    ],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "token 1 exhausted until <now> (1 tokens left)");
+        s.expect_line(
+            0,
+            "GH Commits by SHA API calls: 1, id-less commits: 1, with author: 1, with committer: 1",
+        );
+        assert!(
+            !s.lines(0).iter().any(|l| l.contains("rate limited")),
+            "{:#?}",
+            s.lines(0)
+        );
+        let by_sha: Vec<String> = s
+            .requests()
+            .into_iter()
+            .filter(|r| r.contains("/commits/"))
+            .collect();
+        // (`requests()` is sorted, the chronology is the `token 1 exhausted` line)
+        assert_eq!(
+            by_sha,
+            vec![
+                format!(
+                    "GET {}?per_page=1 accept={V3_ACCEPT} auth=tok1",
+                    commit_path(REPO, SHA1)
+                ),
+                format!(
+                    "GET {}?per_page=1 accept={V3_ACCEPT} auth=tok2",
+                    commit_path(REPO, SHA1)
+                ),
+            ]
+        );
+        assert_eq!(
+            s.column(&format!(
+                "select author_id::text from gha_commits where sha = '{SHA1}'"
+            )),
+            vec!["11".to_string()]
+        );
+    });
+    // With every token exhausted (here: the only one) the commit is skipped
+    // like a restore page, the rest of the run is not affected.
+    let sides = check(
+        Case::new("cm_bysha_rl", Pass::Commits)
+            .seed(&seed)
+            .setup(|gh| {
+                gh.get_ok(&commits_path(REPO), &json!([]));
+                gh.get(
+                    &commit_path(REPO, SHA1),
+                    vec![Scripted::rate_limited(5000, 3600)],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &format!("org/repo: commit {SHA1}: rate limited, reset in <dur>, skipping"),
+        );
+        s.expect_line(
+            0,
+            "GH Commits by SHA API calls: 1, id-less commits: 1, with author: 0, with committer: 0",
+        );
+        assert_eq!(
+            s.column(&format!(
+                "select coalesce(author_id::text, '-') from gha_commits where sha = '{SHA1}'"
+            )),
+            vec!["-".to_string()]
+        );
+    });
+}
+
+#[test]
+fn commits_by_sha_caps_a_repository_at_a_thousand() {
+    // A repository with more than 1000 id-less recent commits (a project just
+    // added, a mass import) gets the newest 1000 per run - the rest waits for
+    // the next one - and says so; unknown commits (404) are warned about.
+    let mut seed = String::new();
+    for i in 0..1001 {
+        seed.push_str(&seed_commit(
+            &format!("{i:040x}"),
+            1000,
+            "Alice A",
+            "alice@example.com",
+            "2020-03-01T10:00:00Z",
+        ));
+    }
+    let sides = check(
+        Case::new("cm_bysha_cap", Pass::Commits)
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed)
+            .setup(|gh| {
+                gh.get_ok(&commits_path(REPO), &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "org/repo: more than 1000 recent commits without author/committer id, fetching the newest 1000 by SHA",
+        );
+        s.expect_line(
+            0,
+            "GH Commits by SHA API calls: 1000, id-less commits: 1000, with author: 0, with committer: 0",
+        );
+        assert_eq!(
+            s.lines(0)
+                .iter()
+                .filter(|l| l.starts_with("Warning: commit not found: org/repo "))
+                .count(),
+            1000
+        );
+        // the same commit date for all: the sha order decides which one waits
+        s.expect_line(
+            0,
+            &format!("Warning: commit not found: org/repo {:040x}", 0),
+        );
+        s.expect_no_prefix(
+            0,
+            &format!("Warning: commit not found: org/repo {:040x}", 1000),
         );
     });
 }
@@ -3988,8 +4397,11 @@ fn restore_api_error_paths() {
 
 #[test]
 fn restore_rate_limited_response_skips_the_rest() {
-    // once a 403 with X-RateLimit-Remaining: 0 arrives, the client refuses
-    // further calls until the reset: every later page is "rate limited"
+    // once a 403 with X-RateLimit-Remaining: 0 arrives, the (only) token is
+    // known to be exhausted until its reset: every later page is "rate
+    // limited" without another request - whatever `/rate_limit` would say
+    // about the (fake) token's points (bug 65: the token choice follows the
+    // answers, not the unreliable `/rate_limit`).
     let sides = check(
         Case::new("rc_rl", Pass::Comments)
             .seed_only(&seed_event(
@@ -4185,6 +4597,9 @@ fn restore_pass_refreshes_the_rate_every_20_repos() {
             ));
         }
         case.setup(move |gh| {
+            // the pass-start poll is healthy, the refresh after the 20th
+            // repository sees the exhausted token (the API calls themselves
+            // do not poll - bug 65: the token choice follows the answers)
             gh.get(
                 "/rate_limit",
                 vec![
@@ -4212,6 +4627,8 @@ fn restore_pass_refreshes_the_rate_every_20_repos() {
             0,
             "ghapi2db comments restore: processed 20 repos, 60 pages, checked 0, restored 0",
         );
+        // 1 at the pass start + the refresh after the 20th repository + the
+        // re-poll after "don't want to wait"
         assert_eq!(
             s.requests()
                 .iter()
@@ -4997,6 +5414,7 @@ fn all_passes_run_in_order() {
         );
         gh.get_ok("/repos/org/repo/languages", &json!({"Go": 10}));
         gh.get_ok(&feed_path(REPO), &json!([]));
+        gh.get_ok(&issues_listing_path(REPO), &json!([]));
         gh.get_ok(&events_path(REPO), &json!([]));
         gh.get_ok(&commits_path(REPO), &json!([]));
         empty_restores(gh, REPO);
@@ -5015,6 +5433,7 @@ fn all_passes_run_in_order() {
             pos("Checking license on 1 repos"),
             pos("Checking programming languages on 1 repos"),
             pos("ghapi2db repo events: processing 1 repos"),
+            pos("ghapi2db issues prs: processing 1 repos"),
             pos("ghapi2db.go: Processing 1 repos - GHAPI Events part"),
             pos("ghapi2db.go: Processing 1 repos - GHAPI commits part"),
             pos("ghapi2db comments restore: processing 1 repos"),
@@ -5032,6 +5451,15 @@ fn all_passes_run_in_order() {
         s.expect_line(
             0,
             "ghapi2db repo events: processed 1 repos, 1 pages, checked 0, restored 0",
+        );
+        // no stub rows, an empty listing: one page fetched, nothing to upgrade or synthesize
+        s.expect_line(
+            0,
+            "ghapi2db issues prs: processed 1 repos, 1 pages, checked 0, restored 0",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db issues prs: upgraded 0 stub rows of 0 pull requests, attached 0 issue rows",
         );
         // legacy scope: the repository counters come from the API
         s.expect_line(
@@ -7068,14 +7496,12 @@ fn repo_events_feed_is_written_with_native_ids() {
         );
         // one page, no more requests than the feed itself
         assert_eq!(
-            s.requests(),
-            vec![
-                format!("GET /rate_limit accept={V3_ACCEPT} auth=tok1"),
-                format!(
-                    "GET /repos/org/repo/events?page=1&per_page=100 accept={V3_ACCEPT} auth=tok1"
-                ),
-            ]
+            api_requests(s),
+            vec![format!(
+                "GET /repos/org/repo/events?page=1&per_page=100 accept={V3_ACCEPT} auth=tok1"
+            )]
         );
+        assert_polled_once(s, "tok1");
     });
 }
 
@@ -7303,6 +7729,73 @@ fn repo_events_untracked_feeds_and_missing_repos_are_skipped() {
 }
 
 #[test]
+fn repo_events_without_a_repository_object_are_attributed_to_the_feed() {
+    let sides = check(
+        Case::new("fe_norepo", Pass::RepoEvents)
+            .env("GHA2DB_DEBUG", "1")
+            .setup(|gh| {
+                // GitHub blanks `repo` for a fork into a private repository (seen live on
+                // kubernetes-sigs/aws-load-balancer-controller); the event stays this
+                // repository's, the rest of the page is processed as usual
+                let mut fork = feed_event(
+                    9000012,
+                    "ForkEvent",
+                    (REPO_ID, REPO),
+                    (13, "carol"),
+                    "2020-05-03T10:06:00Z",
+                    json!({
+                        "action": "forked",
+                        "forkee": feed_repo_object(701, "carol/repo-private", (13, "carol"), "2020-05-03T10:06:00Z")
+                    }),
+                );
+                fork["repo"] = json!({});
+                let mut page = json!([fork]);
+                page.as_array_mut()
+                    .unwrap()
+                    .extend(feed_mixed_page().as_array().unwrap().iter().cloned());
+                gh.get_ok(&feed_page_path(REPO, 1), &page);
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: ForkEvent 9000012 has no repository object, attributed to the feed's repository",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: restored ForkEvent 9000012 (2020-05-03 10:06:00 +0000 UTC)",
+        );
+        s.expect_no_prefix(0, "WARNING: ghapi2db repo events: ");
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 1 repos, 1 pages, checked 7, restored 7",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: restored events by type: ForkEvent 2, IssueCommentEvent 1, IssuesEvent 1, PullRequestEvent 1, PushEvent 1, WatchEvent 1",
+        );
+        assert_eq!(
+            s.query(
+                "select repo_id::text, dup_repo_name, dup_actor_login from gha_events where id = 9000012"
+            ),
+            vec![vec![
+                REPO_ID.to_string(),
+                REPO.to_string(),
+                "carol".to_string()
+            ]]
+        );
+        assert_eq!(
+            s.query("select id::text, full_name from gha_forkees where event_id = 9000012"),
+            vec![vec!["701".to_string(), "carol/repo-private".to_string()]]
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where repo_id = 0"),
+            0
+        );
+    });
+}
+
+#[test]
 fn repo_events_single_repo_mode_and_hidden_actors() {
     let sides = check(
         Case::new("fe_single", Pass::RepoEvents)
@@ -7488,6 +7981,1778 @@ fn repo_events_run_the_targeted_postprocess() {
                 "select label_id::text, dup_label_name from gha_issues_labels where event_id = 9000001"
             ),
             vec![vec!["4001".to_string(), "kind/bug".to_string()]]
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Issues and pull requests sweep (`ghapi2db issues prs`, P1-C)
+// ---------------------------------------------------------------------------
+
+/// Synthesized lifecycle event id bands (`ArtificialIssueIDBase`/`ArtificialPRIDBase`).
+const ISSUE_BASE: i64 = ARTIFICIAL_BASE + 28_000_000_000_000;
+const PR_BASE: i64 = ARTIFICIAL_BASE + 32_000_000_000_000;
+
+const HEAD_SHA: &str = "1111111111111111111111111111111111111111";
+const BASE_SHA: &str = "2222222222222222222222222222222222222222";
+const MERGE_SHA: &str = "4444444444444444444444444444444444444444";
+
+/// The listing route without the dynamic `since` (parameters are matched as a subset).
+fn issues_listing_path(repo: &str) -> String {
+    format!("/repos/{repo}/issues?state=all&sort=updated&direction=asc&per_page=100")
+}
+
+/// The `Link`-header base of the listing pages.
+fn issues_listing_base(repo: &str) -> String {
+    issues_listing_path(repo)
+}
+
+fn issues_listing_page_path(repo: &str, page: i64) -> String {
+    format!("{}&page={page}", issues_listing_path(repo))
+}
+
+/// The logged listing request of page `page` (sorted parameters, `since` masked).
+fn issues_listing_request(repo: &str, page: i64) -> String {
+    format!(
+        "GET /repos/{repo}/issues?direction=asc&page={page}&per_page=100&since=<recent>&sort=updated&state=all accept={V3_ACCEPT} auth=tok1"
+    )
+}
+
+fn api_user(user: (i64, &str)) -> Value {
+    json!({
+        "login": user.1,
+        "id": user.0,
+        "node_id": format!("U_{}", user.0),
+        "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", user.0),
+        "url": format!("https://api.github.com/users/{}", user.1),
+        "type": "User",
+        "site_admin": false
+    })
+}
+
+/// A REST issue object (`GET /issues/{n}` and the listing elements); `pr`
+/// adds the `pull_request` marker of a pull request seen as an issue.
+fn api_issue(
+    id: i64,
+    number: i64,
+    user: (i64, &str),
+    title: &str,
+    body: &str,
+    created_at: &str,
+    pr: bool,
+) -> Value {
+    let mut v = json!({
+        "url": format!("https://api.github.com/repos/{REPO}/issues/{number}"),
+        "repository_url": format!("https://api.github.com/repos/{REPO}"),
+        "labels_url": format!("https://api.github.com/repos/{REPO}/issues/{number}/labels{{/name}}"),
+        "comments_url": format!("https://api.github.com/repos/{REPO}/issues/{number}/comments"),
+        "events_url": format!("https://api.github.com/repos/{REPO}/issues/{number}/events"),
+        "html_url": format!("https://github.com/{REPO}/issues/{number}"),
+        "id": id,
+        "node_id": format!("I_{id}"),
+        "number": number,
+        "title": title,
+        "user": api_user(user),
+        "labels": [{"id": 4002, "node_id": "L_4002", "url": format!("https://api.github.com/repos/{REPO}/labels/area%2Fapi"), "name": "area/api", "color": "0052cc", "default": false, "description": null}],
+        "state": "open",
+        "locked": false,
+        "assignee": null,
+        "assignees": [],
+        "milestone": null,
+        "comments": 1,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "closed_at": null,
+        "author_association": "CONTRIBUTOR",
+        "active_lock_reason": null,
+        "body": body,
+        "closed_by": null,
+        "reactions": {"url": format!("https://api.github.com/repos/{REPO}/issues/{number}/reactions"), "total_count": 0},
+        "timeline_url": format!("https://api.github.com/repos/{REPO}/issues/{number}/timeline"),
+        "performed_via_github_app": null,
+        "state_reason": null
+    });
+    if pr {
+        v["pull_request"] = json!({
+            "url": format!("https://api.github.com/repos/{REPO}/pulls/{number}"),
+            "html_url": format!("https://github.com/{REPO}/pull/{number}"),
+            "diff_url": format!("https://github.com/{REPO}/pull/{number}.diff"),
+            "patch_url": format!("https://github.com/{REPO}/pull/{number}.patch"),
+            "merged_at": null
+        });
+        v["draft"] = json!(false);
+    }
+    v
+}
+
+/// Close an [`api_issue`] object at `closed_at` (by `closed_by` when known).
+fn api_issue_closed(mut v: Value, closed_at: &str, closed_by: Option<(i64, &str)>) -> Value {
+    v["state"] = json!("closed");
+    v["state_reason"] = json!("completed");
+    v["closed_at"] = json!(closed_at);
+    v["updated_at"] = json!(closed_at);
+    v["closed_by"] = closed_by.map(api_user).unwrap_or(Value::Null);
+    v
+}
+
+/// A REST pull request object (`GET /pulls/{n}`), open, from `carol:fix` into `org:main`.
+fn api_pull_request(
+    id: i64,
+    number: i64,
+    user: (i64, &str),
+    title: &str,
+    body: &str,
+    created_at: &str,
+) -> Value {
+    let mut v = json!({
+        "url": format!("https://api.github.com/repos/{REPO}/pulls/{number}"),
+        "id": id,
+        "node_id": format!("PR_{id}"),
+        "html_url": format!("https://github.com/{REPO}/pull/{number}"),
+        "diff_url": format!("https://github.com/{REPO}/pull/{number}.diff"),
+        "patch_url": format!("https://github.com/{REPO}/pull/{number}.patch"),
+        "issue_url": format!("https://api.github.com/repos/{REPO}/issues/{number}"),
+        "number": number,
+        "state": "open",
+        "locked": false,
+        "title": title,
+        "user": api_user(user),
+        "body": body,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "closed_at": null,
+        "merged_at": null,
+        "merge_commit_sha": null,
+        "assignee": null,
+        "assignees": [],
+        "requested_reviewers": [],
+        "requested_teams": [],
+        "labels": [],
+        "milestone": null,
+        "draft": false,
+        "commits_url": format!("https://api.github.com/repos/{REPO}/pulls/{number}/commits")
+    });
+    let head = feed_pr_branch(
+        "carol:fix",
+        "fix",
+        HEAD_SHA,
+        (13, "carol"),
+        Some(feed_repo_object(
+            700,
+            "carol/repo",
+            (13, "carol"),
+            "2020-04-01T00:00:00Z",
+        )),
+    );
+    let base = feed_pr_branch(
+        "org:main",
+        "main",
+        BASE_SHA,
+        (11, "alice"),
+        Some(feed_repo_object(
+            REPO_ID,
+            REPO,
+            (ORG_ID, "org"),
+            "2020-01-01T00:00:00Z",
+        )),
+    );
+    let tail = json!({
+        "head": head,
+        "base": base,
+        "author_association": "CONTRIBUTOR",
+        "auto_merge": null,
+        "active_lock_reason": null,
+        "merged": false,
+        "mergeable": true,
+        "rebaseable": true,
+        "mergeable_state": "clean",
+        "merged_by": null,
+        "comments": 2,
+        "review_comments": 1,
+        "maintainer_can_modify": false,
+        "commits": 1,
+        "additions": 10,
+        "deletions": 3,
+        "changed_files": 2
+    });
+    for (k, val) in tail.as_object().unwrap() {
+        v[k] = val.clone();
+    }
+    v
+}
+
+/// Merge an [`api_pull_request`] object at `merged_at` by `merged_by`.
+fn api_pr_merged(mut v: Value, merged_at: &str, merged_by: (i64, &str)) -> Value {
+    v["state"] = json!("closed");
+    v["closed_at"] = json!(merged_at);
+    v["merged_at"] = json!(merged_at);
+    v["updated_at"] = json!(merged_at);
+    v["merged"] = json!(true);
+    v["merged_by"] = api_user(merged_by);
+    v["merge_commit_sha"] = json!(MERGE_SHA);
+    v["mergeable"] = Value::Null;
+    v["rebaseable"] = Value::Null;
+    v["mergeable_state"] = json!("unknown");
+    v
+}
+
+/// The object with the `v1.0` milestone (5001) attached.
+fn with_milestone(mut v: Value) -> Value {
+    v["milestone"] = api_milestone(5001, 7, "v1.0", (11, "alice"));
+    v
+}
+
+fn api_milestone(id: i64, number: i64, title: &str, creator: (i64, &str)) -> Value {
+    json!({
+        "url": format!("https://api.github.com/repos/{REPO}/milestones/{number}"),
+        "html_url": format!("https://github.com/{REPO}/milestone/{number}"),
+        "id": id,
+        "node_id": format!("MI_{id}"),
+        "number": number,
+        "title": title,
+        "description": "Sprint",
+        "creator": api_user(creator),
+        "open_issues": 3,
+        "closed_issues": 1,
+        "state": "open",
+        "created_at": "2020-04-01T00:00:00Z",
+        "updated_at": "2020-05-01T00:00:00Z",
+        "due_on": "2020-06-01T00:00:00Z",
+        "closed_at": null
+    })
+}
+
+/// The merged pull request 2 of `carol` with an assignee, two assignees, a
+/// requested reviewer and a milestone (the stub sweep's fetch).
+fn api_pr_two() -> Value {
+    let mut v = api_pr_merged(
+        api_pull_request(
+            8102,
+            2,
+            (13, "carol"),
+            "Fix the API",
+            "Closes #1",
+            "2020-05-01T10:00:00Z",
+        ),
+        "2020-05-04T12:00:00Z",
+        (11, "alice"),
+    );
+    v["assignee"] = api_user((12, "bob"));
+    v["assignees"] = json!([api_user((12, "bob")), api_user((14, "dave"))]);
+    v["requested_reviewers"] = json!([api_user((11, "alice"))]);
+    v["milestone"] = api_milestone(5001, 7, "v1.0", (11, "alice"));
+    v
+}
+
+/// Pull request 2 seen as an issue (`GET /issues/2`): GitHub's issue view of
+/// a pull request carries the same assignee(s) and milestone as the pull
+/// request object - the stub upgrade writes the milestone row for the newest
+/// event from the pull request first, so attaching the issue row must
+/// tolerate it (the first production run of the pass died on exactly this:
+/// a unique violation on `gha_milestones(id, event_id)`).
+fn api_issue_two() -> Value {
+    let mut v = api_issue_closed(
+        api_issue(
+            8202,
+            2,
+            (13, "carol"),
+            "Fix the API",
+            "Closes #1",
+            "2020-05-01T10:00:00Z",
+            true,
+        ),
+        "2020-05-04T12:00:00Z",
+        Some((11, "alice")),
+    );
+    v["assignee"] = api_user((12, "bob"));
+    v["assignees"] = json!([api_user((12, "bob")), api_user((14, "dave"))]);
+    v["milestone"] = api_milestone(5001, 7, "v1.0", (11, "alice"));
+    v
+}
+
+/// A stub `gha_pull_requests` row: what the writer stores from the 5-field
+/// pull request objects GH Archive delivers since 2024-10 (zero created_at,
+/// no user, title or state).
+fn seed_pr_stub_row(
+    id: i64,
+    event_id: i64,
+    number: i64,
+    repo: (i64, &str),
+    actor: (i64, &str),
+    e_type: &str,
+    created_at: &str,
+) -> String {
+    format!(
+        "insert into gha_pull_requests(id, event_id, user_id, base_sha, head_sha, number, state, title, created_at, \
+         updated_at, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, dup_user_login) \
+         values({id}, {event_id}, 0, '{BASE_SHA}', '{HEAD_SHA}', {number}, '', '', '0001-01-01 00:00:00', \
+         '0001-01-01 00:00:00', {}, {}, {}, {}, {}, {}, '');",
+        actor.0,
+        sql_str(actor.1),
+        repo.0,
+        sql_str(repo.1),
+        sql_str(e_type),
+        sql_ts(created_at)
+    )
+}
+
+/// Pull request 2 (id 8102) of `org/repo` with two stub rows (a
+/// `PullRequestEvent` by carol and a `PullRequestReviewEvent` by bob).
+fn pr_two_stub_seed() -> String {
+    let mut s = seed_event(
+        9000003,
+        "PullRequestEvent",
+        REPO,
+        REPO_ID,
+        (13, "carol"),
+        "2020-05-03T10:02:00Z",
+    );
+    s.push_str(&seed_event(
+        9000007,
+        "PullRequestReviewEvent",
+        REPO,
+        REPO_ID,
+        (12, "bob"),
+        "2020-05-04T11:00:00Z",
+    ));
+    s.push_str(&seed_pr_stub_row(
+        8102,
+        9000003,
+        2,
+        (REPO_ID, REPO),
+        (13, "carol"),
+        "PullRequestEvent",
+        "2020-05-03T10:02:00Z",
+    ));
+    s.push_str(&seed_pr_stub_row(
+        8102,
+        9000007,
+        2,
+        (REPO_ID, REPO),
+        (12, "bob"),
+        "PullRequestReviewEvent",
+        "2020-05-04T11:00:00Z",
+    ));
+    s
+}
+
+const IP_PREFIX: &str = "ghapi2db issues prs";
+
+#[test]
+fn issues_prs_stub_rows_are_upgraded_from_the_api() {
+    let sides = check(
+        Case::new("ip_stubs", Pass::IssuesPrs)
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&pr_two_stub_seed())
+            .setup(|gh| {
+                gh.get_ok("/repos/org/repo/pulls/2", &api_pr_two());
+                gh.get_ok("/repos/org/repo/issues/2", &api_issue_two());
+                gh.get_ok(&issues_listing_path(REPO), &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: processing 1 repos, recent date: <recent>"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: 1 pull requests with stub rows"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: pull request 2 (8102): upgraded 2 stub rows, issue row attached: true"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: page 1: 0 objects, synthesized so far 0"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: processed 1 repos, 1 pages, checked 1, restored 0"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: upgraded 2 stub rows of 1 pull requests, attached 1 issue rows"),
+        );
+        // both stub rows carry the current object now - except the event-time base/head shas
+        let row = |eid: &str| {
+            vec![
+                eid.to_string(),
+                "13".to_string(),
+                "carol".to_string(),
+                "closed".to_string(),
+                "Fix the API".to_string(),
+                "Closes #1".to_string(),
+                "2020-05-01 10:00:00".to_string(),
+                "2020-05-04 12:00:00".to_string(),
+                "2020-05-04 12:00:00".to_string(),
+                "2020-05-04 12:00:00".to_string(),
+                "true".to_string(),
+                "11".to_string(),
+                "alice".to_string(),
+                "12".to_string(),
+                "5001".to_string(),
+                BASE_SHA.to_string(),
+                HEAD_SHA.to_string(),
+                MERGE_SHA.to_string(),
+                "2".to_string(),
+                "10".to_string(),
+                "<nil>".to_string(),
+                "unknown".to_string(),
+            ]
+        };
+        assert_eq!(
+            s.query(
+                "select event_id, user_id, dup_user_login, state, title, body, created_at::text, updated_at::text, \
+                 closed_at::text, merged_at::text, merged::text, merged_by_id, dupn_merged_by_login, assignee_id, \
+                 milestone_id, base_sha, head_sha, merge_commit_sha, comments::text, additions::text, \
+                 mergeable::text, mergeable_state from gha_pull_requests order by event_id"
+            ),
+            vec![row("9000003"), row("9000007")]
+        );
+        assert_eq!(
+            s.query("select event_id, assignee_id from gha_pull_requests_assignees order by 1, 2"),
+            vec![
+                vec!["9000003".to_string(), "12".to_string()],
+                vec!["9000003".to_string(), "14".to_string()],
+                vec!["9000007".to_string(), "12".to_string()],
+                vec!["9000007".to_string(), "14".to_string()],
+            ]
+        );
+        assert_eq!(
+            s.query("select event_id, requested_reviewer_id from gha_pull_requests_requested_reviewers order by 1, 2"),
+            vec![
+                vec!["9000003".to_string(), "11".to_string()],
+                vec!["9000007".to_string(), "11".to_string()],
+            ]
+        );
+        // the milestone rows carry each event's own columns
+        assert_eq!(
+            s.query("select id, event_id, title, dup_actor_login, dup_type, dup_created_at::text from gha_milestones order by event_id"),
+            vec![
+                vec!["5001".to_string(), "9000003".to_string(), "v1.0".to_string(), "carol".to_string(), "PullRequestEvent".to_string(), "2020-05-03 10:02:00".to_string()],
+                vec!["5001".to_string(), "9000007".to_string(), "v1.0".to_string(), "bob".to_string(), "PullRequestReviewEvent".to_string(), "2020-05-04 11:00:00".to_string()],
+            ]
+        );
+        // the issue row is attached to the newest upgraded event; its milestone row for
+        // that event already exists (written from the pull request above) and is left alone
+        assert_eq!(
+            s.query("select id, event_id, number, is_pull_request::text, state, title, closed_at::text, dup_actor_login, dup_type, dup_created_at::text, milestone_id, assignee_id from gha_issues where number = 2"),
+            vec![vec![
+                "8202".to_string(),
+                "9000007".to_string(),
+                "2".to_string(),
+                "true".to_string(),
+                "closed".to_string(),
+                "Fix the API".to_string(),
+                "2020-05-04 12:00:00".to_string(),
+                "bob".to_string(),
+                "PullRequestReviewEvent".to_string(),
+                "2020-05-04 11:00:00".to_string(),
+                "5001".to_string(),
+                "12".to_string(),
+            ]]
+        );
+        assert_eq!(s.count("select count(*) from gha_milestones"), 2);
+        // the issue's extra assignee (the primary one is skipped, as in gha2db)
+        assert_eq!(
+            s.query(
+                "select issue_id, event_id, assignee_id from gha_issues_assignees order by 1, 2, 3"
+            ),
+            vec![vec![
+                "8202".to_string(),
+                "9000007".to_string(),
+                "14".to_string()
+            ]]
+        );
+        assert_eq!(
+            s.query("select label_id::text, dup_label_name from gha_issues_labels where event_id = 9000007"),
+            vec![vec!["4002".to_string(), "area/api".to_string()]]
+        );
+        // new actors (the PR author, the second assignee) are upserted
+        assert_eq!(
+            s.query("select id, login from gha_actors where id in (13, 14) order by id"),
+            vec![
+                vec!["13".to_string(), "carol".to_string()],
+                vec!["14".to_string(), "dave".to_string()],
+            ]
+        );
+        // no synthetic events: the stub sweep only updates rows
+        assert_eq!(
+            s.count("select count(*) from gha_events where id > 9000007"),
+            0
+        );
+        assert_eq!(
+            api_requests(s),
+            vec![
+                format!("GET /repos/org/repo/issues/2 accept={V3_ACCEPT} auth=tok1"),
+                issues_listing_request(REPO, 1),
+                format!("GET /repos/org/repo/pulls/2 accept={V3_ACCEPT} auth=tok1"),
+            ]
+        );
+        assert_polled_once(s, "tok1");
+    });
+}
+
+#[test]
+fn issues_prs_deleted_pull_request_keeps_its_stub_rows() {
+    // GitHub answers 404 for a pull request that still has stub rows (deleted PR): api_page is
+    // silent on 404, the sweep says so in debug mode and leaves the rows for the next run
+    let sides = check(
+        Case::new("ip_gone", Pass::IssuesPrs)
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&pr_two_stub_seed())
+            .setup(|gh| {
+                gh.get("/repos/org/repo/pulls/2", vec![Scripted::not_found()]);
+                gh.get_ok(&issues_listing_path(REPO), &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: 1 pull requests with stub rows"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: pull request 2 (8102): not available on GitHub, stub rows kept"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: processed 1 repos, 1 pages, checked 1, restored 0"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: upgraded 0 stub rows of 0 pull requests, attached 0 issue rows"),
+        );
+        s.expect_no_prefix(0, "WARNING:");
+        // the two stub rows are untouched
+        assert_eq!(
+            s.count("select count(*) from gha_pull_requests where id = 8102 and created_at < '1900-01-01'"),
+            2
+        );
+        assert_eq!(
+            api_requests(s),
+            vec![
+                issues_listing_request(REPO, 1),
+                format!("GET /repos/org/repo/pulls/2 accept={V3_ACCEPT} auth=tok1"),
+            ]
+        );
+    });
+}
+
+#[test]
+fn issues_prs_requests_rotate_through_the_tokens() {
+    // Bug 65: the restore passes used to pick one client per repository (the
+    // hint at the start of the pass, refreshed every 20 repositories) - a
+    // repository with thousands of stub pull requests exhausted that token and
+    // every following request of the pass was "rate limited, … skipping" while
+    // the other 48 production tokens kept all their points. Every request now
+    // takes the token with the most remaining points as seen in the answers:
+    // both tokens are unknown at first (tok1 serves the first request, tok2
+    // the second), then tok2 - one point ahead - takes the third.
+    let sides = check(
+        Case::new("ip_tokens", Pass::IssuesPrs)
+            .oauth(Some("tok1,tok2"))
+            .seed(&pr_two_stub_seed())
+            .setup(|gh| {
+                gh.count_points(true);
+                gh.set_rate(Some("tok1"), 5000, 4000, 3600);
+                gh.set_rate(Some("tok2"), 5000, 4002, 3600);
+                gh.get_ok("/repos/org/repo/pulls/2", &api_pr_two());
+                gh.get_ok("/repos/org/repo/issues/2", &api_issue_two());
+                gh.get_ok(&issues_listing_path(REPO), &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: upgraded 2 stub rows of 1 pull requests, attached 1 issue rows"),
+        );
+        assert_eq!(rate_limit_requests(s, "tok1"), 1, "{:#?}", s.requests());
+        assert_eq!(rate_limit_requests(s, "tok2"), 1, "{:#?}", s.requests());
+        let api = api_requests(s);
+        assert_eq!(api.len(), 3, "{api:#?}");
+        let tok1 = api.iter().filter(|r| r.ends_with(" auth=tok1")).count();
+        let tok2 = api.iter().filter(|r| r.ends_with(" auth=tok2")).count();
+        assert_eq!((tok1, tok2), (1, 2), "{api:#?}");
+    });
+}
+
+#[test]
+fn issues_prs_exhausted_token_is_retried_on_the_next_one() {
+    // Bug 65 (part 2): `GET /rate_limit` no longer reflects the real usage
+    // (2026-09: it reported 5000 remaining for tokens whose answers said 0),
+    // so the token choice follows the `X-RateLimit-*` headers of the answers:
+    // tok1 answers "rate limit exceeded" to the first request (while
+    // `/rate_limit` still shows its 4000 points), the request is repeated with
+    // tok2 at once - nothing is "rate limited, … skipping" - and tok1 is left
+    // alone until its reset.
+    let sides = check(
+        Case::new("ip_stale", Pass::IssuesPrs)
+            .env("GHA2DB_GITHUB_DEBUG", "1")
+            .oauth(Some("tok1,tok2"))
+            .seed(&pr_two_stub_seed())
+            .setup(|gh| {
+                gh.set_rate(Some("tok1"), 5000, 4000, 3600);
+                gh.set_rate(Some("tok2"), 5000, 3000, 3600);
+                gh.get(
+                    "/repos/org/repo/pulls/2",
+                    vec![
+                        Scripted::rate_limited(5000, 3600),
+                        Scripted::ok(&api_pr_two()),
+                    ],
+                );
+                gh.get_ok("/repos/org/repo/issues/2", &api_issue_two());
+                gh.get_ok(&issues_listing_path(REPO), &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: upgraded 2 stub rows of 1 pull requests, attached 1 issue rows"),
+        );
+        s.expect_line(0, "token 0 exhausted until <now> (1 tokens left)");
+        s.expect_no_prefix(
+            0,
+            &format!("{IP_PREFIX}: org/repo pull request 2: rate limited"),
+        );
+        assert!(
+            !s.lines(0).iter().any(|l| l.contains("rate limited")),
+            "{:#?}",
+            s.lines(0)
+        );
+        let api = api_requests(s);
+        assert_eq!(api.len(), 4, "{api:#?}");
+        let tok1: Vec<&String> = api.iter().filter(|r| r.ends_with(" auth=tok1")).collect();
+        assert_eq!(
+            tok1,
+            vec![&format!(
+                "GET /repos/org/repo/pulls/2 accept={V3_ACCEPT} auth=tok1"
+            )],
+            "{api:#?}"
+        );
+        assert_eq!(
+            api.iter().filter(|r| r.ends_with(" auth=tok2")).count(),
+            3,
+            "{api:#?}"
+        );
+    });
+}
+
+#[test]
+fn issues_prs_listing_synthesizes_unknown_issues_and_prs() {
+    let sides = check(
+        Case::new("ip_listing", Pass::IssuesPrs)
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&issue_and_pr_seed())
+            .setup(|gh| {
+                gh.get_ok(
+                    &issues_listing_page_path(REPO, 1),
+                    &json!([
+                        // known: issue 1 has a gha_issues row, PR 2 a good gha_pull_requests row
+                        api_issue(
+                            7001,
+                            1,
+                            (11, "alice"),
+                            "Issue 1",
+                            "b",
+                            "2020-03-01T12:00:00Z",
+                            false
+                        ),
+                        api_issue(
+                            7202,
+                            2,
+                            (12, "bob"),
+                            "PR 2",
+                            "b",
+                            "2020-04-01T08:00:00Z",
+                            true
+                        ),
+                        // unknown: an open issue, a closed one, a merged pull request
+                        api_issue(
+                            7003,
+                            3,
+                            (11, "alice"),
+                            "Open issue",
+                            "Please fix",
+                            "2020-05-01T09:00:00Z",
+                            false
+                        ),
+                        api_issue_closed(
+                            api_issue(
+                                7004,
+                                4,
+                                (12, "bob"),
+                                "Closed issue",
+                                "Done",
+                                "2020-05-02T09:00:00Z",
+                                false
+                            ),
+                            "2020-05-03T09:30:00Z",
+                            Some((11, "alice")),
+                        ),
+                        with_milestone(api_issue_closed(
+                            api_issue(
+                                7205,
+                                5,
+                                (13, "carol"),
+                                "Merged PR",
+                                "Fixes #4",
+                                "2020-05-02T10:00:00Z",
+                                true
+                            ),
+                            "2020-05-04T10:00:00Z",
+                            Some((11, "alice")),
+                        )),
+                    ]),
+                );
+                // the pull request and its issue view carry the same milestone (bug 67:
+                // the synthetic event writes both objects, the milestone row must be
+                // written once)
+                gh.get_ok(
+                    "/repos/org/repo/pulls/5",
+                    &with_milestone(api_pr_merged(
+                        api_pull_request(
+                            8105,
+                            5,
+                            (13, "carol"),
+                            "Merged PR",
+                            "Fixes #4",
+                            "2020-05-02T10:00:00Z",
+                        ),
+                        "2020-05-04T10:00:00Z",
+                        (11, "alice"),
+                    )),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        let i3 = ISSUE_BASE + 2 * 7003;
+        let i4 = ISSUE_BASE + 2 * 7004;
+        let p5 = PR_BASE + 2 * 8105;
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: 0 pull requests with stub rows"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: synthesized IssuesEvent opened {i3} (2020-05-01 09:00:00 +0000 UTC)"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: synthesized IssuesEvent closed {} (2020-05-03 09:30:00 +0000 UTC)", i4 + 1),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: synthesized PullRequestEvent closed {} (2020-05-04 10:00:00 +0000 UTC)", p5 + 1),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: page 1: 5 objects, synthesized so far 5"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: processed 1 repos, 1 pages, checked 5, restored 5"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: restored events by type: IssuesEvent 3, PullRequestEvent 2"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: upgraded 0 stub rows of 0 pull requests, attached 0 issue rows"),
+        );
+        // deterministic ids in the issue/PR bands, the object's own times and actors
+        assert_eq!(
+            s.query("select id, type, actor_id, dup_actor_login, created_at::text, org_id, dup_repo_name from gha_events where id > 1000 order by id"),
+            vec![
+                vec![i3.to_string(), "IssuesEvent".to_string(), "11".to_string(), "alice".to_string(), "2020-05-01 09:00:00".to_string(), "1".to_string(), REPO.to_string()],
+                vec![i4.to_string(), "IssuesEvent".to_string(), "12".to_string(), "bob".to_string(), "2020-05-02 09:00:00".to_string(), "1".to_string(), REPO.to_string()],
+                vec![(i4 + 1).to_string(), "IssuesEvent".to_string(), "11".to_string(), "alice".to_string(), "2020-05-03 09:30:00".to_string(), "1".to_string(), REPO.to_string()],
+                vec![p5.to_string(), "PullRequestEvent".to_string(), "13".to_string(), "carol".to_string(), "2020-05-02 10:00:00".to_string(), "1".to_string(), REPO.to_string()],
+                vec![(p5 + 1).to_string(), "PullRequestEvent".to_string(), "11".to_string(), "alice".to_string(), "2020-05-04 10:00:00".to_string(), "1".to_string(), REPO.to_string()],
+            ]
+        );
+        assert_eq!(
+            s.query("select event_id, action, number, issue_id, pull_request_id from gha_payloads where event_id > 1000 order by event_id"),
+            vec![
+                vec![i3.to_string(), "opened".to_string(), "3".to_string(), "7003".to_string(), "<nil>".to_string()],
+                vec![i4.to_string(), "opened".to_string(), "4".to_string(), "7004".to_string(), "<nil>".to_string()],
+                vec![(i4 + 1).to_string(), "closed".to_string(), "4".to_string(), "7004".to_string(), "<nil>".to_string()],
+                vec![p5.to_string(), "opened".to_string(), "5".to_string(), "7205".to_string(), "8105".to_string()],
+                vec![(p5 + 1).to_string(), "closed".to_string(), "5".to_string(), "7205".to_string(), "8105".to_string()],
+            ]
+        );
+        // every synthetic event carries the current object (state included): the latest row wins
+        assert_eq!(
+            s.query("select id, event_id, number, state, is_pull_request::text, closed_at::text from gha_issues where event_id > 1000 order by event_id"),
+            vec![
+                vec!["7003".to_string(), i3.to_string(), "3".to_string(), "open".to_string(), "false".to_string(), "<nil>".to_string()],
+                vec!["7004".to_string(), i4.to_string(), "4".to_string(), "closed".to_string(), "false".to_string(), "2020-05-03 09:30:00".to_string()],
+                vec!["7004".to_string(), (i4 + 1).to_string(), "4".to_string(), "closed".to_string(), "false".to_string(), "2020-05-03 09:30:00".to_string()],
+                vec!["7205".to_string(), p5.to_string(), "5".to_string(), "closed".to_string(), "true".to_string(), "2020-05-04 10:00:00".to_string()],
+                vec!["7205".to_string(), (p5 + 1).to_string(), "5".to_string(), "closed".to_string(), "true".to_string(), "2020-05-04 10:00:00".to_string()],
+            ]
+        );
+        assert_eq!(
+            s.query("select id, event_id, number, state, merged::text, merged_by_id, dup_actor_login, dup_type from gha_pull_requests where event_id > 1000 order by event_id"),
+            vec![
+                vec!["8105".to_string(), p5.to_string(), "5".to_string(), "closed".to_string(), "true".to_string(), "11".to_string(), "carol".to_string(), "PullRequestEvent".to_string()],
+                vec!["8105".to_string(), (p5 + 1).to_string(), "5".to_string(), "closed".to_string(), "true".to_string(), "11".to_string(), "alice".to_string(), "PullRequestEvent".to_string()],
+            ]
+        );
+        // the PR's base/head forkees and the issue's label come along
+        assert_eq!(
+            s.column(&format!(
+                "select full_name from gha_forkees where event_id = {p5} order by id"
+            )),
+            vec![REPO.to_string(), "carol/repo".to_string()]
+        );
+        // one milestone row per synthetic PR event (the issue view and the pull
+        // request share it - bug 67), referenced by both objects
+        assert_eq!(
+            s.query("select id, event_id, title, creator_id, dup_type from gha_milestones where event_id > 1000 order by event_id"),
+            vec![
+                vec!["5001".to_string(), p5.to_string(), "v1.0".to_string(), "11".to_string(), "PullRequestEvent".to_string()],
+                vec!["5001".to_string(), (p5 + 1).to_string(), "v1.0".to_string(), "11".to_string(), "PullRequestEvent".to_string()],
+            ]
+        );
+        assert_eq!(
+            s.column(&format!(
+                "select milestone_id from gha_issues where event_id = {p5} union all select milestone_id from gha_pull_requests where event_id = {p5}"
+            )),
+            vec!["5001".to_string(), "5001".to_string()]
+        );
+        assert_eq!(
+            s.column(&format!(
+                "select dup_label_name from gha_issues_labels where event_id = {i3}"
+            )),
+            vec!["area/api".to_string()]
+        );
+        // only the unknown pull request is fetched
+        assert_eq!(
+            api_requests(s),
+            vec![
+                issues_listing_request(REPO, 1),
+                format!("GET /repos/org/repo/pulls/5 accept={V3_ACCEPT} auth=tok1"),
+            ]
+        );
+        assert_polled_once(s, "tok1");
+    });
+}
+
+#[test]
+fn issues_prs_are_idempotent_and_leave_known_objects_alone() {
+    let sides = check(
+        Case::new("ip_twice", Pass::IssuesPrs)
+            .runs(2)
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&pr_two_stub_seed())
+            .setup(|gh| {
+                gh.get_ok("/repos/org/repo/pulls/2", &api_pr_two());
+                gh.get_ok("/repos/org/repo/issues/2", &api_issue_two());
+                let open = api_issue(
+                    7003,
+                    3,
+                    (11, "alice"),
+                    "Open issue",
+                    "Please fix",
+                    "2020-05-01T09:00:00Z",
+                    false,
+                );
+                gh.get(
+                    &issues_listing_page_path(REPO, 1),
+                    vec![
+                        // first run: the issue is open; second run: closed since — the row
+                        // exists now, so the state fix belongs to the events pass, not to this one
+                        Scripted::ok(&json!([open.clone()])),
+                        Scripted::ok(&json!([api_issue_closed(
+                            open,
+                            "2020-05-05T09:00:00Z",
+                            Some((12, "bob"))
+                        )])),
+                    ],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        let i3 = ISSUE_BASE + 2 * 7003;
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: processed 1 repos, 1 pages, checked 2, restored 1"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: upgraded 2 stub rows of 1 pull requests, attached 1 issue rows"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: synthesized IssuesEvent opened {i3} (2020-05-01 09:00:00 +0000 UTC)"),
+        );
+        // second run: no stub rows are left and the issue is known — nothing to do
+        s.expect_line(
+            1,
+            &format!("{IP_PREFIX}: org/repo: 0 pull requests with stub rows"),
+        );
+        s.expect_line(
+            1,
+            &format!("{IP_PREFIX}: org/repo: page 1: 1 objects, synthesized so far 0"),
+        );
+        s.expect_no_prefix(1, &format!("{IP_PREFIX}: org/repo: synthesized "));
+        s.expect_line(
+            1,
+            &format!("{IP_PREFIX}: processed 1 repos, 1 pages, checked 1, restored 0"),
+        );
+        s.expect_line(
+            1,
+            &format!("{IP_PREFIX}: upgraded 0 stub rows of 0 pull requests, attached 0 issue rows"),
+        );
+        // the first run's row keeps the object as it was then (open, no closed_at)
+        assert_eq!(
+            s.query("select event_id, state, closed_at::text, dup_actor_login from gha_issues where id = 7003 order by event_id"),
+            vec![vec![
+                i3.to_string(),
+                "open".to_string(),
+                "<nil>".to_string(),
+                "alice".to_string()
+            ]]
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where id > 9000007"),
+            1
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_pull_requests where created_at < '1900-01-01'"),
+            0
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_issues where number = 2"),
+            1
+        );
+        // the second run fetches no pull request or issue object
+        let reqs = s.requests();
+        assert_eq!(
+            reqs.iter().filter(|r| r.contains("/pulls/2 ")).count(),
+            1,
+            "{reqs:?}"
+        );
+        assert_eq!(
+            reqs.iter().filter(|r| r.contains("/issues/2 ")).count(),
+            1,
+            "{reqs:?}"
+        );
+    });
+}
+
+#[test]
+fn issues_prs_rows_under_historical_names_belong_to_the_repository() {
+    // org/repo (id 500) used to be org/old: the stub row, the issue row of PR 2 and the good row of
+    // PR 6 were written under the old name - the sweep works by repository id, so the stub is
+    // upgraded under the current name, no issue row is attached twice and PR 6 is not synthesized
+    let sides = check(
+        Case::new("ip_names", Pass::IssuesPrs)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed_repo(REPO_ID, "org/old", None))
+            .seed(&seed_event(
+                900,
+                "PullRequestEvent",
+                "org/old",
+                REPO_ID,
+                (13, "carol"),
+                "2019-02-01T10:00:00Z",
+            ))
+            .seed(&seed_pr_stub_row(
+                8102,
+                900,
+                2,
+                (REPO_ID, "org/old"),
+                (13, "carol"),
+                "PullRequestEvent",
+                "2019-02-01T10:00:00Z",
+            ))
+            .seed(&seed_issue_row(8202, 900, 2, true))
+            .seed(&seed_pr_row(8106, 900, 6))
+            .seed("update gha_issues set dup_repo_name = 'org/old' where event_id = 900;")
+            .seed("update gha_pull_requests set dup_repo_name = 'org/old' where event_id = 900;")
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[Ok(HbNode::new(
+                        REPO_ID, REPO,
+                    )
+                    .issue(RECENT_TS))]))],
+                );
+                gh.get_ok("/repos/org/repo/pulls/2", &api_pr_two());
+                gh.get_ok(
+                    &issues_listing_page_path(REPO, 1),
+                    &json!([api_issue(
+                        7206,
+                        6,
+                        (12, "bob"),
+                        "Old PR",
+                        "",
+                        "2020-05-02T10:00:00Z",
+                        true
+                    )]),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db scope: 1 repos from gha_repos (1 ids), 1 historical names skipped",
+        );
+        s.expect_line(0, "Historical names skipped: [org/old]");
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: 1 pull requests with stub rows"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: pull request 2 (8102): upgraded 1 stub rows, issue row attached: false"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: page 1: 1 objects, synthesized so far 0"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: processed 1 repos, 1 pages, checked 2, restored 0"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: upgraded 1 stub rows of 1 pull requests, attached 0 issue rows"),
+        );
+        // the upgraded row keeps its event's (historical) repository name
+        assert_eq!(
+            s.query("select event_id, dup_repo_name, state, title, created_at::text from gha_pull_requests where id = 8102"),
+            vec![vec![
+                "900".to_string(),
+                "org/old".to_string(),
+                "closed".to_string(),
+                "Fix the API".to_string(),
+                "2020-05-01 10:00:00".to_string(),
+            ]]
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_issues where number = 2"),
+            1
+        );
+        assert_eq!(
+            s.count(
+                "select count(*) from gha_events where id > 9000007 or id > 1000 and id < 9000000"
+            ),
+            0
+        );
+        // no GET under the old name, no /issues/2 (the row exists), no /pulls/6 (a good row exists)
+        let reqs: Vec<String> = s
+            .requests()
+            .into_iter()
+            .filter(|r| r.starts_with("GET /repos/"))
+            .collect();
+        assert_eq!(
+            reqs,
+            vec![
+                issues_listing_request(REPO, 1),
+                format!("GET /repos/org/repo/pulls/2 accept={V3_ACCEPT} auth=tok1"),
+            ]
+        );
+    });
+}
+
+#[test]
+fn issues_prs_heartbeat_gate_skips_quiet_listings() {
+    let sides = check(
+        Case::new("ip_hb", Pass::IssuesPrs)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed_repo(501, "org/quiet", None))
+            .seed(&seed_repo(503, "org/gone", None))
+            // a stub row in the quiet repository: the DB-driven sweep still fills it
+            .seed(&seed_event(
+                9000009,
+                "PullRequestEvent",
+                "org/quiet",
+                501,
+                (13, "carol"),
+                "2020-05-03T10:09:00Z",
+            ))
+            .seed(&seed_pr_stub_row(
+                8109,
+                9000009,
+                9,
+                (501, "org/quiet"),
+                (13, "carol"),
+                "PullRequestEvent",
+                "2020-05-03T10:09:00Z",
+            ))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[
+                        Err("NOT_FOUND"),
+                        Ok(HbNode::new(501, "org/quiet").pushed(OLD).issue(OLD)),
+                        Ok(HbNode::new(REPO_ID, REPO).issue(RECENT_TS)),
+                    ]))],
+                );
+                gh.get_ok(
+                    &issues_listing_page_path(REPO, 1),
+                    &json!([api_issue(
+                        7003,
+                        3,
+                        (11, "alice"),
+                        "Open issue",
+                        "Please fix",
+                        "2020-05-01T09:00:00Z",
+                        false
+                    )]),
+                );
+                let mut pr = api_pull_request(
+                    8109,
+                    9,
+                    (13, "carol"),
+                    "Quiet PR",
+                    "",
+                    "2020-05-01T10:00:00Z",
+                );
+                pr["url"] = json!("https://api.github.com/repos/org/quiet/pulls/9");
+                gh.get_ok("/repos/org/quiet/pulls/9", &pr);
+                gh.get_ok(
+                    "/repos/org/quiet/issues/9",
+                    &api_issue(
+                        8209,
+                        9,
+                        (13, "carol"),
+                        "Quiet PR",
+                        "",
+                        "2020-05-01T10:00:00Z",
+                        true,
+                    ),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                3,
+                1,
+                "2 found, 1 not found, 0 moved, 0 unknown, 0 archived",
+                [0, 1, 0, 0, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            &format!(
+                "{IP_PREFIX}: processing 2 repos (heartbeat: 1 skipped), recent date: <recent>"
+            ),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/quiet: pull request 9 (8109): upgraded 1 stub rows, issue row attached: true"),
+        );
+        s.expect_line(
+            0,
+            &format!(
+                "{IP_PREFIX}: org/quiet: no issue or PR updates since <recent>, listing skipped"
+            ),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: processed 2 repos, 1 pages, checked 2, restored 1"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: upgraded 1 stub rows of 1 pull requests, attached 1 issue rows"),
+        );
+        assert_eq!(
+            s.query("select event_id, user_id, title, dup_repo_name from gha_pull_requests where id = 8109"),
+            vec![vec!["9000009".to_string(), "13".to_string(), "Quiet PR".to_string(), "org/quiet".to_string()]]
+        );
+        assert_eq!(
+            s.query(
+                "select id, event_id, dup_repo_name, dup_repo_id from gha_issues where number = 9"
+            ),
+            vec![vec![
+                "8209".to_string(),
+                "9000009".to_string(),
+                "org/quiet".to_string(),
+                "501".to_string()
+            ]]
+        );
+        let reqs = s.requests();
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/gone/")),
+            "{reqs:?}"
+        );
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/quiet/issues?")),
+            "{reqs:?}"
+        );
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/org/quiet/pulls/9 ")),
+            "{reqs:?}"
+        );
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/org/repo/issues?")),
+            "{reqs:?}"
+        );
+    });
+}
+
+#[test]
+fn issues_prs_hidden_actors_and_actor_filters() {
+    let sides = check(
+        Case::new("ip_hidden", Pass::IssuesPrs)
+            .hide(&format!("sha1\n{ALICE_SHA1}\n"))
+            .env("GHA2DB_ACTORS_FILTER", "1")
+            .env("GHA2DB_ACTORS_FORBID", "^bob$")
+            .seed(&pr_two_stub_seed())
+            .setup(|gh| {
+                // the pull request author and merger is alice (hidden)
+                let mut pr = api_pr_two();
+                pr["user"] = api_user((11, "alice"));
+                gh.get_ok("/repos/org/repo/pulls/2", &pr);
+                let mut issue = api_issue_two();
+                issue["user"] = api_user((11, "alice"));
+                gh.get_ok("/repos/org/repo/issues/2", &issue);
+                gh.get_ok(
+                    &issues_listing_page_path(REPO, 1),
+                    &json!([
+                        // bob is forbidden by the actor filter: not synthesized
+                        api_issue(
+                            7003,
+                            3,
+                            (12, "bob"),
+                            "Bob's issue",
+                            "",
+                            "2020-05-01T09:00:00Z",
+                            false
+                        ),
+                        api_issue(
+                            7004,
+                            4,
+                            (11, "alice"),
+                            "Alice's issue",
+                            "",
+                            "2020-05-02T09:00:00Z",
+                            false
+                        ),
+                    ]),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        let i4 = ISSUE_BASE + 2 * 7004;
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: processed 1 repos, 1 pages, checked 3, restored 1"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: upgraded 2 stub rows of 1 pull requests, attached 1 issue rows"),
+        );
+        // GDPR: alice is anonymised in every written column
+        let anon = format!("anon-{ALICE_SHA1}");
+        assert_eq!(
+            s.query("select distinct dup_user_login, dupn_merged_by_login from gha_pull_requests where id = 8102"),
+            vec![vec![anon.clone(), anon.clone()]]
+        );
+        assert_eq!(
+            s.column("select dup_user_login from gha_issues where number = 2"),
+            vec![anon.clone()]
+        );
+        assert_eq!(
+            s.query(&format!(
+                "select dup_actor_login from gha_events where id = {i4}"
+            )),
+            vec![vec![anon.clone()]]
+        );
+        assert_eq!(
+            s.column(&format!(
+                "select dup_user_login from gha_issues where event_id = {i4}"
+            )),
+            vec![anon.clone()]
+        );
+        assert_eq!(
+            s.count(&format!(
+                "select count(*) from gha_actors where login = '{anon}'"
+            )),
+            1
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_issues where id = 7003"),
+            0
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where id > 9000007"),
+            1
+        );
+    });
+}
+
+#[test]
+fn issues_prs_skip_mismatched_and_unavailable_objects() {
+    let sides = check(
+        Case::new("ip_bad", Pass::IssuesPrs)
+            .loose(&format!("WARNING: {IP_PREFIX}: org/repo: cannot unmarshal an issue: "))
+            .seed(&pr_two_stub_seed())
+            .seed(&seed_event(9000016, "PullRequestEvent", REPO, REPO_ID, (13, "carol"), "2020-05-03T10:16:00Z"))
+            .seed(&seed_pr_stub_row(8106, 9000016, 6, (REPO_ID, REPO), (13, "carol"), "PullRequestEvent", "2020-05-03T10:16:00Z"))
+            .setup(|gh| {
+                // pull request 2 is another object on GitHub than in the database
+                let mut pr = api_pr_two();
+                pr["id"] = json!(9999);
+                gh.get_ok("/repos/org/repo/pulls/2", &pr);
+                // pull request 6 comes without an id
+                gh.get_ok("/repos/org/repo/pulls/6", &json!({"number": 6}));
+                // the listing: a pull request GitHub no longer serves, an id-less object,
+                // a good issue and a malformed element that ends the listing
+                gh.get_ok(
+                    &issues_listing_page_path(REPO, 1),
+                    &json!([
+                        api_issue(7207, 7, (13, "carol"), "Gone PR", "", "2020-05-01T10:00:00Z", true),
+                        {"number": 77},
+                        api_issue(7008, 8, (11, "alice"), "Good issue", "", "2020-05-02T09:00:00Z", false),
+                        "bad",
+                        api_issue(7009, 9, (11, "alice"), "Never reached", "", "2020-05-02T09:00:00Z", false),
+                    ]),
+                );
+                gh.get("/repos/org/repo/pulls/7", vec![Scripted::not_found()]);
+            }),
+    );
+    both(&sides, |s| {
+        let i8 = ISSUE_BASE + 2 * 7008;
+        s.expect_line(
+            0,
+            &format!("WARNING: {IP_PREFIX}: org/repo: pull request 2 is 9999 on GitHub, 8102 in the database, skipping"),
+        );
+        s.expect_line(
+            0,
+            &format!("WARNING: {IP_PREFIX}: org/repo pull request 6: pull request object without an id, skipping"),
+        );
+        s.expect_prefix(
+            0,
+            &format!("WARNING: {IP_PREFIX}: org/repo: cannot unmarshal an issue: "),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: processed 1 repos, 1 pages, checked 4, restored 1"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: upgraded 0 stub rows of 0 pull requests, attached 0 issue rows"),
+        );
+        // nothing was upgraded, only the good issue was synthesized
+        assert_eq!(
+            s.count("select count(*) from gha_pull_requests where created_at < '1900-01-01'"),
+            3
+        );
+        assert_eq!(
+            s.column("select id from gha_events where id > 9000016 order by id"),
+            vec![i8.to_string()]
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_issues where id = 7009"),
+            0
+        );
+        assert_eq!(
+            api_requests(s),
+            vec![
+                issues_listing_request(REPO, 1),
+                format!("GET /repos/org/repo/pulls/2 accept={V3_ACCEPT} auth=tok1"),
+                format!("GET /repos/org/repo/pulls/6 accept={V3_ACCEPT} auth=tok1"),
+                format!("GET /repos/org/repo/pulls/7 accept={V3_ACCEPT} auth=tok1"),
+            ]
+        );
+        assert_polled_once(s, "tok1");
+    });
+}
+
+#[test]
+fn issues_prs_listing_pages_follow_the_link_header() {
+    let sides = check(
+        Case::new("ip_paging", Pass::IssuesPrs)
+            .env("GHA2DB_DEBUG", "1")
+            .setup(|gh| {
+                gh.get(
+                    &issues_listing_page_path(REPO, 1),
+                    vec![Scripted::ok(&json!([
+                        api_issue(
+                            7003,
+                            3,
+                            (11, "alice"),
+                            "Issue 3",
+                            "",
+                            "2020-05-01T09:00:00Z",
+                            false
+                        ),
+                        api_issue(
+                            7004,
+                            4,
+                            (12, "bob"),
+                            "Issue 4",
+                            "",
+                            "2020-05-01T09:01:00Z",
+                            false
+                        ),
+                    ]))
+                    .paged(&issues_listing_base(REPO), 1, 2)],
+                );
+                gh.get(
+                    &issues_listing_page_path(REPO, 2),
+                    vec![Scripted::ok(&json!([api_issue(
+                        7005,
+                        5,
+                        (11, "alice"),
+                        "Issue 5",
+                        "",
+                        "2020-05-01T09:02:00Z",
+                        false
+                    ),]))
+                    .paged(&issues_listing_base(REPO), 2, 2)],
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: page 1: 2 objects, synthesized so far 2"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: page 2: 1 objects, synthesized so far 3"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: processed 1 repos, 2 pages, checked 3, restored 3"),
+        );
+        assert_eq!(
+            s.column("select number from gha_issues where event_id > 1000 order by number"),
+            vec!["3".to_string(), "4".to_string(), "5".to_string()]
+        );
+        assert_eq!(
+            api_requests(s),
+            vec![
+                issues_listing_request(REPO, 1),
+                issues_listing_request(REPO, 2)
+            ],
+        );
+        assert_polled_once(s, "tok1");
+    });
+}
+
+#[test]
+fn issues_prs_run_the_targeted_postprocess() {
+    let sides = check(
+        Case::new("ip_pp", Pass::IssuesPrs)
+            .util_sql()
+            .seed(&pr_two_stub_seed())
+            .seed("insert into gha_texts(event_id, body, created_at, repo_id, repo_name, actor_id, actor_login, type) values(1000, 'seed', '2020-02-01 10:00:00', 500, 'org/repo', 11, 'alice', 'IssuesEvent');")
+            .setup(|gh| {
+                gh.get_ok("/repos/org/repo/pulls/2", &api_pr_two());
+                gh.get_ok("/repos/org/repo/issues/2", &api_issue_two());
+                gh.get_ok(
+                    &issues_listing_page_path(REPO, 1),
+                    &json!([
+                        api_issue(
+                            7003,
+                            3,
+                            (11, "alice"),
+                            "Open issue",
+                            "Please fix",
+                            "2020-05-01T09:00:00Z",
+                            false
+                        ),
+                        api_issue_closed(
+                            api_issue(
+                                7205,
+                                5,
+                                (13, "carol"),
+                                "Merged PR",
+                                "Fixes #4",
+                                "2020-05-02T10:00:00Z",
+                                true
+                            ),
+                            "2020-05-04T10:00:00Z",
+                            Some((11, "alice")),
+                        ),
+                    ]),
+                );
+                gh.get_ok(
+                    "/repos/org/repo/pulls/5",
+                    &api_pr_merged(
+                        api_pull_request(
+                            8105,
+                            5,
+                            (13, "carol"),
+                            "Merged PR",
+                            "Fixes #4",
+                            "2020-05-02T10:00:00Z",
+                        ),
+                        "2020-05-04T10:00:00Z",
+                        (11, "alice"),
+                    ),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        let i3 = ISSUE_BASE + 2 * 7003;
+        let p5 = PR_BASE + 2 * 8105;
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: processed 1 repos, 1 pages, checked 3, restored 3"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: upgraded 2 stub rows of 1 pull requests, attached 1 issue rows"),
+        );
+        // 2 upgraded stub event ids + 3 synthetic events
+        s.expect_line(
+            0,
+            "targeted postprocess executed for 5 restored event id(s)",
+        );
+        // texts: the upgraded rows' title and body, the synthesized objects' ones
+        assert_eq!(
+            s.query("select event_id, body, type from gha_texts where event_id > 1000 order by event_id, body"),
+            vec![
+                vec!["9000003".to_string(), "Closes #1".to_string(), "PullRequestEvent".to_string()],
+                vec!["9000003".to_string(), "Fix the API".to_string(), "PullRequestEvent".to_string()],
+                vec!["9000007".to_string(), "Closes #1".to_string(), "PullRequestReviewEvent".to_string()],
+                vec!["9000007".to_string(), "Fix the API".to_string(), "PullRequestReviewEvent".to_string()],
+                vec![i3.to_string(), "Open issue".to_string(), "IssuesEvent".to_string()],
+                vec![i3.to_string(), "Please fix".to_string(), "IssuesEvent".to_string()],
+                vec![p5.to_string(), "Fixes #4".to_string(), "PullRequestEvent".to_string()],
+                vec![p5.to_string(), "Merged PR".to_string(), "PullRequestEvent".to_string()],
+                vec![(p5 + 1).to_string(), "Fixes #4".to_string(), "PullRequestEvent".to_string()],
+                vec![(p5 + 1).to_string(), "Merged PR".to_string(), "PullRequestEvent".to_string()],
+            ]
+        );
+        // the issue-PR links: the attached issue row of PR 2, the synthesized pair of PR 5
+        assert_eq!(
+            s.query("select issue_id, pull_request_id, number from gha_issues_pull_requests order by number"),
+            vec![
+                vec!["8202".to_string(), "8102".to_string(), "2".to_string()],
+                vec!["7205".to_string(), "8105".to_string(), "5".to_string()],
+            ]
+        );
+        assert_eq!(
+            s.query(&format!("select label_id::text, dup_label_name from gha_issues_labels where event_id = {i3}")),
+            vec![vec!["4002".to_string(), "area/api".to_string()]]
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios: bug 68 - a repository name listed under several ids
+// ---------------------------------------------------------------------------
+
+/// The placeholder id of `org/repo` (bug 68): a `gha_repos` row with one old
+/// native event and the artificial events written under it by the old
+/// `max(repo_id)` rule.
+const PLACEHOLDER_ID: i64 = 900;
+
+/// `org/repo` under two ids: the placeholder 900 (a `CreateEvent` from 2015
+/// plus an artificial event from 2019, so `max(repo_id)` returns it from
+/// `gha_events` and from `gha_repos`) and the real 500 (the base seed's 2020
+/// `IssuesEvent`).
+fn two_ids_seed() -> String {
+    let mut s = seed_repo(PLACEHOLDER_ID, REPO, None);
+    s.push_str(&seed_event(
+        1,
+        "CreateEvent",
+        REPO,
+        PLACEHOLDER_ID,
+        (11, "alice"),
+        "2015-08-10T12:00:00Z",
+    ));
+    s.push_str(&seed_event(
+        ARTIFICIAL_BASE + 1,
+        "IssuesEvent",
+        REPO,
+        PLACEHOLDER_ID,
+        (11, "alice"),
+        "2019-01-01T00:00:00Z",
+    ));
+    s
+}
+
+/// Every table carrying a repository id of rows written after the seed
+/// (event ids above the seeded ones) with the distinct ids seen.
+fn repo_ids_written(s: &Side) -> Vec<(String, Vec<String>)> {
+    let cond = format!("event_id > {ARTIFICIAL_BASE} + 1 or event_id < 0");
+    let mut res = vec![(
+        "gha_events".to_string(),
+        s.column(&format!(
+            "select distinct repo_id::text || '/' || coalesce(org_id::text, '-') from gha_events where id > {ARTIFICIAL_BASE} + 1 or id < 0 order by 1"
+        )),
+    )];
+    for t in [
+        "gha_issues",
+        "gha_pull_requests",
+        "gha_payloads",
+        "gha_milestones",
+        "gha_issues_labels",
+        "gha_forkees",
+    ] {
+        res.push((
+            t.to_string(),
+            s.column(&format!(
+                "select distinct dup_repo_id::text from {t} where {cond} order by 1"
+            )),
+        ));
+    }
+    res
+}
+
+#[test]
+fn repo_ids_artificial_events_use_the_current_id() {
+    // Bug 68: the artificial event rows resolved the repository id with
+    // `max(repo_id)` over the name's events (= the placeholder 900 here),
+    // which is self-reinforcing; the current id is the one with the newest
+    // native event under the name (500).
+    let issue = IssueSpec::new(7001, 1)
+        .labels(vec![(31, "bug")])
+        .milestone(milestone(41, 1, "v1.0"));
+    let pr = IssueSpec::new(7002, 2).pr().state("closed");
+    let pr2 = pr.clone();
+    let sides = check(
+        Case::new("b68_events", Pass::Events)
+            .seed(&two_ids_seed())
+            .setup(move |gh| {
+                gh.get_ok(
+                    &events_path(REPO),
+                    &json!([
+                        issue_event(
+                            5001,
+                            Some("labeled"),
+                            (11, "alice"),
+                            "2020-05-01T10:00:00Z",
+                            Some(&issue)
+                        ),
+                        issue_event(
+                            5002,
+                            Some("closed"),
+                            (12, "bob"),
+                            "2020-05-02T11:00:00Z",
+                            Some(&pr)
+                        ),
+                    ]),
+                );
+                gh.get_ok(&pr_path(REPO, 2), &pr_json(&pr2));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, EVENTS_PART);
+        s.expect_line(
+            0,
+            "ghapi2db.go: Processing 1 PRs, 2 issues (2 with date collisions), manual mode: false - GHA part",
+        );
+        assert_eq!(
+            s.count(&format!(
+                "select count(*) from gha_events where id > {ARTIFICIAL_BASE} + 1"
+            )),
+            2
+        );
+        let id = REPO_ID.to_string();
+        assert_eq!(
+            repo_ids_written(s),
+            vec![
+                ("gha_events".to_string(), vec![format!("{id}/{ORG_ID}")]),
+                ("gha_issues".to_string(), vec![id.clone()]),
+                ("gha_pull_requests".to_string(), vec![id.clone()]),
+                ("gha_payloads".to_string(), vec![id.clone()]),
+                ("gha_milestones".to_string(), vec![id.clone()]),
+                ("gha_issues_labels".to_string(), vec![id.clone()]),
+                ("gha_forkees".to_string(), vec![]),
+            ]
+        );
+        // the placeholder keeps only its seeded rows
+        assert_eq!(
+            s.count(&format!(
+                "select count(*) from gha_events where repo_id = {PLACEHOLDER_ID}"
+            )),
+            2
+        );
+    });
+}
+
+#[test]
+fn repo_ids_stub_sweep_uses_the_current_id() {
+    // Bug 68 on prod: `kubernetes/kubernetes: 0 pull requests with stub rows`
+    // while 28k stub rows waited under the real id - the sweep keyed on the
+    // placeholder id.
+    let sides = check(
+        Case::new("b68_stubs", Pass::IssuesPrs)
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&two_ids_seed())
+            .seed(&pr_two_stub_seed())
+            .setup(|gh| {
+                gh.get_ok("/repos/org/repo/pulls/2", &api_pr_two());
+                gh.get_ok("/repos/org/repo/issues/2", &api_issue_two());
+                gh.get_ok(&issues_listing_path(REPO), &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: 1 pull requests with stub rows"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: org/repo: pull request 2 (8102): upgraded 2 stub rows, issue row attached: true"),
+        );
+        s.expect_line(
+            0,
+            &format!("{IP_PREFIX}: upgraded 2 stub rows of 1 pull requests, attached 1 issue rows"),
+        );
+        s.expect_no_prefix(0, "org/repo: no events, using gha_repos id");
+        assert_eq!(
+            s.count("select count(*) from gha_pull_requests where created_at < '1900-01-01'"),
+            0
+        );
+        // the attached issue row and the milestone rows carry the real id
+        assert_eq!(
+            s.column("select distinct dup_repo_id::text from gha_issues where number = 2 union select distinct dup_repo_id::text from gha_milestones order by 1"),
+            vec![REPO_ID.to_string()]
+        );
+    });
+}
+
+#[test]
+fn repo_ids_restore_uses_the_current_id() {
+    // The restore passes stamp the synthetic events with `repoIDs()` too.
+    let sides = check(
+        Case::new("b68_forks", Pass::Forks)
+            .seed(&two_ids_seed())
+            .setup(|gh| {
+                gh.get_ok(
+                    "/repos/org/repo/forks",
+                    &json!([fork_json(8001, (14, "dave"), "2020-05-03T10:00:00Z", 5)]),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processed 1 repos, 1 pages, checked 1, restored 1",
+        );
+        let id = REPO_ID.to_string();
+        assert_eq!(
+            repo_ids_written(s),
+            vec![
+                ("gha_events".to_string(), vec![format!("{id}/{ORG_ID}")]),
+                ("gha_issues".to_string(), vec![]),
+                ("gha_pull_requests".to_string(), vec![]),
+                ("gha_payloads".to_string(), vec![id.clone()]),
+                ("gha_milestones".to_string(), vec![]),
+                ("gha_issues_labels".to_string(), vec![]),
+                ("gha_forkees".to_string(), vec![id.clone()]),
+            ]
         );
     });
 }

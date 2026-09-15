@@ -140,14 +140,17 @@ pub fn gha_org(db: &PgConn, ctx: &Ctx, org: Option<&Org>) {
     }
 }
 
-/// Go `ghaMilestone`.
-pub fn gha_milestone(
+/// Go `ghaMilestoneInsert`: inserts a single GHA milestone, insert-ignore when
+/// the `(id, event_id)` row may already exist.
+#[allow(clippy::too_many_arguments)]
+pub fn gha_milestone_insert(
     tx: &mut PgTx<'_>,
     ctx: &Ctx,
     eid: &str,
     milestone: &Milestone,
     ev: &Event,
     maybe_hide: MaybeHide<'_>,
+    ignore: bool,
 ) {
     // creator
     if let Some(creator) = &milestone.creator {
@@ -155,17 +158,23 @@ pub fn gha_milestone(
     }
 
     // gha_milestones
+    let query = format!(
+        "into gha_milestones(\
+         id, event_id, closed_at, closed_issues, created_at, creator_id, \
+         description, due_on, number, open_issues, state, title, updated_at, \
+         dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, \
+         dupn_creator_login) {}",
+        n_values(20)
+    );
+    let query = if ignore {
+        insert_ignore(&query)
+    } else {
+        format!("insert {query}")
+    };
     exec_sql_tx_with_err(
         tx,
         ctx,
-        &format!(
-            "insert into gha_milestones(\
-             id, event_id, closed_at, closed_issues, created_at, creator_id, \
-             description, due_on, number, open_issues, state, title, updated_at, \
-             dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, \
-             dupn_creator_login) {}",
-            n_values(20)
-        ),
+        &query,
         &[
             SqlArg::Int(milestone.id),
             SqlArg::from(eid),

@@ -7,12 +7,13 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use devstatscode::consts::HIDE_CFG_FILE;
-use devstatscode::ghapi::{fmt_slice, get_rate_limits, GoDuration};
+use devstatscode::ghapi::{current_repo_id, fmt_slice, get_rate_limits, GoDuration};
 use devstatscode::github::{
     self, Client, Error, GoTime, IssueListCommentsOptions, ListOptions,
     PullRequestListCommentsOptions, PullRequestListOptions, RepositoryListForksOptions, Response,
     Stargazer, Timestamp, User,
 };
+use devstatscode::gofmt;
 use devstatscode::io::read_file;
 use devstatscode::pg::api::{n_value, query_sql_with_err};
 use devstatscode::pg::{PgConn, SqlArg};
@@ -29,7 +30,7 @@ use serde::Deserialize;
 use crate::heartbeat::{scope_suffix, ApiPass};
 use crate::{db_time, get_api_params, MaybeHide};
 
-const RESTORE_PAGE_CAP: i64 = 2000;
+pub const RESTORE_PAGE_CAP: i64 = 2000;
 
 /// Go `restoreStats`.
 #[derive(Clone, Debug, Default)]
@@ -46,8 +47,13 @@ pub struct RestoreStats {
     /// sources); forks/releases/stars restores add no gha_texts/labels/issue-PR-link rows,
     /// so they are counted but never collected here (they must not trigger a postprocess)
     pub eids: Vec<i64>,
-    /// restored events per GHA event type - repo events feed only
+    /// restored events per GHA event type - repo events feed and issues/PRs sweep
     pub types: BTreeMap<String, usize>,
+    /// issues/PRs sweep: upgraded stub gha_pull_requests rows, the pull requests they belong to,
+    /// gha_issues rows attached to pull requests that had none
+    pub stub_rows: usize,
+    pub stub_prs: usize,
+    pub issue_rows: usize,
 }
 
 impl RestoreStats {
@@ -79,6 +85,9 @@ impl RestoreStats {
         self.restored += o.restored;
         self.pages += o.pages;
         self.unavailable += o.unavailable;
+        self.stub_rows += o.stub_rows;
+        self.stub_prs += o.stub_prs;
+        self.issue_rows += o.issue_rows;
         if let Some(m) = o.min_dt {
             self.mark(m);
         }
@@ -92,9 +101,180 @@ impl RestoreStats {
     }
 }
 
+/// Go `ghClients`: the GitHub clients (one per token) of a restore pass.
+/// [`GhClients::call`] picks the client for every single request (bug 65:
+/// one client per repository exhausted its token on a repository needing
+/// thousands of requests - the P1-C stub sweep - and skipped the rest of it
+/// while the other tokens were idle) by the rate limits observed in the
+/// responses (`X-RateLimit-Remaining`/`Reset`): `GET /rate_limit` no longer
+/// reflects the real usage (2026-09: it reported 5000 remaining for tokens
+/// whose responses said 0), so a token is only trusted after its first
+/// answer; one answering "rate limit exceeded" is not used again before its
+/// reset and the request is repeated with the next token - the rate limit
+/// error reaches the caller only when every token is exhausted.
+pub struct GhClients<'a> {
+    ctx: &'a Ctx,
+    gcs: &'a [Client],
+    seen: Mutex<Vec<TokenState>>,
+}
+
+/// The rate limit of one token as seen in its last response.
+#[derive(Clone, Copy, Default)]
+struct TokenState {
+    known: bool,
+    remaining: i64,
+    reset: Option<DateTime<Utc>>,
+}
+
+impl TokenState {
+    /// The remaining points: a token not seen yet (or past its reset)
+    /// counts as full.
+    fn remaining_now(&self, now: DateTime<Utc>) -> i64 {
+        match self.reset {
+            Some(reset) if self.known && reset > now => self.remaining,
+            _ => UNKNOWN_REMAINING,
+        }
+    }
+}
+
+const UNKNOWN_REMAINING: i64 = 1 << 30;
+
+/// Go `responseStatus`: the HTTP status of a [`GhClients::call`] outcome —
+/// the response's, 403 when every token was exhausted (no response then,
+/// only the rate limit error), 0 when there is no response for another reason.
+pub(crate) fn response_status<T>(r: &github::ApiResult<T>) -> u16 {
+    match (&r.response, &r.error) {
+        (Some(resp), _) => resp.status,
+        (None, Some(Error::RateLimit { .. })) => 403,
+        _ => 0,
+    }
+}
+
+impl<'a> GhClients<'a> {
+    pub fn new(ctx: &'a Ctx, gcs: &'a [Client]) -> Self {
+        GhClients {
+            ctx,
+            gcs,
+            seen: Mutex::new(vec![TokenState::default(); gcs.len()]),
+        }
+    }
+
+    /// The index of the client with the most remaining points (never seen =
+    /// full), `None` when every token is exhausted (then the soonest reset);
+    /// the picked token's remaining is decremented so concurrent requests
+    /// spread.
+    fn pick(&self) -> Result<usize, Option<DateTime<Utc>>> {
+        let now = Utc::now();
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        let mut best: Option<(usize, i64)> = None;
+        let mut soonest: Option<DateTime<Utc>> = None;
+        for (i, st) in seen.iter().enumerate() {
+            let rem = st.remaining_now(now);
+            if rem <= 0 {
+                if soonest.is_none_or(|s| st.reset.is_some_and(|r| r < s)) {
+                    soonest = st.reset;
+                }
+                continue;
+            }
+            if best.is_none_or(|(_, b)| rem > b) {
+                best = Some((i, rem));
+            }
+        }
+        match best {
+            Some((i, rem)) => {
+                if rem != UNKNOWN_REMAINING {
+                    seen[i].remaining -= 1;
+                }
+                Ok(i)
+            }
+            None => Err(soonest),
+        }
+    }
+
+    /// Records the rate limit seen in a response of the client `i`
+    /// (exhausted: remaining 0 until the reset).
+    fn observe(&self, i: usize, rate: &github::Rate, exhausted: bool) {
+        let now = Utc::now();
+        let mut reset = rate.reset.map(|t| t.0);
+        if exhausted && !reset.is_some_and(|r| r > now) {
+            // no usable reset in the answer: leave the token alone for a minute
+            reset = Some(now + Duration::from_secs(60));
+        }
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        seen[i] = TokenState {
+            known: true,
+            remaining: if exhausted { 0 } else { rate.remaining },
+            reset,
+        };
+    }
+
+    /// The number of tokens not known to be exhausted.
+    fn available(&self) -> usize {
+        let now = Utc::now();
+        let seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        seen.iter().filter(|st| st.remaining_now(now) > 0).count()
+    }
+
+    /// Runs `call` with the picked client, moving to the next token on
+    /// "rate limit exceeded".
+    pub fn call<T>(&self, call: impl Fn(&Client) -> github::ApiResult<T>) -> github::ApiResult<T> {
+        loop {
+            let idx = match self.pick() {
+                Ok(idx) => idx,
+                Err(soonest) => {
+                    let reset = soonest.map(Timestamp);
+                    let n = self.gcs.len();
+                    return github::ApiResult {
+                        value: None,
+                        response: None,
+                        error: Some(Error::RateLimit {
+                            method: String::new(),
+                            url: String::new(),
+                            status: 403,
+                            message: format!(
+                                "all {n} tokens exhausted until {}",
+                                gofmt::time(
+                                    reset
+                                        .map(|t| t.0)
+                                        .unwrap_or_default()
+                                        .with_timezone(&chrono::Local)
+                                )
+                            ),
+                            rate: github::Rate {
+                                limit: 0,
+                                remaining: 0,
+                                reset,
+                            },
+                        }),
+                    };
+                }
+            };
+            let r = call(&self.gcs[idx]);
+            if let Some(Error::RateLimit { rate, .. }) = &r.error {
+                self.observe(idx, rate, true);
+                if self.ctx.github_debug > 0 {
+                    printf!(
+                        "token {} exhausted until {} ({} tokens left)\n",
+                        idx,
+                        gofmt::time(rate.reset_time().with_timezone(&chrono::Local)),
+                        self.available()
+                    );
+                }
+                continue;
+            }
+            if let Some(resp) = &r.response {
+                if resp.rate.limit > 0 {
+                    self.observe(idx, &resp.rate, false);
+                }
+            }
+            return r;
+        }
+    }
+}
+
 /// The per-repository arguments of a restore function (Go `restoreRepoFunc`).
 pub struct RepoJob<'a> {
-    pub gc: &'a Client,
+    pub gc: &'a GhClients<'a>,
     pub c: &'a PgConn,
     pub ctx: &'a Ctx,
     pub org: &'a str,
@@ -182,43 +362,25 @@ fn star_present(c: &PgConn, ctx: &Ctx, actor_id: i64, org_repo: &str, starred_at
 }
 
 /// Go `repoIDs`: the repository id (0 when unknown) and organization id
-/// (NULL when none) from the repository's events, else (no events yet - a
-/// GHA gap) from `gha_repos`.
+/// (NULL when none): the current id of the name (`current_repo_id`, bug 68:
+/// not `max(repo_id)`, which returned a placeholder id for
+/// kubernetes/kubernetes), from `gha_repos` when the repository has no events
+/// yet (a GHA gap).
 pub fn repo_ids(c: &PgConn, ctx: &Ctx, org_repo: &str) -> (i64, SqlArg) {
-    let queries = [
-        format!(
-            "select coalesce(max(repo_id), 0), max(org_id) from gha_events where dup_repo_name = {}",
-            n_value(1)
-        ),
-        format!(
-            "select coalesce(max(id), 0), max(org_id) from gha_repos where name = {}",
-            n_value(1)
-        ),
-    ];
-    let mut repo_id: i64 = 0;
-    for (i, query) in queries.iter().enumerate() {
-        let mut rows = query_sql_with_err(c, ctx, query, &[SqlArg::from(org_repo)]);
-        let mut oid: Option<i64> = None;
-        while rows.next() {
-            fatal_on_err(rows.scan(&mut [&mut repo_id, &mut oid]));
-        }
-        fatal_on_err(rows.err());
-        fatal_on_err(rows.close());
-        if repo_id <= 0 {
-            continue;
-        }
-        if i > 0 && ctx.debug > 0 {
-            printf(&format!(
-                "{org_repo}: no events, using gha_repos id {repo_id}\n"
-            ));
-        }
-        let org_id = match oid {
-            None => SqlArg::Null,
-            Some(o) => SqlArg::Int(o),
-        };
-        return (repo_id, org_id);
+    let Some(ids) = current_repo_id(c, ctx, org_repo) else {
+        return (0, SqlArg::Null);
+    };
+    if !ids.native && ctx.debug > 0 {
+        printf(&format!(
+            "{org_repo}: no events, using gha_repos id {}\n",
+            ids.repo_id
+        ));
     }
-    (repo_id, SqlArg::Null)
+    let org_id = match ids.org_id {
+        None => SqlArg::Null,
+        Some(o) => SqlArg::Int(o),
+    };
+    (ids.repo_id, org_id)
 }
 
 /// The result of one API page call: Go's `(*github.Response, more, error)`.
@@ -347,6 +509,7 @@ pub fn restore_pass(ctx: &mut Ctx, pass: ApiPass, process: RestoreRepoFunc) -> R
     let c = &params.c;
     let recent_dt = params.recent_dt;
     let maybe_hide: MaybeHide<'_> = &maybe_hide;
+    let clients = GhClients::new(ctx, gcs);
     let mut iter = |processed: &mut usize| {
         *processed += 1;
         if (*processed).is_multiple_of(20) {
@@ -394,12 +557,8 @@ pub fn restore_pass(ctx: &mut Ctx, pass: ApiPass, process: RestoreRepoFunc) -> R
             return;
         }
         let mut stats = RestoreStats::default();
-        let cl = {
-            let rt = rate.lock().unwrap_or_else(|p| p.into_inner());
-            &gcs[rt.hint]
-        };
         let job = RepoJob {
-            gc: cl,
+            gc: &clients,
             c,
             ctx,
             org: ary[0],
@@ -498,7 +657,7 @@ fn restore_comments_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
             ctx,
             &format!("{} issue comments", job.org_repo),
             &mut || {
-                let r = gc.issues_list_comments(job.org, job.repo, 0, &opt);
+                let r = gc.call(|cl| cl.issues_list_comments(job.org, job.repo, 0, &opt));
                 if page_failed(&r) {
                     return (r.response, false, r.error);
                 }
@@ -552,7 +711,7 @@ fn restore_comments_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
             ctx,
             &format!("{} review comments", job.org_repo),
             &mut || {
-                let r = gc.pull_requests_list_comments(job.org, job.repo, 0, &popt);
+                let r = gc.call(|cl| cl.pull_requests_list_comments(job.org, job.repo, 0, &popt));
                 if page_failed(&r) {
                     return (r.response, false, r.error);
                 }
@@ -601,7 +760,7 @@ fn restore_comments_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
         ctx,
         &format!("{} commit comments last page", job.org_repo),
         &mut || {
-            let r = gc.repositories_list_comments(job.org, job.repo, copt);
+            let r = gc.call(|cl| cl.repositories_list_comments(job.org, job.repo, copt));
             if page_failed(&r) {
                 return (r.response, false, r.error);
             }
@@ -619,7 +778,7 @@ fn restore_comments_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
             ctx,
             &format!("{} commit comments", job.org_repo),
             &mut || {
-                let r = gc.repositories_list_comments(job.org, job.repo, copt);
+                let r = gc.call(|cl| cl.repositories_list_comments(job.org, job.repo, copt));
                 if page_failed(&r) {
                     return (r.response, false, r.error);
                 }
@@ -1072,7 +1231,7 @@ fn restore_reviews_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
         opt.list.page = page;
         let mut older = false;
         let more = api_page(ctx, &format!("{} PRs", job.org_repo), &mut || {
-            let r = gc.pull_requests_list(job.org, job.repo, &opt);
+            let r = gc.call(|cl| cl.pull_requests_list(job.org, job.repo, &opt));
             if page_failed(&r) {
                 return (r.response, false, r.error);
             }
@@ -1111,7 +1270,8 @@ fn restore_reviews_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
                 ctx,
                 &format!("{}#{} reviews", job.org_repo, number),
                 &mut || {
-                    let r = gc.pull_requests_list_reviews(job.org, job.repo, number, ropt);
+                    let r = gc
+                        .call(|cl| cl.pull_requests_list_reviews(job.org, job.repo, number, ropt));
                     if page_failed(&r) {
                         return (r.response, false, r.error);
                     }
@@ -1166,7 +1326,7 @@ fn restore_forks_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
         opt.list.page = page;
         let mut older = false;
         let more = api_page(ctx, &format!("{} forks", job.org_repo), &mut || {
-            let r = gc.repositories_list_forks(job.org, job.repo, &opt);
+            let r = gc.call(|cl| cl.repositories_list_forks(job.org, job.repo, &opt));
             if page_failed(&r) {
                 return (r.response, false, r.error);
             }
@@ -1222,7 +1382,7 @@ fn restore_releases_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
         opt.page = page;
         let mut older = false;
         let more = api_page(ctx, &format!("{} releases", job.org_repo), &mut || {
-            let r = gc.repositories_list_releases(job.org, job.repo, opt);
+            let r = gc.call(|cl| cl.repositories_list_releases(job.org, job.repo, opt));
             if page_failed(&r) {
                 return (r.response, false, r.error);
             }

@@ -8,6 +8,7 @@
 
 mod feed;
 mod heartbeat;
+mod issues;
 mod restore;
 
 use std::collections::BTreeSet;
@@ -22,7 +23,7 @@ use devstatscode::ghapi::{
     sync_issues_state, GoDuration, IssueConfig, IssuesMap, PrsMap,
 };
 use devstatscode::github::{
-    Client, CommitsListOptions, License, ListOptions, PullRequest, RepositoryCommit,
+    ApiResult, Client, CommitsListOptions, License, ListOptions, PullRequest, RepositoryCommit,
 };
 use devstatscode::gofmt;
 use devstatscode::hash::hash_strings;
@@ -43,7 +44,7 @@ use devstatscode::time::{
 use devstatscode::{fatal_on_err, fatalf, printf, signal, Ctx};
 
 use heartbeat::{scope_repos, scope_suffix, sync_repo_stats, ApiPass};
-use restore::RestoreStats;
+use restore::{response_status, GhClients, RestoreStats};
 
 /// Go `func(string) string` hiding function shared between threads.
 pub type MaybeHide<'a> = &'a (dyn Fn(&str) -> String + Sync);
@@ -474,21 +475,27 @@ fn process_commit(c: &PgConn, ctx: &Ctx, commit: &RepositoryCommit, maybe_hide: 
         n_value(4),
         n_value(5)
     );
+    // The identity rows are only recorded for commits GitHub attached a user
+    // to: an author/committer without a GitHub user has id 0 and its
+    // e-mails/names would pile up under the placeholder actor 0 (bug 66:
+    // thousands of such rows per database, unusable for affiliations)
     let m_email = maybe_hide(&trunc_to_bytes(&author_email, 120));
-    exec_affs_upsert(
-        &mut tx,
-        ctx,
-        &emails_query,
-        &[
-            SqlArg::Int(author_id),
-            SqlArg::from(&m_email),
-            SqlArg::Int(1),
-            SqlArg::Int(author_id),
-            SqlArg::from(&m_email),
-        ],
-    );
+    if author_id != 0 {
+        exec_affs_upsert(
+            &mut tx,
+            ctx,
+            &emails_query,
+            &[
+                SqlArg::Int(author_id),
+                SqlArg::from(&m_email),
+                SqlArg::Int(1),
+                SqlArg::Int(author_id),
+                SqlArg::from(&m_email),
+            ],
+        );
+    }
     // Committer email
-    if committer_email != author_email {
+    if committer_id != 0 && committer_email != author_email {
         let m_email = maybe_hide(&trunc_to_bytes(&committer_email, 120));
         exec_affs_upsert(
             &mut tx,
@@ -513,20 +520,22 @@ fn process_commit(c: &PgConn, ctx: &Ctx, commit: &RepositoryCommit, maybe_hide: 
         n_value(5)
     );
     let m_name = maybe_hide(&trunc_to_bytes(&author_name, 120));
-    exec_affs_upsert(
-        &mut tx,
-        ctx,
-        &names_query,
-        &[
-            SqlArg::Int(author_id),
-            SqlArg::from(&m_name),
-            SqlArg::Int(1),
-            SqlArg::Int(author_id),
-            SqlArg::from(&m_name),
-        ],
-    );
+    if author_id != 0 {
+        exec_affs_upsert(
+            &mut tx,
+            ctx,
+            &names_query,
+            &[
+                SqlArg::Int(author_id),
+                SqlArg::from(&m_name),
+                SqlArg::Int(1),
+                SqlArg::Int(author_id),
+                SqlArg::from(&m_name),
+            ],
+        );
+    }
     // Committer name
-    if committer_name != author_name {
+    if committer_id != 0 && committer_name != author_name {
         let m_name = maybe_hide(&trunc_to_bytes(&committer_name, 120));
         exec_affs_upsert(
             &mut tx,
@@ -576,6 +585,9 @@ fn date_range_from_env() -> DateRange {
 struct Shared<'a> {
     ctx: &'a Ctx,
     gcs: &'a [Client],
+    /// The per-request token picker (bug 65): `gcs` stays for the
+    /// `/rate_limit` pre-checks and the debug lines.
+    gc: GhClients<'a>,
     c: &'a PgConn,
     recent_dt: DateTime<Utc>,
     is_single_repo: bool,
@@ -722,9 +734,141 @@ fn split_org_repo(org_repo: &str) -> Option<(&str, &str)> {
     Some((org, repo))
 }
 
+/// At most this many id-less commits of one repository are fetched by SHA
+/// per run (Go `maxCommitsBySHA`).
+const MAX_COMMITS_BY_SHA: usize = 1000;
+
+/// Counters of the by-SHA commits enrichment (Go `bySHAStats`).
+#[derive(Clone, Copy, Default)]
+struct BySHAStats {
+    calls: usize,
+    idless: usize,
+    authors: usize,
+    committers: usize,
+}
+
+impl BySHAStats {
+    fn merge(&mut self, o: BySHAStats) {
+        self.calls += o.calls;
+        self.idless += o.idless;
+        self.authors += o.authors;
+        self.committers += o.committers;
+    }
+}
+
+/// The state of the commits pass shared between its workers on top of
+/// [`Shared`]: the by-SHA counters.
+struct CommitsShared {
+    by_sha: Mutex<BySHAStats>,
+}
+
+/// Go `enrichCommitsBySHA`: the recent `gha_commits` rows of the repository
+/// without an author or committer GitHub id are fetched one by one
+/// (`GET /repos/{org}/{repo}/commits/{sha}`) and enriched with
+/// [`process_commit`]. The listing (`ListCommits`) only covers the default
+/// branch inside the autofetch window, so the commits GHA (PushEvents) or
+/// get_repos (all branches, the commit dates) delivered outside it never got
+/// their GitHub ids - since GHA stopped delivering commits (2024-10) that is
+/// most of them (allprj: 5-12 % of the daily commits, kubernetes: ~1 %). A
+/// commit whose author/committer has no GitHub user keeps id 0 and is retried
+/// on every run inside the recent range.
+fn enrich_commits_by_sha(
+    sh: &Shared<'_>,
+    org: &str,
+    repo: &str,
+    org_repo: &str,
+    maybe_hide: MaybeHide,
+) -> BySHAStats {
+    let ctx = sh.ctx;
+    let mut st = BySHAStats::default();
+    let mut rows = query_sql_with_err(
+        sh.c,
+        ctx,
+        &format!(
+            "select sha from gha_commits where dup_repo_name = {} and dup_created_at >= {} \
+             and (coalesce(author_id, 0) = 0 or coalesce(committer_id, 0) = 0) \
+             group by sha order by max(dup_created_at) desc, sha limit {}",
+            n_value(1),
+            n_value(2),
+            MAX_COMMITS_BY_SHA + 1
+        ),
+        &[
+            SqlArg::from(org_repo),
+            SqlArg::Time(sh.recent_dt.fixed_offset()),
+        ],
+    );
+    let mut shas: Vec<String> = Vec::new();
+    while rows.next() {
+        let mut sha = String::new();
+        fatal_on_err(rows.scan(&mut [&mut sha]));
+        shas.push(sha);
+    }
+    if shas.is_empty() {
+        return st;
+    }
+    if shas.len() > MAX_COMMITS_BY_SHA {
+        printf!(
+            "{}: more than {} recent commits without author/committer id, fetching the newest {} by SHA\n",
+            org_repo,
+            MAX_COMMITS_BY_SHA,
+            MAX_COMMITS_BY_SHA
+        );
+        shas.truncate(MAX_COMMITS_BY_SHA);
+    } else if ctx.debug > 0 {
+        printf!(
+            "{}: {} recent commits without author/committer id, fetching by SHA\n",
+            org_repo,
+            shas.len()
+        );
+    }
+    st.idless = shas.len();
+    for sha in &shas {
+        let mut commit: Option<RepositoryCommit> = None;
+        let info = format!("{org_repo}: commit {sha}");
+        let mut calls = 0usize;
+        restore::api_page(ctx, &info, &mut || {
+            calls += 1;
+            let r = sh.gc.call(|cl| cl.repositories_get_commit(org, repo, sha));
+            let status = r.status();
+            if r.response.is_some() && (status == 404 || status == 410) {
+                printf!("Warning: commit not found: {} {}\n", org_repo, sha);
+            }
+            commit = if r.error.is_none() { r.value } else { None };
+            (r.response, false, r.error)
+        });
+        st.calls += calls;
+        let commit = match commit {
+            Some(c) => c,
+            None => continue,
+        };
+        if commit.author.as_ref().and_then(|u| u.id).is_some() {
+            st.authors += 1;
+        }
+        if commit.committer.as_ref().and_then(|u| u.id).is_some() {
+            st.committers += 1;
+        }
+        if ctx.debug > 1 {
+            printf!(
+                "{}: commit {} by SHA: author {}, committer {}\n",
+                org_repo,
+                sha,
+                commit.author.as_ref().map(|u| u.get_login()).unwrap_or(""),
+                commit
+                    .committer
+                    .as_ref()
+                    .map(|u| u.get_login())
+                    .unwrap_or("")
+            );
+        }
+        process_commit(sh.c, ctx, &commit, maybe_hide);
+    }
+    st
+}
+
 /// The per-repository commits goroutine of `syncCommits`.
 fn fetch_commits(
     sh: &Shared<'_>,
+    cs: &CommitsShared,
     org_repo: &str,
     opt: &CommitsListOptions,
     dt_start: DateTime<Utc>,
@@ -785,7 +929,10 @@ fn fetch_commits(
                 );
             }
             sh.api_calls.fetch_add(1, Ordering::SeqCst);
-            let r = sh.gcs[hint].repositories_list_commits(org, repo, &copt);
+            // the token is picked per request (bug 65): hint is the /rate_limit view for the logs only
+            let r = sh
+                .gc
+                .call(|cl| cl.repositories_list_commits(org, repo, &copt));
             let res = handle_possible_error(r.error.as_ref(), org_repo, "Repositories.ListCommits");
             if !res.is_empty() {
                 if res == ABUSE {
@@ -842,6 +989,12 @@ fn fetch_commits(
         copt.list.page = next_page;
     }
     // end infinite for (paging)
+    // The commits the listing did not cover (other branches, dates before the
+    // autofetch window) are fetched by SHA (not in the DTFROM/DTTO debugging mode)
+    if !sh.date_range.is_range {
+        let st = enrich_commits_by_sha(sh, org, repo, org_repo, &maybe_hide);
+        cs.by_sha.lock().unwrap().merge(st);
+    }
     true
 }
 
@@ -945,6 +1098,7 @@ fn sync_commits(ctx: &mut Ctx) {
     let sh = Shared {
         ctx,
         gcs: &params.gcs,
+        gc: GhClients::new(ctx, &params.gcs),
         c: &params.c,
         recent_dt: params.recent_dt,
         is_single_repo: params.is_single_repo,
@@ -955,13 +1109,24 @@ fn sync_commits(ctx: &mut Ctx) {
         n_threads: AtomicUsize::new(0),
         api_calls: AtomicUsize::new(0),
     };
+    let cs = CommitsShared {
+        by_sha: Mutex::new(BySHAStats::default()),
+    };
     let opt = &opt;
     run_pool(&sh, &params.repos, |sh, org_repo| {
-        fetch_commits(sh, org_repo, opt, dt_start)
+        fetch_commits(sh, &cs, org_repo, opt, dt_start)
     });
     printf!(
         "GH Commits API calls: {}\n",
         sh.api_calls.load(Ordering::SeqCst)
+    );
+    let by_sha = *cs.by_sha.lock().unwrap();
+    printf!(
+        "GH Commits by SHA API calls: {}, id-less commits: {}, with author: {}, with committer: {}\n",
+        by_sha.calls,
+        by_sha.idless,
+        by_sha.authors,
+        by_sha.committers
     );
     params.c.close();
 }
@@ -1124,11 +1289,11 @@ fn fetch_events(sh: &Shared<'_>, es: &EventsShared, filter: &EventsFilter, org_r
             }
             sh.api_calls.fetch_add(1, Ordering::SeqCst);
             // Returns events in Issue Event format (UI events)
-            let r = sh.gcs[hint].issues_list_repository_events(org, repo, opt);
-            let (value, response, err) = match r {
-                Ok((v, resp)) => (Some(v), Some(resp), None),
-                Err(e) => (None, None, Some(e)),
-            };
+            // the token is picked per request (bug 65): hint is the /rate_limit view for the logs only
+            let r = sh
+                .gc
+                .call(|cl| ApiResult::from(cl.issues_list_repository_events(org, repo, opt)));
+            let (value, response, err) = (r.value, r.response, r.error);
             let res = handle_possible_error(err.as_ref(), &gcfg_str, "Issues.ListRepositoryEvents");
             if !res.is_empty() {
                 if res == ABUSE {
@@ -1313,12 +1478,11 @@ fn fetch_events(sh: &Shared<'_>, es: &EventsShared, filter: &EventsFilter, org_r
                             );
                         }
                         sh.api_calls.fetch_add(1, Ordering::SeqCst);
-                        let res = sh.gcs[hint].pull_requests_get(org, repo, pr_num);
-                        let (got_pr, err) = match res {
-                            Ok((p, _)) => (Some(p), None),
-                            Err(e) => (None, Some(e)),
-                        };
-                        pr = got_pr;
+                        let r = sh
+                            .gc
+                            .call(|cl| ApiResult::from(cl.pull_requests_get(org, repo, pr_num)));
+                        let err = r.error;
+                        pr = r.value;
                         let res =
                             handle_possible_error(err.as_ref(), &gcfg_str, "PullRequests.Get");
                         if !res.is_empty() {
@@ -1403,6 +1567,7 @@ fn sync_events(ctx: &mut Ctx) {
     let sh = Shared {
         ctx,
         gcs: &params.gcs,
+        gc: GhClients::new(ctx, &params.gcs),
         c: &params.c,
         recent_dt: params.recent_dt,
         is_single_repo: params.is_single_repo,
@@ -1459,6 +1624,9 @@ struct Budget {
 struct RepoPass<'a> {
     ctx: &'a Ctx,
     gcs: &'a [Client],
+    /// The per-request token picker (bug 65): `gcs` stays for the
+    /// `/rate_limit` budget and the progress lines.
+    gc: GhClients<'a>,
     n_repos: usize,
     /// `licenses` / `programming languages` (the rate-limit messages).
     what: &'a str,
@@ -1696,6 +1864,7 @@ fn sync_licenses(ctx: &mut Ctx) {
     let pass = RepoPass {
         ctx,
         gcs: &gcs,
+        gc: GhClients::new(ctx, &gcs),
         n_repos,
         what: "licenses",
         budget: Mutex::new(new_budget(ctx, &gcs)),
@@ -1733,7 +1902,6 @@ fn sync_licenses(ctx: &mut Ctx) {
             );
             pass.lock().not_found += 1;
         };
-        let cl = &gcs[pass.lock().hint];
         let ary: Vec<&str> = org_repo.split('/').collect();
         if ary.len() < 2 {
             printf!("WARNING: malformed repo name: '{}'\n", org_repo);
@@ -1744,25 +1912,24 @@ fn sync_licenses(ctx: &mut Ctx) {
         let license;
         let mut retries = 0;
         loop {
-            let r = cl.repositories_license(org, repo);
-            let resp = match &r.response {
-                None => {
-                    printf!(
-                        "License API response is null for {}/{}, skipping\n",
-                        org,
-                        repo
-                    );
-                    return;
-                }
-                Some(resp) => resp,
-            };
-            if resp.status == 404 {
+            // the token is picked per request (bug 65): hint is the /rate_limit view for the budget and the logs
+            let r = pass.gc.call(|cl| cl.repositories_license(org, repo));
+            let status = response_status(&r);
+            if status == 0 {
+                printf!(
+                    "License API response is null for {}/{}, skipping\n",
+                    org,
+                    repo
+                );
+                return;
+            }
+            if status == 404 {
                 printf!("No license found for: {}/{} (404)\n", org, repo);
                 no_license();
                 return;
             }
-            if resp.status >= 400 {
-                if resp.status == 403 {
+            if status >= 400 {
+                if status == 403 {
                     retries += 1;
                     if retries > ctx.max_ghapi_retry {
                         printf!(
@@ -1784,7 +1951,7 @@ fn sync_licenses(ctx: &mut Ctx) {
                     "No license found for: {}/{}, skipping ({})\n",
                     org,
                     repo,
-                    resp.status
+                    status
                 );
                 return;
             }
@@ -1856,6 +2023,7 @@ fn sync_langs(ctx: &mut Ctx) {
     let pass = RepoPass {
         ctx,
         gcs: &gcs,
+        gc: GhClients::new(ctx, &gcs),
         n_repos,
         what: "programming languages",
         budget: Mutex::new(new_budget(ctx, &gcs)),
@@ -1887,7 +2055,6 @@ fn sync_langs(ctx: &mut Ctx) {
             );
             pass.lock().not_found += 1;
         };
-        let cl = &gcs[pass.lock().hint];
         let ary: Vec<&str> = org_repo.split('/').collect();
         if ary.len() < 2 {
             printf!("WARNING: malformed repo name: '{}'\n", org_repo);
@@ -1899,19 +2066,20 @@ fn sync_langs(ctx: &mut Ctx) {
         let when = Local::now();
         let mut retries = 0;
         loop {
-            let r = cl.repositories_list_languages_full(org, repo);
-            let resp = match &r.response {
-                None => {
-                    printf!(
-                        "Languages API response is null for {}/{}, skipping\n",
-                        org,
-                        repo
-                    );
-                    return;
-                }
-                Some(resp) => resp,
-            };
-            if resp.status == 404 {
+            // the token is picked per request (bug 65): hint is the /rate_limit view for the budget and the logs
+            let r = pass
+                .gc
+                .call(|cl| cl.repositories_list_languages_full(org, repo));
+            let status = response_status(&r);
+            if status == 0 {
+                printf!(
+                    "Languages API response is null for {}/{}, skipping\n",
+                    org,
+                    repo
+                );
+                return;
+            }
+            if status == 404 {
                 printf!(
                     "No programming languages found for: {}/{} (404)\n",
                     org,
@@ -1920,8 +2088,8 @@ fn sync_langs(ctx: &mut Ctx) {
                 no_langs();
                 return;
             }
-            if resp.status >= 400 {
-                if resp.status == 403 {
+            if status >= 400 {
+                if status == 403 {
                     retries += 1;
                     if retries > ctx.max_ghapi_retry {
                         printf!(
@@ -1943,7 +2111,7 @@ fn sync_langs(ctx: &mut Ctx) {
                     "No languages found for: {}/{}, skipping ({})\n",
                     org,
                     repo,
-                    resp.status
+                    status
                 );
                 return;
             }
@@ -2042,6 +2210,11 @@ fn main() {
         // reviews and forks passes below check for before synthesizing artificial ones
         if !ctx.skip_api_repo_events {
             restored.merge(feed::sync_repo_events(&mut ctx));
+        }
+        // then the issues/PRs sweep: stub pull request rows (also the ones the feed just wrote) are
+        // filled and the objects still unknown to the database get their lifecycle events
+        if !ctx.skip_api_issues_prs {
+            restored.merge(issues::sync_issues_prs(&mut ctx));
         }
         if !ctx.skip_api_events {
             sync_events(&mut ctx);

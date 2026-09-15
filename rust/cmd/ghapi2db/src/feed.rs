@@ -34,7 +34,9 @@ fn restore_repo_events_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
         let mut events: Option<Vec<Box<serde_json::value::RawValue>>> = None;
         let info = format!("{}: {} events page {}", name, job.org_repo, page);
         let more = api_page(ctx, &info, &mut || {
-            let r = gc.activity_list_repository_events_raw(job.org, job.repo, FEED_PER_PAGE, page);
+            let r = gc.call(|cl| {
+                cl.activity_list_repository_events_raw(job.org, job.repo, FEED_PER_PAGE, page)
+            });
             if page_failed(&r) {
                 return (r.response, false, r.error);
             }
@@ -50,7 +52,7 @@ fn restore_repo_events_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
         stats.pages += 1;
         let mut oldest: Option<DateTime<Utc>> = None;
         for raw in &events {
-            let ev: Event = match serde_json::from_str(raw.get()) {
+            let mut ev: Event = match serde_json::from_str(raw.get()) {
                 Ok(ev) => ev,
                 Err(e) => {
                     printf!(
@@ -62,6 +64,21 @@ fn restore_repo_events_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
                     return;
                 }
             };
+            if ev.repo.id == 0 && ev.repo.name.is_empty() {
+                // GitHub blanks the repository object of some events (a fork into a private
+                // repository for example) - they are still this repository's events
+                ev.repo.id = job.repo_id;
+                ev.repo.name = job.org_repo.to_string();
+                if ctx.debug > 0 {
+                    printf!(
+                        "{}: {}: {} {} has no repository object, attributed to the feed's repository\n",
+                        name,
+                        job.org_repo,
+                        ev.type_,
+                        ev.id
+                    );
+                }
+            }
             if ev.repo.id != job.repo_id && !tracked_repo(c, ctx, job.org_repo, ev.repo.id) {
                 printf!(
                     "WARNING: {}: {}: the feed belongs to {} (id {}) which is not tracked, skipping\n",

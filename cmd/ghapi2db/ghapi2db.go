@@ -333,22 +333,27 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 	}
 
 	// Author email
+	// The identity rows are only recorded for commits GitHub attached a user to: an author/committer
+	// without a GitHub user has id 0 and its e-mails/names would pile up under the placeholder actor 0
+	// (bug 66: thousands of such rows per database, unusable for affiliations)
 	mEmail := maybeHide(lib.TruncToBytes(authorEmail, 120))
-	execAffsUpsert(
-		tx,
-		ctx,
-		fmt.Sprintf(
-			"insert into gha_actors_emails(actor_id, email, origin) %s on conflict(actor_id, email) "+
-				"do update set origin = 1 where gha_actors_emails.actor_id = %s "+
-				"and gha_actors_emails.email = %s",
-			lib.NValues(3),
-			lib.NValue(4),
-			lib.NValue(5),
-		),
-		lib.AnyArray{authorID, mEmail, 1, authorID, mEmail}...,
-	)
+	if authorID != 0 {
+		execAffsUpsert(
+			tx,
+			ctx,
+			fmt.Sprintf(
+				"insert into gha_actors_emails(actor_id, email, origin) %s on conflict(actor_id, email) "+
+					"do update set origin = 1 where gha_actors_emails.actor_id = %s "+
+					"and gha_actors_emails.email = %s",
+				lib.NValues(3),
+				lib.NValue(4),
+				lib.NValue(5),
+			),
+			lib.AnyArray{authorID, mEmail, 1, authorID, mEmail}...,
+		)
+	}
 	// Committer email
-	if committerEmail != authorEmail {
+	if committerID != 0 && committerEmail != authorEmail {
 		mEmail = maybeHide(lib.TruncToBytes(committerEmail, 120))
 		execAffsUpsert(
 			tx,
@@ -366,21 +371,23 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 	}
 	// Author name
 	mName := maybeHide(lib.TruncToBytes(authorName, 120))
-	execAffsUpsert(
-		tx,
-		ctx,
-		fmt.Sprintf(
-			"insert into gha_actors_names(actor_id, name, origin) %s on conflict(actor_id, name) "+
-				"do update set origin = 1 where gha_actors_names.actor_id = %s "+
-				"and gha_actors_names.name = %s",
-			lib.NValues(3),
-			lib.NValue(4),
-			lib.NValue(5),
-		),
-		lib.AnyArray{authorID, mName, 1, authorID, mName}...,
-	)
+	if authorID != 0 {
+		execAffsUpsert(
+			tx,
+			ctx,
+			fmt.Sprintf(
+				"insert into gha_actors_names(actor_id, name, origin) %s on conflict(actor_id, name) "+
+					"do update set origin = 1 where gha_actors_names.actor_id = %s "+
+					"and gha_actors_names.name = %s",
+				lib.NValues(3),
+				lib.NValue(4),
+				lib.NValue(5),
+			),
+			lib.AnyArray{authorID, mName, 1, authorID, mName}...,
+		)
+	}
 	// Committer name
-	if committerName != authorName {
+	if committerID != 0 && committerName != authorName {
 		mName = maybeHide(lib.TruncToBytes(committerName, 120))
 		execAffsUpsert(
 			tx,
@@ -400,6 +407,99 @@ func processCommit(c *sql.DB, ctx *lib.Ctx, commit *github.RepositoryCommit, may
 	// Final commit
 	// lib.FatalOnError(tx.Rollback())
 	lib.FatalOnError(tx.Commit())
+}
+
+// maxCommitsBySHA - at most this many id-less commits of one repository are fetched by SHA per run
+const maxCommitsBySHA = 1000
+
+// bySHAStats - counters of the by-SHA commits enrichment
+type bySHAStats struct {
+	calls      int
+	idless     int
+	authors    int
+	committers int
+}
+
+func (st *bySHAStats) merge(o bySHAStats) {
+	st.calls += o.calls
+	st.idless += o.idless
+	st.authors += o.authors
+	st.committers += o.committers
+}
+
+// enrichCommitsBySHA - the recent gha_commits rows of the repository without an author or committer GitHub id
+// are fetched one by one (GET /repos/{org}/{repo}/commits/{sha}) and enriched with processCommit. The listing
+// (ListCommits) only covers the default branch inside the autofetch window, so the commits GHA (PushEvents) or
+// get_repos (all branches, the commit dates) delivered outside it never got their GitHub ids - since GHA stopped
+// delivering commits (2024-10) that is most of them (allprj: 5-12 % of the daily commits, kubernetes: ~1 %).
+// A commit whose author/committer has no GitHub user keeps id 0 and is retried on every run inside the recent range.
+func enrichCommitsBySHA(gc *ghClients, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, recentDt time.Time, maybeHide func(string) string) (st bySHAStats) {
+	rows := lib.QuerySQLWithErr(
+		c,
+		ctx,
+		fmt.Sprintf(
+			"select sha from gha_commits where dup_repo_name = %s and dup_created_at >= %s "+
+				"and (coalesce(author_id, 0) = 0 or coalesce(committer_id, 0) = 0) "+
+				"group by sha order by max(dup_created_at) desc, sha limit %d",
+			lib.NValue(1),
+			lib.NValue(2),
+			maxCommitsBySHA+1,
+		),
+		orgRepo,
+		recentDt,
+	)
+	defer func() { lib.FatalOnError(rows.Close()) }()
+	shas := []string{}
+	sha := ""
+	for rows.Next() {
+		lib.FatalOnError(rows.Scan(&sha))
+		shas = append(shas, sha)
+	}
+	lib.FatalOnError(rows.Err())
+	if len(shas) == 0 {
+		return
+	}
+	if len(shas) > maxCommitsBySHA {
+		lib.Printf("%s: more than %d recent commits without author/committer id, fetching the newest %d by SHA\n", orgRepo, maxCommitsBySHA, maxCommitsBySHA)
+		shas = shas[:maxCommitsBySHA]
+	} else if ctx.Debug > 0 {
+		lib.Printf("%s: %d recent commits without author/committer id, fetching by SHA\n", orgRepo, len(shas))
+	}
+	st.idless = len(shas)
+	// the files list is not needed (per_page=1 keeps the answers small)
+	opt := &github.ListOptions{PerPage: 1}
+	for _, sha := range shas {
+		var commit *github.RepositoryCommit
+		got := false
+		info := fmt.Sprintf("%s: commit %s", orgRepo, sha)
+		apiPage(ctx, info, func() (*github.Response, bool, error) {
+			commit = nil
+			st.calls++
+			resp, err := gc.do(func(cl *github.Client) (r *github.Response, e error) {
+				commit, r, e = cl.Repositories.GetCommit(gc.gctx, org, repo, sha, opt)
+				return
+			})
+			if resp != nil && (resp.StatusCode == 404 || resp.StatusCode == 410) {
+				lib.Printf("Warning: commit not found: %s %s\n", orgRepo, sha)
+			}
+			got = err == nil && commit != nil
+			return resp, false, err
+		})
+		if !got {
+			continue
+		}
+		if commit.Author != nil && commit.Author.ID != nil {
+			st.authors++
+		}
+		if commit.Committer != nil && commit.Committer.ID != nil {
+			st.committers++
+		}
+		if ctx.Debug > 1 {
+			lib.Printf("%s: commit %s by SHA: author %s, committer %s\n", orgRepo, sha, commit.Author.GetLogin(), commit.Committer.GetLogin())
+		}
+		processCommit(c, ctx, commit, maybeHide)
+	}
+	return
 }
 
 // Some debugging options (environment variables)
@@ -441,6 +541,9 @@ func syncCommits(ctx *lib.Ctx) {
 	var thrMutex = &sync.Mutex{}
 	apiCalls := 0
 	var apiCallsMutex = &sync.Mutex{}
+	// the by-SHA enrichment picks the token per request (bug 65)
+	gcp := newGHClients(gctx, ctx, gc)
+	bySHA := bySHAStats{}
 	ch := make(chan bool)
 	nThreads := 0
 	dtStart := time.Now()
@@ -546,7 +649,11 @@ func syncCommits(ctx *lib.Ctx) {
 					apiCallsMutex.Lock()
 					apiCalls++
 					apiCallsMutex.Unlock()
-					commits, response, err = gc[hint].Repositories.ListCommits(gctx, org, repo, copt)
+					// the token is picked per request (bug 65): hint is the /rate_limit view for the logs only
+					response, err = gcp.do(func(cl *github.Client) (resp *github.Response, e error) {
+						commits, resp, e = cl.Repositories.ListCommits(gctx, org, repo, copt)
+						return
+					})
 					res := lib.HandlePossibleError(err, orgRepo, "Repositories.ListCommits")
 					if res != "" {
 						if res == lib.Abuse {
@@ -610,6 +717,14 @@ func syncCommits(ctx *lib.Ctx) {
 				copt.Page = response.NextPage
 			}
 			// end infinite for (paging)
+			// The commits the listing did not cover (other branches, dates before the autofetch window)
+			// are fetched by SHA (not in the DTFROM/DTTO debugging mode)
+			if !isDateRange {
+				st := enrichCommitsBySHA(gcp, c, ctx, org, repo, orgRepo, recentDt, maybeHide)
+				apiCallsMutex.Lock()
+				bySHA.merge(st)
+				apiCallsMutex.Unlock()
+			}
 			ch <- true
 		}(ch, orgRepo)
 		nThreads++
@@ -635,6 +750,7 @@ func syncCommits(ctx *lib.Ctx) {
 		lib.ProgressInfo(checked, nRepos, dtStart, &lastTime, time.Duration(10)*time.Second, fmt.Sprintf("API points: %+v, resets in: %+v, hint: %d", rem, wait, hint))
 	}
 	lib.Printf("GH Commits API calls: %d\n", apiCalls)
+	lib.Printf("GH Commits by SHA API calls: %d, id-less commits: %d, with author: %d, with committer: %d\n", bySHA.calls, bySHA.idless, bySHA.authors, bySHA.committers)
 }
 
 // Some debugging options (environment variables)
@@ -649,6 +765,8 @@ func syncEvents(ctx *lib.Ctx) {
 	// Get common params
 	repos, skipped, isSingleRepo, singleRepo, gctx, gc, c, recentDt := getAPIParams(ctx, passEvents)
 	defer func() { lib.FatalOnError(c.Close()) }()
+	// the token is picked per request (bug 65): the /rate_limit hint is for the pre-checks and the logs only
+	gcp := newGHClients(gctx, ctx, gc)
 
 	// Date range mode
 	var (
@@ -854,7 +972,10 @@ func syncEvents(ctx *lib.Ctx) {
 					// Returns events in GHA format
 					//events, response, err = gc.Activity.ListRepositoryEvents(gctx, org, repo, opt)
 					// Returns events in Issue Event format (UI events)
-					events, response, err = gc[hint].Issues.ListRepositoryEvents(gctx, org, repo, opt)
+					response, err = gcp.do(func(cl *github.Client) (resp *github.Response, e error) {
+						events, resp, e = cl.Issues.ListRepositoryEvents(gctx, org, repo, opt)
+						return
+					})
 					res := lib.HandlePossibleError(err, gcfg.String(), "Issues.ListRepositoryEvents")
 					if res != "" {
 						if res == lib.Abuse {
@@ -1079,7 +1200,10 @@ func syncEvents(ctx *lib.Ctx) {
 								apiCallsMutex.Lock()
 								apiCalls++
 								apiCallsMutex.Unlock()
-								pr, _, err = gc[hint].PullRequests.Get(gctx, org, repo, prNum)
+								_, err = gcp.do(func(cl *github.Client) (resp *github.Response, e error) {
+									pr, resp, e = cl.PullRequests.Get(gctx, org, repo, prNum)
+									return
+								})
 								res := lib.HandlePossibleError(err, gcfg.String(), "PullRequests.Get")
 								if res != "" {
 									if res == lib.Abuse {
@@ -1177,6 +1301,7 @@ func syncEvents(ctx *lib.Ctx) {
 
 func syncLicenses(ctx *lib.Ctx) {
 	gctx, gcs := lib.GHClient(ctx)
+	gcp := newGHClients(gctx, ctx, gcs)
 	c := lib.PgConn(ctx)
 	defer func() { lib.FatalOnError(c.Close()) }()
 	query := lib.RepoNamesQuery
@@ -1269,7 +1394,6 @@ func syncLicenses(ctx *lib.Ctx) {
 			notFound++
 			mtx.Unlock()
 		}
-		cl := gcs[hint]
 		ary := strings.Split(orgRepo, "/")
 		if len(ary) < 2 {
 			lib.Printf("WARNING: malformed repo name: '%s'\n", orgRepo)
@@ -1280,18 +1404,24 @@ func syncLicenses(ctx *lib.Ctx) {
 		var license *github.RepositoryLicense
 		retries := 0
 		for {
-			lic, resp, err := cl.Repositories.License(gctx, org, repo)
-			if resp == nil {
+			// the token is picked per request (bug 65): hint is the /rate_limit view for the budget and the logs
+			var lic *github.RepositoryLicense
+			resp, err := gcp.do(func(cl *github.Client) (r *github.Response, e error) {
+				lic, r, e = cl.Repositories.License(gctx, org, repo)
+				return
+			})
+			status := responseStatus(resp, err)
+			if status == 0 {
 				lib.Printf("License API response is null for %s/%s, skipping\n", org, repo)
 				return
 			}
-			if resp.StatusCode == 404 {
+			if status == 404 {
 				lib.Printf("No license found for: %s/%s (404)\n", org, repo)
 				noLicense()
 				return
 			}
-			if resp.StatusCode >= 400 {
-				if resp.StatusCode == 403 {
+			if status >= 400 {
+				if status == 403 {
 					retries++
 					if retries > ctx.MaxGHAPIRetry {
 						lib.Printf("Licenses abuse detected on %s/%s, giving up after %d retries\n", org, repo, ctx.MaxGHAPIRetry)
@@ -1306,7 +1436,7 @@ func syncLicenses(ctx *lib.Ctx) {
 					mtx.Unlock()
 					continue
 				} else {
-					lib.Printf("No license found for: %s/%s, skipping (%d)\n", org, repo, resp.StatusCode)
+					lib.Printf("No license found for: %s/%s, skipping (%d)\n", org, repo, status)
 				}
 				return
 			}
@@ -1377,6 +1507,7 @@ func syncLicenses(ctx *lib.Ctx) {
 
 func syncLangs(ctx *lib.Ctx) {
 	gctx, gcs := lib.GHClient(ctx)
+	gcp := newGHClients(gctx, ctx, gcs)
 	c := lib.PgConn(ctx)
 	defer func() { lib.FatalOnError(c.Close()) }()
 	query := lib.RepoNamesQuery
@@ -1461,7 +1592,6 @@ func syncLangs(ctx *lib.Ctx) {
 			notFound++
 			mtx.Unlock()
 		}
-		cl := gcs[hint]
 		ary := strings.Split(orgRepo, "/")
 		if len(ary) < 2 {
 			lib.Printf("WARNING: malformed repo name: '%s'\n", orgRepo)
@@ -1473,18 +1603,24 @@ func syncLangs(ctx *lib.Ctx) {
 		when := time.Now()
 		retries := 0
 		for {
-			ls, resp, err := cl.Repositories.ListLanguages(gctx, org, repo)
-			if resp == nil {
+			// the token is picked per request (bug 65): hint is the /rate_limit view for the budget and the logs
+			var ls map[string]int
+			resp, err := gcp.do(func(cl *github.Client) (r *github.Response, e error) {
+				ls, r, e = cl.Repositories.ListLanguages(gctx, org, repo)
+				return
+			})
+			status := responseStatus(resp, err)
+			if status == 0 {
 				lib.Printf("Languages API response is null for %s/%s, skipping\n", org, repo)
 				return
 			}
-			if resp.StatusCode == 404 {
+			if status == 404 {
 				lib.Printf("No programming languages found for: %s/%s (404)\n", org, repo)
 				noLangs()
 				return
 			}
-			if resp.StatusCode >= 400 {
-				if resp.StatusCode == 403 {
+			if status >= 400 {
+				if status == 403 {
 					retries++
 					if retries > ctx.MaxGHAPIRetry {
 						lib.Printf("Languages abuse detected on %s/%s, giving up after %d retries\n", org, repo, ctx.MaxGHAPIRetry)
@@ -1499,7 +1635,7 @@ func syncLangs(ctx *lib.Ctx) {
 					mtx.Unlock()
 					continue
 				} else {
-					lib.Printf("No languages found for: %s/%s, skipping (%d)\n", org, repo, resp.StatusCode)
+					lib.Printf("No languages found for: %s/%s, skipping (%d)\n", org, repo, status)
 				}
 				return
 			}
@@ -1603,6 +1739,11 @@ func main() {
 		// reviews and forks passes below check for before synthesizing artificial ones
 		if !ctx.SkipAPIRepoEvents {
 			restored.merge(syncRepoEvents(&ctx))
+		}
+		// then the issues/PRs sweep: stub pull request rows (also the ones the feed just wrote) are
+		// filled and the objects still unknown to the database get their lifecycle events
+		if !ctx.SkipAPIIssuesPRs {
+			restored.merge(syncIssuesPRs(&ctx))
 		}
 		if !ctx.SkipAPIEvents {
 			syncEvents(&ctx)

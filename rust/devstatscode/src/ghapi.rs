@@ -3,7 +3,7 @@
 //! classification, and the "artificial" API events (event id = 2^48 +
 //! `EventID`) written into `gha_*` tables.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::mpsc;
 use std::sync::Mutex;
@@ -665,6 +665,7 @@ pub fn gh_milestone(
     ctx: &Ctx,
     eid: i64,
     ic: &mut IssueConfig,
+    repo_id: i64,
     milestone: &github::Milestone,
     maybe_hide: &dyn Fn(&str) -> String,
 ) {
@@ -676,10 +677,27 @@ pub fn gh_milestone(
          description, due_on, number, open_issues, state, title, updated_at, \
          dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, \
          dupn_creator_login) values({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, \
-         (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = {}), {}, {}, {}, {})",
-        n_value(1), n_value(2), n_value(3), n_value(4), n_value(5), n_value(6), n_value(7),
-        n_value(8), n_value(9), n_value(10), n_value(11), n_value(12), n_value(13), n_value(14),
-        n_value(15), n_value(16), n_value(17), n_value(18), n_value(19), n_value(20),
+         {}, {}, {}, {}, {})",
+        n_value(1),
+        n_value(2),
+        n_value(3),
+        n_value(4),
+        n_value(5),
+        n_value(6),
+        n_value(7),
+        n_value(8),
+        n_value(9),
+        n_value(10),
+        n_value(11),
+        n_value(12),
+        n_value(13),
+        n_value(14),
+        n_value(15),
+        n_value(16),
+        n_value(17),
+        n_value(18),
+        n_value(19),
+        n_value(20),
     ));
     let args = [
         int_or_nil(milestone.id),
@@ -699,7 +717,7 @@ pub fn gh_milestone(
         SqlArg::Str(maybe_hide(
             actor.login.as_deref().expect("actor without login"),
         )),
-        SqlArg::from(&ic.repo),
+        SqlArg::Int(repo_id),
         SqlArg::from(&ic.repo),
         SqlArg::from(&ic.event_type),
         SqlArg::Time(ic.created_at),
@@ -820,6 +838,117 @@ pub fn get_tracked_repos(
     (repos, ids, historical)
 }
 
+/// Go `CurrentRepoID` result: the id (and organization id) behind a repository
+/// name; `native == false` when the id comes from `gha_repos` alone (no native
+/// event under that name yet).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RepoIDs {
+    pub repo_id: i64,
+    pub org_id: Option<i64>,
+    pub native: bool,
+}
+
+/// Go `repoIDByNameCache`: `current_repo_id` results per name (per process).
+static REPO_ID_BY_NAME_CACHE: Mutex<Option<HashMap<String, Option<RepoIDs>>>> = Mutex::new(None);
+
+/// Go `CurrentRepoID`: the repository id (and organization id, `None` when
+/// none) behind a repository name. GH Archive lists some names under several
+/// ids (a placeholder repository created before a transfer, a fork that took
+/// over a name, id-less rows): the current id is the one whose newest native
+/// event (`0 < id < 2^48`) under that name is the newest — the same rule
+/// `get_tracked_repos` uses for the current name of an id; ids without native
+/// events come after those with, ties go to the highest id. Names without a
+/// `gha_repos` row fall back to the events (highest `repo_id`). `None` when the
+/// name is unknown to both.
+/// Bug 68: `max(repo_id)` picked the placeholder id 40511817 for
+/// kubernetes/kubernetes (one CreateEvent from 2015) over the real 20580498,
+/// and once an artificial event carried it, `max` kept returning it — 2M
+/// artificial events ended up under the placeholder.
+pub fn current_repo_id(con: &PgConn, ctx: &Ctx, name: &str) -> Option<RepoIDs> {
+    {
+        let mut cache = REPO_ID_BY_NAME_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(hit) = cache.get_or_insert_with(HashMap::new).get(name) {
+            return *hit;
+        }
+    }
+    // The lateral subquery walks events_repo_name_created_at_idx backwards:
+    // cheap unless the id carries millions of artificial events (the bug 68
+    // placeholder before its repair), and then once per process per name.
+    let queries = [
+        format!(
+            "select r.id, coalesce(n.org_id, r.org_id), n.created_at is not null from gha_repos r left join lateral (\
+             select e.created_at, e.org_id from gha_events e where e.repo_id = r.id and e.dup_repo_name = r.name \
+             and e.id > 0 and e.id < 281474976710656 order by e.created_at desc limit 1) n on true \
+             where r.name = {} order by n.created_at desc nulls last, r.id desc limit 1",
+            n_value(1)
+        ),
+        format!(
+            "select max(repo_id), max(org_id), true from gha_events where dup_repo_name = {}",
+            n_value(1)
+        ),
+    ];
+    let mut found: Option<RepoIDs> = None;
+    for query in &queries {
+        let mut rows = query_sql_with_err(con, ctx, query, &[SqlArg::from(name)]);
+        let mut rid: Option<i64> = None;
+        let mut oid: Option<i64> = None;
+        let mut native = false;
+        while rows.next() {
+            fatal_on_err(rows.scan(&mut [&mut rid, &mut oid, &mut native]));
+        }
+        fatal_on_err(rows.err());
+        fatal_on_err(rows.close());
+        if let Some(repo_id) = rid {
+            found = Some(RepoIDs {
+                repo_id,
+                org_id: oid,
+                native,
+            });
+            break;
+        }
+    }
+    if let Some(ids) = found.as_mut() {
+        if ids.org_id.is_none() {
+            let mut rows = query_sql_with_err(
+                con,
+                ctx,
+                &format!(
+                    "select max(org_id) from gha_events where dup_repo_name = {}",
+                    n_value(1)
+                ),
+                &[SqlArg::from(name)],
+            );
+            let mut oid: Option<i64> = None;
+            while rows.next() {
+                fatal_on_err(rows.scan(&mut [&mut oid]));
+            }
+            fatal_on_err(rows.err());
+            fatal_on_err(rows.close());
+            ids.org_id = oid;
+        }
+    }
+    REPO_ID_BY_NAME_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(name.to_string(), found);
+    found
+}
+
+/// Go `artificialRepoIDs`: repo id (-1 when unknown, the legacy marker) and
+/// org id (`Null` when none) for the artificial events of a repository name.
+fn artificial_repo_ids(con: &PgConn, ctx: &Ctx, name: &str) -> (i64, SqlArg) {
+    match current_repo_id(con, ctx, name) {
+        None => (-1, SqlArg::Null),
+        Some(ids) => (
+            ids.repo_id,
+            ids.org_id.map(SqlArg::Int).unwrap_or(SqlArg::Null),
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Artificial events
 // ---------------------------------------------------------------------------
@@ -874,7 +1003,8 @@ pub fn delete_artificial_event(con: &PgConn, ctx: &Ctx, cfg: &IssueConfig) {
     fatal_on_err(tx.commit());
 }
 
-/// The `gha_events` insert shared by both artificial event kinds.
+/// The `gha_events` insert shared by both artificial event kinds; `(repo_id, org_id)` from `artificial_repo_ids`.
+#[allow(clippy::too_many_arguments)]
 fn insert_artificial_gha_event(
     tx: &mut PgTx<'_>,
     ctx: &Ctx,
@@ -882,23 +1012,23 @@ fn insert_artificial_gha_event(
     cfg: &IssueConfig,
     actor: Option<&User>,
     created_at: DateTime<FixedOffset>,
+    (repo_id, org_id): (i64, SqlArg),
     maybe_hide: &dyn Fn(&str) -> String,
 ) {
     let query = insert_ignore(&format!(
         "into gha_events(id, type, actor_id, repo_id, created_at, dup_actor_login, dup_repo_name, org_id) \
-         values({}, {}, {}, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = {}), {}, \
-         {}, {}, (select max(org_id) from gha_events where dup_repo_name = {}))",
+         values({}, {}, {}, {}, {}, {}, {}, {})",
         n_value(1), n_value(2), n_value(3), n_value(4), n_value(5), n_value(6), n_value(7), n_value(8),
     ));
     let args = [
         SqlArg::Int(event_id),
         SqlArg::from(&cfg.event_type),
         gh_actor_id_or_nil(actor),
-        SqlArg::from(&cfg.repo),
+        SqlArg::Int(repo_id),
         SqlArg::Time(created_at),
         gh_actor_login_or_nil(actor, maybe_hide),
         SqlArg::from(&cfg.repo),
-        SqlArg::from(&cfg.repo),
+        org_id,
     ];
     exec_sql_tx_with_err(tx, ctx, &query, &args);
 }
@@ -936,6 +1066,9 @@ pub fn artificial_pr_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig, pr: &
         .and_then(|e| e.actor.clone())
         .expect("event without actor");
 
+    // Repository id (bug 68: the current id of the name, not max(repo_id)) and organization id
+    let (repo_id, org_id) = artificial_repo_ids(con, ctx, &cfg.repo);
+
     let mut tx = fatal_on_err(con.begin());
 
     gh_actor(&mut tx, ctx, Some(&actor), &maybe_hide);
@@ -959,7 +1092,7 @@ pub fn artificial_pr_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig, pr: &
         gh_actor(&mut tx, ctx, pr.assignee.as_ref(), &maybe_hide);
     }
     if let Some(m) = pr.milestone.as_ref() {
-        gh_milestone(&mut tx, ctx, event_id, cfg, m, &maybe_hide);
+        gh_milestone(&mut tx, ctx, event_id, cfg, repo_id, m, &maybe_hide);
     }
 
     let prid = pr.id.expect("PR without id");
@@ -971,7 +1104,7 @@ pub fn artificial_pr_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig, pr: &
          dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, \
          dup_user_login, dupn_merged_by_login) values({}, {}, {}, {}, {}, {}, {}, {}, \
          {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, \
-         {}, {}, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = {}), {}, {}, {}, {}, {})",
+         {}, {}, {}, {}, {}, {}, {}, {})",
         n_value(1), n_value(2), n_value(3), n_value(4), n_value(5), n_value(6), n_value(7), n_value(8),
         n_value(9), n_value(10), n_value(11), n_value(12), n_value(13), n_value(14), n_value(15), n_value(16),
         n_value(17), n_value(18), n_value(19), n_value(20), n_value(21), n_value(22), n_value(23), n_value(24),
@@ -1007,7 +1140,7 @@ pub fn artificial_pr_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig, pr: &
         int_or_nil(pr.changed_files),
         int_or_nil(actor.id),
         gh_actor_login_or_nil(Some(&actor), &maybe_hide),
-        SqlArg::from(&cfg.repo),
+        SqlArg::Int(repo_id),
         SqlArg::from(&cfg.repo),
         SqlArg::from(&e_type),
         SqlArg::Time(e_created_at),
@@ -1023,6 +1156,7 @@ pub fn artificial_pr_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig, pr: &
         cfg,
         Some(&actor),
         e_created_at,
+        (repo_id, org_id),
         &maybe_hide,
     );
 
@@ -1031,9 +1165,17 @@ pub fn artificial_pr_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig, pr: &
          issue_id, pull_request_id, comment_id, commit, number, forkee_id, release_id, member_id, \
          dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) \
          values({}, null, null, null, null, null, {}, {}, {}, null, null, {}, null, null, null, \
-         {}, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = {}), {}, {}, {})",
-        n_value(1), n_value(2), n_value(3), n_value(4), n_value(5), n_value(6), n_value(7), n_value(8),
-        n_value(9), n_value(10),
+         {}, {}, {}, {}, {})",
+        n_value(1),
+        n_value(2),
+        n_value(3),
+        n_value(4),
+        n_value(5),
+        n_value(6),
+        n_value(7),
+        n_value(8),
+        n_value(9),
+        n_value(10),
     ));
     let issue_number = int_or_nil(cfg.issue().number);
     let args = [
@@ -1043,7 +1185,7 @@ pub fn artificial_pr_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig, pr: &
         SqlArg::Int(prid),
         issue_number,
         gh_actor_login_or_nil(Some(&actor), &maybe_hide),
-        SqlArg::from(&cfg.repo),
+        SqlArg::Int(repo_id),
         SqlArg::from(&cfg.repo),
         SqlArg::from(&cfg.event_type),
         SqlArg::Time(e_created_at),
@@ -1124,6 +1266,9 @@ pub fn artificial_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig) {
     let issue = cfg.issue().clone();
     let actor = cfg.gh_event.as_ref().and_then(|e| e.actor.clone());
 
+    // Repository id (bug 68: the current id of the name, not max(repo_id)) and organization id
+    let (repo_id, org_id) = artificial_repo_ids(con, ctx, &cfg.repo);
+
     let mut tx = fatal_on_err(con.begin());
 
     gh_actor(&mut tx, ctx, actor.as_ref(), &maybe_hide);
@@ -1141,7 +1286,7 @@ pub fn artificial_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig) {
          locked, milestone_id, number, state, title, updated_at, user_id, \
          dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, \
          dup_user_login, is_pull_request) values({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, \
-         {}, {}, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = {}), {}, {}, {}, {}, {}) ",
+         {}, {}, {}, {}, {}, {}, {}, {}) ",
         n_value(1), n_value(2), n_value(3), n_value(4), n_value(5), n_value(6), n_value(7), n_value(8),
         n_value(9), n_value(10), n_value(11), n_value(12), n_value(13), n_value(14), n_value(15), n_value(16),
         n_value(17), n_value(18), n_value(19), n_value(20), n_value(21), n_value(22),
@@ -1163,7 +1308,7 @@ pub fn artificial_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig) {
         gh_actor_id_or_nil(issue.user.as_ref()),
         gh_actor_id_or_nil(actor.as_ref()),
         gh_actor_login_or_nil(actor.as_ref(), &maybe_hide),
-        SqlArg::from(&cfg.repo),
+        SqlArg::Int(repo_id),
         SqlArg::from(&cfg.repo),
         SqlArg::from(&cfg.event_type),
         SqlArg::Time(now),
@@ -1173,7 +1318,7 @@ pub fn artificial_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig) {
     exec_sql_tx_with_err(&mut tx, ctx, &query, &args);
 
     if let Some(m) = issue.milestone.as_ref() {
-        gh_milestone(&mut tx, ctx, event_id, cfg, m, &maybe_hide);
+        gh_milestone(&mut tx, ctx, event_id, cfg, repo_id, m, &maybe_hide);
     }
 
     insert_artificial_gha_event(
@@ -1183,6 +1328,7 @@ pub fn artificial_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig) {
         cfg,
         actor.as_ref(),
         now,
+        (repo_id, org_id),
         &maybe_hide,
     );
 
@@ -1191,8 +1337,15 @@ pub fn artificial_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig) {
          issue_id, pull_request_id, comment_id, commit, number, forkee_id, release_id, member_id, \
          dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) \
          values({}, null, null, null, null, null, {}, {}, null, null, null, {}, null, null, null, \
-         {}, (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = {}), {}, {}, {})",
-        n_value(1), n_value(2), n_value(3), n_value(4), n_value(5), n_value(6), n_value(7), n_value(8),
+         {}, {}, {}, {}, {})",
+        n_value(1),
+        n_value(2),
+        n_value(3),
+        n_value(4),
+        n_value(5),
+        n_value(6),
+        n_value(7),
+        n_value(8),
         n_value(9),
     ));
     let args = [
@@ -1201,7 +1354,7 @@ pub fn artificial_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig) {
         SqlArg::Int(iid),
         int_or_nil(issue.number),
         gh_actor_login_or_nil(actor.as_ref(), &maybe_hide),
-        SqlArg::from(&cfg.repo),
+        SqlArg::Int(repo_id),
         SqlArg::from(&cfg.repo),
         SqlArg::from(&cfg.event_type),
         SqlArg::Time(now),
@@ -1212,7 +1365,7 @@ pub fn artificial_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig) {
         let query = insert_ignore(&format!(
             "into gha_issues_labels(issue_id, event_id, label_id, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, \
              dup_type, dup_created_at, dup_issue_number, dup_label_name) values({}, {}, {}, {}, {}, \
-             (select coalesce(max(repo_id), -1) from gha_events where dup_repo_name = {}), {}, {}, {}, {}, {})",
+             {}, {}, {}, {}, {}, {})",
             n_value(1), n_value(2), n_value(3), n_value(4), n_value(5), n_value(6), n_value(7), n_value(8),
             n_value(9), n_value(10), n_value(11),
         ));
@@ -1222,7 +1375,7 @@ pub fn artificial_event(con: &PgConn, ctx: &Ctx, cfg: &mut IssueConfig) {
             SqlArg::Int(*label_id),
             gh_actor_id_or_nil(actor.as_ref()),
             gh_actor_login_or_nil(actor.as_ref(), &maybe_hide),
-            SqlArg::from(&cfg.repo),
+            SqlArg::Int(repo_id),
             SqlArg::from(&cfg.repo),
             SqlArg::from(&cfg.event_type),
             SqlArg::Time(now),

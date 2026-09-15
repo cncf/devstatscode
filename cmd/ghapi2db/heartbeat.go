@@ -29,6 +29,7 @@ const (
 	passStars
 	passRepoStats
 	passRepoEvents
+	passIssuesPRs
 )
 
 // label - pass name used in the log lines (the restore passes use the same names)
@@ -52,6 +53,8 @@ func (p apiPass) label() string {
 		return "ghapi2db repo stats"
 	case passRepoEvents:
 		return "ghapi2db repo events"
+	case passIssuesPRs:
+		return "ghapi2db issues prs"
 	}
 	return "ghapi2db"
 }
@@ -77,6 +80,8 @@ func (p apiPass) gate() string {
 		return "repository data"
 	case passRepoEvents:
 		return "activity"
+	case passIssuesPRs:
+		return "repository data"
 	}
 	return "activity"
 }
@@ -153,6 +158,10 @@ func (h *repoHeartbeat) active(pass apiPass, recentDt time.Time) bool {
 		// the events feed carries every event type: any signal the heartbeat has
 		return since(h.issueAt, recentDt) || since(h.prAt, recentDt) || since(h.pushedAt, recentDt) ||
 			since(h.forkAt, recentDt) || since(h.releaseAt, recentDt) || h.active(passStars, recentDt)
+	case passIssuesPRs:
+		// the stub sweep is database-driven (a repository without stub rows costs one query),
+		// the listing part gates itself on issue or PR updates
+		return true
 	}
 	return true
 }

@@ -7,4 +7,6 @@ pub mod db;
 pub mod writer;
 
 pub use db::{cache_len, lookup_actor_name_email, Db, MaybeHide};
-pub use writer::{write_to_db, write_to_db_old_fmt};
+pub use writer::{
+    upgrade_pull_request_stubs, write_to_db, write_to_db_old_fmt, STUB_CREATED_AT_CUT,
+};
