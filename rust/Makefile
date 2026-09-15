@@ -8,7 +8,8 @@
 #   make check      rustfmt --check + clippy -D warnings only
 #   make fmt        rustfmt
 #   make install    copy release binaries to BINDIR (default: $GOPATH/bin, like the Go `make install`)
-#   make clean
+#   make clean      remove the whole target/ directory (binaries included)
+#   make cleanup    remove every build/test artifact but keep target/<os>/release/<name> (../cleanup.sh)
 
 GOPATH ?= $(HOME)/go
 BINDIR ?= $(GOPATH)/bin
@@ -16,7 +17,7 @@ BINDIR ?= $(GOPATH)/bin
 # Ported so far (one crate per cmd/<name>; keep in sync with [workspace] members in Cargo.toml).
 BINARIES = tsplit replacer splitcrons structure tags runq vars columns devstats hide_data website_data webhook sqlitedb merge_dbs gha2db_sync import_affs calc_metric annotations get_repos sync_issues ghapi2db gha2db api
 
-.PHONY: all build $(BINARIES) test test-rust-only check fmt install clean
+.PHONY: all build $(BINARIES) test test-rust-only check fmt install clean cleanup
 
 all: build
 
@@ -44,3 +45,6 @@ install:
 
 clean:
 	rm -rf target
+
+cleanup:
+	../cleanup.sh

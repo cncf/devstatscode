@@ -144,4 +144,9 @@ strip: ${BINARIES}
 clean:
 	rm -f ${BINARIES}
 
-.PHONY: test
+# Remove every Go/Rust build and test artifact (caches, cargo intermediates, test leftovers)
+# but keep the final binaries: ./<name> and rust/target/<os>/release/<name>. See ./cleanup.sh --help.
+cleanup:
+	./cleanup.sh
+
+.PHONY: test cleanup

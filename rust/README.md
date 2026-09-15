@@ -114,6 +114,12 @@ cd rust
 ./compile.sh                 # release build, stripped: target/<os>/release/{tsplit,replacer,splitcrons,structure,tags,runq,vars,columns,devstats,hide_data,website_data,webhook,sqlitedb,merge_dbs,gha2db_sync,import_affs,calc_metric,annotations,get_repos,sync_issues,ghapi2db,gha2db,api}
 BINDIR=$GOPATH/bin ./compile.sh   # ... and copy them there (same as `make install`)
 make / make install          # equivalents via the Makefile
+../cleanup.sh                # afterwards: drop every build/test artifact (cargo deps/incremental/
+                             # fingerprints, debug/, go-bin/, Go build+test caches, *.test, ...)
+                             # keeping only the final binaries; -n = dry run, --all = also the
+                             # Go module cache and ~/.cargo/{registry,git}, --docker = also the
+                             # local Docker build cache / dangling images; `make cleanup` in
+                             # either directory does the same
 ```
 
 Requires a stable Rust toolchain (`rust-version` in `Cargo.toml`) and a C
