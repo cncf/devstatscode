@@ -1989,6 +1989,47 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
   unchanged. Prod's last 30 days of `PqError` lines were exactly the three
   classes this separates: `connection_failure` (DB restarts 09-08…09-12,
   still retried), `unique_violation` and `syntax_error` (now immediate).
+* Bug 73 (2026-09-15, Go and Rust alike; found by the megacheck after the
+  wip-37 all-branches restore went live): the orphan-commit restore
+  **starved the PushEvent commit backfill** (`cmd/get_repos/fetch_commits.go`
+  / `rust/cmd/get_repos/src/fetch_commits.rs`, and the `devstats` driver).
+  Four coupled defects, the first two present since the Go original: (a) the
+  mode-1 watermark `max(dup_created_at) from gha_commits where dup_repo_name`
+  counted the restore's synthetic rows (negative `event_id`), whose dates are
+  the landing dates of just-fetched commits, i.e. later than almost every
+  loaded GHA push — so `created_at >= watermark` selected next to nothing
+  (opentelemetry: 1 of 753 pushes of the day got commits); (b) synthetic
+  pushes were themselves backfill candidates; (c) the restore ran first and
+  unbounded, in the fetch-only get_repos step `devstats` runs before any
+  project's `gha2db_sync`, so commits landed after the newest parsed GHA hour
+  (PushEvent still in the next hour file) became "orphans" with synthetic
+  pushes, and the real push then found no work. Fix: watermark and selection
+  use real events only (`event_id > 0` / `e.id > 0`); the restore window is
+  `[to − range, to]` with `to = least(max(gha_parsed.dt) + 1h | now(), start
+  of the current hour)` per DB (`git log --until=@…`, tip = `rev-list -1
+  --first-parent --before=@… <ref>`), printed as `Restoring orphan commits:
+  DB '<db>': orphan commits since <from> until <to>`; `devstats` passes
+  `GHA2DB_RESTORE_ORPHAN_COMMITS=""` to its fetch-only child (empty = off in
+  both languages), so only the per-project sync step restores — after its
+  backfill; and the backfill **takes over**: before inserting a real
+  `(sha, event)` it deletes the synthetic `gha_commits` / `gha_commits_roles`
+  rows of that sha (the real row becomes `is_distinct`), removes synthetic
+  events left without commits (`gha_texts`, `gha_events_commits_files`,
+  `gha_payloads`, `gha_events`) and runs the targeted `postprocess_*_ids.sql`
+  for the partially emptied ones and the real pushes — lines `<repo>
+  PushEvent <id>: took over commit <sha> from restored event <id>` (Debug)
+  and `<repo>: took over N commit(s) from M restored push event(s) into K GHA
+  push event(s), removed R emptied restored event(s)`. The fleet self-heals on
+  the next mode-1 run (falco: pushes-with-commits 0/14 → 14/14 for the day).
+  Compat: `orphan_then_backfill_takeover`, `orphan_takeover_texts`,
+  `orphan_takeover_partial` (new `Step::SqlFrom` harness step for runtime
+  SHAs), `orphan_quiet` expects the window line, the recent-merge fixtures
+  use `yesterday()` (a today-dated commit is outside the hour-start horizon
+  at 00:xx UTC); devstats compat env arrays gained
+  `GHA2DB_RESTORE_ORPHAN_COMMITS=`. Left as is (data, not code): legacy
+  synthetic events without commits and shas having both a real
+  (`is_distinct = false`) and a synthetic row — the takeover only fires when a
+  real row is inserted.
 
 ### Rust-only bugs found after go-live (Go was correct)
 

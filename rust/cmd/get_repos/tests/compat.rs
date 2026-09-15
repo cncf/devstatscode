@@ -292,6 +292,10 @@ enum Step {
     Sql(&'static str),
     /// Execute SQL on the side's second database.
     Sql2(&'static str),
+    /// Execute on the side's (first) database the SQL printed by a `bash -c`
+    /// command run in the scratch directory (SQL needing SHAs of commits
+    /// created by earlier steps).
+    SqlFrom(&'static str),
     /// Run a `bash -c` command in the scratch directory.
     Shell(&'static str),
 }
@@ -1000,6 +1004,23 @@ fn run_side(bin: &Path, case: &Case, suffix: &str) -> Option<Side> {
             }
             Step::Sql2(sql) => {
                 db2.as_ref().expect("no second database").exec(&expand(sql));
+                continue;
+            }
+            Step::SqlFrom(cmd) => {
+                let out = Command::new("bash")
+                    .args(["-c", &expand(cmd)])
+                    .current_dir(dir.path())
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_CONFIG_COUNT", "0")
+                    .output()
+                    .expect("bash");
+                assert!(
+                    out.status.success(),
+                    "SQL-producing step {cmd:?} failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                db.exec(&String::from_utf8_lossy(&out.stdout));
                 continue;
             }
             Step::Shell(cmd) => {
@@ -2917,6 +2938,7 @@ fn orphan_quiet() {
         strs(&[
             BANNER,
             "Restoring orphan commits: processing DB '<db>' (1 repos, threads 1)",
+            "Restoring orphan commits: DB '<db>': orphan commits since <ts>",
             "Finished DB '<db>': processed 1 repos, checked 4 commits, restored 4",
             "targeted postprocess skipped: gha_texts is empty, full structure rebuild pending",
             "Finished orphan commit restore: processed 1 repos, checked 4 commits, restored 4 in: <dur>",
@@ -2952,6 +2974,329 @@ fn orphan_after_backfill() {
             rs.shas[1]
         )),
         strs(&["1"])
+    );
+}
+
+#[test]
+fn orphan_then_backfill_takeover() {
+    // The restore ran before the commits of the GHA pushes could be backfilled
+    // (all 4 commits sit under synthetic events). The backfill's watermark
+    // ignores the synthetic rows, so both pushes are still due: their commits
+    // move over (the synthetic rows go first, so the GHA rows are distinct;
+    // roles included), the emptied synthetic events disappear with their
+    // payloads, and the restore that follows finds nothing left (commit 1
+    // keeps its synthetic event - it never had a GHA push). A third run
+    // starts from the newest GHA-backed commit.
+    let case = Case::new("orphan_then_backfill_takeover")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .steps(vec![
+            Step::Run(Vec::new()),
+            Step::Run(vec![("GHA2DB_FETCH_COMMITS_MODE", "1")]),
+            Step::Run(vec![("GHA2DB_FETCH_COMMITS_MODE", "1")]),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    assert_eq!(rs.code(1), Some(0));
+    assert_eq!(rs.code(2), Some(0));
+    let nids: Vec<String> = (0..4)
+        .map(|i| negative_artificial_id(&["PushEvent", "org/repo", &rs.shas[i]]).to_string())
+        .collect();
+    rs.expect_line(0, "<db>/org/repo: successfully restored 4 orphan commits");
+    rs.expect_no_prefix(0, "FetchCommitsMode=");
+
+    // Run 2: no GHA-backed commit yet - the backfill starts from the default
+    // start date and takes the commits over.
+    rs.expect_line(
+        1,
+        "<db>/org/repo: need to backfill 2 events since 2012-07-01 00:00:00 +0000 UTC",
+    );
+    rs.expect_line(
+        1,
+        &format!(
+            "<db>/org/repo PushEvent 1001: took over commit {} from restored event {}",
+            rs.shas[1], nids[1]
+        ),
+    );
+    rs.expect_line(
+        1,
+        &format!(
+            "<db>/org/repo PushEvent 1002: took over commit {} from restored event {}",
+            rs.shas[2], nids[2]
+        ),
+    );
+    rs.expect_line(
+        1,
+        &format!(
+            "<db>/org/repo PushEvent 1002: took over commit {} from restored event {}",
+            rs.shas[3], nids[3]
+        ),
+    );
+    rs.expect_line(
+        1,
+        "<db>/org/repo: took over 3 commit(s) from 3 restored push event(s) into 2 GHA push event(s), removed 3 emptied restored event(s)",
+    );
+    rs.expect_line(
+        1,
+        "<db>/org/repo: successfully backfilled 3 commits and 2 commit roles for 2 events",
+    );
+    rs.expect_line(
+        1,
+        "Finished DB '<db>': backfilled 3 commits and 2 commit roles for 1 repos",
+    );
+    rs.expect_line(
+        1,
+        "targeted postprocess skipped: gha_texts is empty, full structure rebuild pending",
+    );
+    rs.expect_line(1, "<db>/org/repo: found 4 commits since <ts>");
+    rs.expect_line(1, "<db>/org/repo: no orphan commits to restore");
+    rs.expect_line(
+        1,
+        "Finished DB '<db>': processed 1 repos, checked 4 commits, restored 0",
+    );
+
+    // Run 3: the watermark is the newest GHA-backed commit (2020-01-04).
+    rs.expect_line(2, "<db>/org/repo: no need to backfill commits since <ts>");
+    rs.expect_no_prefix(2, "<db>/org/repo: took over ");
+    rs.expect_no_prefix(2, "targeted postprocess");
+    rs.expect_line(2, "<db>/org/repo: no orphan commits to restore");
+
+    // Commit 1 stays restored, commits 2-4 belong to their GHA pushes.
+    let mut e1002 = vec![
+        strs(&[
+            &rs.shas[2],
+            "1002",
+            "1",
+            "true",
+            "carol",
+            "2020-01-04 01:00:00",
+        ]),
+        strs(&[
+            &rs.shas[3],
+            "1002",
+            "1",
+            "true",
+            "carol",
+            "2020-01-04 01:00:00",
+        ]),
+    ];
+    e1002.sort();
+    let mut expected = vec![
+        strs(&[
+            &rs.shas[0],
+            &nids[0],
+            "2",
+            "true",
+            "Dev",
+            "2020-01-01 00:00:00",
+        ]),
+        strs(&[
+            &rs.shas[1],
+            "1001",
+            "1",
+            "true",
+            "alice",
+            "2020-01-02 01:00:00",
+        ]),
+    ];
+    expected.extend(e1002);
+    assert_eq!(
+        rs.query("select sha, event_id::text, origin::text, is_distinct::text, dup_actor_login, dup_created_at::text from gha_commits order by event_id, sha"),
+        expected
+    );
+    // Only the synthetic event of commit 1 is left (event and payload).
+    assert_eq!(
+        restored_events(&rs),
+        vec![strs(&[
+            &nids[0],
+            "PushEvent",
+            "0",
+            "100",
+            "2020-01-01 00:00:00",
+            "Dev",
+            "org/repo",
+        ])]
+    );
+    assert_eq!(
+        rs.column("select event_id::text from gha_payloads where event_id < 0"),
+        vec![nids[0].clone()]
+    );
+    assert_eq!(rs.count("select count(*) from gha_payloads"), 3);
+    // The trailer roles of commit 2 moved to push 1001.
+    assert_eq!(
+        roles(&rs),
+        vec![
+            strs(&[
+                &rs.shas[1],
+                "Reviewed-by",
+                "2",
+                "bob",
+                "Bob",
+                "bob@example.com"
+            ]),
+            strs(&[
+                &rs.shas[1],
+                "Signed-off-by",
+                "1",
+                "alice",
+                "Alice Smith",
+                "alice@example.com"
+            ]),
+        ]
+    );
+    assert_eq!(
+        rs.query(
+            "select event_id::text, dup_created_at::text from gha_commits_roles order by role"
+        ),
+        vec![
+            strs(&["1001", "2020-01-02 01:00:00"]),
+            strs(&["1001", "2020-01-02 01:00:00"]),
+        ]
+    );
+}
+
+#[test]
+fn orphan_takeover_texts() {
+    // gha_texts is not empty: the restore builds the texts of its synthetic
+    // events, the takeover drops those of the emptied ones and rebuilds the
+    // texts of the GHA pushes that took the commits over (the seeded text of
+    // push 1001 is replaced by its commit message).
+    let case = Case::new("orphan_takeover_texts")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .also("insert into gha_texts(event_id, body, created_at, actor_id, actor_login, repo_id, repo_name, type) values (1001, 'x', '2020-01-02 01:00:00', 1, 'alice', 100, 'org/repo', 'PushEvent');")
+        .steps(vec![
+            Step::Run(Vec::new()),
+            Step::Run(vec![("GHA2DB_FETCH_COMMITS_MODE", "1")]),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    assert_eq!(rs.code(1), Some(0));
+    rs.expect_line(
+        0,
+        "targeted postprocess executed for 4 restored event id(s)",
+    );
+    // The backfill's postprocess (pushes 1001 and 1002); the restore has
+    // nothing to postprocess.
+    rs.expect_line(
+        1,
+        "targeted postprocess executed for 2 restored event id(s)",
+    );
+    assert_eq!(rs.count_prefix(1, "targeted postprocess"), 1);
+    let nid0 = negative_artificial_id(&["PushEvent", "org/repo", &rs.shas[0]]).to_string();
+    assert_eq!(
+        rs.query("select event_id::text, count(*)::text from gha_texts group by event_id order by event_id"),
+        vec![
+            strs(&[&nid0, "1"]),
+            strs(&["1001", "1"]),
+            strs(&["1002", "2"]),
+        ]
+    );
+    assert_eq!(
+        rs.count("select count(*) from gha_texts where body = 'x'"),
+        0
+    );
+    let body = rs.column("select body from gha_texts where event_id = 1001");
+    assert!(body[0].starts_with("second commit"), "{body:?}");
+    assert_eq!(
+        rs.query("select actor_id::text, actor_login, repo_id::text, repo_name, type, created_at::text from gha_texts where event_id = 1001"),
+        vec![strs(&[
+            "1",
+            "alice",
+            "100",
+            "org/repo",
+            "PushEvent",
+            "2020-01-02 01:00:00"
+        ])]
+    );
+}
+
+#[test]
+fn orphan_takeover_partial() {
+    // A synthetic push keeping some of its commits: the restore grouped the
+    // merged feature commits under main's merge push (f1, f2, merge); a GHA
+    // push to the feature branch (before = commit 4, head = f1) then takes
+    // only f1 over. That synthetic event keeps f2 and the merge (and its
+    // payload); pushes 1001/1002 take commits 2-4 as usual.
+    let case = Case::new("orphan_takeover_partial")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .steps(vec![
+            merged_feature("2020-01-12T00:00:00Z", "2020-01-12T00:00:00Z"),
+            Step::Run(Vec::new()),
+            Step::SqlFrom("f1=$(git -C {dir}/repos/org/repo rev-parse 'refs/remotes/origin/main^2^'); echo \"insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values (1003, 'PushEvent', 1, 100, '2020-01-10 01:00:00', 10, 'alice', 'org/repo'); insert into gha_payloads(event_id, push_id, size, ref, head, befor, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at) values (1003, 3, 1, 'refs/heads/feat', '$f1', '{sha3}', 'alice', 100, 'org/repo', 'PushEvent', '2020-01-10 01:00:00');\""),
+            Step::Run(vec![("GHA2DB_FETCH_COMMITS_MODE", "1")]),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    assert_eq!(rs.code(1), Some(0));
+    let merge = rev(&rs, "refs/remotes/origin/main");
+    let f2 = rev(&rs, &format!("{merge}^2"));
+    let f1 = rev(&rs, &format!("{merge}^2^"));
+    let nid0 = negative_artificial_id(&["PushEvent", "org/repo", &rs.shas[0]]).to_string();
+    let nid_merge = negative_artificial_id(&["PushEvent", "org/repo", &merge]).to_string();
+    rs.expect_line(
+        0,
+        &format!("<db>/org/repo: main push {merge}: restoring 3 of 3 commits"),
+    );
+    rs.expect_line(0, "<db>/org/repo: successfully restored 7 orphan commits");
+    rs.expect_line(
+        1,
+        "<db>/org/repo: need to backfill 3 events since 2012-07-01 00:00:00 +0000 UTC",
+    );
+    rs.expect_line(
+        1,
+        &format!(
+            "<db>/org/repo PushEvent 1003: took over commit {f1} from restored event {nid_merge}"
+        ),
+    );
+    rs.expect_line(
+        1,
+        "<db>/org/repo: took over 4 commit(s) from 4 restored push event(s) into 3 GHA push event(s), removed 3 emptied restored event(s)",
+    );
+    rs.expect_line(
+        1,
+        "<db>/org/repo: successfully backfilled 4 commits and 2 commit roles for 3 events",
+    );
+    rs.expect_line(1, "<db>/org/repo: found 7 commits since <ts>");
+    rs.expect_line(1, "<db>/org/repo: no orphan commits to restore");
+
+    assert_eq!(rs.count("select count(*) from gha_commits"), 7);
+    assert_eq!(
+        rs.query(&format!(
+            "select event_id::text, origin::text, is_distinct::text, dup_actor_login, dup_created_at::text from gha_commits where sha = '{f1}'"
+        )),
+        vec![strs(&["1003", "1", "true", "alice", "2020-01-10 01:00:00"])]
+    );
+    let mut kept = vec![f2.clone(), merge.clone()];
+    kept.sort();
+    assert_eq!(
+        rs.column(&format!(
+            "select sha from gha_commits where event_id = {nid_merge} order by sha"
+        )),
+        kept
+    );
+    let mut left = vec![nid0.clone(), nid_merge.clone()];
+    left.sort();
+    let mut got = rs.column("select id::text from gha_events where id < 0");
+    got.sort();
+    assert_eq!(got, left);
+    // The payload of the partially emptied synthetic push is left alone.
+    assert_eq!(
+        rs.query(&format!(
+            "select size::text, head, befor from gha_payloads where event_id = {nid_merge}"
+        )),
+        vec![strs(&["3", &merge, &rs.shas[3]])]
+    );
+    assert_eq!(
+        rs.count("select count(*) from gha_payloads where event_id < 0"),
+        2
     );
 }
 
@@ -3468,10 +3813,14 @@ fn rev(rs: &Side, spec: &str) -> String {
     .to_string()
 }
 
-/// Today's date (UTC) — "recent" fixture commits are dated at its midnight so
-/// both sides build identical SHAs and the commits fall into a short window.
-fn today() -> String {
-    Utc::now().format("%Y-%m-%d").to_string()
+/// Yesterday's date (UTC) — "recent" fixture commits are dated at its midnight
+/// so both sides build identical SHAs and the commits fall into a short window
+/// (the restore stops at the start of the current hour: commits landed today at
+/// midnight would be outside it during the first hour of the day).
+fn yesterday() -> String {
+    (Utc::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 /// `(sha, event_id, dup_created_at)` of `gha_commits`.
@@ -3481,18 +3830,18 @@ fn commit_events(rs: &Side) -> Vec<Vec<String>> {
 
 #[test]
 fn orphan_landing_window() {
-    // A feature branch with 2020-dated commits merged today: everything that
+    // A feature branch with 2020-dated commits merged yesterday: everything that
     // landed on main inside the window is restored as one push (head = the
     // merge commit, before = its first parent, size 3, created_at = the
     // landing time), and a re-run finds nothing new.
-    let today = today();
+    let yesterday = yesterday();
     let case = Case::new("orphan_landing_window")
         .debug()
         .orphan("2 days")
         .steps(vec![
             merged_feature(
-                leak(&format!("{today}T00:00:00Z")),
-                leak(&format!("{today}T00:00:01Z")),
+                leak(&format!("{yesterday}T00:00:00Z")),
+                leak(&format!("{yesterday}T00:00:01Z")),
             ),
             Step::Run(Vec::new()),
             Step::Run(Vec::new()),
@@ -3533,7 +3882,7 @@ fn orphan_landing_window() {
         "Finished DB '<db>': processed 1 repos, checked 3 commits, restored 0",
     );
     let nid = negative_artificial_id(&["PushEvent", "org/repo", &merge]).to_string();
-    let landed = format!("{today} 00:00:01");
+    let landed = format!("{yesterday} 00:00:01");
     assert_eq!(
         restored_events(&rs),
         vec![strs(&[
@@ -3570,18 +3919,18 @@ fn orphan_landing_window() {
 #[test]
 fn orphan_no_grouping_commit_dates() {
     // The legacy shape (GHA2DB_ORPHAN_COMMITS_NO_GROUPING): commit dates
-    // instead of landing times, so the 2020-dated feature commits merged today
-    // are missed; one event per commit, ref = the remote ref, no before, the
+    // instead of landing times, so the 2020-dated feature commits merged
+    // yesterday are missed; one event per commit, ref = the remote ref, no before, the
     // author as the actor and the author date as created_at.
-    let today = today();
+    let yesterday = yesterday();
     let case = Case::new("orphan_no_grouping_commit_dates")
         .debug()
         .orphan("2 days")
         .env("GHA2DB_ORPHAN_COMMITS_NO_GROUPING", "1")
         .steps(vec![
             merged_feature(
-                leak(&format!("{today}T00:00:00Z")),
-                leak(&format!("{today}T00:00:01Z")),
+                leak(&format!("{yesterday}T00:00:00Z")),
+                leak(&format!("{yesterday}T00:00:01Z")),
             ),
             Step::Run(Vec::new()),
         ]);
@@ -3598,7 +3947,7 @@ fn orphan_no_grouping_commit_dates() {
     );
     rs.expect_line(0, "<db>/org/repo: successfully restored 1 orphan commits");
     let nid = negative_artificial_id(&["PushEvent", "org/repo", &merge]).to_string();
-    let authored = format!("{today} 00:00:00");
+    let authored = format!("{yesterday} 00:00:00");
     assert_eq!(
         restored_events(&rs),
         vec![strs(&[
@@ -3630,14 +3979,14 @@ fn orphan_legacy_event_reuse() {
     // as the push's); the grouped run then adds the merged commits to that
     // event: no conflict, the existing created_at is kept, the legacy payload
     // is left alone.
-    let today = today();
+    let yesterday = yesterday();
     let case = Case::new("orphan_legacy_event_reuse")
         .debug()
         .orphan("2 days")
         .steps(vec![
             merged_feature(
-                leak(&format!("{today}T00:00:00Z")),
-                leak(&format!("{today}T00:00:01Z")),
+                leak(&format!("{yesterday}T00:00:00Z")),
+                leak(&format!("{yesterday}T00:00:01Z")),
             ),
             Step::Run(vec![("GHA2DB_ORPHAN_COMMITS_NO_GROUPING", "1")]),
             Step::Run(Vec::new()),
@@ -3665,7 +4014,7 @@ fn orphan_legacy_event_reuse() {
     );
     rs.expect_line(1, "<db>/org/repo: successfully restored 2 orphan commits");
     let nid = negative_artificial_id(&["PushEvent", "org/repo", &merge]).to_string();
-    let authored = format!("{today} 00:00:00");
+    let authored = format!("{yesterday} 00:00:00");
     assert_eq!(
         restored_events(&rs),
         vec![strs(&[

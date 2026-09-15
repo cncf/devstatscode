@@ -614,6 +614,7 @@ fn get_repos_runs_first_with_its_env() {
         [
             "GHA2DB_FETCH_COMMITS_MODE=0",
             "GHA2DB_PROCESS_REPOS=1",
+            "GHA2DB_RESTORE_ORPHAN_COMMITS=",
             "PG_DB=<dbs>_p1"
         ]
     );
@@ -633,6 +634,7 @@ fn fetch_commits_mode_2_is_passed_to_get_repos() {
         [
             "GHA2DB_FETCH_COMMITS_MODE=2",
             "GHA2DB_PROCESS_REPOS=1",
+            "GHA2DB_RESTORE_ORPHAN_COMMITS=",
             "PG_DB=<dbs>_p1"
         ]
     );
@@ -648,6 +650,7 @@ fn fetch_commits_mode_2_is_passed_to_get_repos() {
         [
             "GHA2DB_FETCH_COMMITS_MODE=0",
             "GHA2DB_PROCESS_REPOS=1",
+            "GHA2DB_RESTORE_ORPHAN_COMMITS=",
             "PG_DB=<dbs>_p1"
         ]
     );

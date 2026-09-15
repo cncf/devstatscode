@@ -330,7 +330,8 @@ pub fn backfill_push_event_commits(
         let con = pg_conn_db_shared(ctx_ro, db);
         // Actor cache shared across repos processed for this DB (thread-safe).
         let acache = ActorCache::new();
-        let counters = Mutex::new((0i64, 0i64));
+        // (commits, roles, event ids whose texts are rebuilt after the takeovers)
+        let counters: Mutex<(i64, i64, Vec<i64>)> = Mutex::new((0, 0, Vec::new()));
 
         // the repositories of a project include the ones without a clone (deleted or moved on
         // GitHub, excluded, never fetched) - nothing to backfill there, counted once per DB
@@ -357,25 +358,33 @@ pub fn backfill_push_event_commits(
         }
 
         for_each_repo_limited(&work, thr_n, |repo| {
-            let (commits, roles) = match backfill_repo(ctx_ro, &con, db, repo, &maybe_hide, &acache)
-            {
-                Ok(v) => v,
-                Err((commits, roles, err)) => {
-                    printf!("backfillRepo(DB={db}, repo={repo}) error: {err}\n");
-                    (commits, roles)
-                }
-            };
+            let (commits, roles, eids) =
+                match backfill_repo(ctx_ro, &con, db, repo, &maybe_hide, &acache) {
+                    Ok(v) => v,
+                    Err((commits, roles, err)) => {
+                        printf!("backfillRepo(DB={db}, repo={repo}) error: {err}\n");
+                        (commits, roles, Vec::new())
+                    }
+                };
             let mut c = counters.lock().unwrap_or_else(|p| p.into_inner());
             c.0 += commits;
             c.1 += roles;
+            c.2.extend(eids);
         });
 
         con.close();
-        let (n_commits, n_roles) = *counters.lock().unwrap_or_else(|p| p.into_inner());
+        let (n_commits, n_roles, db_eids) =
+            counters.into_inner().unwrap_or_else(|p| p.into_inner());
         printf!(
             "Finished DB '{db}': backfilled {n_commits} commits and {n_roles} commit roles for {} repos\n",
             work.len()
         );
+        if !db_eids.is_empty() {
+            // texts of the pushes that took commits over from restored events and of the restored
+            // events that kept some commits: gha_texts rows are keyed by event id, so only a
+            // targeted rebuild reflects the moved commits
+            restore::run_event_ids_postprocess_db(ctx_ro, db, &db_eids);
+        }
         all_commits += n_commits;
         all_roles += n_roles;
     }
@@ -389,8 +398,11 @@ pub fn backfill_push_event_commits(
     ctx.exec_quiet = prev_exec_quiet;
 }
 
-/// Go `backfillRepo`: returns `(commits, roles)` inserted, or the counts so
-/// far plus the error message.
+/// Go `backfillRepo`'s result: `(commits, roles, event ids to postprocess)`
+/// inserted, or the counts so far plus the error message.
+type BackfillResult = Result<(i64, i64, Vec<i64>), (i64, i64, String)>;
+
+/// Go `backfillRepo`.
 fn backfill_repo(
     ctx: &Ctx,
     con: &PgConn,
@@ -398,17 +410,21 @@ fn backfill_repo(
     repo: &str,
     maybe_hide: &MaybeHide,
     acache: &ActorCache,
-) -> Result<(i64, i64), (i64, i64, String)> {
+) -> BackfillResult {
     let repo_path = format!("{}{repo}", ctx.repos_dir);
     stat_repo_path(db, &repo_path).map_err(|e| (0, 0, e))?;
 
     // For mode=1 (missing only) we can limit scanning by last commit time already inserted.
+    // Only rows of GHA events (event_id > 0) move the watermark: the orphan restore stamps its
+    // synthetic (negative id) events with the commits' landing dates, which can be later than
+    // every PushEvent loaded so far (or user-controlled and in the future) and used to starve
+    // the backfill of the same sync (see the takeover below).
     let mut dt_from = GoTime::Utc(ctx.default_start_date);
     if ctx.fetch_commits_mode == 1 {
         let mut max_dt: Option<DateTime<FixedOffset>> = None;
         let res = con
             .query_row(
-                "select max(dup_created_at) from gha_commits where dup_repo_name = $1",
+                "select max(dup_created_at) from gha_commits where dup_repo_name = $1 and event_id > 0",
                 &[SqlArg::from(repo)],
             )
             .scan(&mut [&mut max_dt]);
@@ -434,7 +450,7 @@ fn backfill_repo(
         if ctx.debug > 0 {
             printf!("{db}/{repo}: no need to backfill commits since {dt_from}\n");
         }
-        return Ok((0, 0));
+        return Ok((0, 0, Vec::new()));
     }
     printf!(
         "{db}/{repo}: need to backfill {} events since {dt_from}\n",
@@ -671,7 +687,7 @@ fn backfill_repo(
             "{db}/{repo}: no commits to backfill after processing {} events\n",
             events.len()
         );
-        return Ok((0, 0));
+        return Ok((0, 0, Vec::new()));
     }
     printf!(
         "{db}/{repo}: need to backfill {} commits for {} events\n",
@@ -736,6 +752,18 @@ on conflict do nothing
 ";
     // Only fill missing payload size (NULL) with the computed count.
     let upd_payload_sql = "update gha_payloads set size = $2 where event_id = $1 and (size is null or size <= 1) and (size is null or size <> $2)";
+
+    // Takeover: a commit restored earlier by the orphan restore (a synthetic PushEvent with a
+    // negative id, written before this push was loaded from GHA, or before its commits could be
+    // backfilled) now belongs to this GHA push. The synthetic rows of the commit go away first, so
+    // the GHA row gets is_distinct and the same commit is never counted twice; a synthetic event
+    // left without commits is removed with its payload, texts and files, one that kept some
+    // commits (only part of its commits were pushed by this event) has its texts rebuilt.
+    // synthetic event id -> number of its commits taken over
+    let mut taken_from: BTreeMap<i64, usize> = BTreeMap::new();
+    // GHA push event ids that took commits over (texts rebuilt after the commit)
+    let mut taken_by: BTreeSet<i64> = BTreeSet::new();
+    let mut n_taken = 0usize;
 
     printf!(
         "{db}/{repo}: inserting commits for {} events\n",
@@ -816,6 +844,34 @@ on conflict do nothing
                 }
                 continue;
             };
+
+            // Take the commit over from the synthetic events of the orphan restore (if any).
+            let synth_ids = match take_over_commit(&mut tx, &sha) {
+                Ok(ids) => ids,
+                Err(terr) => {
+                    return Err((
+                        0,
+                        0,
+                        format!(
+                            "take over restored commit (db={db}, repo={repo}, event={}, sha={sha}): error: {terr}",
+                            ev.event_id
+                        ),
+                    ));
+                }
+            };
+            for sid in &synth_ids {
+                *taken_from.entry(*sid).or_insert(0) += 1;
+                n_taken += 1;
+                if ctx.debug > 0 {
+                    printf!(
+                        "{db}/{repo} PushEvent {}: took over commit {sha} from restored event {sid}\n",
+                        ev.event_id
+                    );
+                }
+            }
+            if !synth_ids.is_empty() {
+                taken_by.insert(ev.event_id);
+            }
 
             // Commit table fields.
             let author_name_raw = ci.author_name.replace('\0', "");
@@ -994,15 +1050,98 @@ on conflict do nothing
         }
     }
 
+    // Synthetic events left without commits are removed entirely, the ones that kept some commits
+    // get their texts rebuilt together with the pushes that took the commits over.
+    let mut pp_eids: Vec<i64> = Vec::new();
+    let mut n_removed = 0usize;
+    if n_taken > 0 {
+        for sid in taken_from.keys() {
+            let mut left = 0i64;
+            if let Err(err) = tx
+                .query_row(
+                    "select count(*) from gha_commits where event_id = $1",
+                    &[SqlArg::from(*sid)],
+                )
+                .scan(&mut [&mut left])
+            {
+                return Err((
+                    0,
+                    0,
+                    format!(
+                        "count commits of restored event (db={db}, repo={repo}, event={sid}): error: {err}"
+                    ),
+                ));
+            }
+            if left > 0 {
+                pp_eids.push(*sid);
+                continue;
+            }
+            for q in [
+                "delete from gha_texts where event_id = $1",
+                "delete from gha_events_commits_files where event_id = $1",
+                "delete from gha_payloads where event_id = $1",
+                "delete from gha_events where id = $1",
+            ] {
+                if let Err(err) = tx.exec(q, &[SqlArg::from(*sid)]) {
+                    return Err((
+                        0,
+                        0,
+                        format!(
+                            "remove emptied restored event (db={db}, repo={repo}, event={sid}): error: {err}"
+                        ),
+                    ));
+                }
+            }
+            n_removed += 1;
+        }
+        pp_eids.extend(taken_by.iter().copied());
+    }
+
     if let Err(err) = tx.commit() {
         printf!("Error committing transaction for {db}/{repo}: {err}\n");
         return Err((0, 0, err.to_string()));
+    }
+    if n_taken > 0 {
+        printf!(
+            "{db}/{repo}: took over {n_taken} commit(s) from {} restored push event(s) into {} GHA push event(s), removed {n_removed} emptied restored event(s)\n",
+            taken_from.len(),
+            taken_by.len()
+        );
     }
     printf!(
         "{db}/{repo}: successfully backfilled {n_commits} commits and {n_roles} commit roles for {} events\n",
         events.len()
     );
-    Ok((n_commits, n_roles))
+    Ok((n_commits, n_roles, pp_eids))
+}
+
+/// Go `takeOverCommit`: remove the rows the orphan restore wrote for `sha`
+/// under its synthetic (negative id) PushEvents, returns the ids of those
+/// events (ascending). Called right before the commit is inserted for a GHA
+/// push, so the GHA row gets `is_distinct` when no other row is left.
+fn take_over_commit(tx: &mut PgTx<'_>, sha: &str) -> Result<Vec<i64>, PgError> {
+    let mut ids: Vec<i64> = Vec::new();
+    {
+        let mut rows = tx.query(
+            "delete from gha_commits where sha = $1 and event_id < 0 returning event_id",
+            &[SqlArg::from(sha)],
+        )?;
+        while rows.next() {
+            let mut id = 0i64;
+            rows.scan(&mut [&mut id])?;
+            ids.push(id);
+        }
+        rows.err()?;
+    }
+    if ids.is_empty() {
+        return Ok(ids);
+    }
+    ids.sort_unstable();
+    tx.exec(
+        "delete from gha_commits_roles where sha = $1 and event_id < 0",
+        &[SqlArg::from(sha)],
+    )?;
+    Ok(ids)
 }
 
 /// Go `insertRoles`: insert one `gha_commits_roles` row.
@@ -1287,7 +1426,8 @@ fn git_range_commits(
 }
 
 /// Go `selectPushEventsNeedingCommits`: mode=1: missing only; mode>=2:
-/// missing + truncated (cnt < payload.size).
+/// missing + truncated (cnt < payload.size). GHA events only (e.id > 0): the
+/// synthetic pushes of the orphan restore are never backfilled.
 fn select_push_events_needing_commits(
     ctx: &Ctx,
     con: &PgConn,
@@ -1318,6 +1458,7 @@ left join (
   group by event_id
 ) c on c.event_id = e.id
 where e.type = 'PushEvent'
+  and e.id > 0
   and e.dup_repo_name = $1
   and e.created_at >= $2
   and (
@@ -1598,6 +1739,33 @@ pub fn restore_orphan_commits(
         let con = pg_conn_db_shared(ctx_ro, db);
         let acache = ActorCache::new();
 
+        // The window, once per DB: commits that landed after the newest GHA hour loaded into this
+        // database are not orphans (yet) - their PushEvents arrive with the next hour file, and
+        // restoring them first would leave every such push without commits (its commits already
+        // have rows under a synthetic event) until the backfill takes them over again. The upper
+        // bound is the hour after the newest `gha_parsed` row (`now()` when nothing was parsed yet),
+        // never later than the start of the current hour.
+        let mut dt_to_db = DateTime::<FixedOffset>::default();
+        if let Err(err) = con
+            .query_row(ORPHAN_HORIZON_SQL, &[])
+            .scan(&mut [&mut dt_to_db])
+        {
+            printf!("orphan window(DB={db}) error: {err}\n");
+            con.close();
+            continue;
+        }
+        let dt_to = GoTime::Db(dt_to_db);
+        let dt_from = if ctx_ro.orphan_commits_range.is_empty() {
+            GoTime::Utc(ctx_ro.default_start_date)
+        } else {
+            GoTime::Db(
+                get_date_ago(&con, ctx_ro, dt_to_db, &ctx_ro.orphan_commits_range).fixed_offset(),
+            )
+        };
+        printf!(
+            "Restoring orphan commits: DB '{db}': orphan commits since {dt_from} until {dt_to}\n"
+        );
+
         let skip_set = match select_skip_commits(&con) {
             Ok(s) => s,
             Err(err) => {
@@ -1669,6 +1837,8 @@ pub fn restore_orphan_commits(
                 db,
                 repo,
                 name,
+                dt_from,
+                dt_to,
                 &maybe_hide,
                 &acache,
                 &skip_set,
@@ -1822,10 +1992,20 @@ fn orphan_push_actor(ctx: &Ctx, hi: &CommitInfo) -> (String, String) {
     (name, email)
 }
 
+/// Go `orphanHorizonSQL`: the upper bound of the orphan restore window
+/// (timestamptz): the hour after the newest GHA hour parsed into the database
+/// (`now()` when there is none), capped at the start of the current hour.
+/// Commits landed after it are still waiting for their PushEvents.
+const ORPHAN_HORIZON_SQL: &str = "select least(
+  coalesce(((select max(dt) from gha_parsed) at time zone 'UTC') + interval '1 hour', now()),
+  date_trunc('hour', now() at time zone 'UTC') at time zone 'UTC'
+)";
+
 /// Go `restoreOrphanRepo`: returns (repos processed, commits checked,
 /// commits restored, restored event ids) or the counts so far plus the error.
 /// `repo` is the clone directory name, `name` the repo name the restored rows
-/// are attributed to (the current name; differs for historical aliases).
+/// are attributed to (the current name; differs for historical aliases),
+/// `dt_from`/`dt_to` the window (computed once per database).
 #[allow(clippy::too_many_arguments)]
 fn restore_orphan_repo(
     ctx: &Ctx,
@@ -1833,6 +2013,8 @@ fn restore_orphan_repo(
     db: &str,
     repo: &str,
     name: &str,
+    dt_from: GoTime,
+    dt_to: GoTime,
     maybe_hide: &MaybeHide,
     acache: &ActorCache,
     skip_set: &HashSet<String>,
@@ -1843,23 +2025,8 @@ fn restore_orphan_repo(
     let repo_path = format!("{}{repo}", ctx.repos_dir);
     stat_repo_path(db, &repo_path).map_err(|e| (0, 0, 0, e.into()))?;
 
-    let mut dt_from = GoTime::Utc(ctx.default_start_date);
-    if !ctx.orphan_commits_range.is_empty() {
-        let mut dt_to: Option<DateTime<FixedOffset>> = None;
-        if let Err(err) = con.query_row("select now()", &[]).scan(&mut [&mut dt_to]) {
-            return Err((
-                0,
-                0,
-                0,
-                format!("select now() failed (db={db}, repo={repo}): {err}").into(),
-            ));
-        }
-        if let Some(dt_to) = dt_to {
-            let ago = get_date_ago(con, ctx, dt_to, &ctx.orphan_commits_range);
-            dt_from = GoTime::Db(ago.fixed_offset());
-        }
-    }
     let since = dt_from.utc();
+    let until = dt_to.utc();
 
     // The default ref first; --all would also pick upstream history reachable in fork clones,
     // so only `origin/*` branches whose tip moved inside the window are added.
@@ -1915,9 +2082,9 @@ fn restore_orphan_repo(
     let mut seen: HashSet<String> = HashSet::new();
     for b in &branches {
         let listed = if ctx.orphan_commits_group {
-            git_landed_commits(ctx, &repo_path, b, since)
+            git_landed_commits(ctx, &repo_path, b, since, until)
         } else {
-            git_listed_commits(ctx, &repo_path, &b.ref_, since)
+            git_listed_commits(ctx, &repo_path, &b.ref_, since, until)
         };
         let bp = match listed {
             Ok(bp) => bp,
@@ -1957,7 +2124,7 @@ fn restore_orphan_repo(
         }
         if ctx.orphan_commits_group && n_commits > 0 && ctx.debug > 0 {
             printf!(
-                "{db}/{repo}: {}: {n_commits} commits in {n_pushes} pushes landed since {dt_from}\n",
+                "{db}/{repo}: {}: {n_commits} commits in {n_pushes} pushes landed since {dt_from} until {dt_to}\n",
                 b.name
             );
         }
@@ -1965,14 +2132,14 @@ fn restore_orphan_repo(
 
     if shas.is_empty() {
         if ctx.debug > 0 {
-            printf!("{db}/{repo}: no commits found since {dt_from}\n");
+            printf!("{db}/{repo}: no commits found since {dt_from} until {dt_to}\n");
         }
         return Ok((0, 0, 0, Vec::new()));
     }
 
     if ctx.debug > 0 {
         printf!(
-            "{db}/{repo}: found {} commits since {dt_from}\n",
+            "{db}/{repo}: found {} commits since {dt_from} until {dt_to}\n",
             shas.len()
         );
     }
@@ -2558,12 +2725,14 @@ fn get_repo_id(con: &PgConn, repo_name: &str) -> Result<i64, String> {
 /// Result of [`git_list_commits`]: shas newest first, sha → author date (UTC).
 type ListedCommits = (Vec<String>, HashMap<String, DateTime<Utc>>);
 
-/// Go `gitListCommits`: `git log <ref> --format=%H %at --since=YYYY-MM-DD`.
+/// Go `gitListCommits`: `git log <ref> --format=%H %at --since=YYYY-MM-DD --until=@<unix>`:
+/// commits whose committer date is inside the window (`since` at day granularity, `until` exact).
 fn git_list_commits(
     ctx: &Ctx,
     repo_path: &str,
     ref_: &str,
     since: DateTime<Utc>,
+    until: DateTime<Utc>,
 ) -> Result<ListedCommits, String> {
     let args = vec![
         "git".to_string(),
@@ -2573,6 +2742,7 @@ fn git_list_commits(
         ref_.to_string(),
         "--format=%H %at".to_string(),
         format!("--since={}", to_ymd_date(since)),
+        format!("--until=@{}", until.timestamp()),
     ];
 
     let out = exec::exec_command(ctx, &args, &no_env()).map_err(|e| e.to_string())?;
@@ -2605,8 +2775,9 @@ fn git_listed_commits(
     repo_path: &str,
     ref_: &str,
     since: DateTime<Utc>,
+    until: DateTime<Utc>,
 ) -> Result<Vec<OrphanPush>, String> {
-    let (shas, dates) = git_list_commits(ctx, repo_path, ref_, since)?;
+    let (shas, dates) = git_list_commits(ctx, repo_path, ref_, since, until)?;
     let mut pushes: Vec<OrphanPush> = Vec::with_capacity(shas.len());
     for sha in shas {
         let sha_norm = normalize_sha(&sha);
@@ -2669,17 +2840,19 @@ fn git_origin_branches(
     Ok(branches)
 }
 
-/// Go `gitLandedCommits`: commits that became reachable from `branch` after `since`, grouped
-/// by the first-parent step that brought them in (the GHA PushEvent shape). The boundary is
-/// the branch's first-parent tip as of `since` (`git rev-list -1 --first-parent --before=…`);
-/// when there is none (young repository) everything reachable from the branch landed inside
-/// the window. Pushes are returned oldest first, commits inside a push in `git log` order
-/// (newest first).
+/// Go `gitLandedCommits`: commits that became reachable from `branch` after `since` and not
+/// later than `until`, grouped by the first-parent step that brought them in (the GHA PushEvent
+/// shape). The tip is the branch's first-parent tip as of `until` (`git rev-list -1
+/// --first-parent --before=…`; nothing landed inside the window when there is none), the
+/// boundary its tip as of `since`; when there is no boundary (young repository) everything
+/// reachable from the tip landed inside the window. Pushes are returned oldest first, commits
+/// inside a push in `git log` order (newest first).
 fn git_landed_commits(
     ctx: &Ctx,
     repo_path: &str,
     branch: &OrphanBranch,
     since: DateTime<Utc>,
+    until: DateTime<Utc>,
 ) -> Result<Vec<OrphanPush>, String> {
     let git = |args: &[&str]| -> Result<String, String> {
         let mut argv = vec!["git".to_string(), "-C".to_string(), repo_path.to_string()];
@@ -2702,6 +2875,19 @@ fn git_landed_commits(
         "rev-list",
         "-1",
         "--first-parent",
+        &format!("--before=@{}", until.timestamp()),
+        &branch.ref_,
+    ])?;
+    let tip = normalize_sha(out.trim());
+    if !is_valid_non_zero_sha40(&tip) {
+        // every first-parent commit of the branch is newer than the horizon
+        return Ok(Vec::new());
+    }
+
+    let out = git(&[
+        "rev-list",
+        "-1",
+        "--first-parent",
         &format!("--before=@{}", since.timestamp()),
         &branch.ref_,
     ])?;
@@ -2710,9 +2896,9 @@ fn git_landed_commits(
         if boundary == tip {
             return Ok(Vec::new());
         }
-        format!("{boundary}..{}", branch.ref_)
+        format!("{boundary}..{tip}")
     } else {
-        branch.ref_.clone()
+        tip.clone()
     };
 
     let out = git(&["log", "--format=%H %P %ct", &range_spec])?;

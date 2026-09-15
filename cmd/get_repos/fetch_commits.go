@@ -261,6 +261,7 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 		var mtx sync.Mutex
 		nCommits := 0
 		nRoles := 0
+		var dbEids []int64
 
 		for _, repo := range work {
 			thr <- struct{}{}
@@ -269,13 +270,14 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 				// completion is signalled only on the normal path: a fatal error (panic) in the
 				// worker ends the process, and a deferred signal would let the main goroutine
 				// racily print the "Finished DB" summary while the runtime is exiting
-				commits, roles, err := backfillRepo(ctx, con, db, repo, maybeHide, acache)
+				commits, roles, eids, err := backfillRepo(ctx, con, db, repo, maybeHide, acache)
 				if err != nil {
 					lib.Printf("backfillRepo(DB=%s, repo=%s) error: %v\n", db, repo, err)
 				}
 				mtx.Lock()
 				nCommits += commits
 				nRoles += roles
+				dbEids = append(dbEids, eids...)
 				mtx.Unlock()
 				<-thr
 				done <- struct{}{}
@@ -287,6 +289,12 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 		}
 		lib.FatalOnError(con.Close())
 		lib.Printf("Finished DB '%s': backfilled %d commits and %d commit roles for %d repos\n", db, nCommits, nRoles, len(work))
+		if len(dbEids) > 0 {
+			// texts of the pushes that took commits over from restored events and of the restored
+			// events that kept some commits: gha_texts rows are keyed by event id, so only a
+			// targeted rebuild reflects the moved commits
+			lib.RunEventIDsPostprocessDB(ctx, db, dbEids)
+		}
 		allCommits += nCommits
 		allRoles += nRoles
 	}
@@ -294,22 +302,26 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 	lib.Printf("Finished all DBs: backfilled %d commits and %d commit roles in: %v\n", allCommits, allRoles, dtEnd.Sub(dtStart))
 }
 
-func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(string) string, acache *actorCache) (int, int, error) {
+func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(string) string, acache *actorCache) (int, int, []int64, error) {
 	repoPath := ctx.ReposDir + repo
 	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
 		// Do not silently skip: user explicitly requested tracking.
-		return 0, 0, fmt.Errorf("%s: repo not cloned: %s", db, repoPath)
+		return 0, 0, nil, fmt.Errorf("%s: repo not cloned: %s", db, repoPath)
 	} else if err != nil {
-		return 0, 0, fmt.Errorf("%s: cannot stat repo path %s: %w", db, repoPath, err)
+		return 0, 0, nil, fmt.Errorf("%s: cannot stat repo path %s: %w", db, repoPath, err)
 	}
 
 	// For mode=1 (missing only) we can limit scanning by last commit time already inserted.
+	// Only rows of GHA events (event_id > 0) move the watermark: the orphan restore stamps its
+	// synthetic (negative id) events with the commits' landing dates, which can be later than
+	// every PushEvent loaded so far (or user-controlled and in the future) and used to starve
+	// the backfill of the same sync (see the takeover below).
 	dtFrom := ctx.DefaultStartDate
 	if ctx.FetchCommitsMode == 1 {
 		var maxDt sql.NullTime
-		err := con.QueryRow(`select max(dup_created_at) from gha_commits where dup_repo_name = $1`, repo).Scan(&maxDt)
+		err := con.QueryRow(`select max(dup_created_at) from gha_commits where dup_repo_name = $1 and event_id > 0`, repo).Scan(&maxDt)
 		if err != nil {
-			return 0, 0, fmt.Errorf("select max(dup_created_at) from gha_commits failed (db=%s, repo=%s): %w", db, repo, err)
+			return 0, 0, nil, fmt.Errorf("select max(dup_created_at) from gha_commits failed (db=%s, repo=%s): %w", db, repo, err)
 		}
 		if maxDt.Valid && maxDt.Time.After(dtFrom) {
 			dtFrom = maxDt.Time
@@ -318,13 +330,13 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 
 	events, err := selectPushEventsNeedingCommits(ctx, con, repo, dtFrom)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, nil, err
 	}
 	if len(events) == 0 {
 		if ctx.Debug > 0 {
 			lib.Printf("%s/%s: no need to backfill commits since %s\n", db, repo, dtFrom)
 		}
-		return 0, 0, nil
+		return 0, 0, nil, nil
 	}
 	lib.Printf("%s/%s: need to backfill %d events since %s\n", db, repo, len(events), dtFrom)
 
@@ -498,7 +510,7 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 
 	if len(eventShas) == 0 || len(shaSet) == 0 {
 		lib.Printf("%s/%s: no commits to backfill after processing %d events\n", db, repo, len(events))
-		return 0, 0, nil
+		return 0, 0, nil, nil
 	}
 	lib.Printf("%s/%s: need to backfill %d commits for %d events\n", db, repo, len(shaSet), len(events))
 
@@ -524,7 +536,7 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 		}
 	}
 	if len(infoMap) == 0 {
-		return 0, 0, fmt.Errorf("git_commits.sh returned no commit metadata for db=%s, repo=%s (shas=%d)", db, repo, len(shaSet))
+		return 0, 0, nil, fmt.Errorf("git_commits.sh returned no commit metadata for db=%s, repo=%s (shas=%d)", db, repo, len(shaSet))
 	}
 	if ctx.Debug > 0 {
 		lib.Printf("Fetched commit metadata for %s/%s: %d SHAs, %d records so far\n", db, repo, len(shaSet), len(infoMap))
@@ -532,7 +544,7 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 
 	tx, err := con.Begin()
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, nil, err
 	}
 	defer func() {
 		_ = tx.Rollback()
@@ -573,13 +585,13 @@ on conflict do nothing
 
 	insCommitStmt, err := tx.Prepare(insCommitSQL)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, nil, err
 	}
 	defer func() { _ = insCommitStmt.Close() }()
 
 	insRoleStmt, err := tx.Prepare(insCommitRoleSQL)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, nil, err
 	}
 	defer func() { _ = insRoleStmt.Close() }()
 
@@ -588,10 +600,34 @@ on conflict do nothing
 		// Keep legacy behavior (and keep older workflows intact).
 		updPayloadStmt, err = tx.Prepare(updPayloadSQL)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, nil, err
 		}
 		defer func() { _ = updPayloadStmt.Close() }()
 	}
+
+	// Takeover: a commit restored earlier by the orphan restore (a synthetic PushEvent with a
+	// negative id, written before this push was loaded from GHA, or before its commits could be
+	// backfilled) now belongs to this GHA push. The synthetic rows of the commit go away first, so
+	// the GHA row gets is_distinct and the same commit is never counted twice; a synthetic event
+	// left without commits is removed with its payload, texts and files, one that kept some
+	// commits (only part of its commits were pushed by this event) has its texts rebuilt.
+	takeCommitSQL := `delete from gha_commits where sha = $1 and event_id < 0 returning event_id`
+	takeRoleSQL := `delete from gha_commits_roles where sha = $1 and event_id < 0`
+	takeCommitStmt, err := tx.Prepare(takeCommitSQL)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	defer func() { _ = takeCommitStmt.Close() }()
+	takeRoleStmt, err := tx.Prepare(takeRoleSQL)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	defer func() { _ = takeRoleStmt.Close() }()
+	// synthetic event id -> number of its commits taken over
+	takenFrom := make(map[int64]int)
+	// GHA push event ids that took commits over (texts rebuilt after the commit)
+	takenBy := make(map[int64]struct{})
+	nTaken := 0
 
 	lib.Printf("%s/%s: inserting commits for %d events\n", db, repo, len(events))
 	nCommits := 0
@@ -611,7 +647,7 @@ on conflict do nothing
 		// Legacy mode: optionally update payload.size when missing/<=1.
 		if updPayloadStmt != nil {
 			if _, uerr := updPayloadStmt.Exec(ev.EventID, len(shas)); uerr != nil {
-				return 0, 0, fmt.Errorf("update gha_payloads.size (db=%s, repo=%s, event=%d): error: %w", db, repo, ev.EventID, uerr)
+				return 0, 0, nil, fmt.Errorf("update gha_payloads.size (db=%s, repo=%s, event=%d): error: %w", db, repo, ev.EventID, uerr)
 			}
 		}
 
@@ -637,6 +673,22 @@ on conflict do nothing
 					lib.Printf("Warning: missing git metadata for %s/%s sha %s (event %d)\n", db, repo, sha, ev.EventID)
 				}
 				continue
+			}
+
+			// Take the commit over from the synthetic events of the orphan restore (if any).
+			synthIDs, terr := takeOverCommit(takeCommitStmt, takeRoleStmt, sha)
+			if terr != nil {
+				return 0, 0, nil, fmt.Errorf("take over restored commit (db=%s, repo=%s, event=%d, sha=%s): error: %w", db, repo, ev.EventID, sha, terr)
+			}
+			for _, sid := range synthIDs {
+				takenFrom[sid]++
+				nTaken++
+				if ctx.Debug > 0 {
+					lib.Printf("%s/%s PushEvent %d: took over commit %s from restored event %d\n", db, repo, ev.EventID, sha, sid)
+				}
+			}
+			if len(synthIDs) > 0 {
+				takenBy[ev.EventID] = struct{}{}
 			}
 
 			// Commit table fields.
@@ -696,20 +748,20 @@ on conflict do nothing
 				commRoleName,
 				commRoleEmail,
 			); err != nil {
-				return 0, 0, fmt.Errorf("insert gha_commits (db=%s, repo=%s, event=%d, sha=%s): error: %w", db, repo, ev.EventID, sha, err)
+				return 0, 0, nil, fmt.Errorf("insert gha_commits (db=%s, repo=%s, event=%d, sha=%s): error: %w", db, repo, ev.EventID, sha, err)
 			}
 			nCommits++
 
 			// Insert roles: Author + Committer + trailers.
 			if InsertAuthorRole {
 				if err := insertRoles(insRoleStmt, sha, ev, "Author", authorID, authorLogin, authorRoleName, authorRoleEmail, maybeHide); err != nil {
-					return 0, 0, fmt.Errorf("insert Author role (db=%s, repo=%s, event=%d, sha=%s): error: %w", db, repo, ev.EventID, sha, err)
+					return 0, 0, nil, fmt.Errorf("insert Author role (db=%s, repo=%s, event=%d, sha=%s): error: %w", db, repo, ev.EventID, sha, err)
 				}
 				nRoles++
 			}
 			if InsertCommitterRole {
 				if err := insertRoles(insRoleStmt, sha, ev, "Committer", commID, commLogin, commRoleName, commRoleEmail, maybeHide); err != nil {
-					return 0, 0, fmt.Errorf("insert Committer role (db=%s, repo=%s, event=%d, sha=%s): error: %w", db, repo, ev.EventID, sha, err)
+					return 0, 0, nil, fmt.Errorf("insert Committer role (db=%s, repo=%s, event=%d, sha=%s): error: %w", db, repo, ev.EventID, sha, err)
 				}
 				nRoles++
 			}
@@ -724,19 +776,96 @@ on conflict do nothing
 					lib.Printf("Warning: could not find actor for trailer role of %s/%s sha %s (event %d): name=%q, email=%q\n", db, repo, sha, ev.EventID, tr.Name, tr.Email)
 				}
 				if err := insertRoles(insRoleStmt, sha, ev, tr.Role, tID, tLogin, name, email, maybeHide); err != nil {
-					return 0, 0, fmt.Errorf("insert trailer role (db=%s, repo=%s, event=%d, sha=%s, role=%s): error: %w", db, repo, ev.EventID, sha, tr.Role, err)
+					return 0, 0, nil, fmt.Errorf("insert trailer role (db=%s, repo=%s, event=%d, sha=%s, role=%s): error: %w", db, repo, ev.EventID, sha, tr.Role, err)
 				}
 				nRoles++
 			}
 		}
 	}
 
+	// Synthetic events left without commits are removed entirely, the ones that kept some commits
+	// get their texts rebuilt together with the pushes that took the commits over.
+	var ppEids []int64
+	nRemoved := 0
+	if nTaken > 0 {
+		synthIDs := make([]int64, 0, len(takenFrom))
+		for sid := range takenFrom {
+			synthIDs = append(synthIDs, sid)
+		}
+		sort.Slice(synthIDs, func(i, j int) bool { return synthIDs[i] < synthIDs[j] })
+		for _, sid := range synthIDs {
+			var left int
+			if err := tx.QueryRow(`select count(*) from gha_commits where event_id = $1`, sid).Scan(&left); err != nil {
+				return 0, 0, nil, fmt.Errorf("count commits of restored event (db=%s, repo=%s, event=%d): error: %w", db, repo, sid, err)
+			}
+			if left > 0 {
+				ppEids = append(ppEids, sid)
+				continue
+			}
+			for _, q := range []string{
+				`delete from gha_texts where event_id = $1`,
+				`delete from gha_events_commits_files where event_id = $1`,
+				`delete from gha_payloads where event_id = $1`,
+				`delete from gha_events where id = $1`,
+			} {
+				if _, err := tx.Exec(q, sid); err != nil {
+					return 0, 0, nil, fmt.Errorf("remove emptied restored event (db=%s, repo=%s, event=%d): error: %w", db, repo, sid, err)
+				}
+			}
+			nRemoved++
+		}
+		realIDs := make([]int64, 0, len(takenBy))
+		for eid := range takenBy {
+			realIDs = append(realIDs, eid)
+		}
+		sort.Slice(realIDs, func(i, j int) bool { return realIDs[i] < realIDs[j] })
+		ppEids = append(ppEids, realIDs...)
+	}
+
 	if err := tx.Commit(); err != nil {
 		lib.Printf("Error committing transaction for %s/%s: %v\n", db, repo, err)
-		return 0, 0, err
+		return 0, 0, nil, err
+	}
+	if nTaken > 0 {
+		lib.Printf(
+			"%s/%s: took over %d commit(s) from %d restored push event(s) into %d GHA push event(s), removed %d emptied restored event(s)\n",
+			db, repo, nTaken, len(takenFrom), len(takenBy), nRemoved,
+		)
 	}
 	lib.Printf("%s/%s: successfully backfilled %d commits and %d commit roles for %d events\n", db, repo, nCommits, nRoles, len(events))
-	return nCommits, nRoles, nil
+	return nCommits, nRoles, ppEids, nil
+}
+
+// takeOverCommit - remove the rows the orphan restore wrote for `sha` under its synthetic
+// (negative id) PushEvents, returns the ids of those events (ascending). Called right before the
+// commit is inserted for a GHA push, so the GHA row gets `is_distinct` when no other row is left.
+func takeOverCommit(takeCommitStmt, takeRoleStmt *sql.Stmt, sha string) ([]int64, error) {
+	rows, err := takeCommitStmt.Query(sha)
+	if err != nil {
+		return nil, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	if _, err := takeRoleStmt.Exec(sha); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 func insertRoles(stmt *sql.Stmt, sha string, ev pushEvent, role string, actorID int64, actorLogin, actorName, actorEmail string, maybeHide func(string) string) error {
@@ -978,6 +1107,7 @@ func gitRangeCommits(ctx *lib.Ctx, repoPath, before, head string, pageSize int, 
 
 func selectPushEventsNeedingCommits(ctx *lib.Ctx, con *sql.DB, repo string, dtFrom time.Time) ([]pushEvent, error) {
 	// mode=1: missing only; mode>=2: missing + truncated (cnt < payload.size).
+	// GHA events only (e.id > 0): the synthetic pushes of the orphan restore are never backfilled.
 	q := `
 select
   e.id,
@@ -1002,6 +1132,7 @@ left join (
   group by event_id
 ) c on c.event_id = e.id
 where e.type = 'PushEvent'
+  and e.id > 0
   and e.dup_repo_name = $1
   and e.created_at >= $2
   and (
@@ -1270,6 +1401,25 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		con := lib.PgConnDB(ctx, db)
 		acache := newActorCache()
 
+		// The window, once per DB: commits that landed after the newest GHA hour loaded into this
+		// database are not orphans (yet) - their PushEvents arrive with the next hour file, and
+		// restoring them first would leave every such push without commits (its commits already
+		// have rows under a synthetic event) until the backfill takes them over again. The upper
+		// bound is the hour after the newest `gha_parsed` row (`now()` when nothing was parsed yet),
+		// never later than the start of the current hour.
+		var dtTo time.Time
+		err := con.QueryRow(orphanHorizonSQL).Scan(&dtTo)
+		if err != nil {
+			lib.Printf("orphan window(DB=%s) error: %v\n", db, err)
+			lib.FatalOnError(con.Close())
+			continue
+		}
+		dtFrom := ctx.DefaultStartDate
+		if ctx.OrphanCommitsRange != "" {
+			dtFrom = lib.GetDateAgo(con, ctx, dtTo, ctx.OrphanCommitsRange)
+		}
+		lib.Printf("Restoring orphan commits: DB '%s': orphan commits since %s until %s\n", db, dtFrom, dtTo)
+
 		skipSet, err := selectSkipCommits(ctx, con)
 		if err != nil {
 			lib.Printf("selectSkipCommits(DB=%s) error: %v\n", db, err)
@@ -1339,7 +1489,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 			w := w
 			go func() {
 				// completion is signalled only on the normal path (see backfillPushEventCommits)
-				rp, cc, cr, reids, err := restoreOrphanRepo(ctx, con, db, w.repo, w.name, maybeHide, acache, skipSet, &claimedShas, &nNoIdentity)
+				rp, cc, cr, reids, err := restoreOrphanRepo(ctx, con, db, w.repo, w.name, dtFrom, dtTo, maybeHide, acache, skipSet, &claimedShas, &nNoIdentity)
 				if err != nil {
 					if errors.Is(err, errEmptyClone) {
 						// a clone of an empty GitHub repository: nothing to restore, counted below
@@ -1460,25 +1610,21 @@ func orphanPushActor(ctx *lib.Ctx, hi commitInfo) (string, string) {
 	return name, email
 }
 
-func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo, name string, maybeHide func(string) string, acache *actorCache, skipSet map[string]struct{}, claimedShas *sync.Map, noIdentity *int64) (int, int, int, []int64, error) {
+// orphanHorizonSQL - the upper bound of the orphan restore window (timestamptz): the hour after
+// the newest GHA hour parsed into the database (`now()` when there is none), capped at the start
+// of the current hour. Commits landed after it are still waiting for their PushEvents.
+const orphanHorizonSQL = `select least(
+  coalesce(((select max(dt) from gha_parsed) at time zone 'UTC') + interval '1 hour', now()),
+  date_trunc('hour', now() at time zone 'UTC') at time zone 'UTC'
+)`
+
+func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo, name string, dtFrom, dtTo time.Time, maybeHide func(string) string, acache *actorCache, skipSet map[string]struct{}, claimedShas *sync.Map, noIdentity *int64) (int, int, int, []int64, error) {
 	var eids []int64
 	repoPath := ctx.ReposDir + repo
 	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
 		return 0, 0, 0, nil, fmt.Errorf("%s: repo not cloned: %s", db, repoPath)
 	} else if err != nil {
 		return 0, 0, 0, nil, fmt.Errorf("%s: cannot stat repo path %s: %w", db, repoPath, err)
-	}
-
-	dtFrom := ctx.DefaultStartDate
-	if ctx.OrphanCommitsRange != "" {
-		var dtTo sql.NullTime
-		err := con.QueryRow("select now()").Scan(&dtTo)
-		if err != nil {
-			return 0, 0, 0, nil, fmt.Errorf("select now() failed (db=%s, repo=%s): %w", db, repo, err)
-		}
-		if dtTo.Valid {
-			dtFrom = lib.GetDateAgo(con, ctx, dtTo.Time, ctx.OrphanCommitsRange)
-		}
 	}
 
 	// The default ref first; --all would also pick upstream history reachable in fork clones,
@@ -1518,9 +1664,9 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo, name string, maybeHi
 		var bp []orphanPush
 		var lerr error
 		if ctx.OrphanCommitsGroup {
-			bp, lerr = gitLandedCommits(ctx, repoPath, b, dtFrom)
+			bp, lerr = gitLandedCommits(ctx, repoPath, b, dtFrom, dtTo)
 		} else {
-			bp, lerr = gitListedCommits(ctx, repoPath, b.ref, dtFrom)
+			bp, lerr = gitListedCommits(ctx, repoPath, b.ref, dtFrom, dtTo)
 		}
 		if lerr != nil {
 			if b.ref == defaultRef {
@@ -1549,19 +1695,19 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo, name string, maybeHi
 			nPushes++
 		}
 		if ctx.OrphanCommitsGroup && nCommits > 0 && ctx.Debug > 0 {
-			lib.Printf("%s/%s: %s: %d commits in %d pushes landed since %s\n", db, repo, b.name, nCommits, nPushes, dtFrom)
+			lib.Printf("%s/%s: %s: %d commits in %d pushes landed since %s until %s\n", db, repo, b.name, nCommits, nPushes, dtFrom, dtTo)
 		}
 	}
 
 	if len(shas) == 0 {
 		if ctx.Debug > 0 {
-			lib.Printf("%s/%s: no commits found since %s\n", db, repo, dtFrom)
+			lib.Printf("%s/%s: no commits found since %s until %s\n", db, repo, dtFrom, dtTo)
 		}
 		return 0, 0, 0, nil, nil
 	}
 
 	if ctx.Debug > 0 {
-		lib.Printf("%s/%s: found %d commits since %s\n", db, repo, len(shas), dtFrom)
+		lib.Printf("%s/%s: found %d commits since %s until %s\n", db, repo, len(shas), dtFrom, dtTo)
 	}
 
 	candidates := make([]string, 0)
@@ -2033,12 +2179,15 @@ func getRepoID(con *sql.DB, repoName string) (int64, error) {
 	return repoID, nil
 }
 
-func gitListCommits(ctx *lib.Ctx, repoPath, ref string, since time.Time) ([]string, map[string]time.Time, error) {
+// gitListCommits - `git log <ref> --format=%H %at --since=YYYY-MM-DD --until=@<unix>`: commits
+// whose committer date is inside the window (`since` at day granularity, `until` exact).
+func gitListCommits(ctx *lib.Ctx, repoPath, ref string, since, until time.Time) ([]string, map[string]time.Time, error) {
 	args := []string{
 		"git", "-C", repoPath, "log",
 		ref,
 		"--format=%H %at",
 		"--since=" + lib.ToYMDDate(since),
+		"--until=@" + strconv.FormatInt(until.Unix(), 10),
 	}
 
 	out, err := lib.ExecCommand(ctx, args, nil)
@@ -2066,8 +2215,8 @@ func gitListCommits(ctx *lib.Ctx, repoPath, ref string, since time.Time) ([]stri
 
 // gitListedCommits - the legacy listing (gitListCommits: commits whose committer date is inside
 // the window, day granularity) as one-commit pushes: head = the commit, created = its author date.
-func gitListedCommits(ctx *lib.Ctx, repoPath, ref string, since time.Time) ([]orphanPush, error) {
-	shas, dates, err := gitListCommits(ctx, repoPath, ref, since)
+func gitListedCommits(ctx *lib.Ctx, repoPath, ref string, since, until time.Time) ([]orphanPush, error) {
+	shas, dates, err := gitListCommits(ctx, repoPath, ref, since, until)
 	if err != nil {
 		return nil, err
 	}
@@ -2110,12 +2259,14 @@ func gitOriginBranches(ctx *lib.Ctx, repoPath string, since time.Time) ([]orphan
 	return branches, nil
 }
 
-// gitLandedCommits - commits that became reachable from `branch` after `since`, grouped by the
-// first-parent step that brought them in (the GHA PushEvent shape). The boundary is the branch's
-// first-parent tip as of `since` (`git rev-list -1 --first-parent --before=…`); when there is
-// none (young repository) everything reachable from the branch landed inside the window.
-// Pushes are returned oldest first, commits inside a push in `git log` order (newest first).
-func gitLandedCommits(ctx *lib.Ctx, repoPath string, branch orphanBranch, since time.Time) ([]orphanPush, error) {
+// gitLandedCommits - commits that became reachable from `branch` after `since` and not later
+// than `until`, grouped by the first-parent step that brought them in (the GHA PushEvent shape).
+// The tip is the branch's first-parent tip as of `until` (`git rev-list -1 --first-parent
+// --before=…`; nothing landed inside the window when there is none), the boundary its tip as of
+// `since`; when there is no boundary (young repository) everything reachable from the tip landed
+// inside the window. Pushes are returned oldest first, commits inside a push in `git log` order
+// (newest first).
+func gitLandedCommits(ctx *lib.Ctx, repoPath string, branch orphanBranch, since, until time.Time) ([]orphanPush, error) {
 	out, err := lib.ExecCommand(ctx, []string{"git", "-C", repoPath, "rev-parse", "--verify", "--quiet", branch.ref + "^{commit}"}, nil)
 	if err != nil {
 		return nil, err
@@ -2127,6 +2278,20 @@ func gitLandedCommits(ctx *lib.Ctx, repoPath string, branch orphanBranch, since 
 
 	out, err = lib.ExecCommand(
 		ctx,
+		[]string{"git", "-C", repoPath, "rev-list", "-1", "--first-parent", "--before=@" + strconv.FormatInt(until.Unix(), 10), branch.ref},
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	tip = normalizeSHA(strings.TrimSpace(out))
+	if !isValidNonZeroSHA40(tip) {
+		// every first-parent commit of the branch is newer than the horizon
+		return nil, nil
+	}
+
+	out, err = lib.ExecCommand(
+		ctx,
 		[]string{"git", "-C", repoPath, "rev-list", "-1", "--first-parent", "--before=@" + strconv.FormatInt(since.Unix(), 10), branch.ref},
 		nil,
 	)
@@ -2134,12 +2299,12 @@ func gitLandedCommits(ctx *lib.Ctx, repoPath string, branch orphanBranch, since 
 		return nil, err
 	}
 	boundary := normalizeSHA(strings.TrimSpace(out))
-	rangeSpec := branch.ref
+	rangeSpec := tip
 	if isValidNonZeroSHA40(boundary) {
 		if boundary == tip {
 			return nil, nil
 		}
-		rangeSpec = boundary + ".." + branch.ref
+		rangeSpec = boundary + ".." + tip
 	}
 
 	out, err = lib.ExecCommand(ctx, []string{"git", "-C", repoPath, "log", "--format=%H %P %ct", rangeSpec}, nil)

@@ -329,6 +329,10 @@ fn sync_projects(
         let mut env: BTreeMap<String, String> = BTreeMap::new();
         env.insert("GHA2DB_PROCESS_REPOS".into(), "1".into());
         env.insert("GHA2DB_FETCH_COMMITS_MODE".into(), "0".into());
+        // the orphan commit restore is left to the per-project `gha2db_sync` step (get_repos with
+        // GHA2DB_PROCESS_COMMITS), which runs it after the PushEvent commit backfill: restoring
+        // first would claim the commits of pushes not yet backfilled under synthetic events
+        env.insert("GHA2DB_RESTORE_ORPHAN_COMMITS".into(), String::new());
         if ctx.fetch_commits_mode == 2 {
             env.insert(
                 "GHA2DB_FETCH_COMMITS_MODE".into(),
