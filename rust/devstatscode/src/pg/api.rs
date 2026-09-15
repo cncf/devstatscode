@@ -83,18 +83,16 @@ pub fn fatal_on_pg_error(err: &PgError) -> &'static str {
                 e.code, name, e.detail
             );
             if durable_pq() {
-                match name {
-                    "program_limit_exceeded"
-                    | "undefined_column"
-                    | "invalid_catalog_name"
-                    | "character_not_in_repertoire" => {
-                        printf!("{} error is not retryable, even with DURABLE_PQ\n", name);
-                    }
-                    _ => {
-                        eprintln!("retrying with DURABLE_PQ");
-                        return RECONNECT;
-                    }
+                if pq_retryable(e) {
+                    eprintln!("retrying with DURABLE_PQ");
+                    return RECONNECT;
                 }
+                let name = if name.is_empty() {
+                    e.code.as_str()
+                } else {
+                    name
+                };
+                printf!("{} error is not retryable, even with DURABLE_PQ\n", name);
             }
         }
         other => {
@@ -114,6 +112,48 @@ pub fn fatal_on_pg_error(err: &PgError) -> &'static str {
         return RECONNECT;
     }
     fatal_on_error(err)
+}
+
+/// Go `PqRetryable`: whether a PostgreSQL error is a condition that can go
+/// away on its own, so that DURABLE_PQ should retry the statement (after a
+/// growing delay, possibly reconnecting): connection problems, server
+/// shutdown/restart, exhausted resources, transaction rollbacks (deadlocks,
+/// serialization failures), and the catalog races of concurrent
+/// `create table/index if not exists` / `add column if not exists` that
+/// DevStats runs from many processes at once.
+///
+/// Everything else - syntax errors, constraint violations on data (duplicate
+/// keys, nulls, foreign keys), data errors (bad casts, overflows), unknown
+/// columns/functions/types, permission errors, program limits - is
+/// deterministic: retrying the very same statement can never succeed, so it
+/// must fail right away.
+pub fn pq_retryable(e: &super::ServerError) -> bool {
+    let code = e.code.as_str();
+    if code.len() < 5 {
+        // No SQLSTATE (should never happen with a server error) - assume a
+        // connection level problem.
+        return true;
+    }
+    // connection_exception, transaction_rollback, insufficient_resources,
+    // operator_intervention, system_error, snapshot_too_old
+    if let Some("08" | "40" | "53" | "57" | "58" | "72") = code.get(..2) {
+        return true;
+    }
+    match code {
+        // internal_error ("tuple concurrently updated", "could not open relation with OID", ...)
+        "XX000"
+        // object_not_in_prerequisite_state, object_in_use, lock_not_available
+        | "55000" | "55006" | "55P03"
+        // read_only_sql_transaction (failover to a replica), idle_in_transaction_session_timeout
+        | "25006" | "25P03"
+        // undefined_table, duplicate_table, duplicate_column, duplicate_object: concurrent drop/create races
+        | "42P01" | "42P07" | "42701" | "42710" => true,
+        // unique_violation: only the system catalog races of concurrent "create ... if not exists"
+        // (pg_type_typname_nsp_index, pg_class_relname_nsp_index, ...) - a duplicate key in DevStats
+        // data (gha_* tables, s* series tables) is a bug, retrying it changes nothing.
+        "23505" => e.constraint.starts_with("pg_"),
+        _ => false,
+    }
 }
 
 /// `FatalOnError` on a result: the value on success, `T::default()` when the
@@ -1590,6 +1630,87 @@ fn _status_is_ok(status: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pq_retryable_classification() {
+        // (SQLSTATE, constraint, retryable) - mirrors Go `TestPqRetryable`.
+        let cases: &[(&str, &str, bool)] = &[
+            // Connection problems, shutdowns, exhausted resources, rollbacks: the DB may come back
+            ("08000", "", true),
+            ("08006", "", true),
+            ("08003", "", true),
+            ("08P01", "", true),
+            ("40001", "", true),
+            ("40P01", "", true),
+            ("40003", "", true),
+            ("53300", "", true),
+            ("53200", "", true),
+            ("53100", "", true),
+            ("57P01", "", true),
+            ("57P03", "", true),
+            ("57014", "", true),
+            ("58030", "", true),
+            ("72000", "", true),
+            ("XX000", "", true),
+            ("55P03", "", true),
+            ("55006", "", true),
+            ("55000", "", true),
+            ("25006", "", true),
+            ("25P03", "", true),
+            // Concurrent "create ... if not exists" / "drop ..." races
+            ("42P01", "", true),
+            ("42P07", "", true),
+            ("42701", "", true),
+            ("42710", "", true),
+            ("23505", "pg_type_typname_nsp_index", true),
+            ("23505", "pg_class_relname_nsp_index", true),
+            ("", "", true),
+            // Deterministic: the same statement can never succeed
+            ("42601", "", false),
+            ("42703", "", false),
+            ("42883", "", false),
+            ("42704", "", false),
+            ("42804", "", false),
+            ("42501", "", false),
+            ("42702", "", false),
+            ("42P10", "", false),
+            ("23505", "gha_issues_pkey", false),
+            ("23505", "suser_activity_time_period_key", false),
+            ("23505", "", false),
+            ("23502", "", false),
+            ("23503", "", false),
+            ("23514", "", false),
+            ("22001", "", false),
+            ("22003", "", false),
+            ("22012", "", false),
+            ("22P02", "", false),
+            ("22021", "", false),
+            ("22007", "", false),
+            ("3D000", "", false),
+            ("3F000", "", false),
+            ("54000", "", false),
+            ("54011", "", false),
+            ("0A000", "", false),
+            ("28P01", "", false),
+            ("25P02", "", false),
+            ("P0001", "", false),
+            ("XX001", "", false),
+            ("XX002", "", false),
+            ("21000", "", false),
+        ];
+        for (code, constraint, expected) in cases {
+            let e = super::super::ServerError {
+                code: (*code).to_string(),
+                constraint: (*constraint).to_string(),
+                ..Default::default()
+            };
+            assert_eq!(
+                pq_retryable(&e),
+                *expected,
+                "code '{code}' constraint '{constraint}'"
+            );
+        }
+    }
 
     #[test]
     fn sql_text_helpers() {

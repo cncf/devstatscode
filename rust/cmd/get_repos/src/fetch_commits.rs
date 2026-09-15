@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -331,7 +332,31 @@ pub fn backfill_push_event_commits(
         let acache = ActorCache::new();
         let counters = Mutex::new((0i64, 0i64));
 
-        for_each_repo_limited(&repos, thr_n, |repo| {
+        // the repositories of a project include the ones without a clone (deleted or moved on
+        // GitHub, excluded, never fetched) - nothing to backfill there, counted once per DB
+        // instead of one error line each (same as the orphan restore)
+        let mut work: Vec<String> = Vec::with_capacity(repos.len());
+        let mut n_not_cloned = 0usize;
+        for repo in &repos {
+            let repo_path = format!("{}{repo}", ctx_ro.repos_dir);
+            if matches!(std::fs::metadata(&repo_path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+            {
+                n_not_cloned += 1;
+                if ctx_ro.debug > 0 {
+                    printf!("{db}/{repo}: repo not cloned: {repo_path}, skipping\n");
+                }
+                continue;
+            }
+            work.push(repo.clone());
+        }
+        if n_not_cloned > 0 {
+            printf!(
+                "FetchCommitsMode={}: DB '{db}': skipped {n_not_cloned} repo(s) without a clone\n",
+                ctx_ro.fetch_commits_mode
+            );
+        }
+
+        for_each_repo_limited(&work, thr_n, |repo| {
             let (commits, roles) = match backfill_repo(ctx_ro, &con, db, repo, &maybe_hide, &acache)
             {
                 Ok(v) => v,
@@ -349,7 +374,7 @@ pub fn backfill_push_event_commits(
         let (n_commits, n_roles) = *counters.lock().unwrap_or_else(|p| p.into_inner());
         printf!(
             "Finished DB '{db}': backfilled {n_commits} commits and {n_roles} commit roles for {} repos\n",
-            repos.len()
+            work.len()
         );
         all_commits += n_commits;
         all_roles += n_roles;
@@ -1634,6 +1659,8 @@ pub fn restore_orphan_commits(
 
         // (repos processed, commits checked, commits restored, restored event ids, empty clones)
         let totals: Mutex<(i64, i64, i64, Vec<i64>, usize)> = Mutex::new((0, 0, 0, Vec::new(), 0));
+        // commits of pushes without a usable author/committer identity (bug 71)
+        let no_identity = AtomicUsize::new(0);
 
         for_each_repo_limited(&work, thr_n, |(repo, name)| {
             let (rp, cc, cr, reids) = match restore_orphan_repo(
@@ -1646,6 +1673,7 @@ pub fn restore_orphan_commits(
                 &acache,
                 &skip_set,
                 &claimed_shas,
+                &no_identity,
             ) {
                 Ok(v) => v,
                 Err((_, _, _, RestoreErr::EmptyClone)) => {
@@ -1675,6 +1703,12 @@ pub fn restore_orphan_commits(
         if n_empty_clones > 0 {
             printf!(
                 "Restoring orphan commits: DB '{db}': skipped {n_empty_clones} empty clone(s)\n"
+            );
+        }
+        let n_no_identity = no_identity.load(Ordering::Relaxed);
+        if n_no_identity > 0 {
+            printf!(
+                "Restoring orphan commits: DB '{db}': skipped {n_no_identity} commit(s) without an author/committer identity\n"
             );
         }
         printf!(
@@ -1762,6 +1796,32 @@ fn push_ref(ref_: &str) -> String {
     }
 }
 
+/// Go `orphanPushActor`: the identity a restored PushEvent is attributed to.
+/// GHA's pusher is best approximated by the committer of the step commit
+/// (grouped mode), or by its author when GitHub's web-flow identity committed
+/// it (UI merges); the legacy one-event-per-commit shape uses the author.
+/// Some tools commit with an empty identity (` <>`, e.g. ghp-import/MkDocs
+/// gh-deploy) - then the other identity is used; when both are empty
+/// `("", "")` is returned and the caller skips the push.
+fn orphan_push_actor(ctx: &Ctx, hi: &CommitInfo) -> (String, String) {
+    let auth_name = hi.author_name.replace('\0', "");
+    let auth_email = hi.author_email.replace('\0', "");
+    let comm_name = hi.committer_name.replace('\0', "");
+    let comm_email = hi.committer_email.replace('\0', "");
+    let (mut name, mut email, other_name, other_email) = if !ctx.orphan_commits_group
+        || comm_email.trim().eq_ignore_ascii_case("noreply@github.com")
+    {
+        (auth_name, auth_email, comm_name, comm_email)
+    } else {
+        (comm_name, comm_email, auth_name, auth_email)
+    };
+    if name.trim().is_empty() && email.trim().is_empty() {
+        name = other_name;
+        email = other_email;
+    }
+    (name, email)
+}
+
 /// Go `restoreOrphanRepo`: returns (repos processed, commits checked,
 /// commits restored, restored event ids) or the counts so far plus the error.
 /// `repo` is the clone directory name, `name` the repo name the restored rows
@@ -1777,6 +1837,7 @@ fn restore_orphan_repo(
     acache: &ActorCache,
     skip_set: &HashSet<String>,
     claimed_shas: &Mutex<HashSet<String>>,
+    no_identity: &AtomicUsize,
 ) -> RestoreResult {
     let mut eids: Vec<i64> = Vec::new();
     let repo_path = format!("{}{repo}", ctx.repos_dir);
@@ -2119,29 +2180,8 @@ on conflict do nothing
             }
             continue;
         };
-        let claimed: Vec<&str> = {
-            let mut guard = claimed_shas.lock().unwrap_or_else(|p| p.into_inner());
-            todo.iter()
-                .copied()
-                .filter(|sha| guard.insert((*sha).to_string()))
-                .collect()
-        };
-        if claimed.is_empty() {
-            continue;
-        }
-
-        // The event actor: GHA's pusher - the committer of the step commit, or its author when
-        // GitHub's web-flow identity committed it (UI merges); the legacy shape uses the author.
-        let mut actor_name_raw = hi.committer_name.replace('\0', "");
-        let mut actor_email_raw = hi.committer_email.replace('\0', "");
-        if !ctx.orphan_commits_group
-            || actor_email_raw
-                .trim()
-                .eq_ignore_ascii_case("noreply@github.com")
-        {
-            actor_name_raw = hi.author_name.replace('\0', "");
-            actor_email_raw = hi.author_email.replace('\0', "");
-        }
+        // The event actor: GHA's pusher, approximated from the step commit (see orphan_push_actor).
+        let (actor_name_raw, actor_email_raw) = orphan_push_actor(ctx, hi);
         let (actor_id, actor_login) = lookup_actor_name_email_cached_tx(
             ctx,
             &mut tx,
@@ -2156,6 +2196,33 @@ on conflict do nothing
             actor_login.clone()
         };
         let dup_actor_login = trunc_to_bytes(&maybe_hide.hide(&dup_actor_login), 120);
+        if dup_actor_login.trim().is_empty() {
+            // Neither the committer nor the author of the step commit has a usable identity
+            // (` <>` commits of deploy tools like ghp-import/MkDocs): the push cannot be attributed
+            // to anybody. A PushEvent with an empty pusher login would poison every login based
+            // tag/metric (users_tags -> the `user_activity` metric fails on a "" column), so these
+            // commits are left alone (bug 71). Counted once per DB, not claimed: another clone of
+            // the same repository hits the same commit and skips it too.
+            no_identity.fetch_add(todo.len(), Ordering::Relaxed);
+            if ctx.debug > 0 {
+                printf!(
+                    "{db}/{repo}: push {}: no usable author/committer identity, skipping {} commit(s)\n",
+                    push.head,
+                    todo.len()
+                );
+            }
+            continue;
+        }
+        let claimed: Vec<&str> = {
+            let mut guard = claimed_shas.lock().unwrap_or_else(|p| p.into_inner());
+            todo.iter()
+                .copied()
+                .filter(|sha| guard.insert((*sha).to_string()))
+                .collect()
+        };
+        if claimed.is_empty() {
+            continue;
+        }
 
         let mut created_at = push.created;
         let event_id = hash::negative_artificial_id(&["PushEvent", name, &push.head]);

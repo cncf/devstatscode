@@ -1886,6 +1886,103 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
   `orphan_empty_clone` (`Repo::Empty` fixture: `git init` + `origin` remote,
   no commits), `orphan_empty_clone_with_others` (3 repos: not cloned, empty,
   normal — summary order and totals), `orphan_alias_only_clone` (updated).
+  Second half (2026-09-15, after the 2nd megacheck of the day still showed
+  the class on the *backfill* path — `backfillRepo(DB=opa, repo=…) error:
+  opa: repo not cloned: …`, 2–3 lines per project per `FetchCommitsMode=1`
+  run): `backfillPushEventCommits` / `backfill_push_event_commits` now
+  filters the repositories without a clone before the workers, exactly like
+  the orphan restore — one debug line per repository (`<db>/<repo>: repo not
+  cloned: <path>, skipping`), one per-DB summary `FetchCommitsMode=<n>: DB
+  '<db>': skipped N repo(s) without a clone`, and `Finished DB '<db>':
+  backfilled … for N repos` counts the repositories actually backfilled
+  (`backfillRepo`'s own stat check stays as a safety net; a plain file at the
+  repository path is still processed and fails as before). Compat:
+  `mode1_not_cloned` (updated), new `mode1_not_cloned_no_debug`,
+  `projects_commits_both` (updated).
+* Bug 71 (2026-09-15, Go and Rust alike; found by the 2nd megacheck of the
+  day: prod `urunc` `PqError: code=42601, name=syntax_error` retried by
+  `calc_metric` for 1h20m): the orphan restore attributed a push to the
+  committer/author of its step commit and derived the event's
+  `dup_actor_login` as "the actor's login, else its git name" — a commit with
+  an **empty git identity** (`author  <> …` / `committer  <> …`, produced by
+  ghp-import/MkDocs `gh-deploy` on `gh-pages` branches;
+  `urunc-dev/urunc` `3457f224…`) therefore became a `PushEvent` with
+  `dup_actor_login = ''` (and `gha_payloads`/`gha_commits` rows alike). The
+  `users` tag (`users_tags.sql`: the top logins by event count over 3 months,
+  1 event is enough in a small project) then contained `''`, and the
+  `user_activity` metric (`multi_row_multi_column`, one column per user)
+  generated `alter table "suser_activity" add column if not exists ""` —
+  `zero-length delimited identifier`, a deterministic syntax error retried by
+  DURABLE_PQ through the whole `GHA2DB_TRIALS` backoff (10s…1h, see bug 72)
+  for each of the ~24 `user_activity*` invocations of the sync. Now the
+  identity of the step commit falls back to the other one (empty committer →
+  author, and — legacy shape — empty author → committer; `orphanPushActor` /
+  `orphan_push_actor`) and a push whose head has **no usable identity at
+  all** is not restored: `<db>/<repo>: push <sha>: no usable
+  author/committer identity, skipping N commit(s)` (debug) and one per-DB
+  summary `Restoring orphan commits: DB '<db>': skipped N commit(s) without
+  an author/committer identity`; the commits are not claimed, so a second
+  clone of the repository skips them too, and every run reports them again
+  until they leave the orphan window. Per-commit `dup_author_login` may
+  still be `''` — that is what gha2db writes (column default) for every
+  native commit, only the event-level pusher login must never be empty.
+  Prod repair: the `urunc` event `-2011734841005593738` (+ payload, commit,
+  text rows) and the `''` row of `tusers` were deleted, the stuck
+  `calc_metric` killed (the sync finished in 75 s after that, allow_fail
+  WARNING); a scan of all 238 prod and all test DBs found no other
+  orphan-restored empty login (`allprj` and `envoy` each carry one *native*
+  GHA event with an empty login since years — not in `tusers`; every DB has
+  two unreferenced `gha_actors` rows with `login = ''`, ids `0` and
+  `-3750763034362895579`, pre-existing, left alone). Compat: new
+  `orphan_empty_identity_skipped` (a raw `git hash-object -t commit` commit
+  with ` <>` idents on top of commit 4: skipped in both runs, 4 restored, no
+  `''` login anywhere), `orphan_empty_committer_uses_author` (→ `carol`,
+  actor 3; commit row keeps the empty committer), and
+  `orphan_empty_author_no_grouping` (legacy shape → committer `Dev`).
+  Suggested (not applied — `../devstats` is out of scope):
+  `metrics/shared/users_tags.sql` could also exclude `dup_actor_login = ''`
+  defensively, since native GHA data contains such events too.
+* Bug 72 (2026-09-15, Go and Rust alike, pre-existing — the DURABLE_PQ retry
+  policy; raised by the user while looking at bug 71): `FatalOnError` retried
+  **every** PostgreSQL error under `DURABLE_PQ` except four names
+  (`program_limit_exceeded`, `undefined_column`, `invalid_catalog_name`,
+  `character_not_in_repertoire`), so deterministic failures — a syntax error,
+  a duplicate key in the data (`unique_violation`, the bug 64/67 history:
+  `Key (id, event_id)=(…) already exists` retried for hours), a bad cast, a
+  missing function — went through the whole `GHA2DB_TRIALS` backoff
+  (10+30+60+120+300+600+1200+3600 s ≈ 1h39m, reconnecting each time) before
+  failing with `too many attempts`, although retrying the very same statement
+  can never succeed. Now `PqRetryable` / `pq_retryable` decides by SQLSTATE:
+  retried are the conditions that can go away on their own — classes `08`
+  (connection), `40` (transaction rollback: deadlocks, serialization), `53`
+  (resources: too many connections, out of memory, disk full), `57`
+  (operator intervention: shutdown, `cannot_connect_now`, `query_canceled`),
+  `58` (system/IO errors), `72` (snapshot too old), plus `XX000`
+  internal_error ("tuple concurrently updated"), `55000`/`55006`/`55P03`
+  (object in use, lock not available), `25006`/`25P03` (read-only after a
+  failover, idle-in-transaction timeout) and the concurrent-DDL races
+  DevStats' many `create table/index if not exists` / `add column if not
+  exists` processes can hit: `42P01` undefined_table, `42P07`
+  duplicate_table, `42701` duplicate_column, `42710` duplicate_object and a
+  `unique_violation` whose constraint is a system catalog index
+  (`pg_type_typname_nsp_index`, `pg_class_relname_nsp_index`, … — `pg_`
+  prefix). Everything else fails at once with the existing `<name> error is
+  not retryable, even with DURABLE_PQ` line (the SQLSTATE itself when the
+  name is unknown). The `too_many_connections` / `cannot_connect_now` /
+  `driver: bad connection` / `cannot assign requested address` special cases
+  (retried even without DURABLE_PQ) are unchanged. Unit tests: Go
+  `TestPqRetryable` (`error_test.go`, added to the Makefile `test` target),
+  Rust `pq_retryable_classification` (the same 59 code/constraint cases);
+  compat: runq
+  `durable_pq_retries_only_recoverable_errors` (syntax error and
+  `runq_types_pkey` duplicate fail immediately with the not-retryable line;
+  the same duplicate without DURABLE_PQ is a plain fatal; `undefined_table`
+  goes through `GHA2DB_TRIALS=1,1` with two `retrying with DURABLE_PQ` /
+  `Reconnected after 1 seconds` rounds and ends with `too many attempts,
+  tried 2 times`), merge_dbs `column_mismatch_durable_pq_is_not_retried`
+  unchanged. Prod's last 30 days of `PqError` lines were exactly the three
+  classes this separates: `connection_failure` (DB restarts 09-08…09-12,
+  still retried), `unique_violation` and `syntax_error` (now immediate).
 
 ### Rust-only bugs found after go-live (Go was correct)
 

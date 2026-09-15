@@ -1091,6 +1091,119 @@ fn sql_error_is_fatal_with_pq_details() {
     assert!(stdout_of(&side).contains("PqError: code=42601, name=syntax_error, detail=\n"));
 }
 
+/// DURABLE_PQ retries only the errors that can go away on their own (connection loss,
+/// shutdown, resources, rollbacks, concurrent DDL races). Deterministic ones - a syntax
+/// error, a duplicate key in the data - fail right away instead of burning the whole
+/// GHA2DB_TRIALS backoff (10s..1h) on a statement that can never succeed.
+#[test]
+fn durable_pq_retries_only_recoverable_errors() {
+    // syntax_error (42601): not retried
+    let Some(side) = both(
+        &Case::new("durable_syntax")
+            .env("DURABLE_PQ", "1")
+            .env("GHA2DB_TRIALS", "1,1")
+            .args(["sql/syntax_error.sql"]),
+    ) else {
+        return;
+    };
+    assert_eq!(side.out.code(), 2);
+    let out = stdout_of(&side);
+    assert!(
+        out.contains("PqError: code=42601, name=syntax_error, detail=\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("syntax_error error is not retryable, even with DURABLE_PQ\n"),
+        "{out}"
+    );
+    let err = side.out.stderr_str();
+    assert!(!err.contains("retrying with DURABLE_PQ"), "{err}");
+    assert!(!err.contains("Will retry after"), "{err}");
+    assert_eq!(
+        error_lines(&err),
+        vec!["Error: 'pq: syntax error at or near \"where\"'".to_string()]
+    );
+
+    // unique_violation (23505) on a data table: not retried
+    let Some(side) = both(
+        &Case::new("durable_dup")
+            .env("DURABLE_PQ", "1")
+            .env("GHA2DB_TRIALS", "1,1")
+            .args(["sql/dup_key.sql"]),
+    ) else {
+        return;
+    };
+    assert_eq!(side.out.code(), 2);
+    let out = stdout_of(&side);
+    assert!(
+        out.contains(
+            "PqError: code=23505, name=unique_violation, detail=Key (id)=(1) already exists.\n"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("unique_violation error is not retryable, even with DURABLE_PQ\n"),
+        "{out}"
+    );
+    let err = side.out.stderr_str();
+    assert!(!err.contains("Will retry after"), "{err}");
+    assert_eq!(
+        error_lines(&err),
+        vec![
+            "Error: 'pq: duplicate key value violates unique constraint \"runq_types_pkey\"'"
+                .to_string()
+        ]
+    );
+    // ... and without DURABLE_PQ the same statement is a plain fatal error
+    let Some(side) = both(&Case::new("nodurable_dup").args(["sql/dup_key.sql"])) else {
+        return;
+    };
+    assert_eq!(side.out.code(), 2);
+    let out = stdout_of(&side);
+    assert!(!out.contains("even with DURABLE_PQ"), "{out}");
+    assert!(!side.out.stderr_str().contains("Will retry after"));
+
+    // undefined_table (42P01) can be a concurrent drop/create race: retried through
+    // every GHA2DB_TRIALS step (reconnecting), then given up.
+    let Some(side) = both(
+        &Case::new("durable_notable")
+            .env("DURABLE_PQ", "1")
+            .env("GHA2DB_TRIALS", "1,1")
+            .args(["sql/no_table.sql"]),
+    ) else {
+        return;
+    };
+    assert_eq!(side.out.code(), 2);
+    let out = stdout_of(&side);
+    assert_eq!(
+        out.matches("PqError: code=42P01, name=undefined_table, detail=\n")
+            .count(),
+        2,
+        "{out}"
+    );
+    assert!(!out.contains("even with DURABLE_PQ"), "{out}");
+    let err = side.out.stderr_str();
+    assert_eq!(
+        err.matches("retrying with DURABLE_PQ\n").count(),
+        2,
+        "{err}"
+    );
+    assert_eq!(
+        err.matches("Will retry after 1 seconds...\n").count(),
+        2,
+        "{err}"
+    );
+    assert_eq!(
+        err.matches("Reconnected after 1 seconds\n").count(),
+        2,
+        "{err}"
+    );
+    assert_eq!(
+        error_lines(&err),
+        vec!["Error: 'too many attempts, tried 2 times'".to_string()]
+    );
+}
+
 #[test]
 fn unreachable_server_is_fatal() {
     let Some(side) =

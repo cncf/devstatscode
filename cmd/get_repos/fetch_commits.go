@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	lib "github.com/cncf/devstatscode"
@@ -236,13 +237,32 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 		// Actor cache shared across repos processed for this DB (thread-safe).
 		acache := newActorCache()
 
+		// the repositories of a project include the ones without a clone (deleted or moved on
+		// GitHub, excluded, never fetched) - nothing to backfill there, counted once per DB instead
+		// of one error line each (same as the orphan restore)
+		work := make([]string, 0, len(repos))
+		nNotCloned := 0
+		for _, repo := range repos {
+			if _, serr := os.Stat(ctx.ReposDir + repo); os.IsNotExist(serr) {
+				nNotCloned++
+				if ctx.Debug > 0 {
+					lib.Printf("%s/%s: repo not cloned: %s, skipping\n", db, repo, ctx.ReposDir+repo)
+				}
+				continue
+			}
+			work = append(work, repo)
+		}
+		if nNotCloned > 0 {
+			lib.Printf("FetchCommitsMode=%d: DB '%s': skipped %d repo(s) without a clone\n", ctx.FetchCommitsMode, db, nNotCloned)
+		}
+
 		thr := make(chan struct{}, thrN)
-		done := make(chan struct{}, len(repos))
+		done := make(chan struct{}, len(work))
 		var mtx sync.Mutex
 		nCommits := 0
 		nRoles := 0
 
-		for _, repo := range repos {
+		for _, repo := range work {
 			thr <- struct{}{}
 			repo := repo
 			go func() {
@@ -262,11 +282,11 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 			}()
 		}
 
-		for range repos {
+		for range work {
 			<-done
 		}
 		lib.FatalOnError(con.Close())
-		lib.Printf("Finished DB '%s': backfilled %d commits and %d commit roles for %d repos\n", db, nCommits, nRoles, len(repos))
+		lib.Printf("Finished DB '%s': backfilled %d commits and %d commit roles for %d repos\n", db, nCommits, nRoles, len(work))
 		allCommits += nCommits
 		allRoles += nRoles
 	}
@@ -1311,6 +1331,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		nCommitsChecked := 0
 		nCommitsRestored := 0
 		nEmptyClones := 0
+		var nNoIdentity int64
 		var dbEids []int64
 
 		for _, w := range work {
@@ -1318,7 +1339,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 			w := w
 			go func() {
 				// completion is signalled only on the normal path (see backfillPushEventCommits)
-				rp, cc, cr, reids, err := restoreOrphanRepo(ctx, con, db, w.repo, w.name, maybeHide, acache, skipSet, &claimedShas)
+				rp, cc, cr, reids, err := restoreOrphanRepo(ctx, con, db, w.repo, w.name, maybeHide, acache, skipSet, &claimedShas, &nNoIdentity)
 				if err != nil {
 					if errors.Is(err, errEmptyClone) {
 						// a clone of an empty GitHub repository: nothing to restore, counted below
@@ -1351,6 +1372,9 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		lib.FatalOnError(con.Close())
 		if nEmptyClones > 0 {
 			lib.Printf("Restoring orphan commits: DB '%s': skipped %d empty clone(s)\n", db, nEmptyClones)
+		}
+		if nNoIdentity > 0 {
+			lib.Printf("Restoring orphan commits: DB '%s': skipped %d commit(s) without an author/committer identity\n", db, nNoIdentity)
 		}
 		lib.Printf("Finished DB '%s': processed %d repos, checked %d commits, restored %d\n", db, nReposProcessed, nCommitsChecked, nCommitsRestored)
 		if len(dbEids) > 0 {
@@ -1414,7 +1438,29 @@ func pushRef(ref string) string {
 	return ref
 }
 
-func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo, name string, maybeHide func(string) string, acache *actorCache, skipSet map[string]struct{}, claimedShas *sync.Map) (int, int, int, []int64, error) {
+// orphanPushActor - the identity a restored PushEvent is attributed to. GHA's pusher is best
+// approximated by the committer of the step commit (grouped mode), or by its author when GitHub's
+// web-flow identity committed it (UI merges); the legacy one-event-per-commit shape uses the author.
+// Some tools commit with an empty identity (` <>`, e.g. ghp-import/MkDocs gh-deploy) - then the
+// other identity is used; when both are empty ("", "") is returned and the caller skips the push.
+func orphanPushActor(ctx *lib.Ctx, hi commitInfo) (string, string) {
+	authName := strings.ReplaceAll(hi.AuthorName, "\x00", "")
+	authEmail := strings.ReplaceAll(hi.AuthorEmail, "\x00", "")
+	commName := strings.ReplaceAll(hi.CommitterName, "\x00", "")
+	commEmail := strings.ReplaceAll(hi.CommitterEmail, "\x00", "")
+	name, email := commName, commEmail
+	otherName, otherEmail := authName, authEmail
+	if !ctx.OrphanCommitsGroup || strings.EqualFold(strings.TrimSpace(commEmail), "noreply@github.com") {
+		name, email = authName, authEmail
+		otherName, otherEmail = commName, commEmail
+	}
+	if strings.TrimSpace(name) == "" && strings.TrimSpace(email) == "" {
+		name, email = otherName, otherEmail
+	}
+	return name, email
+}
+
+func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo, name string, maybeHide func(string) string, acache *actorCache, skipSet map[string]struct{}, claimedShas *sync.Map, noIdentity *int64) (int, int, int, []int64, error) {
 	var eids []int64
 	repoPath := ctx.ReposDir + repo
 	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
@@ -1731,6 +1777,27 @@ on conflict do nothing
 			}
 			continue
 		}
+		// The event actor: GHA's pusher, approximated from the step commit (see orphanPushActor).
+		actorNameRaw, actorEmailRaw := orphanPushActor(ctx, hi)
+		actorID, actorLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, actorNameRaw, actorEmailRaw)
+		dupActorLogin := actorLogin
+		if dupActorLogin == "" {
+			dupActorLogin = actorNameRaw
+		}
+		dupActorLogin = lib.TruncToBytes(maybeHide(dupActorLogin), 120)
+		if strings.TrimSpace(dupActorLogin) == "" {
+			// Neither the committer nor the author of the step commit has a usable identity
+			// (` <>` commits of deploy tools like ghp-import/MkDocs): the push cannot be attributed
+			// to anybody. A PushEvent with an empty pusher login would poison every login based
+			// tag/metric (users_tags -> the `user_activity` metric fails on a "" column), so these
+			// commits are left alone (bug 71). Counted once per DB, not claimed: another clone of
+			// the same repository hits the same commit and skips it too.
+			atomic.AddInt64(noIdentity, int64(len(todo)))
+			if ctx.Debug > 0 {
+				lib.Printf("%s/%s: push %s: no usable author/committer identity, skipping %d commit(s)\n", db, repo, push.head, len(todo))
+			}
+			continue
+		}
 		claimed := make([]string, 0, len(todo))
 		for _, sha := range todo {
 			if _, loaded := claimedShas.LoadOrStore(sha, struct{}{}); loaded {
@@ -1741,21 +1808,6 @@ on conflict do nothing
 		if len(claimed) == 0 {
 			continue
 		}
-
-		// The event actor: GHA's pusher - the committer of the step commit, or its author when
-		// GitHub's web-flow identity committed it (UI merges); the legacy shape uses the author.
-		actorNameRaw := strings.ReplaceAll(hi.CommitterName, "\x00", "")
-		actorEmailRaw := strings.ReplaceAll(hi.CommitterEmail, "\x00", "")
-		if !ctx.OrphanCommitsGroup || strings.EqualFold(strings.TrimSpace(actorEmailRaw), "noreply@github.com") {
-			actorNameRaw = strings.ReplaceAll(hi.AuthorName, "\x00", "")
-			actorEmailRaw = strings.ReplaceAll(hi.AuthorEmail, "\x00", "")
-		}
-		actorID, actorLogin := lookupActorNameEmailCachedTx(ctx, tx, acache, maybeHide, actorNameRaw, actorEmailRaw)
-		dupActorLogin := actorLogin
-		if dupActorLogin == "" {
-			dupActorLogin = actorNameRaw
-		}
-		dupActorLogin = lib.TruncToBytes(maybeHide(dupActorLogin), 120)
 
 		createdAt := push.created
 		eventID := lib.NegativeArtificialID([]string{"PushEvent", name, push.head})

@@ -1637,8 +1637,17 @@ fn projects_commits_both() {
     );
     rs.expect_line(
         0,
-        "backfillRepo(DB=<db2>, repo=org/repo2) error: <db2>: repo not cloned: <dir>/repos/org/repo2",
+        "<db2>/org/repo2: repo not cloned: <dir>/repos/org/repo2, skipping",
     );
+    rs.expect_line(
+        0,
+        "FetchCommitsMode=1: DB '<db2>': skipped 1 repo(s) without a clone",
+    );
+    rs.expect_line(
+        0,
+        "Finished DB '<db2>': backfilled 0 commits and 0 commit roles for 0 repos",
+    );
+    rs.expect_no_prefix(0, "backfillRepo(DB=<db2>");
     assert_eq!(rs.commit_shas().len(), 3);
     assert!(rs.query2("select sha from gha_commits").is_empty());
 }
@@ -2113,6 +2122,9 @@ fn mode1_startdt() {
 
 #[test]
 fn mode1_not_cloned() {
+    // A repository without a clone is not an error of the backfill (gha_repos holds every
+    // repository the project ever had an event for): one debug line per repository and one
+    // per-DB summary, like the orphan restore; the repository does not count as backfilled.
     let case = Case::new("mode1_not_cloned")
         .mode("1")
         .debug()
@@ -2123,11 +2135,39 @@ fn mode1_not_cloned() {
     assert_eq!(rs.code(0), Some(0));
     rs.expect_line(
         0,
-        "backfillRepo(DB=<db>, repo=org/repo) error: <db>: repo not cloned: <dir>/repos/org/repo",
+        "<db>/org/repo: repo not cloned: <dir>/repos/org/repo, skipping",
     );
     rs.expect_line(
         0,
-        "Finished DB '<db>': backfilled 0 commits and 0 commit roles for 1 repos",
+        "FetchCommitsMode=1: DB '<db>': skipped 1 repo(s) without a clone",
+    );
+    rs.expect_line(
+        0,
+        "Finished DB '<db>': backfilled 0 commits and 0 commit roles for 0 repos",
+    );
+    rs.expect_no_prefix(0, "backfillRepo(DB=<db>");
+    assert!(rs.commit_shas().is_empty());
+}
+
+#[test]
+fn mode1_not_cloned_no_debug() {
+    // Without debug only the per-DB summary remains.
+    let case = Case::new("mode1_not_cloned_no_debug")
+        .mode("1")
+        .repo(Repo::Missing);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_no_prefix(0, "<db>/org/repo: repo not cloned");
+    rs.expect_no_prefix(0, "backfillRepo(DB=<db>");
+    rs.expect_line(
+        0,
+        "FetchCommitsMode=1: DB '<db>': skipped 1 repo(s) without a clone",
+    );
+    rs.expect_line(
+        0,
+        "Finished DB '<db>': backfilled 0 commits and 0 commit roles for 0 repos",
     );
     assert!(rs.commit_shas().is_empty());
 }
@@ -3124,6 +3164,174 @@ insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_acto
     assert_eq!(
         rs.query("select distinct dup_repo_name from gha_events where id < 0"),
         vec![strs(&["org/other"])]
+    );
+}
+
+// ------------------------------------ orphan restore: empty git identities (bug 71)
+
+/// A `Step::Shell` adding a commit with the given raw `author` / `committer`
+/// ident lines (`name <email>` - possibly ` <>`, which `git commit` refuses
+/// but deploy tools like ghp-import/MkDocs produce) dated 2020-01-05 on top
+/// of commit 4 in the working clone, and pointing `origin/main` at it.
+fn ident_commit(author: &str, committer: &str) -> Step {
+    in_clone(&format!(
+        "T=$(git log -1 --format=%T {{sha3}}); C=$(printf 'tree %s\\nparent %s\\nauthor {author} 1578182400 +0000\\ncommitter {committer} 1578182400 +0000\\n\\nDeployed 77c2357 with MkDocs version: 1.6.1\\n' \"$T\" {{sha3}} | git hash-object -t commit -w --stdin); git update-ref refs/remotes/origin/main \"$C\""
+    ))
+}
+
+#[test]
+fn orphan_empty_identity_skipped() {
+    // The step commit has neither an author nor a committer identity: the push
+    // cannot be attributed to anybody, so it is not restored (an event with an
+    // empty pusher login would poison the login based tags/metrics) - counted
+    // once per DB, the other 4 commits are restored, and a re-run skips it again.
+    let case = Case::new("orphan_empty_identity_skipped")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .steps(vec![
+            ident_commit(" <>", " <>"),
+            Step::Run(Vec::new()),
+            Step::Run(Vec::new()),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    assert_eq!(rs.code(1), Some(0));
+    let empty = rev(&rs, "refs/remotes/origin/main");
+    assert_eq!(rev(&rs, &format!("{empty}^")), rs.shas[3]);
+    rs.expect_line(0, "<db>/org/repo: found 5 commits since <ts>");
+    rs.expect_line(
+        0,
+        "<db>/org/repo: main: 5 commits in 5 pushes landed since <ts>",
+    );
+    rs.expect_line(0, "<db>/org/repo: need to restore 5 orphan commits");
+    rs.expect_line(
+        0,
+        &format!("<db>/org/repo: push {empty}: no usable author/committer identity, skipping 1 commit(s)"),
+    );
+    rs.expect_line(0, "<db>/org/repo: successfully restored 4 orphan commits");
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: DB '<db>': skipped 1 commit(s) without an author/committer identity",
+    );
+    rs.expect_line(
+        0,
+        "Finished DB '<db>': processed 1 repos, checked 5 commits, restored 4",
+    );
+    assert!(rs.stderr_lines(0).is_empty(), "{:?}", rs.stderr_lines(0));
+    // The re-run: the same commit is still an orphan, still skipped, nothing else to do.
+    rs.expect_line(1, "<db>/org/repo: need to restore 1 orphan commits");
+    rs.expect_line(
+        1,
+        &format!("<db>/org/repo: push {empty}: no usable author/committer identity, skipping 1 commit(s)"),
+    );
+    rs.expect_line(
+        1,
+        "Restoring orphan commits: DB '<db>': skipped 1 commit(s) without an author/committer identity",
+    );
+    rs.expect_line(
+        1,
+        "Finished DB '<db>': processed 1 repos, checked 5 commits, restored 0",
+    );
+    let mut expected: Vec<String> = rs.shas[..4].to_vec();
+    expected.sort();
+    assert_eq!(rs.commit_shas(), expected);
+    assert_eq!(
+        rs.count("select count(*) from gha_events where dup_actor_login = ''"),
+        0
+    );
+    assert_eq!(
+        rs.count("select count(*) from gha_payloads where dup_actor_login = ''"),
+        0
+    );
+    assert_eq!(
+        rs.count(&format!(
+            "select count(*) from gha_events where id = {}",
+            negative_artificial_id(&["PushEvent", "org/repo", &empty])
+        )),
+        0
+    );
+    assert_eq!(restored_events(&rs).len(), 4);
+}
+
+#[test]
+fn orphan_empty_committer_uses_author() {
+    // Only the committer identity is empty: the push is attributed to the
+    // author instead (Carol Jones -> actor 3 `carol`), and the commit row keeps
+    // the empty committer (committer_id 0, empty dup_committer_login).
+    let case = Case::new("orphan_empty_committer_uses_author")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .steps(vec![
+            ident_commit("Carol Jones <carol@example.com>", " <>"),
+            Step::Run(Vec::new()),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    let head = rev(&rs, "refs/remotes/origin/main");
+    rs.expect_line(0, "<db>/org/repo: successfully restored 5 orphan commits");
+    rs.expect_no_prefix(0, "Restoring orphan commits: DB '<db>': skipped");
+    rs.expect_line(
+        0,
+        "Finished DB '<db>': processed 1 repos, checked 5 commits, restored 5",
+    );
+    let eid = negative_artificial_id(&["PushEvent", "org/repo", &head]).to_string();
+    assert_eq!(
+        rs.query(&format!(
+            "select actor_id::text, dup_actor_login, created_at::text from gha_events where id = {eid}"
+        )),
+        vec![strs(&["3", "carol", "2020-01-05 00:00:00"])]
+    );
+    assert_eq!(
+        rs.query(&format!(
+            "select author_name, author_id::text, committer_id::text, dup_author_login, dup_committer_login, committer_name, committer_email from gha_commits where sha = '{head}'"
+        )),
+        vec![strs(&["Carol Jones", "3", "0", "carol", "", "", ""])]
+    );
+    assert_eq!(
+        rs.count("select count(*) from gha_events where dup_actor_login = ''"),
+        0
+    );
+}
+
+#[test]
+fn orphan_empty_author_no_grouping() {
+    // The legacy shape attributes events to the author; with an empty author
+    // the committer (Dev, unknown actor -> login = the name) is used instead.
+    let case = Case::new("orphan_empty_author_no_grouping")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .env("GHA2DB_ORPHAN_COMMITS_NO_GROUPING", "1")
+        .steps(vec![
+            ident_commit(" <>", "Dev <dev@example.com>"),
+            Step::Run(Vec::new()),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    let head = rev(&rs, "refs/remotes/origin/main");
+    rs.expect_line(0, "<db>/org/repo: successfully restored 5 orphan commits");
+    rs.expect_no_prefix(0, "Restoring orphan commits: DB '<db>': skipped");
+    let eid = negative_artificial_id(&["PushEvent", "org/repo", &head]).to_string();
+    assert_eq!(
+        rs.query(&format!(
+            "select actor_id::text, dup_actor_login from gha_events where id = {eid}"
+        )),
+        vec![strs(&["0", "Dev"])]
+    );
+    assert_eq!(
+        rs.query(&format!(
+            "select author_name, dup_author_login, committer_name, dup_committer_login from gha_commits where sha = '{head}'"
+        )),
+        vec![strs(&["", "", "Dev", ""])]
+    );
+    assert_eq!(
+        rs.count("select count(*) from gha_events where dup_actor_login = ''"),
+        0
     );
 }
 
