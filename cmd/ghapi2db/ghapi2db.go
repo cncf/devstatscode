@@ -1204,8 +1204,17 @@ func syncEvents(ctx *lib.Ctx) {
 									pr, resp, e = cl.PullRequests.Get(gctx, org, repo, prNum)
 									return
 								})
-								res := lib.HandlePossibleError(err, gcfg.String(), "PullRequests.Get")
+								// bug 69: the message names the PR (number, issue id, event) instead of the bare repository config
+								res := lib.HandlePossibleError(err, cfg.String(), "PullRequests.Get")
 								if res != "" {
+									if res == lib.NotFound || res == lib.IssueIsDeleted {
+										// bug 69: a deleted PR (404/410) is not a transient error: it was retried MaxGHAPIRetry times
+										// and then the repository's remaining events were given up ("GetRateLimit call failed ...
+										// while getting PR, aborting"). The PR is simply not synced (its issue events still are).
+										pr = nil
+										got = true
+										break
+									}
 									if res == lib.Abuse {
 										wait := time.Duration(int(math.Pow(2.0, float64(tr+3)))) * time.Second
 										thrMutex.Lock()

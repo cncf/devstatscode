@@ -17,7 +17,7 @@ use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, FixedOffset, Local, Utc};
-use devstatscode::consts::{ABUSE, HIDE_CFG_FILE, NOT_FOUND, REPO_NAMES_QUERY};
+use devstatscode::consts::{ABUSE, HIDE_CFG_FILE, ISSUE_IS_DELETED, NOT_FOUND, REPO_NAMES_QUERY};
 use devstatscode::ghapi::{
     fmt_slice, get_rate_limits, get_recent_repos, gh_client, handle_possible_error,
     sync_issues_state, GoDuration, IssueConfig, IssuesMap, PrsMap,
@@ -1483,9 +1483,18 @@ fn fetch_events(sh: &Shared<'_>, es: &EventsShared, filter: &EventsFilter, org_r
                             .call(|cl| ApiResult::from(cl.pull_requests_get(org, repo, pr_num)));
                         let err = r.error;
                         pr = r.value;
-                        let res =
-                            handle_possible_error(err.as_ref(), &gcfg_str, "PullRequests.Get");
+                        // bug 69: the message names the PR (number, issue id, event) instead of the bare repository config
+                        let res = handle_possible_error(err.as_ref(), &cfg_str, "PullRequests.Get");
                         if !res.is_empty() {
+                            if res == NOT_FOUND || res == ISSUE_IS_DELETED {
+                                // bug 69: a deleted PR (404/410) is not a transient error: it was retried
+                                // max_ghapi_retry times and then the repository's remaining events were given up
+                                // ("GetRateLimit call failed ... while getting PR, aborting"). The PR is simply
+                                // not synced (its issue events still are).
+                                pr = None;
+                                got = true;
+                                break;
+                            }
                             if res == ABUSE {
                                 abuse_backoff(sh, tr, "get PR");
                             }

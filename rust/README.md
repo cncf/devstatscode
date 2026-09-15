@@ -1834,6 +1834,58 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
   as parameters instead of the per-insert subselect (compat `repo_ids_*`,
   3 scenarios seeding one name under two ids; the misplaced prod rows were
   re-pointed to the live ids).
+* Bug 69 (2026-09-15, Go and Rust alike, pre-existing — found by the morning
+  health check after go-live in the `gha_logs` history: `Error: GetRateLimit
+  call failed 6 times while getting PR, aborting` for grpc/grpc-dotnet,
+  backstage, kubernetes-sigs/external-dns, kubestellar/console-marketplace
+  …): in the legacy repository-events pass a `PullRequests.Get` answering
+  404/410 (the PR was deleted on GitHub, e.g. `kubestellar/console-marketplace`
+  #654) was retried like a transient error `MaxGHAPIRetry` (6) times and the
+  repository's remaining events of the run were then given up, with a
+  message blaming the rate limit and naming a bare repository config
+  (`Number: 0, IssueID: 0`). Now a 404/410 is final: reported once (naming
+  the PR: number, issue id, event), the PR is not synced (its issue events
+  still are) and the run continues with the next event (compat
+  `events_pr_fetch_errors`: `ev_pr_404` with a second event behind the deleted
+  PR, new `ev_pr_410`, `ev_pr_502` unchanged — server errors are still
+  retried and abort the repository).
+* Bug 70 (2026-09-15, Go only; found by the get_repos compat suite after the
+  log-noise polish below — `orphan_invalid_range` compared unequal once):
+  the worker goroutines of `backfillPushEventCommits` and
+  `restoreOrphanCommits` signalled their completion from a `defer`, so when a
+  worker hit a fatal error (`FatalOnError` → panic, exit 2) the deferred send
+  still let the main goroutine continue and racily print `Finished DB '…'`
+  while the runtime was tearing the process down — the fatal run sometimes
+  ended with a success-looking summary. Rust always exits at the fatal error
+  (`process::exit(2)`, no summary), so the Go fix (signal only on the normal
+  path; a panic ends the process anyway) makes both deterministic and equal.
+  The compat suite had passed twice before because the race is timing
+  dependent.
+* Log-noise polish of the `get_repos` orphan restore (2026-09-15, Go and
+  Rust alike, not a bug — the two biggest pre-existing "other error-ish"
+  classes in the prod `gha_logs`, ≈30k lines a day): every `gha_repos` row
+  without a clone (repositories deleted or moved on GitHub, excluded or never
+  fetched: fluentd alone has 1,022 of them × 5 runs × 2 rows a day) printed
+  `restoreOrphanRepo(DB=…, repo=…) error: …: repo not cloned: …`, and every
+  clone of an **empty** GitHub repository (`istio/.github`,
+  `youki-dev/.github`, `kube-logging/roadmap`,
+  `prometheus-community/prometheus-community`, `cncf/multi-cloud-provisioner`,
+  `istio-ecosystem/synergasia` — all `size=0`) printed `Warning: could not
+  determine default ref for …: exit status 128, using HEAD` followed by
+  `gitListCommits failed for …: exit status 1` on every run. Both are now
+  counted per database — `Restoring orphan commits: DB '<db>': skipped N
+  repo(s) without a clone` (decided in the work-list loop, before the
+  workers) and `… skipped N empty clone(s)` (a clone whose `HEAD` is unborn,
+  `git rev-parse --verify --quiet HEAD` fails, is skipped without the warning
+  and without the error) — with one debug line per repository
+  (`<db>/<repo>: repo not cloned: <path>, skipping`, `<db>/<repo>: empty
+  clone (no commits), skipping`). A clone with commits but without
+  `origin/HEAD` keeps the warning and is still scanned from `HEAD`; the
+  `restoreOrphanRepo` stat check stays as a safety net. Compat:
+  `orphan_not_cloned` (updated), new `orphan_not_cloned_no_debug`,
+  `orphan_empty_clone` (`Repo::Empty` fixture: `git init` + `origin` remote,
+  no commits), `orphan_empty_clone_with_others` (3 repos: not cloned, empty,
+  normal — summary order and totals), `orphan_alias_only_clone` (updated).
 
 ### Rust-only bugs found after go-live (Go was correct)
 

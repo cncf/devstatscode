@@ -1597,12 +1597,25 @@ pub fn restore_orphan_commits(
         // current name - never to the alias (bug 61).
         let mut work: Vec<(String, String)> = Vec::with_capacity(repos.len());
         let mut n_aliases_skipped = 0usize;
+        let mut n_not_cloned = 0usize;
         for repo in &repos {
             let name = aliases.get(repo).cloned().unwrap_or_else(|| repo.clone());
             if name != *repo && Path::new(&format!("{}{name}", ctx_ro.repos_dir)).exists() {
                 n_aliases_skipped += 1;
                 if ctx_ro.debug > 0 {
                     printf!("{db}/{repo}: historical alias of {name}, skipping\n");
+                }
+                continue;
+            }
+            // gha_repos holds every repository that ever had an event; the ones without a clone
+            // (deleted or moved on GitHub, excluded, never fetched) have nothing to restore -
+            // counted once per DB instead of one error line each (~30k log rows a day on prod)
+            let repo_path = format!("{}{repo}", ctx_ro.repos_dir);
+            if matches!(std::fs::metadata(&repo_path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+            {
+                n_not_cloned += 1;
+                if ctx_ro.debug > 0 {
+                    printf!("{db}/{repo}: repo not cloned: {repo_path}, skipping\n");
                 }
                 continue;
             }
@@ -1613,9 +1626,14 @@ pub fn restore_orphan_commits(
                 "Restoring orphan commits: DB '{db}': skipped {n_aliases_skipped} historical alias clone(s)\n"
             );
         }
+        if n_not_cloned > 0 {
+            printf!(
+                "Restoring orphan commits: DB '{db}': skipped {n_not_cloned} repo(s) without a clone\n"
+            );
+        }
 
-        // (repos processed, commits checked, commits restored, restored event ids)
-        let totals: Mutex<(i64, i64, i64, Vec<i64>)> = Mutex::new((0, 0, 0, Vec::new()));
+        // (repos processed, commits checked, commits restored, restored event ids, empty clones)
+        let totals: Mutex<(i64, i64, i64, Vec<i64>, usize)> = Mutex::new((0, 0, 0, Vec::new(), 0));
 
         for_each_repo_limited(&work, thr_n, |(repo, name)| {
             let (rp, cc, cr, reids) = match restore_orphan_repo(
@@ -1630,7 +1648,16 @@ pub fn restore_orphan_commits(
                 &claimed_shas,
             ) {
                 Ok(v) => v,
-                Err((rp, cc, cr, err)) => {
+                Err((_, _, _, RestoreErr::EmptyClone)) => {
+                    // a clone of an empty GitHub repository: nothing to restore, counted below
+                    if ctx_ro.debug > 0 {
+                        printf!("{db}/{repo}: empty clone (no commits), skipping\n");
+                    }
+                    let mut t = totals.lock().unwrap_or_else(|p| p.into_inner());
+                    t.4 += 1;
+                    return;
+                }
+                Err((rp, cc, cr, RestoreErr::Other(err))) => {
                     printf!("restoreOrphanRepo(DB={db}, repo={repo}) error: {err}\n");
                     (rp, cc, cr, Vec::new())
                 }
@@ -1643,8 +1670,13 @@ pub fn restore_orphan_commits(
         });
 
         con.close();
-        let (n_repos_processed, n_commits_checked, n_commits_restored, db_eids) =
+        let (n_repos_processed, n_commits_checked, n_commits_restored, db_eids, n_empty_clones) =
             totals.into_inner().unwrap_or_else(|p| p.into_inner());
+        if n_empty_clones > 0 {
+            printf!(
+                "Restoring orphan commits: DB '{db}': skipped {n_empty_clones} empty clone(s)\n"
+            );
+        }
         printf!(
             "Finished DB '{db}': processed {n_repos_processed} repos, checked {n_commits_checked} commits, restored {n_commits_restored}\n"
         );
@@ -1666,7 +1698,30 @@ pub fn restore_orphan_commits(
     ctx.exec_quiet = prev_exec_quiet;
 }
 
-type RestoreResult = Result<(i64, i64, i64, Vec<i64>), (i64, i64, i64, String)>;
+/// Why [`restore_orphan_repo`] gave up on a repository.
+enum RestoreErr {
+    /// The clone has no commits at all (a clone of an empty GitHub repository).
+    EmptyClone,
+    /// Any other failure, printed by the caller as `restoreOrphanRepo(...) error: ...`.
+    Other(String),
+}
+
+impl From<String> for RestoreErr {
+    fn from(s: String) -> Self {
+        RestoreErr::Other(s)
+    }
+}
+
+impl fmt::Display for RestoreErr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RestoreErr::EmptyClone => f.write_str("empty clone"),
+            RestoreErr::Other(s) => f.write_str(s),
+        }
+    }
+}
+
+type RestoreResult = Result<(i64, i64, i64, Vec<i64>), (i64, i64, i64, RestoreErr)>;
 
 /// Go `orphanBranch`: one `refs/remotes/origin/<name>` branch scanned for orphan commits.
 struct OrphanBranch {
@@ -1725,7 +1780,7 @@ fn restore_orphan_repo(
 ) -> RestoreResult {
     let mut eids: Vec<i64> = Vec::new();
     let repo_path = format!("{}{repo}", ctx.repos_dir);
-    stat_repo_path(db, &repo_path).map_err(|e| (0, 0, 0, e))?;
+    stat_repo_path(db, &repo_path).map_err(|e| (0, 0, 0, e.into()))?;
 
     let mut dt_from = GoTime::Utc(ctx.default_start_date);
     if !ctx.orphan_commits_range.is_empty() {
@@ -1735,7 +1790,7 @@ fn restore_orphan_repo(
                 0,
                 0,
                 0,
-                format!("select now() failed (db={db}, repo={repo}): {err}"),
+                format!("select now() failed (db={db}, repo={repo}): {err}").into(),
             ));
         }
         if let Some(dt_to) = dt_to {
@@ -1749,13 +1804,17 @@ fn restore_orphan_repo(
     // so only `origin/*` branches whose tip moved inside the window are added.
     let default_ref = match git_default_ref(ctx, &repo_path) {
         Ok(r) if !r.is_empty() => r,
-        Ok(_) => {
-            printf!(
-                "Warning: could not determine default ref for {db}/{repo}: <nil>, using HEAD\n"
-            );
-            "HEAD".to_string()
-        }
-        Err(err) => {
+        other => {
+            // no origin/HEAD: a clone of an EMPTY GitHub repository has no commits at all (HEAD is
+            // unborn) - it used to print this warning and then a "gitListCommits failed" error on
+            // every run; a repository with commits but without origin/HEAD is scanned from HEAD
+            if !git_has_commits(ctx, &repo_path) {
+                return Err((0, 0, 0, RestoreErr::EmptyClone));
+            }
+            let err = match other {
+                Ok(_) => "<nil>".to_string(),
+                Err(err) => err,
+            };
             printf!(
                 "Warning: could not determine default ref for {db}/{repo}: {err}, using HEAD\n"
             );
@@ -1807,7 +1866,7 @@ fn restore_orphan_repo(
                         0,
                         0,
                         0,
-                        format!("gitListCommits failed for {db}/{repo}: {lerr}"),
+                        format!("gitListCommits failed for {db}/{repo}: {lerr}").into(),
                     ));
                 }
                 printf!(
@@ -1893,20 +1952,20 @@ fn restore_orphan_repo(
                     0,
                     0,
                     0,
-                    format!("select gha_commits shas failed (db={db}, repo={repo}): {e}"),
+                    format!("select gha_commits shas failed (db={db}, repo={repo}): {e}").into(),
                 )
             })?;
         while rows.next() {
             let mut sha = String::new();
             if let Err(e) = rows.scan(&mut [&mut sha]) {
                 let _ = rows.close();
-                return Err((0, 0, 0, e.to_string()));
+                return Err((0, 0, 0, e.to_string().into()));
             }
             existing_set.insert(normalize_sha(&sha));
         }
         let err = rows.err();
         let _ = rows.close();
-        err.map_err(|e| (0, 0, 0, e.to_string()))?;
+        err.map_err(|e| (0, 0, 0, e.to_string().into()))?;
         i += batch;
     }
 
@@ -1975,7 +2034,8 @@ fn restore_orphan_repo(
             format!(
                 "git_commits.sh returned no commit metadata for db={db}, repo={repo} (shas={})",
                 to_restore.len()
-            ),
+            )
+            .into(),
         ));
     }
 
@@ -1990,9 +2050,9 @@ fn restore_orphan_repo(
     if name != repo && ctx.debug > 0 {
         printf!("{db}/{repo}: attributing restored commits to {name} (current name)\n");
     }
-    let mut repo_id = get_repo_id(con, name).map_err(|e| (1, n_shas, 0, e))?;
+    let mut repo_id = get_repo_id(con, name).map_err(|e| (1, n_shas, 0, e.into()))?;
     if repo_id == 0 && name != repo {
-        repo_id = get_repo_id(con, repo).map_err(|e| (1, n_shas, 0, e))?;
+        repo_id = get_repo_id(con, repo).map_err(|e| (1, n_shas, 0, e.into()))?;
     }
     if repo_id == 0 {
         if ctx.debug > 0 {
@@ -2003,7 +2063,9 @@ fn restore_orphan_repo(
         return Ok((1, n_shas, 0, Vec::new()));
     }
 
-    let mut tx = con.begin().map_err(|e| (1, n_shas, 0, e.to_string()))?;
+    let mut tx = con
+        .begin()
+        .map_err(|e| (1, n_shas, 0, e.to_string().into()))?;
 
     let ins_event_sql = "
 insert into gha_events(id, type, actor_id, repo_id, created_at, dup_actor_login, dup_repo_name)
@@ -2318,7 +2380,7 @@ on conflict do nothing
     if let Err(err) = tx.commit() {
         printf!("Error committing transaction for {db}/{repo}: {err}\n");
         // rolled back - none of the restored rows persisted, so no event ids to postprocess
-        return Err((1, n_shas, 0, err.to_string()));
+        return Err((1, n_shas, 0, err.to_string().into()));
     }
 
     if ctx.debug > 0 {
@@ -2683,6 +2745,24 @@ fn git_default_ref(ctx: &Ctx, repo_path: &str) -> Result<String, String> {
     let ref_ = out.trim();
     let ref_ = ref_.strip_prefix("ref: ").unwrap_or(ref_);
     Ok(ref_.to_string())
+}
+
+/// Go `gitHasCommits`: false when HEAD is unborn (no commits in the clone).
+fn git_has_commits(ctx: &Ctx, repo_path: &str) -> bool {
+    exec::exec_command(
+        ctx,
+        &[
+            "git".to_string(),
+            "-C".to_string(),
+            repo_path.to_string(),
+            "rev-parse".to_string(),
+            "--verify".to_string(),
+            "--quiet".to_string(),
+            "HEAD".to_string(),
+        ],
+        &no_env(),
+    )
+    .is_ok()
 }
 
 /// Result of [`orphan_event_check`].

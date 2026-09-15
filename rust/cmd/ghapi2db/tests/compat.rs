@@ -2893,34 +2893,100 @@ fn rate_limits_cache_disabled_polls_before_every_call() {
 fn events_pr_fetch_errors() {
     let pr = IssueSpec::new(7002, 2).pr();
     let pr_b = pr.clone();
+    let pr_c = pr.clone();
+    let issue = IssueSpec::new(7003, 3);
+    let issue_b = issue.clone();
+    // bug 69: a deleted PR (404) used to be retried like a transient error and then the whole
+    // repository was given up ("GetRateLimit call failed ... while getting PR, aborting")
     let sides = check(Case::new("ev_pr_404", Pass::Events).setup(move |gh| {
         gh.get_ok(
             &events_path(REPO),
-            &json!([issue_event(
-                5002,
-                Some("closed"),
-                (11, "alice"),
-                "2020-05-01T10:00:00Z",
-                Some(&pr)
-            )]),
+            &json!([
+                issue_event(
+                    5002,
+                    Some("closed"),
+                    (11, "alice"),
+                    "2020-05-01T10:00:00Z",
+                    Some(&pr)
+                ),
+                // an event after the deleted PR's one on the same page
+                issue_event(
+                    5003,
+                    Some("labeled"),
+                    (11, "alice"),
+                    "2020-05-01T09:00:00Z",
+                    Some(&issue)
+                ),
+            ]),
         );
         gh.get(&pr_path(REPO, 2), vec![Scripted::not_found()]);
     }));
     both(&sides, |s| {
-        // a 404 of the PR is retried like any other error, then the repo is given up
-        assert_eq!(s.count_prefix(0, "Not found (PullRequests.Get) for "), 2);
+        // reported once, naming the PR (not the bare repository config), not retried
+        assert_eq!(
+            s.count_prefix(
+                0,
+                "Not found (PullRequests.Get) for {Repo: org/repo, Number: 2, IssueID: 7002, EventID: <evid>, EventType: closed, Pr: true, "
+            ),
+            1
+        );
+        s.expect_no_prefix(0, "Error: GetRateLimit call failed");
+        s.expect_line(0, "GH Repo Events/PRs API calls: 2");
+        // the repository's remaining events are still processed: both issues are synced,
+        // the deleted PR without PR data
         s.expect_line(
             0,
-            "Error: GetRateLimit call failed 2 times while getting PR, aborting",
+            "ghapi2db.go: Processing 0 PRs, 2 issues (2 with date collisions), manual mode: false - GHA part",
         );
-        s.expect_line(0, "GH Repo Events/PRs API calls: 3");
-        // the issue is still synced, without PR data
         assert_eq!(
-            s.count("select count(*) from gha_issues where id = 7002"),
-            1
+            s.column("select id::text from gha_issues order by id"),
+            vec!["7002".to_string(), "7003".to_string()]
         );
         assert_eq!(s.count("select count(*) from gha_pull_requests"), 0);
     });
+    // 410 (the PR was deleted) is handled the same way
+    let sides = check(Case::new("ev_pr_410", Pass::Events).setup(move |gh| {
+        gh.get_ok(
+            &events_path(REPO),
+            &json!([
+                issue_event(
+                    5002,
+                    Some("closed"),
+                    (11, "alice"),
+                    "2020-05-01T10:00:00Z",
+                    Some(&pr_c)
+                ),
+                issue_event(
+                    5003,
+                    Some("labeled"),
+                    (11, "alice"),
+                    "2020-05-01T09:00:00Z",
+                    Some(&issue_b)
+                ),
+            ]),
+        );
+        gh.get(
+            &pr_path(REPO, 2),
+            vec![Scripted::error(410, "This issue was deleted")],
+        );
+    }));
+    both(&sides, |s| {
+        assert_eq!(
+            s.count_prefix(
+                0,
+                "Issue was deleted (PullRequests.Get) for {Repo: org/repo, Number: 2, IssueID: 7002, "
+            ),
+            1
+        );
+        s.expect_no_prefix(0, "Error: GetRateLimit call failed");
+        s.expect_line(0, "GH Repo Events/PRs API calls: 2");
+        assert_eq!(
+            s.column("select id::text from gha_issues order by id"),
+            vec!["7002".to_string(), "7003".to_string()]
+        );
+        assert_eq!(s.count("select count(*) from gha_pull_requests"), 0);
+    });
+    // a server error is still retried and then the repository is given up
     let sides = check(Case::new("ev_pr_502", Pass::Events).setup(move |gh| {
         gh.get_ok(
             &events_path(REPO),
@@ -2938,7 +3004,13 @@ fn events_pr_fetch_errors() {
         );
     }));
     both(&sides, |s| {
-        assert_eq!(s.count_prefix(0, "Server Error (PullRequests.Get) for "), 2);
+        assert_eq!(
+            s.count_prefix(
+                0,
+                "Server Error (PullRequests.Get) for {Repo: org/repo, Number: 2, IssueID: 7002, "
+            ),
+            2
+        );
         s.expect_line(
             0,
             "Error: GetRateLimit call failed 2 times while getting PR, aborting",

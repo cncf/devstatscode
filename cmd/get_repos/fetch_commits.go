@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -245,10 +246,9 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 			thr <- struct{}{}
 			repo := repo
 			go func() {
-				defer func() {
-					<-thr
-					done <- struct{}{}
-				}()
+				// completion is signalled only on the normal path: a fatal error (panic) in the
+				// worker ends the process, and a deferred signal would let the main goroutine
+				// racily print the "Finished DB" summary while the runtime is exiting
 				commits, roles, err := backfillRepo(ctx, con, db, repo, maybeHide, acache)
 				if err != nil {
 					lib.Printf("backfillRepo(DB=%s, repo=%s) error: %v\n", db, repo, err)
@@ -257,6 +257,8 @@ func backfillPushEventCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[s
 				nCommits += commits
 				nRoles += roles
 				mtx.Unlock()
+				<-thr
+				done <- struct{}{}
 			}()
 		}
 
@@ -1268,6 +1270,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		// current name - never to the alias (bug 61).
 		work := make([]orphanRepoWork, 0, len(repos))
 		nAliasesSkipped := 0
+		nNotCloned := 0
 		for _, repo := range repos {
 			name := repo
 			if alias, ok := aliases[repo]; ok {
@@ -1282,10 +1285,23 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 					continue
 				}
 			}
+			// gha_repos holds every repository that ever had an event; the ones without a clone
+			// (deleted or moved on GitHub, excluded, never fetched) have nothing to restore -
+			// counted once per DB instead of one error line each (~30k log rows a day on prod)
+			if _, serr := os.Stat(ctx.ReposDir + repo); os.IsNotExist(serr) {
+				nNotCloned++
+				if ctx.Debug > 0 {
+					lib.Printf("%s/%s: repo not cloned: %s, skipping\n", db, repo, ctx.ReposDir+repo)
+				}
+				continue
+			}
 			work = append(work, orphanRepoWork{repo: repo, name: name})
 		}
 		if nAliasesSkipped > 0 {
 			lib.Printf("Restoring orphan commits: DB '%s': skipped %d historical alias clone(s)\n", db, nAliasesSkipped)
+		}
+		if nNotCloned > 0 {
+			lib.Printf("Restoring orphan commits: DB '%s': skipped %d repo(s) without a clone\n", db, nNotCloned)
 		}
 
 		thr := make(chan struct{}, thrN)
@@ -1294,18 +1310,28 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		nReposProcessed := 0
 		nCommitsChecked := 0
 		nCommitsRestored := 0
+		nEmptyClones := 0
 		var dbEids []int64
 
 		for _, w := range work {
 			thr <- struct{}{}
 			w := w
 			go func() {
-				defer func() {
-					<-thr
-					done <- struct{}{}
-				}()
+				// completion is signalled only on the normal path (see backfillPushEventCommits)
 				rp, cc, cr, reids, err := restoreOrphanRepo(ctx, con, db, w.repo, w.name, maybeHide, acache, skipSet, &claimedShas)
 				if err != nil {
+					if errors.Is(err, errEmptyClone) {
+						// a clone of an empty GitHub repository: nothing to restore, counted below
+						if ctx.Debug > 0 {
+							lib.Printf("%s/%s: empty clone (no commits), skipping\n", db, w.repo)
+						}
+						mtx.Lock()
+						nEmptyClones++
+						mtx.Unlock()
+						<-thr
+						done <- struct{}{}
+						return
+					}
 					lib.Printf("restoreOrphanRepo(DB=%s, repo=%s) error: %v\n", db, w.repo, err)
 				}
 				mtx.Lock()
@@ -1314,6 +1340,8 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 				nCommitsRestored += cr
 				dbEids = append(dbEids, reids...)
 				mtx.Unlock()
+				<-thr
+				done <- struct{}{}
 			}()
 		}
 
@@ -1321,6 +1349,9 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 			<-done
 		}
 		lib.FatalOnError(con.Close())
+		if nEmptyClones > 0 {
+			lib.Printf("Restoring orphan commits: DB '%s': skipped %d empty clone(s)\n", db, nEmptyClones)
+		}
 		lib.Printf("Finished DB '%s': processed %d repos, checked %d commits, restored %d\n", db, nReposProcessed, nCommitsChecked, nCommitsRestored)
 		if len(dbEids) > 0 {
 			lib.RunEventIDsPostprocessDB(ctx, db, dbEids)
@@ -1408,6 +1439,12 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo, name string, maybeHi
 	// so only `origin/*` branches whose tip moved inside the window are added.
 	defaultRef, err := gitDefaultRef(ctx, repoPath)
 	if err != nil || defaultRef == "" {
+		// no origin/HEAD: a clone of an EMPTY GitHub repository has no commits at all (HEAD is
+		// unborn) - it used to print this warning and then a "gitListCommits failed" error on
+		// every run; a repository with commits but without origin/HEAD is scanned from HEAD
+		if !gitHasCommits(ctx, repoPath) {
+			return 0, 0, 0, nil, errEmptyClone
+		}
 		defaultRef = "HEAD"
 		lib.Printf("Warning: could not determine default ref for %s/%s: %v, using %s\n", db, repo, err, defaultRef)
 	}
@@ -2147,6 +2184,15 @@ func gitDefaultRef(ctx *lib.Ctx, repoPath string) (string, error) {
 		ref = strings.TrimPrefix(ref, "ref: ")
 	}
 	return ref, nil
+}
+
+// errEmptyClone - the clone has no commits at all (a clone of an empty GitHub repository)
+var errEmptyClone = errors.New("empty clone")
+
+// gitHasCommits - false when HEAD is unborn (no commits in the clone)
+func gitHasCommits(ctx *lib.Ctx, repoPath string) bool {
+	_, err := lib.ExecCommand(ctx, []string{"git", "-C", repoPath, "rev-parse", "--verify", "--quiet", "HEAD"}, nil)
+	return err == nil
 }
 
 // orphanEventCheck - how eventID relates to the push (repo, head): exists = the same push already

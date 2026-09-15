@@ -278,6 +278,9 @@ enum Repo {
     Cloned(usize),
     /// Not cloned at all.
     Missing,
+    /// A clone of an empty repository: `git init` with an `origin` remote but
+    /// no commits (unborn HEAD, no `origin/HEAD`).
+    Empty,
 }
 
 /// One step of a case.
@@ -829,6 +832,22 @@ fn run_side(bin: &Path, case: &Case, suffix: &str) -> Option<Side> {
                 &["remote", "remove", "origin"],
             );
         }
+    }
+    if let Repo::Empty = case.repo {
+        let target = dir.path().join("repos").join("org/repo");
+        fs::create_dir_all(&target).unwrap();
+        git(&target, "2020-01-04T00:00:00Z", &[], &["init", "-q"]);
+        git(
+            &target,
+            "2020-01-04T00:00:00Z",
+            &[],
+            &[
+                "remote",
+                "add",
+                "origin",
+                dir.path().join("orig").join("org_repo").to_str().unwrap(),
+            ],
+        );
     }
 
     let db2_name = db2.as_ref().map(|d| d.name.clone()).unwrap_or_default();
@@ -2989,6 +3008,8 @@ fn orphan_invalid_range() {
 
 #[test]
 fn orphan_not_cloned() {
+    // gha_repos rows without a clone are counted once per DB (debug line per
+    // repo) instead of one `restoreOrphanRepo(...) error` line each.
     let case = Case::new("orphan_not_cloned")
         .debug()
         .orphan(WIDE_RANGE)
@@ -2999,11 +3020,110 @@ fn orphan_not_cloned() {
     assert_eq!(rs.code(0), Some(0));
     rs.expect_line(
         0,
-        "restoreOrphanRepo(DB=<db>, repo=org/repo) error: <db>: repo not cloned: <dir>/repos/org/repo",
+        "<db>/org/repo: repo not cloned: <dir>/repos/org/repo, skipping",
+    );
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: DB '<db>': skipped 1 repo(s) without a clone",
+    );
+    rs.expect_no_prefix(0, "restoreOrphanRepo(");
+    rs.expect_line(
+        0,
+        "Finished DB '<db>': processed 0 repos, checked 0 commits, restored 0",
+    );
+}
+
+#[test]
+fn orphan_not_cloned_no_debug() {
+    // Without debug only the per-DB summary line is printed.
+    let case = Case::new("orphan_not_cloned_no_debug")
+        .orphan(WIDE_RANGE)
+        .repo(Repo::Missing);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_no_prefix(0, "<db>/org/repo: repo not cloned");
+    rs.expect_no_prefix(0, "restoreOrphanRepo(");
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: DB '<db>': skipped 1 repo(s) without a clone",
     );
     rs.expect_line(
         0,
         "Finished DB '<db>': processed 0 repos, checked 0 commits, restored 0",
+    );
+}
+
+#[test]
+fn orphan_empty_clone() {
+    // A clone of an empty GitHub repository (unborn HEAD, no origin/HEAD):
+    // counted once per DB, no default-ref warning, no gitListCommits error.
+    let case = Case::new("orphan_empty_clone")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .repo(Repo::Empty);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(0, "<db>/org/repo: empty clone (no commits), skipping");
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: DB '<db>': skipped 1 empty clone(s)",
+    );
+    rs.expect_no_prefix(0, "Warning: could not determine default ref");
+    rs.expect_no_prefix(0, "restoreOrphanRepo(");
+    rs.expect_line(
+        0,
+        "Finished DB '<db>': processed 0 repos, checked 0 commits, restored 0",
+    );
+    assert_eq!(rs.count("select count(*) from gha_events where id < 0"), 0);
+}
+
+#[test]
+fn orphan_empty_clone_with_others() {
+    // The empty clone does not disturb the other repositories of the DB and the
+    // summary lines come out in a fixed order (not cloned, empty, finished).
+    let case = Case::new("orphan_empty_clone_with_others")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .repo(Repo::Empty)
+        .extra(&["org/other"])
+        .also("insert into gha_repos(id, name, org_id, org_login) values (200, 'org/other', 10, 'org'), (300, 'org/gone', 10, 'org');
+insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values
+ (3001, 'PushEvent', 1, 200, '2020-01-02 01:00:00', 10, 'alice', 'org/other'),
+ (3002, 'PushEvent', 1, 300, '2020-01-02 01:00:00', 10, 'alice', 'org/gone');");
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: processing DB '<db>' (3 repos, threads 1)",
+    );
+    rs.expect_line(
+        0,
+        "<db>/org/gone: repo not cloned: <dir>/repos/org/gone, skipping",
+    );
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: DB '<db>': skipped 1 repo(s) without a clone",
+    );
+    rs.expect_line(0, "<db>/org/repo: empty clone (no commits), skipping");
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: DB '<db>': skipped 1 empty clone(s)",
+    );
+    rs.expect_line(0, "<db>/org/other: successfully restored 4 orphan commits");
+    rs.expect_line(
+        0,
+        "Finished DB '<db>': processed 1 repos, checked 4 commits, restored 4",
+    );
+    rs.expect_no_prefix(0, "restoreOrphanRepo(");
+    assert_eq!(
+        rs.query("select distinct dup_repo_name from gha_events where id < 0"),
+        vec![strs(&["org/other"])]
     );
 }
 
@@ -3835,11 +3955,19 @@ insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_acto
         0,
         "Restoring orphan commits: processing DB '<db>' (2 repos, threads 1)",
     );
-    rs.expect_no_prefix(0, "Restoring orphan commits: DB '<db>': skipped ");
+    rs.expect_no_prefix(
+        0,
+        "Restoring orphan commits: DB '<db>': skipped 1 historical",
+    );
     rs.expect_line(
         0,
-        "restoreOrphanRepo(DB=<db>, repo=org/repo) error: <db>: repo not cloned: <dir>/repos/org/repo",
+        "<db>/org/repo: repo not cloned: <dir>/repos/org/repo, skipping",
     );
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: DB '<db>': skipped 1 repo(s) without a clone",
+    );
+    rs.expect_no_prefix(0, "restoreOrphanRepo(");
     rs.expect_line(
         0,
         "<db>/org/renamed: attributing restored commits to org/repo (current name)",
