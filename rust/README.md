@@ -28,7 +28,7 @@ the difference.
 | `webhook`    | `cmd/webhook`     | `cmd/webhook`     | 5 / 21 (HTTP servers)  |
 | `sqlitedb`   | `cmd/sqlitedb`    | `cmd/sqlitedb`    | 5 / 36 (SQLite)        |
 | `merge_dbs`  | `cmd/merge_dbs`   | `cmd/merge_dbs`   | 4 / 49 (PostgreSQL)    |
-| `reconcile_dbs` | `cmd/reconcile_dbs` | `cmd/reconcile_dbs` | 15 / 33 (PostgreSQL) |
+| `reconcile_dbs` | `cmd/reconcile_dbs` | `cmd/reconcile_dbs` | 19 / 41 (PostgreSQL) |
 | `gha2db_sync` | `cmd/gha2db_sync` | `cmd/gha2db_sync` | 7 / 74 (PostgreSQL)   |
 | `import_affs` | `cmd/import_affs` | `cmd/import_affs` | 6 / 47 (PostgreSQL)   |
 | `calc_metric` | `cmd/calc_metric` | `cmd/calc_metric` | 6 / 98 (PostgreSQL)   |
@@ -745,7 +745,13 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `GHA2DB_PROJECT` or `psql_db`), shared (`PG_DB` is the `shared_db` of
     enabled projects — all their `psql_db`, ordered by `order`/name,
     unavailable ones skipped), explicit (`GHA2DB_RECONCILE_DBS=a,b`).
-    Scope: repositories in both `gha_repos`; window `GHA2DB_RECONCILE_RANGE`
+    Scope: repositories in both `gha_repos`, narrowed by the target
+    project's own `gha2db` ingestion rules read from `projects.yaml`
+    (`command_line` org/repo lists or `regexp:` patterns, the project's
+    `GHA2DB_EXCLUDE_REPOS`, `GHA2DB_EXACT`, actors filter — `RepoHit` /
+    `ActorHit` on a fresh Ctx with the project's `env` applied unless
+    `ENV_SET`; reported as the `filter:` header line and per-source
+    `filtered out N event(s) …` lines); window `GHA2DB_RECONCILE_RANGE`
     (interval, default `90 days`); native ids (`0 < id < 2^48`) and synthetic
     orphan pushes (`id < 0`), artificial ids (`>= 2^48`) only with
     `GHA2DB_RECONCILE_ARTIFICIAL=1`. Stateless idempotency via per
@@ -763,13 +769,16 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `GHA2DB_RECONCILE_SKIP_DBS=a,b`; `gha2db_sync` runs it (non-fatally)
     after `ghapi2db` and before `structure` unless `GHA2DB_RECONCILESKIP`
     (Ctx `SkipReconcile`).
-  * Go⇄Rust tests: `cmd/reconcile_dbs/tests/compat.rs` — 33 cases on scratch
+  * Go⇄Rust tests: `cmd/reconcile_dbs/tests/compat.rs` — 41 cases on scratch
     source/target databases (`compat/fixtures/structure/full_structure.sql`
     schema, deterministic seeded world, see
     `compat/fixtures/reconcile_dbs/README.md`): explicit, project and shared
     modes with `projects.yaml` (disabled/overridden projects, ghost DBs),
     idempotent second runs, dry run, artificial events, window ranges, two
-    sources, orphan skipping, commit takeover, empty sources, missing
+    sources, orphan skipping, commit takeover, project org/repo/regexp/
+    exclude/actor filtering (with `ENV_SET`, in project, shared — the shared
+    database's own project rules, also with `GHA2DB_PROJECT` naming a child —
+    and explicit modes, dry run, no owning project), empty sources, missing
     databases/yaml, invalid ranges, `GHA2DB_CTXOUT`. Compared: exit code,
     stdout (`since <ts>`, failing-query argument echoes and durations
     masked), `Error:`/`PqError:` stderr lines and every table of the target

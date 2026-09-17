@@ -30,6 +30,20 @@
 //! ids); artificial API-restored events (id >= 2^48) only with
 //! `GHA2DB_RECONCILE_ARTIFICIAL=1` (each side regenerates them itself).
 //!
+//! Filter: only the events the target's own `gha2db` would ingest are copied:
+//! the org/repo rules of the target project (`command_line` in
+//! projects.yaml: orgs and repos lists or `regexp:` patterns, parsed like
+//! gha2db_sync/gha2db do) applied to the event's `dup_repo_name` with
+//! `repo_hit`, and the actor rules (`GHA2DB_ACTORS_FILTER/ALLOW/FORBID`) with
+//! `actor_hit`; the project's `env` (e.g. `GHA2DB_EXCLUDE_REPOS`,
+//! `GHA2DB_EXACT`) is applied like gha2db_sync does (unless `ENV_SET` is
+//! set). A repository that moved to another org (it keeps its id, so it is in
+//! both `gha_repos`) is therefore not pulled from a database that tracks the
+//! new org. The target project is `GHA2DB_PROJECT` when its `psql_db` is
+//! `PG_DB`, else the first enabled project with `psql_db` = `PG_DB`; when
+//! there is none (or projects.yaml is absent in explicit mode) nothing is
+//! filtered.
+//!
 //! Stateless idempotency: per (repo_id, day) digests (count, sum of ids) on
 //! both sides; only the differing buckets are diffed by id; a second run
 //! copies nothing.
@@ -57,6 +71,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use devstatscode::chrono::Local;
+use devstatscode::context::GoRegex;
+use devstatscode::gha::{actor_hit, repo_hit};
+use devstatscode::map::{strings_map_to_array, strings_map_to_set};
 use devstatscode::pg::{self, fatal_on_pg_err, fatal_on_pg_error, PgConn, PgError, PgTx, SqlArg};
 use devstatscode::time as gotime;
 use devstatscode::yamlv2::de as yde;
@@ -117,6 +134,7 @@ struct SourceStats {
     native: usize,
     orphan: usize,
     artificial: usize,
+    filtered: usize,
     skipped: usize,
     inserted: usize,
     taken: usize,
@@ -137,6 +155,139 @@ impl SourceStats {
     }
 }
 
+/// The ingestion rules of the target project: what its own gha2db accepts
+/// (Go `projectFilter`, see `repo_hit`, `actor_hit`).
+#[derive(Debug, Default)]
+struct ProjectFilter {
+    /// Project name, "" - no project: nothing is filtered.
+    name: String,
+    /// Why nothing is filtered (when `name` is "").
+    detail: String,
+    forg: BTreeSet<String>,
+    frepo: BTreeSet<String>,
+    org_re: Option<GoRegex>,
+    repo_re: Option<GoRegex>,
+    /// Context initialized with the project's `env` applied (exclude list,
+    /// exact mode, actor filters).
+    ctx: Option<Box<Ctx>>,
+}
+
+impl ProjectFilter {
+    /// Go `projectFilter.hit`: would the target project's gha2db ingest an
+    /// event of this repository by this actor?
+    fn hit(&self, repo_name: &str, actor_login: &str) -> bool {
+        let Some(ctx) = self.ctx.as_deref() else {
+            return true;
+        };
+        if self.name.is_empty() {
+            return true;
+        }
+        repo_hit(
+            ctx,
+            repo_name,
+            &self.forg,
+            &self.frepo,
+            self.org_re.as_ref(),
+            self.repo_re.as_ref(),
+        ) && actor_hit(ctx, actor_login)
+    }
+
+    /// Go `projectFilter.info`: human readable filter description.
+    fn info(&self) -> String {
+        let Some(ctx) = self.ctx.as_deref().filter(|_| !self.name.is_empty()) else {
+            return format!("none ({})", self.detail);
+        };
+        format!(
+            "project '{}': {}, {}, {} excluded repo(s), exact {}, actors filter {}",
+            self.name,
+            names_info("org", &self.forg, self.org_re.as_ref()),
+            names_info("repo", &self.frepo, self.repo_re.as_ref()),
+            ctx.exclude_repos.len(),
+            ctx.exact,
+            ctx.actors_filter
+        )
+    }
+}
+
+/// Go `namesInfo`: "any org" / "3 org(s)" / "org regexp '...'".
+fn names_info(kind: &str, names: &BTreeSet<String>, re: Option<&GoRegex>) -> String {
+    if let Some(re) = re {
+        return format!("{kind} regexp '{}'", re.as_str());
+    }
+    if names.is_empty() {
+        return format!("any {kind}");
+    }
+    format!("{} {kind}(s)", names.len())
+}
+
+/// Go `parseFilterArg`: one `command_line` item of a project the way gha2db
+/// gets it from gha2db_sync (comma split, trimmed, re-joined) and parses it:
+/// `regexp:` prefix - a regexp, else a set of names (empty - no restriction).
+fn parse_filter_arg(arg: &str) -> (BTreeSet<String>, Option<GoRegex>) {
+    let strip = |x: &str| x.trim().to_string();
+    let joined =
+        strings_map_to_array(strip, arg.split(',').map(str::to_string).collect()).join(",");
+    if let Some(re) = joined.strip_prefix("regexp:") {
+        return (BTreeSet::new(), Some(GoRegex::must(re)));
+    }
+    (
+        strings_map_to_set(strip, joined.split(',').map(str::to_string).collect()),
+        None,
+    )
+}
+
+/// Go `newProjectFilter`: the ingestion rules of the target database's
+/// project (none when `all` is `None` or no enabled project uses the
+/// database); the project's `env` is applied like gha2db_sync does (unless
+/// `ENV_SET`).
+fn new_project_filter(
+    ctx: &Ctx,
+    all: Option<&projects::AllProjects>,
+    target: &str,
+    path: &str,
+) -> ProjectFilter {
+    let Some(all) = all else {
+        return ProjectFilter {
+            detail: format!("no {path}"),
+            ..ProjectFilter::default()
+        };
+    };
+    let Some((name, proj)) = project_for_db(ctx, all, target) else {
+        return ProjectFilter {
+            detail: format!("no enabled project uses this database in {path}"),
+            ..ProjectFilter::default()
+        };
+    };
+    if std::env::var("ENV_SET").unwrap_or_default().is_empty() {
+        for (env_k, env_v) in &proj.env {
+            setenv(env_k, env_v);
+        }
+    }
+    let mut fctx = Ctx::default();
+    fctx.init();
+    let org_arg = proj.command_line.first().map(String::as_str).unwrap_or("");
+    let repo_arg = proj.command_line.get(1).map(String::as_str).unwrap_or("");
+    let (forg, org_re) = parse_filter_arg(org_arg);
+    let (frepo, repo_re) = parse_filter_arg(repo_arg);
+    ProjectFilter {
+        name: name.to_string(),
+        detail: String::new(),
+        forg,
+        frepo,
+        org_re,
+        repo_re,
+        ctx: Some(Box::new(fctx)),
+    }
+}
+
+/// Go `os.Setenv` failure conditions (`setenv: invalid argument`).
+fn setenv(key: &str, value: &str) {
+    if key.is_empty() || key.contains('=') || key.contains('\0') || value.contains('\0') {
+        fatal_on_error("setenv: invalid argument");
+    }
+    std::env::set_var(key, value);
+}
+
 /// Tool configuration from the environment (Go `config`).
 #[derive(Debug, Default)]
 struct Config {
@@ -147,6 +298,7 @@ struct Config {
     range_str: String,
     dry_run: bool,
     artificial: bool,
+    filter: ProjectFilter,
 }
 
 /// Go `envFlag`: `1`, `t`, `true`, `y`, `yes` (any case, trimmed).
@@ -338,12 +490,7 @@ fn is_no_db_error(err: &PgError) -> bool {
 /// Go `readProjects`: projects.yaml (`GHA2DB_PROJECTS_YAML`) from the data
 /// directory (or ./ in local mode); returns the projects and the path read.
 fn read_projects(ctx: &Ctx) -> (projects::AllProjects, String) {
-    let data_prefix = if ctx.local {
-        "./".to_string()
-    } else {
-        ctx.data_dir.clone()
-    };
-    let path = format!("{data_prefix}{}", ctx.projects_yaml);
+    let path = projects_path(ctx);
     // `ioutil.ReadFile` — no `/shared/` fallback.
     let data = fatal_on_err(io::read_file_raw(&path));
     let all: projects::AllProjects = match yde::unmarshal(&data) {
@@ -351,6 +498,31 @@ fn read_projects(ctx: &Ctx) -> (projects::AllProjects, String) {
         Err(e) => fatal_on_error(e),
     };
     (all, path)
+}
+
+/// Go `projectsPath`: path of projects.yaml: `GHA2DB_PROJECTS_YAML` in the
+/// data directory (or ./ in local mode).
+fn projects_path(ctx: &Ctx) -> String {
+    let data_prefix = if ctx.local {
+        "./".to_string()
+    } else {
+        ctx.data_dir.clone()
+    };
+    format!("{data_prefix}{}", ctx.projects_yaml)
+}
+
+/// Go `readProjectsIfPresent`: like [`read_projects`], but a missing file is
+/// not an error (`None` projects).
+fn read_projects_if_present(ctx: &Ctx) -> (Option<projects::AllProjects>, String) {
+    let path = projects_path(ctx);
+    if let Err(e) = std::fs::metadata(&path) {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return (None, path);
+        }
+        fatal_on_error(format!("stat {path}: {e}"));
+    }
+    let (all, path) = read_projects(ctx);
+    (Some(all), path)
 }
 
 /// Go `sharedDBSources`: `psql_db` of the enabled projects with `shared_db` =
@@ -435,6 +607,7 @@ fn resolve_config(ctx: &Ctx, target: &str) -> Option<Config> {
         cfg.range_str = DEFAULT_RANGE.to_string();
     }
     let explicit = parse_db_list(&std::env::var("GHA2DB_RECONCILE_DBS").unwrap_or_default());
+    let (all, path): (Option<projects::AllProjects>, String);
     if !explicit.is_empty() {
         for db in &explicit {
             if db == target {
@@ -448,19 +621,20 @@ fn resolve_config(ctx: &Ctx, target: &str) -> Option<Config> {
         cfg.detail = "GHA2DB_RECONCILE_DBS".to_string();
         cfg.sources = explicit;
         cfg.explicit = true;
+        (all, path) = read_projects_if_present(ctx);
     } else {
-        let (all, path) = read_projects(ctx);
-        let shared = shared_db_sources(ctx, &all, target);
+        let (read, read_path) = read_projects(ctx);
+        let shared = shared_db_sources(ctx, &read, target);
         if !shared.is_empty() {
             cfg.mode = "shared".to_string();
-            cfg.detail = format!("projects with shared_db '{target}' in {path}");
+            cfg.detail = format!("projects with shared_db '{target}' in {read_path}");
             cfg.sources = shared;
         } else {
-            let Some((name, proj)) = project_for_db(ctx, &all, target) else {
+            let Some((name, proj)) = project_for_db(ctx, &read, target) else {
                 printf!(
                     "reconcile_dbs: {}: no enabled project uses this database in {}, nothing to reconcile\n",
                     target,
-                    path
+                    read_path
                 );
                 return None;
             };
@@ -470,15 +644,17 @@ fn resolve_config(ctx: &Ctx, target: &str) -> Option<Config> {
                     "reconcile_dbs: {}: project '{}' has no shared database in {}, nothing to reconcile\n",
                     target,
                     name,
-                    path
+                    read_path
                 );
                 return None;
             }
             cfg.mode = "project".to_string();
-            cfg.detail = format!("project '{name}' shared_db '{shared_db}' in {path}");
+            cfg.detail = format!("project '{name}' shared_db '{shared_db}' in {read_path}");
             cfg.sources = vec![shared_db.to_string()];
         }
+        (all, path) = (Some(read), read_path);
     }
+    cfg.filter = new_project_filter(ctx, all.as_ref(), target, &path);
     let skip_dbs = parse_db_list(&std::env::var("GHA2DB_RECONCILE_SKIP_DBS").unwrap_or_default());
     if !skip_dbs.is_empty() {
         let mut sources: Vec<String> = Vec::new();
@@ -683,6 +859,45 @@ fn orphan_events_to_skip(ctx: &Ctx, src: &PgConn, tgt: &PgConn, orphans: &[i64])
         }
     }
     skip
+}
+
+/// Go `eventsToFilterOut`: the given source events the target project would
+/// not ingest itself: their repository name (`dup_repo_name`) or actor
+/// (`dup_actor_login`) fails the project's gha2db rules (`repo_hit`,
+/// `actor_hit`).
+fn events_to_filter_out(
+    ctx: &Ctx,
+    src: &PgConn,
+    filter: &ProjectFilter,
+    ids: &[i64],
+) -> BTreeSet<i64> {
+    let mut out: BTreeSet<i64> = BTreeSet::new();
+    if filter.name.is_empty() || ids.is_empty() {
+        return out;
+    }
+    for chunk in chunks(ids, ID_BATCH) {
+        let mut rows = pg::query_sql_with_err(
+            src,
+            ctx,
+            &format!(
+                "select id, dup_repo_name, dup_actor_login from gha_events where id = any({}) order by id",
+                int64_array_literal(&chunk)
+            ),
+            &[],
+        );
+        while rows.next() {
+            let mut id: i64 = 0;
+            let mut repo_name = String::new();
+            let mut actor_login = String::new();
+            fatal_on_pg_err(rows.scan(&mut [&mut id, &mut repo_name, &mut actor_login]));
+            if !filter.hit(&repo_name, &actor_login) {
+                out.insert(id);
+            }
+        }
+        fatal_on_pg_err(rows.err());
+        fatal_on_pg_err(rows.close());
+    }
+    out
 }
 
 /// One `insert ... on conflict do nothing` of the buffered rows; returns the rows inserted.
@@ -981,14 +1196,10 @@ fn reconcile_source(
         target_only += diff_sorted(&target_ids, &source_ids).len();
     }
     missing.sort_unstable();
-    let mut orphans: Vec<i64> = Vec::new();
     for &id in &missing {
         match class_of(id) {
             "native" => stats.native += 1,
-            "orphan" => {
-                stats.orphan += 1;
-                orphans.push(id);
-            }
+            "orphan" => stats.orphan += 1,
             "artificial" => stats.artificial += 1,
             _ => {}
         }
@@ -1005,6 +1216,53 @@ fn reconcile_source(
     if missing.is_empty() {
         return stats;
     }
+
+    // Events the target project would not ingest itself (its gha2db org/repo/actor rules) are not copied
+    let drop = events_to_filter_out(ctx, src, &cfg.filter, &missing);
+    if !drop.is_empty() {
+        let mut to_copy: Vec<i64> = Vec::with_capacity(missing.len());
+        let (mut f_native, mut f_orphan, mut f_artificial) = (0usize, 0usize, 0usize);
+        for id in missing {
+            if drop.contains(&id) {
+                stats.filtered += 1;
+                match class_of(id) {
+                    "native" => {
+                        stats.native = stats.native.saturating_sub(1);
+                        f_native += 1;
+                    }
+                    "orphan" => {
+                        stats.orphan = stats.orphan.saturating_sub(1);
+                        f_orphan += 1;
+                    }
+                    "artificial" => {
+                        stats.artificial = stats.artificial.saturating_sub(1);
+                        f_artificial += 1;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            to_copy.push(id);
+        }
+        missing = to_copy;
+        printf!(
+            "{}: filtered out {} event(s) outside project '{}' org/repo/actor rules (native {}, orphan {}, artificial {})\n",
+            prefix,
+            stats.filtered,
+            cfg.filter.name,
+            f_native,
+            f_orphan,
+            f_artificial
+        );
+    }
+    if missing.is_empty() {
+        return stats;
+    }
+    let orphans: Vec<i64> = missing
+        .iter()
+        .copied()
+        .filter(|&id| class_of(id) == "orphan")
+        .collect();
 
     // Orphan pushes whose commits the target already has are not copied
     let skip = orphan_events_to_skip(ctx, src, tgt, &orphans);
@@ -1183,6 +1441,7 @@ fn reconcile_dbs() {
         classes_info(cfg.artificial),
         cfg.dry_run
     );
+    printf!("reconcile_dbs: {}: filter: {}\n", target, cfg.filter.info());
     let target_repos = repo_ids(&tgt, &ctx);
 
     let mut total = SourceStats::default();
@@ -1222,18 +1481,20 @@ fn reconcile_dbs() {
         n_sources += 1;
         total.copied += stats.copied;
         total.inserted += stats.inserted;
+        total.filtered += stats.filtered;
         total.skipped += stats.skipped;
         total.taken += stats.taken;
         total.postprocess += stats.postprocess;
     }
     let verb = if cfg.dry_run { "would copy" } else { "copied" };
     printf!(
-        "reconcile_dbs: {}: {} source(s), {} {} event(s), inserted {} row(s), skipped {} orphan event(s), taken over {} commit(s)\n",
+        "reconcile_dbs: {}: {} source(s), {} {} event(s), inserted {} row(s), filtered out {} event(s), skipped {} orphan event(s), taken over {} commit(s)\n",
         target,
         n_sources,
         verb,
         total.copied,
         total.inserted,
+        total.filtered,
         total.skipped,
         total.taken
     );
@@ -1543,5 +1804,223 @@ projects:
         assert!(project_for_db(&ctx, &all, "nosuchdb").is_none());
         let (name, proj) = project_for_db(&ctx, &all, "allprj").expect("all");
         assert_eq!((name, proj.shared_db.as_str()), ("all", ""));
+    }
+
+    #[test]
+    fn parse_filter_arg_cases() {
+        let (names, re) = parse_filter_arg("");
+        assert!(names.is_empty() && re.is_none(), "empty - no restriction");
+        let (names, re) = parse_filter_arg(" kcp-dev ");
+        assert_eq!(names.iter().cloned().collect::<Vec<_>>(), s(&["kcp-dev"]));
+        assert!(re.is_none());
+        let (names, re) = parse_filter_arg("a, b ,a,c");
+        assert_eq!(
+            names.iter().cloned().collect::<Vec<_>>(),
+            s(&["a", "b", "c"])
+        );
+        assert!(re.is_none());
+        let (names, re) = parse_filter_arg("regexp:(?i)^spiffe\\/spire.*$");
+        let re = re.expect("regexp");
+        assert!(names.is_empty());
+        assert_eq!(re.as_str(), "(?i)^spiffe\\/spire.*$");
+        assert!(re.is_match("spiffe/spire-api-sdk") && !re.is_match("kcp-dev/kcp"));
+        // gha2db_sync splits by comma and trims before passing the argument on
+        let (_, re) = parse_filter_arg("regexp:^(a|b)$ , ^c$");
+        assert_eq!(re.expect("regexp").as_str(), "^(a|b)$,^c$");
+    }
+
+    #[test]
+    fn names_info_cases() {
+        assert_eq!(names_info("org", &BTreeSet::new(), None), "any org");
+        let two: BTreeSet<String> = s(&["a", "b"]).into_iter().collect();
+        assert_eq!(names_info("repo", &two, None), "2 repo(s)");
+        let re = GoRegex::must("^a$");
+        assert_eq!(names_info("org", &two, Some(&re)), "org regexp '^a$'");
+    }
+
+    #[test]
+    fn project_filter_cases() {
+        // Serializes the environment mutations of this test (Ctx::init reads it).
+        let env_set = std::env::var("ENV_SET").ok();
+        let exclude = std::env::var("GHA2DB_EXCLUDE_REPOS").ok();
+        std::env::remove_var("ENV_SET");
+        std::env::remove_var("GHA2DB_EXCLUDE_REPOS");
+        let yaml = r#"
+projects:
+  kcp: {psql_db: kcp, shared_db: allprj, command_line: ['kcp-dev']}
+  spire: {psql_db: spire, shared_db: allprj, command_line: ['regexp:(?i)^spiffe\/spire.*$']}
+  kube:
+    psql_db: gha
+    command_line: ['kubernetes,kubernetes-client, kubernetes-sigs']
+    env: {GHA2DB_EXCLUDE_REPOS: 'kubernetes/api,kubernetes/apimachinery'}
+  oci: {psql_db: oci, command_line: ['opencontainers', 'runc,image-spec']}
+  all: {psql_db: allprj, command_line: ['kcp-dev,kubestellar,kubernetes']}
+  off: {psql_db: off, disabled: true, command_line: ['x']}
+  exact:
+    psql_db: exact
+    command_line: ['cncf/devstats,cncf/devstatscode']
+    env: {GHA2DB_EXACT: '1'}
+"#;
+        let all: projects::AllProjects = yde::unmarshal(yaml.as_bytes()).expect("yaml");
+        let exact = std::env::var("GHA2DB_EXACT").ok();
+        std::env::remove_var("GHA2DB_EXACT");
+        let mut ctx = Ctx::default();
+
+        // No projects.yaml / no project: nothing is filtered
+        let f = new_project_filter(&ctx, None, "kcp", "./projects.yaml");
+        assert!(f.name.is_empty() && f.hit("other/repo", "bot"));
+        assert_eq!(f.info(), "none (no ./projects.yaml)");
+        let f = new_project_filter(&ctx, Some(&all), "off", "p.yaml");
+        assert!(f.name.is_empty() && f.hit("x/y", "a"));
+        assert_eq!(
+            f.info(),
+            "none (no enabled project uses this database in p.yaml)"
+        );
+
+        // Org list
+        let f = new_project_filter(&ctx, Some(&all), "kcp", "p.yaml");
+        assert_eq!(f.name, "kcp");
+        assert_eq!(
+            f.info(),
+            "project 'kcp': 1 org(s), any repo, 0 excluded repo(s), exact false, actors filter false"
+        );
+        assert!(f.hit("kcp-dev/kcp", "alice") && f.hit("kcp-dev/edge-mc", "alice"));
+        assert!(
+            !f.hit("kubestellar/kubestellar", "alice")
+                && !f.hit("", "alice")
+                && !f.hit("kcp", "alice")
+        );
+
+        // Regexp on the full name
+        let f = new_project_filter(&ctx, Some(&all), "spire", "p.yaml");
+        assert_eq!(
+            f.info(),
+            "project 'spire': org regexp '(?i)^spiffe\\/spire.*$', any repo, 0 excluded repo(s), exact false, actors filter false"
+        );
+        assert!(f.hit("spiffe/spire", "a") && f.hit("SPIFFE/spire-tutorials", "a"));
+        assert!(!f.hit("spiffe/go-spiffe", "a"));
+
+        // Org and repo lists
+        let f = new_project_filter(&ctx, Some(&all), "oci", "p.yaml");
+        assert_eq!(
+            f.info(),
+            "project 'oci': 1 org(s), 2 repo(s), 0 excluded repo(s), exact false, actors filter false"
+        );
+        assert!(f.hit("opencontainers/runc", "a"));
+        assert!(!f.hit("opencontainers/distribution-spec", "a") && !f.hit("other/runc", "a"));
+
+        // The project's env (exclude list) is applied like gha2db_sync does
+        let f = new_project_filter(&ctx, Some(&all), "gha", "p.yaml");
+        assert_eq!(
+            f.info(),
+            "project 'kube': 3 org(s), any repo, 2 excluded repo(s), exact false, actors filter false"
+        );
+        assert!(f.hit("kubernetes/kubernetes", "a") && f.hit("kubernetes-sigs/kind", "a"));
+        assert!(!f.hit("kubernetes/api", "a") && !f.hit("kubernetes/apimachinery", "a"));
+        assert_eq!(
+            std::env::var("GHA2DB_EXCLUDE_REPOS").unwrap_or_default(),
+            "kubernetes/api,kubernetes/apimachinery"
+        );
+        // ... unless ENV_SET says the environment is already prepared
+        std::env::remove_var("GHA2DB_EXCLUDE_REPOS");
+        std::env::set_var("ENV_SET", "1");
+        let f = new_project_filter(&ctx, Some(&all), "gha", "p.yaml");
+        assert!(f.ctx.as_ref().expect("ctx").exclude_repos.is_empty());
+        assert!(f.hit("kubernetes/api", "a"));
+        std::env::remove_var("ENV_SET");
+
+        // Exact mode (the project's env): full repository names, no org matching
+        let f = new_project_filter(&ctx, Some(&all), "exact", "p.yaml");
+        assert_eq!(
+            f.info(),
+            "project 'exact': 2 org(s), any repo, 0 excluded repo(s), exact true, actors filter false"
+        );
+        assert!(f.hit("cncf/devstats", "a") && !f.hit("cncf/other", "a") && !f.hit("cncf", "a"));
+        std::env::remove_var("GHA2DB_EXACT");
+
+        // GHA2DB_PROJECT selects the project of a shared database
+        ctx.project = "all".to_string();
+        let f = new_project_filter(&ctx, Some(&all), "allprj", "p.yaml");
+        assert_eq!(f.name, "all");
+        assert!(f.hit("kubestellar/kubestellar", "a") && !f.hit("cncf/devstats", "a"));
+        // ... and when GHA2DB_PROJECT names a project of another database, the
+        // shared database's own project still decides (the shared side is never
+        // filtered by a child's rules)
+        ctx.project = "kcp".to_string();
+        let f = new_project_filter(&ctx, Some(&all), "allprj", "p.yaml");
+        assert_eq!(f.name, "all");
+        assert!(f.hit("kubernetes/kubernetes", "a") && !f.hit("cncf/devstats", "a"));
+        ctx.project = "all".to_string();
+        let mut f = new_project_filter(&ctx, Some(&all), "allprj", "p.yaml");
+        // Actor rules
+        {
+            let fctx = f.ctx.as_mut().expect("ctx");
+            fctx.actors_filter = true;
+            fctx.actors_forbid = Some(GoRegex::must("(?i)bot$"));
+        }
+        assert!(f.hit("kubernetes/kubernetes", "alice"));
+        assert!(!f.hit("kubernetes/kubernetes", "k8s-ci-robot-bot"));
+        assert_eq!(
+            f.info(),
+            "project 'all': 3 org(s), any repo, 0 excluded repo(s), exact false, actors filter true"
+        );
+
+        match env_set {
+            Some(v) => std::env::set_var("ENV_SET", v),
+            None => std::env::remove_var("ENV_SET"),
+        }
+        match exact {
+            Some(v) => std::env::set_var("GHA2DB_EXACT", v),
+            None => std::env::remove_var("GHA2DB_EXACT"),
+        }
+        match exclude {
+            Some(v) => std::env::set_var("GHA2DB_EXCLUDE_REPOS", v),
+            None => std::env::remove_var("GHA2DB_EXCLUDE_REPOS"),
+        }
+    }
+
+    #[test]
+    fn read_projects_if_present_cases() {
+        let dir = std::env::temp_dir().join(format!(
+            "reconcile_dbs_projects_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dir_s = dir.to_str().expect("utf8").to_string();
+        let mut ctx = Ctx {
+            data_dir: format!("{dir_s}/"),
+            projects_yaml: "projects.yaml".to_string(),
+            ..Ctx::default()
+        };
+        assert_eq!(projects_path(&ctx), format!("{dir_s}/projects.yaml"));
+        ctx.local = true;
+        assert_eq!(projects_path(&ctx), "./projects.yaml");
+        ctx.local = false;
+        ctx.projects_yaml = "custom.yaml".to_string();
+        let (projects, path) = read_projects_if_present(&ctx);
+        assert!(projects.is_none());
+        assert_eq!(path, format!("{dir_s}/custom.yaml"));
+        std::fs::write(
+            dir.join("custom.yaml"),
+            "---\nprojects:\n  kcp:\n    name: KCP\n    psql_db: kcp\n    shared_db: allprj\n    command_line: ['kcp-dev']\n    env:\n      GHA2DB_EXCLUDE_REPOS: kcp-dev/old\n    order: 1\n",
+        )
+        .expect("write yaml");
+        let (projects, path) = read_projects_if_present(&ctx);
+        assert_eq!(path, format!("{dir_s}/custom.yaml"));
+        let projects = projects.expect("parsed projects");
+        let kcp = projects.projects.get("kcp").expect("kcp");
+        assert_eq!(kcp.pdb, "kcp");
+        assert_eq!(kcp.shared_db, "allprj");
+        assert_eq!(kcp.command_line, vec!["kcp-dev".to_string()]);
+        assert_eq!(
+            kcp.env.get("GHA2DB_EXCLUDE_REPOS").map(String::as_str),
+            Some("kcp-dev/old")
+        );
+        assert_eq!(kcp.order, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -24,6 +24,16 @@ package main
 // artificial API-restored events (id >= 2^48) only with GHA2DB_RECONCILE_ARTIFICIAL=1 (each side
 // regenerates them itself).
 //
+// Filter: only the events the target's own `gha2db` would ingest are copied: the org/repo rules of
+// the target project (`command_line` in projects.yaml: orgs and repos lists or `regexp:` patterns,
+// parsed like gha2db_sync/gha2db do) applied to the event's `dup_repo_name` with lib.RepoHit, and the
+// actor rules (GHA2DB_ACTORS_FILTER/ALLOW/FORBID) with lib.ActorHit; the project's `env` (e.g.
+// GHA2DB_EXCLUDE_REPOS, GHA2DB_EXACT) is applied like gha2db_sync does (unless ENV_SET is set). A
+// repository that moved to another org (it keeps its id, so it is in both `gha_repos`) is therefore
+// not pulled from a database that tracks the new org. The target project is GHA2DB_PROJECT when its
+// `psql_db` is PG_DB, else the first enabled project with `psql_db` = PG_DB; when there is none (or
+// projects.yaml is absent in explicit mode) nothing is filtered.
+//
 // Stateless idempotency: per (repo_id, day) digests (count, sum of ids) on both sides; only the
 // differing buckets are diffed by id; a second run copies nothing.
 //
@@ -46,6 +56,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,6 +134,7 @@ type sourceStats struct {
 	native      int
 	orphan      int
 	artificial  int
+	filtered    int
 	skipped     int
 	inserted    int
 	taken       int
@@ -130,6 +142,17 @@ type sourceStats struct {
 	removed     int
 	postprocess int
 	tables      map[string]*tableStats
+}
+
+// projectFilter - the ingestion rules of the target project: what its own gha2db accepts (see lib.RepoHit, lib.ActorHit)
+type projectFilter struct {
+	name   string // project name, "" - no project: nothing is filtered
+	detail string // why nothing is filtered (when name is "")
+	forg   map[string]struct{}
+	frepo  map[string]struct{}
+	orgRE  *regexp.Regexp
+	repoRE *regexp.Regexp
+	ctx    *lib.Ctx // context initialized with the project's `env` applied (exclude list, exact mode, actor filters)
 }
 
 // config - tool configuration from the environment
@@ -141,6 +164,7 @@ type config struct {
 	rangeStr   string
 	dryRun     bool
 	artificial bool
+	filter     projectFilter
 }
 
 func envFlag(name string) bool {
@@ -379,16 +403,104 @@ func isNoDBError(err error) bool {
 
 // readProjects - projects.yaml (GHA2DB_PROJECTS_YAML) from the data directory (or ./ in local mode)
 func readProjects(ctx *lib.Ctx) (*lib.AllProjects, string) {
-	dataPrefix := ctx.DataDir
-	if ctx.Local {
-		dataPrefix = "./"
-	}
-	path := dataPrefix + ctx.ProjectsYaml
+	path := projectsPath(ctx)
 	data, err := ioutil.ReadFile(path)
 	lib.FatalOnError(err)
 	var projects lib.AllProjects
 	lib.FatalOnError(yaml.Unmarshal(data, &projects))
 	return &projects, path
+}
+
+// projectsPath - path of projects.yaml: GHA2DB_PROJECTS_YAML in the data directory (or ./ in local mode)
+func projectsPath(ctx *lib.Ctx) string {
+	dataPrefix := ctx.DataDir
+	if ctx.Local {
+		dataPrefix = "./"
+	}
+	return dataPrefix + ctx.ProjectsYaml
+}
+
+// readProjectsIfPresent - like readProjects, but a missing file is not an error (nil projects)
+func readProjectsIfPresent(ctx *lib.Ctx) (*lib.AllProjects, string) {
+	path := projectsPath(ctx)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, path
+		}
+		lib.FatalOnError(err)
+	}
+	return readProjects(ctx)
+}
+
+// parseFilterArg - one `command_line` item of a project the way gha2db gets it from gha2db_sync (comma split,
+// trimmed, re-joined) and parses it: `regexp:` prefix - a regexp, else a set of names (empty - no restriction)
+func parseFilterArg(arg string) (map[string]struct{}, *regexp.Regexp) {
+	stripFunc := func(x string) string { return strings.TrimSpace(x) }
+	joined := strings.Join(lib.StringsMapToArray(stripFunc, strings.Split(arg, ",")), ",")
+	if strings.HasPrefix(joined, "regexp:") {
+		return nil, regexp.MustCompile(joined[7:])
+	}
+	return lib.StringsMapToSet(stripFunc, strings.Split(joined, ",")), nil
+}
+
+// newProjectFilter - the ingestion rules of the target database's project (none when projects is nil or no
+// enabled project uses the database); the project's `env` is applied like gha2db_sync does (unless ENV_SET)
+func newProjectFilter(ctx *lib.Ctx, projects *lib.AllProjects, target, path string) projectFilter {
+	if projects == nil {
+		return projectFilter{detail: "no " + path}
+	}
+	name, project := projectForDB(ctx, projects, target)
+	if project == nil {
+		return projectFilter{detail: fmt.Sprintf("no enabled project uses this database in %s", path)}
+	}
+	if os.Getenv("ENV_SET") == "" {
+		for envK, envV := range project.Env {
+			lib.FatalOnError(os.Setenv(envK, envV))
+		}
+	}
+	var fctx lib.Ctx
+	fctx.Init()
+	filter := projectFilter{name: name, ctx: &fctx}
+	orgArg, repoArg := "", ""
+	if len(project.CommandLine) > 0 {
+		orgArg = project.CommandLine[0]
+	}
+	if len(project.CommandLine) > 1 {
+		repoArg = project.CommandLine[1]
+	}
+	filter.forg, filter.orgRE = parseFilterArg(orgArg)
+	filter.frepo, filter.repoRE = parseFilterArg(repoArg)
+	return filter
+}
+
+// hit - would the target project's gha2db ingest an event of this repository by this actor?
+func (f *projectFilter) hit(repoName, actorLogin string) bool {
+	if f.name == "" {
+		return true
+	}
+	return lib.RepoHit(f.ctx, repoName, f.forg, f.frepo, f.orgRE, f.repoRE) && lib.ActorHit(f.ctx, actorLogin)
+}
+
+// namesInfo - "any org" / "3 org(s)" / "org regexp '...'"
+func namesInfo(kind string, names map[string]struct{}, re *regexp.Regexp) string {
+	if re != nil {
+		return fmt.Sprintf("%s regexp '%s'", kind, re.String())
+	}
+	if len(names) == 0 {
+		return "any " + kind
+	}
+	return fmt.Sprintf("%d %s(s)", len(names), kind)
+}
+
+// info - human readable filter description
+func (f *projectFilter) info() string {
+	if f.name == "" {
+		return fmt.Sprintf("none (%s)", f.detail)
+	}
+	return fmt.Sprintf(
+		"project '%s': %s, %s, %d excluded repo(s), exact %v, actors filter %v",
+		f.name, namesInfo("org", f.forg, f.orgRE), namesInfo("repo", f.frepo, f.repoRE), len(f.ctx.ExcludeRepos), f.ctx.Exact, f.ctx.ActorsFilter,
+	)
 }
 
 // sharedDBSources - `psql_db` of the enabled projects with `shared_db` = target (ordered by order, name, db; unique)
@@ -473,6 +585,10 @@ func resolveConfig(ctx *lib.Ctx, target string) (config, bool) {
 		cfg.rangeStr = defaultRange
 	}
 	explicit := parseDBList(os.Getenv("GHA2DB_RECONCILE_DBS"))
+	var (
+		projects *lib.AllProjects
+		path     string
+	)
 	if len(explicit) > 0 {
 		for _, db := range explicit {
 			if db == target {
@@ -483,8 +599,9 @@ func resolveConfig(ctx *lib.Ctx, target string) (config, bool) {
 		cfg.detail = "GHA2DB_RECONCILE_DBS"
 		cfg.sources = explicit
 		cfg.explicit = true
+		projects, path = readProjectsIfPresent(ctx)
 	} else {
-		projects, path := readProjects(ctx)
+		projects, path = readProjects(ctx)
 		shared := sharedDBSources(ctx, projects, target)
 		if len(shared) > 0 {
 			cfg.mode = "shared"
@@ -506,6 +623,7 @@ func resolveConfig(ctx *lib.Ctx, target string) (config, bool) {
 			cfg.sources = []string{sharedDB}
 		}
 	}
+	cfg.filter = newProjectFilter(ctx, projects, target, path)
 	skipDBs := parseDBList(os.Getenv("GHA2DB_RECONCILE_SKIP_DBS"))
 	if len(skipDBs) > 0 {
 		skip := make(map[string]struct{})
@@ -660,6 +778,36 @@ func orphanEventsToSkip(ctx *lib.Ctx, src, tgt *sql.DB, orphans []int64) map[int
 		}
 	}
 	return skip
+}
+
+// eventsToFilterOut - the given source events the target project would not ingest itself: their repository
+// name (`dup_repo_name`) or actor (`dup_actor_login`) fails the project's gha2db rules (lib.RepoHit, lib.ActorHit)
+func eventsToFilterOut(ctx *lib.Ctx, src *sql.DB, filter *projectFilter, ids []int64) map[int64]struct{} {
+	out := make(map[int64]struct{})
+	if filter.name == "" || len(ids) == 0 {
+		return out
+	}
+	for _, chunk := range chunkInt64(ids, idBatch) {
+		rows := lib.QuerySQLWithErr(
+			src,
+			ctx,
+			"select id, dup_repo_name, dup_actor_login from gha_events where id = any("+int64ArrayLiteral(chunk)+") order by id",
+		)
+		for rows.Next() {
+			var (
+				id         int64
+				repoName   string
+				actorLogin string
+			)
+			lib.FatalOnError(rows.Scan(&id, &repoName, &actorLogin))
+			if !filter.hit(repoName, actorLogin) {
+				out[id] = struct{}{}
+			}
+		}
+		lib.FatalOnError(rows.Err())
+		lib.FatalOnError(rows.Close())
+	}
+	return out
 }
 
 // copyRows - copy the rows of `selectSQL` (run on the source) into the target table (same column names) with
@@ -882,14 +1030,12 @@ func reconcileSource(ctx *lib.Ctx, cfg *config, tgt, src *sql.DB, target, source
 		targetOnly += len(diffSorted(targetIDs, sourceIDs))
 	}
 	sort.Slice(missing, func(i, j int) bool { return missing[i] < missing[j] })
-	orphans := []int64{}
 	for _, id := range missing {
 		switch classOf(id) {
 		case "native":
 			stats.native++
 		case "orphan":
 			stats.orphan++
-			orphans = append(orphans, id)
 		case "artificial":
 			stats.artificial++
 		}
@@ -900,6 +1046,45 @@ func reconcileSource(ctx *lib.Ctx, cfg *config, tgt, src *sql.DB, target, source
 	)
 	if len(missing) == 0 {
 		return stats
+	}
+
+	// Events the target project would not ingest itself (its gha2db org/repo/actor rules) are not copied
+	drop := eventsToFilterOut(ctx, src, &cfg.filter, missing)
+	if len(drop) > 0 {
+		toCopy := make([]int64, 0, len(missing))
+		fNative, fOrphan, fArtificial := 0, 0, 0
+		for _, id := range missing {
+			if _, ok := drop[id]; ok {
+				stats.filtered++
+				switch classOf(id) {
+				case "native":
+					stats.native--
+					fNative++
+				case "orphan":
+					stats.orphan--
+					fOrphan++
+				case "artificial":
+					stats.artificial--
+					fArtificial++
+				}
+				continue
+			}
+			toCopy = append(toCopy, id)
+		}
+		missing = toCopy
+		lib.Printf(
+			"%s: filtered out %d event(s) outside project '%s' org/repo/actor rules (native %d, orphan %d, artificial %d)\n",
+			prefix, stats.filtered, cfg.filter.name, fNative, fOrphan, fArtificial,
+		)
+	}
+	if len(missing) == 0 {
+		return stats
+	}
+	orphans := []int64{}
+	for _, id := range missing {
+		if classOf(id) == "orphan" {
+			orphans = append(orphans, id)
+		}
 	}
 
 	// Orphan pushes whose commits the target already has are not copied
@@ -1027,6 +1212,7 @@ func reconcileDBs() {
 		"reconcile_dbs: %s: mode %s (%s), %d source(s): %s, since %s (range '%s'), classes: %s, dry run: %v\n",
 		target, cfg.mode, cfg.detail, len(cfg.sources), strings.Join(cfg.sources, ", "), dtFrom, cfg.rangeStr, classesInfo(cfg.artificial), cfg.dryRun,
 	)
+	lib.Printf("reconcile_dbs: %s: filter: %s\n", target, cfg.filter.info())
 	targetRepos := repoIDs(tgt, &ctx)
 
 	total := sourceStats{}
@@ -1046,6 +1232,7 @@ func reconcileDBs() {
 		nSources++
 		total.copied += stats.copied
 		total.inserted += stats.inserted
+		total.filtered += stats.filtered
 		total.skipped += stats.skipped
 		total.taken += stats.taken
 		total.postprocess += stats.postprocess
@@ -1055,8 +1242,8 @@ func reconcileDBs() {
 		verb = "would copy"
 	}
 	lib.Printf(
-		"reconcile_dbs: %s: %d source(s), %s %d event(s), inserted %d row(s), skipped %d orphan event(s), taken over %d commit(s)\n",
-		target, nSources, verb, total.copied, total.inserted, total.skipped, total.taken,
+		"reconcile_dbs: %s: %d source(s), %s %d event(s), inserted %d row(s), filtered out %d event(s), skipped %d orphan event(s), taken over %d commit(s)\n",
+		target, nSources, verb, total.copied, total.inserted, total.filtered, total.skipped, total.taken,
 	)
 }
 

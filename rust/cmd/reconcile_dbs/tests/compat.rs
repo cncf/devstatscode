@@ -762,6 +762,16 @@ fn header(mode: &str, sources: &str, range: &str, classes: &str, dry: bool) -> S
     )
 }
 
+/// The filter line of a run without a projects.yaml (explicit mode, local).
+const NO_FILTER: &str = "reconcile_dbs: <dbs>_tgt: filter: none (no ./projects.yaml)";
+
+/// The filter line of a run whose target belongs to `project`.
+fn filter_line(project: &str, orgs: &str, repos: &str, excluded: usize, actors: bool) -> String {
+    format!(
+        "reconcile_dbs: <dbs>_tgt: filter: project '{project}': {orgs}, {repos}, {excluded} excluded repo(s), exact false, actors filter {actors}"
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Explicit mode: copying, re-runs, orphans, dimensions, post-processing
 // ---------------------------------------------------------------------------
@@ -783,6 +793,7 @@ fn explicit_copies_the_missing_events_and_is_idempotent() {
                 "native, orphan",
                 false
             ),
+            NO_FILTER.to_string(),
             format!("{P}: scope 3 repo(s) (target 3, source 4)"),
             // Only the source's buckets matter (T1's day is target-only).
             format!("{P}: buckets: source 5, target 2, differing 5"),
@@ -803,7 +814,7 @@ fn explicit_copies_the_missing_events_and_is_idempotent() {
             format!("{P}: table gha_actors: rows 2, inserted 1"),
             format!("{P}: copied 5 event(s), inserted 23 row(s), postprocess 5 event id(s)"),
             "targeted postprocess executed for 5 restored event id(s)".to_string(),
-            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 5 event(s), inserted 23 row(s), skipped 1 orphan event(s), taken over 0 commit(s)".to_string(),
+            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 5 event(s), inserted 23 row(s), filtered out 0 event(s), skipped 1 orphan event(s), taken over 0 commit(s)".to_string(),
             "Time: <duration>".to_string(),
         ]
     );
@@ -819,11 +830,12 @@ fn explicit_copies_the_missing_events_and_is_idempotent() {
                 "native, orphan",
                 false
             ),
+            NO_FILTER.to_string(),
             format!("{P}: scope 3 repo(s) (target 3, source 4)"),
             format!("{P}: buckets: source 5, target 5, differing 1"),
             format!("{P}: events: source-only 1 (native 0, orphan 1, artificial 0), target-only 0"),
             format!("{P}: skipped 1 orphan event(s) whose commits are already present"),
-            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 0 event(s), inserted 0 row(s), skipped 1 orphan event(s), taken over 0 commit(s)".to_string(),
+            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 0 event(s), inserted 0 row(s), filtered out 0 event(s), skipped 1 orphan event(s), taken over 0 commit(s)".to_string(),
             "Time: <duration>".to_string(),
         ]
     );
@@ -937,7 +949,7 @@ fn every_orphan_skipped_leaves_nothing_to_copy() {
     )));
     assert!(!rs.has_line_starting(&format!("{P}: table ")));
     assert!(rs.has_line(
-        "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 0 event(s), inserted 0 row(s), skipped 1 orphan event(s), taken over 0 commit(s)"
+        "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 0 event(s), inserted 0 row(s), filtered out 0 event(s), skipped 1 orphan event(s), taken over 0 commit(s)"
     ));
 }
 
@@ -957,9 +969,10 @@ fn identical_databases_have_nothing_to_reconcile() {
                 "native, orphan",
                 false
             ),
+            NO_FILTER.to_string(),
             format!("{P}: scope 4 repo(s) (target 4, source 4)"),
             format!("{P}: buckets: source 6, target 6, differing 0"),
-            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 0 event(s), inserted 0 row(s), skipped 0 orphan event(s), taken over 0 commit(s)".to_string(),
+            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 0 event(s), inserted 0 row(s), filtered out 0 event(s), skipped 0 orphan event(s), taken over 0 commit(s)".to_string(),
             "Time: <duration>".to_string(),
         ]
     );
@@ -1045,7 +1058,7 @@ fn explicit_source_list_is_trimmed_and_deduplicated() {
         false
     )));
     assert!(rs.has_line(
-        "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 5 event(s), inserted 23 row(s), skipped 1 orphan event(s), taken over 0 commit(s)"
+        "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 5 event(s), inserted 23 row(s), filtered out 0 event(s), skipped 1 orphan event(s), taken over 0 commit(s)"
     ));
 }
 
@@ -1073,9 +1086,10 @@ fn two_explicit_sources_are_processed_in_order() {
             false
         )
     );
+    assert_eq!(lines[1], NO_FILTER);
     let p2 = "reconcile_dbs: <dbs>_tgt <- <dbs>_src2";
     assert_eq!(
-        lines[1],
+        lines[2],
         format!("{p2}: scope 2 repo(s) (target 3, source 2)")
     );
     assert!(rs.has_line(&format!(
@@ -1089,7 +1103,7 @@ fn two_explicit_sources_are_processed_in_order() {
         "{P}: copied 2 event(s), inserted 7 row(s), postprocess 2 event id(s)"
     )));
     assert!(rs.has_line(
-        "reconcile_dbs: <dbs>_tgt: 2 source(s), copied 5 event(s), inserted 23 row(s), skipped 1 orphan event(s), taken over 0 commit(s)"
+        "reconcile_dbs: <dbs>_tgt: 2 source(s), copied 5 event(s), inserted 23 row(s), filtered out 0 event(s), skipped 1 orphan event(s), taken over 0 commit(s)"
     ));
 }
 
@@ -1122,6 +1136,7 @@ fn native_pushes_take_over_the_restored_commits() {
                 "native, orphan",
                 false
             ),
+            NO_FILTER.to_string(),
             format!("{P}: scope 1 repo(s) (target 1, source 1)"),
             // Same counts on day -6 (2 vs 2) but different id sums.
             format!("{P}: buckets: source 2, target 2, differing 2"),
@@ -1136,7 +1151,7 @@ fn native_pushes_take_over_the_restored_commits() {
             format!("{P}: taken over 2 commit(s) from 2 restored push event(s), removed 1 emptied restored event(s)"),
             format!("{P}: copied 3 event(s), inserted 21 row(s), postprocess 4 event id(s)"),
             "targeted postprocess executed for 4 restored event id(s)".to_string(),
-            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 3 event(s), inserted 21 row(s), skipped 0 orphan event(s), taken over 2 commit(s)".to_string(),
+            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 3 event(s), inserted 21 row(s), filtered out 0 event(s), skipped 0 orphan event(s), taken over 2 commit(s)".to_string(),
             "Time: <duration>".to_string(),
         ]
     );
@@ -1207,6 +1222,7 @@ fn dry_run_reports_without_changing_anything() {
                 "native, orphan",
                 true
             ),
+            NO_FILTER.to_string(),
             format!("{P}: scope 3 repo(s) (target 3, source 4)"),
             format!("{P}: buckets: source 5, target 2, differing 5"),
             format!("{P}: events: source-only 6 (native 4, orphan 2, artificial 0), target-only 0"),
@@ -1225,7 +1241,7 @@ fn dry_run_reports_without_changing_anything() {
             format!("{P}: table gha_labels: rows 1, inserted 0"),
             format!("{P}: table gha_actors: rows 2, inserted 0"),
             format!("{P}: would copy 5 event(s), inserted 0 row(s), postprocess 5 event id(s)"),
-            "reconcile_dbs: <dbs>_tgt: 1 source(s), would copy 5 event(s), inserted 0 row(s), skipped 1 orphan event(s), taken over 0 commit(s)".to_string(),
+            "reconcile_dbs: <dbs>_tgt: 1 source(s), would copy 5 event(s), inserted 0 row(s), filtered out 0 event(s), skipped 1 orphan event(s), taken over 0 commit(s)".to_string(),
             "Time: <duration>".to_string(),
         ]
     );
@@ -1289,8 +1305,9 @@ fn no_common_repositories_means_nothing_to_do() {
                 "native, orphan",
                 false
             ),
+            NO_FILTER.to_string(),
             format!("{P}: scope 0 repo(s) (target 1, source 4)"),
-            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 0 event(s), inserted 0 row(s), skipped 0 orphan event(s), taken over 0 commit(s)".to_string(),
+            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 0 event(s), inserted 0 row(s), filtered out 0 event(s), skipped 0 orphan event(s), taken over 0 commit(s)".to_string(),
             "Time: <duration>".to_string(),
         ]
     );
@@ -1309,7 +1326,7 @@ fn empty_source_has_no_differing_buckets() {
     assert!(rs.has_line(&format!("{P}: buckets: source 0, target 2, differing 0")));
     assert!(!rs.has_line_starting(&format!("{P}: events:")));
     assert!(rs.has_line(
-        "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 0 event(s), inserted 0 row(s), skipped 0 orphan event(s), taken over 0 commit(s)"
+        "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 0 event(s), inserted 0 row(s), filtered out 0 event(s), skipped 0 orphan event(s), taken over 0 commit(s)"
     ));
 }
 
@@ -1483,6 +1500,7 @@ fn shared_mode_pulls_from_every_project_database() {
                 "native, orphan",
                 false
             ),
+            filter_line("selfref", "any org", "any repo", 0, false),
             format!("{P2}: scope 2 repo(s) (target 3, source 2)"),
             format!("{P2}: buckets: source 2, target 0, differing 2"),
             format!("{P2}: events: source-only 3 (native 3, orphan 0, artificial 0), target-only 0"),
@@ -1515,7 +1533,7 @@ fn shared_mode_pulls_from_every_project_database() {
             format!("{P1}: copied 2 event(s), inserted 10 row(s), postprocess 2 event id(s)"),
             "targeted postprocess executed for 2 restored event id(s)".to_string(),
             "reconcile_dbs: <dbs>_tgt <- <dbs>_ghost: source database unavailable, skipping: pq: database \"<dbs>_ghost\" does not exist".to_string(),
-            "reconcile_dbs: <dbs>_tgt: 2 source(s), copied 5 event(s), inserted 23 row(s), skipped 1 orphan event(s), taken over 0 commit(s)".to_string(),
+            "reconcile_dbs: <dbs>_tgt: 2 source(s), copied 5 event(s), inserted 23 row(s), filtered out 0 event(s), skipped 1 orphan event(s), taken over 0 commit(s)".to_string(),
             "Time: <duration>".to_string(),
         ]
     );
@@ -1523,6 +1541,87 @@ fn shared_mode_pulls_from_every_project_database() {
         rs.event_ids(),
         [O2.id, T1.id, E1.id, E2.id, E3.id, E6.id, E7.id]
     );
+}
+
+/// The shared database's own project (`selfref` here, `all` on the clusters)
+/// decides what is pulled from the children: its org list and its
+/// `GHA2DB_EXCLUDE_REPOS` are applied to every source, so the shared database
+/// never receives events its own `gha2db` would not ingest (the children may
+/// track more, fewer or different repositories than the shared project).
+#[test]
+fn shared_mode_applies_the_shared_projects_own_rules() {
+    let yaml = leak(&SHARED_YAML.replace(
+        "  selfref:\n    name: Self\n    psql_db: {db:tgt}\n    shared_db: {db:tgt}\n    order: 5\n",
+        "  selfref:\n    name: Self\n    psql_db: {db:tgt}\n    shared_db: {db:tgt}\n    command_line: ['org1']\n    env:\n      GHA2DB_EXCLUDE_REPOS: org1/repo2\n    order: 5\n",
+    ));
+    assert!(
+        yaml.contains("GHA2DB_EXCLUDE_REPOS"),
+        "selfref block not found in SHARED_YAML"
+    );
+    let Some(rs) = both(&shared_case("sharedfilter").yaml(yaml)) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert!(rs.has_line(&filter_line("selfref", "1 org(s)", "any repo", 1, false)));
+    // p2: E3 and E7 (org1/repo2 is excluded) and E6 (no organization) are all
+    // dropped, so nothing is copied from it.
+    assert!(rs.has_line(&format!(
+        "{P2}: events: source-only 3 (native 3, orphan 0, artificial 0), target-only 0"
+    )));
+    assert!(rs.has_line(&format!(
+        "{P2}: filtered out 3 event(s) outside project 'selfref' org/repo/actor rules (native 3, orphan 0, artificial 0)"
+    )));
+    assert!(!rs.has_line_starting(&format!("{P2}: copied ")));
+    // p1: O2 (org1/repo2) is dropped before the commit check, O1 passes the
+    // rules but its commit is already present, E2 is copied.
+    assert!(rs.has_line(&format!(
+        "{P1}: events: source-only 3 (native 1, orphan 2, artificial 0), target-only 0"
+    )));
+    assert!(rs.has_line(&format!(
+        "{P1}: filtered out 1 event(s) outside project 'selfref' org/repo/actor rules (native 0, orphan 1, artificial 0)"
+    )));
+    assert!(rs.has_line(&format!(
+        "{P1}: skipped 1 orphan event(s) whose commits are already present"
+    )));
+    assert!(rs.has_line(&format!(
+        "{P1}: copied 1 event(s), inserted 6 row(s), postprocess 1 event id(s)"
+    )));
+    assert!(rs.has_line(
+        "reconcile_dbs: <dbs>_tgt: 2 source(s), copied 1 event(s), inserted 6 row(s), filtered out 4 event(s), skipped 1 orphan event(s), taken over 0 commit(s)"
+    ));
+    assert_eq!(rs.event_ids(), [T1.id, E1.id, E2.id]);
+}
+
+/// `GHA2DB_PROJECT` naming a child project does not switch the rules: the
+/// shared database is still filtered by its own project (`selfref`).
+#[test]
+fn shared_mode_with_a_child_project_name_still_uses_the_shared_projects_rules() {
+    let yaml = leak(&SHARED_YAML.replace(
+        "  selfref:\n    name: Self\n    psql_db: {db:tgt}\n    shared_db: {db:tgt}\n    order: 5\n",
+        "  selfref:\n    name: Self\n    psql_db: {db:tgt}\n    shared_db: {db:tgt}\n    command_line: ['org1']\n    env:\n      GHA2DB_EXCLUDE_REPOS: org1/repo2\n    order: 5\n",
+    ));
+    let Some(rs) = both(
+        &shared_case("sharedchild")
+            .yaml(yaml)
+            .env("GHA2DB_PROJECT", "alpha"),
+    ) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert!(rs.has_line_starting(
+        "reconcile_dbs: <dbs>_tgt: mode shared (projects with shared_db '<dbs>_tgt' in ./projects.yaml), 3 source(s): <dbs>_p2, <dbs>_p1, <dbs>_ghost"
+    ));
+    assert!(rs.has_line(&filter_line("selfref", "1 org(s)", "any repo", 1, false)));
+    assert!(rs.has_line(&format!(
+        "{P2}: filtered out 3 event(s) outside project 'selfref' org/repo/actor rules (native 3, orphan 0, artificial 0)"
+    )));
+    assert!(rs.has_line(&format!(
+        "{P1}: filtered out 1 event(s) outside project 'selfref' org/repo/actor rules (native 0, orphan 1, artificial 0)"
+    )));
+    assert!(rs.has_line(
+        "reconcile_dbs: <dbs>_tgt: 2 source(s), copied 1 event(s), inserted 6 row(s), filtered out 4 event(s), skipped 1 orphan event(s), taken over 0 commit(s)"
+    ));
+    assert_eq!(rs.event_ids(), [T1.id, E1.id, E2.id]);
 }
 
 #[test]
@@ -1551,7 +1650,7 @@ fn shared_mode_skips_the_listed_databases() {
     );
     assert!(!rs.has_line_starting(P1));
     assert!(rs.has_line(
-        "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 3 event(s), inserted 13 row(s), skipped 0 orphan event(s), taken over 0 commit(s)"
+        "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 3 event(s), inserted 13 row(s), filtered out 0 event(s), skipped 0 orphan event(s), taken over 0 commit(s)"
     ));
 }
 
@@ -1625,7 +1724,7 @@ fn shared_mode_reads_the_yaml_from_the_data_directory() {
     // The postprocess scripts are read from the data directory too.
     assert!(rs.has_line("targeted postprocess executed for 3 restored event id(s)"));
     assert!(rs.has_line(
-        "reconcile_dbs: <dbs>_tgt: 2 source(s), copied 5 event(s), inserted 23 row(s), skipped 1 orphan event(s), taken over 0 commit(s)"
+        "reconcile_dbs: <dbs>_tgt: 2 source(s), copied 5 event(s), inserted 23 row(s), filtered out 0 event(s), skipped 1 orphan event(s), taken over 0 commit(s)"
     ));
 }
 
@@ -1712,7 +1811,7 @@ fn project_mode_uses_the_given_project() {
         )
     );
     assert!(rs.has_line(
-        "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 5 event(s), inserted 23 row(s), skipped 1 orphan event(s), taken over 0 commit(s)"
+        "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 5 event(s), inserted 23 row(s), filtered out 0 event(s), skipped 1 orphan event(s), taken over 0 commit(s)"
     ));
     assert_eq!(
         rs.event_ids(),
@@ -1750,8 +1849,9 @@ fn project_mode_with_a_missing_shared_database_is_not_fatal() {
                 "native, orphan",
                 false
             ),
+            filter_line("zeta", "any org", "any repo", 0, false),
             "reconcile_dbs: <dbs>_tgt <- <dbs>_ghost: source database unavailable, skipping: pq: database \"<dbs>_ghost\" does not exist".to_string(),
-            "reconcile_dbs: <dbs>_tgt: 0 source(s), copied 0 event(s), inserted 0 row(s), skipped 0 orphan event(s), taken over 0 commit(s)".to_string(),
+            "reconcile_dbs: <dbs>_tgt: 0 source(s), copied 0 event(s), inserted 0 row(s), filtered out 0 event(s), skipped 0 orphan event(s), taken over 0 commit(s)".to_string(),
             "Time: <duration>".to_string(),
         ]
     );
@@ -1813,6 +1913,260 @@ fn database_without_a_project_has_nothing_to_reconcile() {
     assert_eq!(rs.event_ids(), [T1.id, E1.id]);
 }
 
+// ---------------------------------------------------------------------------
+// Project ingestion rules (bug #74): only what the target's gha2db would take
+// ---------------------------------------------------------------------------
+
+/// Project mode yaml of the main world: `alpha` (target) shares into `src`
+/// with the given `command_line` (and `env`).
+fn filter_yaml(command_line: &str, env: &str) -> &'static str {
+    leak(&format!(
+        "---\nprojects:\n  alpha:\n    name: Alpha\n    psql_db: {{db:tgt}}\n    shared_db: {{db:src}}\n    command_line: {command_line}\n{env}    order: 1\n"
+    ))
+}
+
+fn filter_case(name: &'static str, command_line: &str, env: &str) -> Case {
+    Case::new(name)
+        .db("tgt", main_target())
+        .db("src", main_source())
+        .yaml(filter_yaml(command_line, env))
+        .env("GHA2DB_PROJECT", "alpha")
+}
+
+/// Source-only events of the main world: E2 (org1/repo1, bob), E3 and E7
+/// (org1/repo2, alice), E6 (solo/repo4, bob), O1 (org1/repo1, alice, its
+/// commit is already present), O2 (org1/repo2, bob).
+#[test]
+fn events_outside_the_project_org_list_are_not_copied() {
+    // The repository that moved to another org (no org here) is not pulled.
+    let Some(rs) = both(&filter_case("filterorg", "[' org1 ']", "")) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert_eq!(
+        rs.lines(),
+        [
+            header(
+                "project (project 'alpha' shared_db '<dbs>_src' in ./projects.yaml)",
+                "<dbs>_src",
+                "90 days",
+                "native, orphan",
+                false
+            ),
+            filter_line("alpha", "1 org(s)", "any repo", 0, false),
+            format!("{P}: scope 3 repo(s) (target 3, source 4)"),
+            format!("{P}: buckets: source 5, target 2, differing 5"),
+            format!("{P}: events: source-only 6 (native 4, orphan 2, artificial 0), target-only 0"),
+            format!("{P}: filtered out 1 event(s) outside project 'alpha' org/repo/actor rules (native 1, orphan 0, artificial 0)"),
+            format!("{P}: skipped 1 orphan event(s) whose commits are already present"),
+            format!("{P}: table gha_events: rows 4, inserted 4"),
+            format!("{P}: table gha_payloads: rows 4, inserted 4"),
+            format!("{P}: table gha_commits: rows 2, inserted 2"),
+            format!("{P}: table gha_commits_roles: rows 4, inserted 4"),
+            format!("{P}: table gha_comments: rows 1, inserted 1"),
+            format!("{P}: table gha_issues: rows 1, inserted 1"),
+            format!("{P}: table gha_issues_labels: rows 1, inserted 1"),
+            format!("{P}: table gha_pull_requests: rows 1, inserted 1"),
+            format!("{P}: table gha_reviews: rows 1, inserted 1"),
+            format!("{P}: table gha_repos: rows 2, inserted 0"),
+            format!("{P}: table gha_orgs: rows 1, inserted 0"),
+            format!("{P}: table gha_labels: rows 1, inserted 1"),
+            format!("{P}: table gha_actors: rows 2, inserted 1"),
+            format!("{P}: copied 4 event(s), inserted 21 row(s), postprocess 4 event id(s)"),
+            "targeted postprocess executed for 4 restored event id(s)".to_string(),
+            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 4 event(s), inserted 21 row(s), filtered out 1 event(s), skipped 1 orphan event(s), taken over 0 commit(s)".to_string(),
+            "Time: <duration>".to_string(),
+        ]
+    );
+    assert_eq!(rs.event_ids(), [O2.id, T1.id, E1.id, E2.id, E3.id, E7.id]);
+}
+
+#[test]
+fn org_and_repo_lists_and_the_exclude_list_are_applied() {
+    // Org and repo lists: only org1/repo1 events (E2; O1 is skipped).
+    let Some(rs) = both(&filter_case("filterrepo", "['org1', 'repo1']", "")) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert!(rs.has_line(&filter_line("alpha", "1 org(s)", "1 repo(s)", 0, false)));
+    assert!(rs.has_line(&format!(
+        "{P}: filtered out 4 event(s) outside project 'alpha' org/repo/actor rules (native 3, orphan 1, artificial 0)"
+    )));
+    assert!(rs.has_line(
+        "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 1 event(s), inserted 6 row(s), filtered out 4 event(s), skipped 1 orphan event(s), taken over 0 commit(s)"
+    ));
+    assert_eq!(rs.event_ids(), [T1.id, E1.id, E2.id]);
+
+    // The project's env (GHA2DB_EXCLUDE_REPOS) is applied like gha2db_sync does.
+    let Some(rs) = both(&filter_case(
+        "filterexclude",
+        "['org1']",
+        "    env:\n      GHA2DB_EXCLUDE_REPOS: org1/repo2\n",
+    )) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert!(rs.has_line(&filter_line("alpha", "1 org(s)", "any repo", 1, false)));
+    assert!(rs.has_line(&format!(
+        "{P}: filtered out 4 event(s) outside project 'alpha' org/repo/actor rules (native 3, orphan 1, artificial 0)"
+    )));
+    assert_eq!(rs.event_ids(), [T1.id, E1.id, E2.id]);
+
+    // ... unless ENV_SET says the environment was prepared already (by `devstats`).
+    let Some(rs) = both(
+        &filter_case(
+            "filterenvset",
+            "['org1']",
+            "    env:\n      GHA2DB_EXCLUDE_REPOS: org1/repo2\n",
+        )
+        .env("ENV_SET", "1"),
+    ) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert!(rs.has_line(&filter_line("alpha", "1 org(s)", "any repo", 0, false)));
+    assert!(rs.has_line(&format!(
+        "{P}: filtered out 1 event(s) outside project 'alpha' org/repo/actor rules (native 1, orphan 0, artificial 0)"
+    )));
+    assert_eq!(rs.event_ids(), [O2.id, T1.id, E1.id, E2.id, E3.id, E7.id]);
+}
+
+#[test]
+fn regexp_and_actor_rules_are_applied() {
+    // `regexp:` on the full repository name.
+    let Some(rs) = both(&filter_case(
+        "filterregexp",
+        r"['regexp:^org1\/repo2$']",
+        "",
+    )) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert!(rs.has_line(&filter_line(
+        "alpha",
+        r"org regexp '^org1\/repo2$'",
+        "any repo",
+        0,
+        false
+    )));
+    assert!(rs.has_line(&format!(
+        "{P}: filtered out 3 event(s) outside project 'alpha' org/repo/actor rules (native 2, orphan 1, artificial 0)"
+    )));
+    // O1 (org1/repo1) is filtered out before the orphan check.
+    assert!(!rs.has_line_starting(&format!("{P}: skipped ")));
+    assert_eq!(rs.event_ids(), [O2.id, T1.id, E1.id, E3.id, E7.id]);
+
+    // Actor rules (GHA2DB_ACTORS_FILTER/FORBID): bob's events are not taken.
+    let Some(rs) = both(
+        &filter_case("filteractors", "['org1']", "")
+            .env("GHA2DB_ACTORS_FILTER", "1")
+            .env("GHA2DB_ACTORS_FORBID", "^bob$"),
+    ) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert!(rs.has_line(&filter_line("alpha", "1 org(s)", "any repo", 0, true)));
+    assert!(rs.has_line(&format!(
+        "{P}: filtered out 3 event(s) outside project 'alpha' org/repo/actor rules (native 2, orphan 1, artificial 0)"
+    )));
+    assert!(rs.has_line(&format!(
+        "{P}: skipped 1 orphan event(s) whose commits are already present"
+    )));
+    assert_eq!(rs.event_ids(), [T1.id, E1.id, E3.id, E7.id]);
+    assert_eq!(
+        rs.query("select login from gha_actors order by id"),
+        ["alice"]
+    );
+}
+
+#[test]
+fn a_second_run_after_filtering_copies_nothing_more() {
+    // The filtered events keep their buckets differing; nothing is copied twice.
+    let Some(rs) = both(&filter_case("filterrerun", "['org1']", "").runs(2)) else {
+        return;
+    };
+    assert_eq!(rs.outs[1].code, Some(0));
+    assert!(rs.lines_of(1).contains(&format!(
+        "{P}: events: source-only 2 (native 1, orphan 1, artificial 0), target-only 0"
+    )));
+    assert!(rs.lines_of(1).contains(&format!(
+        "{P}: filtered out 1 event(s) outside project 'alpha' org/repo/actor rules (native 1, orphan 0, artificial 0)"
+    )));
+    assert!(rs.lines_of(1).contains(
+        &"reconcile_dbs: <dbs>_tgt: 1 source(s), copied 0 event(s), inserted 0 row(s), filtered out 1 event(s), skipped 1 orphan event(s), taken over 0 commit(s)".to_string()
+    ));
+}
+
+/// Explicit sources do not switch the rules off: when `projects.yaml` is
+/// present, the target's project filters what is pulled (dry run here, so the
+/// target stays untouched).
+#[test]
+fn explicit_mode_applies_the_yaml_rules_when_present() {
+    let Some(rs) = both(
+        &filter_case("explicitfilter", "['org1']", "")
+            .env("GHA2DB_RECONCILE_DBS", "{db:src}")
+            .env("GHA2DB_RECONCILE_DRY_RUN", "1"),
+    ) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert_eq!(
+        rs.lines()[0],
+        header(
+            "explicit (GHA2DB_RECONCILE_DBS)",
+            "<dbs>_src",
+            "90 days",
+            "native, orphan",
+            true
+        )
+    );
+    assert_eq!(
+        rs.lines()[1],
+        filter_line("alpha", "1 org(s)", "any repo", 0, false)
+    );
+    assert!(rs.has_line(&format!(
+        "{P}: filtered out 1 event(s) outside project 'alpha' org/repo/actor rules (native 1, orphan 0, artificial 0)"
+    )));
+    assert!(rs.has_line(&format!(
+        "{P}: skipped 1 orphan event(s) whose commits are already present"
+    )));
+    assert!(rs.has_line(
+        "reconcile_dbs: <dbs>_tgt: 1 source(s), would copy 4 event(s), inserted 0 row(s), filtered out 1 event(s), skipped 1 orphan event(s), taken over 0 commit(s)"
+    ));
+    assert_eq!(rs.event_ids(), [T1.id, E1.id]);
+}
+
+/// A `projects.yaml` where no enabled project owns the target database means
+/// no rules: everything the source has is pulled (like without the file).
+#[test]
+fn explicit_mode_without_an_owning_project_filters_nothing() {
+    let yaml = leak(
+        "---\nprojects:\n  alpha:\n    name: Alpha\n    psql_db: {db:src}\n    shared_db: {db:tgt}\n    command_line: ['org1']\n    order: 1\n  omega:\n    name: Omega\n    psql_db: {db:tgt}\n    command_line: ['org1']\n    disabled: true\n    order: 2\n",
+    );
+    let Some(rs) = both(
+        &Case::new("explicitnoowner")
+            .db("tgt", main_target())
+            .db("src", main_source())
+            .yaml(yaml)
+            .env("GHA2DB_RECONCILE_DBS", "{db:src}"),
+    ) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert_eq!(
+        rs.lines()[1],
+        "reconcile_dbs: <dbs>_tgt: filter: none (no enabled project uses this database in ./projects.yaml)"
+    );
+    assert!(!rs.has_line_starting(&format!("{P}: filtered out ")));
+    assert!(rs.has_line(
+        "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 5 event(s), inserted 23 row(s), filtered out 0 event(s), skipped 1 orphan event(s), taken over 0 commit(s)"
+    ));
+    assert_eq!(
+        rs.event_ids(),
+        [O2.id, T1.id, E1.id, E2.id, E3.id, E6.id, E7.id]
+    );
+}
+
 #[test]
 fn explicit_sources_win_over_the_yaml() {
     // GHA2DB_RECONCILE_DBS set: projects.yaml is not even read (missing here).
@@ -1827,4 +2181,5 @@ fn explicit_sources_win_over_the_yaml() {
     };
     assert_eq!(rs.code(), Some(0));
     assert!(rs.has_line_starting("reconcile_dbs: <dbs>_tgt: mode explicit (GHA2DB_RECONCILE_DBS)"));
+    assert!(rs.has_line("reconcile_dbs: <dbs>_tgt: filter: none (no ./missing.yaml)"));
 }
