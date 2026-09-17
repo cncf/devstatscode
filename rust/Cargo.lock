@@ -917,6 +917,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
+name = "reconcile_dbs"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "devstats-compat",
+ "devstatscode",
+ "tempfile",
+]
+
+[[package]]
 name = "regex"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -127,6 +127,7 @@ type Ctx struct {
 	SkipAPIIssuesPRs         bool                         // From GHA2DB_GHAPISKIPISSUESPRS, ghapi2db tool, if set then tool is skipping the issues/PRs sweep pass (fills the stub gha_pull_requests rows GH Archive delivers since 2024-10 with GET /pulls/{n} objects and synthesizes opened/closed events for the issues and PRs GH Archive missed)
 	GHAPIAllRepos            bool                         // From GHA2DB_GHAPI_RECENT_REPOS_ONLY, ghapi2db tool, when set the API passes only process repositories with gha_events rows in the recent repos range (legacy scope, no heartbeat), default: every gha_repos repository (one current name per id) gated per pass by a GraphQL heartbeat
 	SkipGetRepos             bool                         // From GHA2DB_GETREPOSSKIP, get_repos tool, if set then tool does nothing
+	SkipReconcile            bool                         // From GHA2DB_RECONCILESKIP, gha2db_sync tool, if set then the reconcile_dbs step (project DB <- shared DB / shared DB <- project DBs missing events reconciliation, runs after ghapi2db and before structure) is skipped
 	CSVFile                  string                       // From GHA2DB_CSVOUT, runq tool, if set, saves result in this file
 	ComputeAll               bool                         // From GHA2DB_COMPUTE_ALL, all tools, if set then no period decisions are taken based on time, but all possible periods are recalculated
 	ActorsFilter             bool                         // From GHA2DB_ACTORS_FILTER gha2db tool, if enabled then actor filterning will be added, default false
@@ -367,8 +368,9 @@ func (ctx *Ctx) Init() {
 		ctx.ForceStartDate = true
 	}
 
-	// Skip ghapi2db and/or get_repos
+	// Skip ghapi2db and/or get_repos and/or reconcile_dbs
 	ctx.SkipGetRepos = os.Getenv("GHA2DB_GETREPOSSKIP") != ""
+	ctx.SkipReconcile = os.Getenv("GHA2DB_RECONCILESKIP") != ""
 	ctx.SkipGHAPI = os.Getenv("GHA2DB_GHAPISKIP") != ""
 	ctx.SkipAPIEvents = os.Getenv("GHA2DB_GHAPISKIPEVENTS") != ""
 	ctx.SkipAPIIssues = os.Getenv("GHA2DB_GHAPISKIPISSUES") != ""
@@ -1051,6 +1053,7 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		WebsiteData:              ctx.WebsiteData,
 		SkipUpdateEvents:         ctx.SkipUpdateEvents,
 		SkipGetRepos:             ctx.SkipGetRepos,
+		SkipReconcile:            ctx.SkipReconcile,
 		SkipTags:                 ctx.SkipTags,
 		SkipAnnotations:          ctx.SkipAnnotations,
 		SkipColumns:              ctx.SkipColumns,

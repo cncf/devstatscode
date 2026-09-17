@@ -50,6 +50,7 @@ const COMMANDS: &[&str] = &[
     "gha2db",
     "get_repos",
     "ghapi2db",
+    "reconcile_dbs",
     "structure",
     "tags",
     "columns",
@@ -487,7 +488,10 @@ fn normalize_stderr(side: &Side, with_errors: bool) -> Vec<String> {
     let text = side.mask(&mask_go_now(&side.out.stderr_str()));
     text.lines()
         .filter_map(|l| {
-            if l.starts_with("PqError: ") || l.starts_with("Error executing ghapi2db: ") {
+            if l.starts_with("PqError: ")
+                || l.starts_with("Error executing ghapi2db: ")
+                || l.starts_with("Error executing reconcile_dbs: ")
+            {
                 return Some(l.to_string());
             }
             if with_errors && l.starts_with("Error: '") {
@@ -684,6 +688,7 @@ fn default_flow_runs_every_stage_in_order() {
             "gha2db",
             "get_repos",
             "ghapi2db",
+            "reconcile_dbs",
             "structure",
             "calc_metric",
             "calc_metric",
@@ -712,8 +717,13 @@ fn default_flow_runs_every_stage_in_order() {
         get_repos.env("GHA2DB_PROJECTS_COMMITS").as_deref(),
         Some("p1")
     );
+    // reconcile_dbs: between ghapi2db and structure, plain sync environment
+    let reconcile = &calls[3];
+    assert_eq!(reconcile.name(), "reconcile_dbs");
+    assert!(reconcile.args().is_empty());
+    assert_eq!(reconcile.env, calls[2].env);
     // structure: only the post-process SQLs
-    let structure = &calls[3];
+    let structure = &calls[4];
     assert_eq!(structure.env("GHA2DB_SKIPTABLE").as_deref(), Some("1"));
     assert_eq!(structure.env("GHA2DB_MGETC").as_deref(), Some("y"));
     // metrics: from the newest events_h point to now, skip_past, d7 skipped,
@@ -796,7 +806,14 @@ fn skip_tsdb_skips_the_metrics() {
     assert_eq!(side.out.code(), 0);
     assert_eq!(
         names(&side),
-        ["gha2db", "get_repos", "ghapi2db", "structure", "vars"]
+        [
+            "gha2db",
+            "get_repos",
+            "ghapi2db",
+            "reconcile_dbs",
+            "structure",
+            "vars"
+        ]
     );
 }
 
@@ -806,6 +823,7 @@ fn individual_stage_skips() {
         &Case::new("skips")
             .env("GHA2DB_GETREPOSSKIP", "1")
             .env("GHA2DB_GHAPISKIP", "1")
+            .env("GHA2DB_RECONCILESKIP", "1")
             .env("GHA2DB_SKIP_VARS", "1")
             .metrics_only(),
     )
@@ -827,6 +845,7 @@ fn reset_tsdb_recomputes_from_the_start_date_with_tags_columns_annotations() {
             "gha2db",
             "get_repos",
             "ghapi2db",
+            "reconcile_dbs",
             "structure",
             "tags",
             "columns",
@@ -956,7 +975,13 @@ fn missing_quick_ranges_table_is_fatal_after_the_gha_stages() {
     );
     assert_eq!(
         names(&side),
-        ["gha2db", "get_repos", "ghapi2db", "structure"]
+        [
+            "gha2db",
+            "get_repos",
+            "ghapi2db",
+            "reconcile_dbs",
+            "structure"
+        ]
     );
 }
 
@@ -1003,6 +1028,7 @@ fn ghapi2db_failure_is_reported_and_ignored() {
             "gha2db",
             "get_repos",
             "ghapi2db",
+            "reconcile_dbs",
             "structure",
             "calc_metric",
             "calc_metric",
@@ -1012,12 +1038,115 @@ fn ghapi2db_failure_is_reported_and_ignored() {
 }
 
 #[test]
+fn reconcile_dbs_failure_is_reported_and_ignored() {
+    let side = both(
+        &Case::new("reconcilefail")
+            .script("reconcile_dbs", "exit 1")
+            .metrics_only(),
+    )
+    .unwrap();
+    assert_eq!(side.out.code(), 0);
+    let out = stdout_lines(&side);
+    assert!(
+        out.contains(&"Error executing reconcile_dbs: exit status 1".to_string()),
+        "{out:?}"
+    );
+    assert!(side
+        .out
+        .stderr_str()
+        .contains("Error executing reconcile_dbs: exit status 1"));
+    assert!(
+        out.contains(&"Reconcile with peer databases".to_string()),
+        "{out:?}"
+    );
+    assert_eq!(
+        names(&side),
+        [
+            "gha2db",
+            "get_repos",
+            "ghapi2db",
+            "reconcile_dbs",
+            "structure",
+            "calc_metric",
+            "calc_metric",
+            "vars"
+        ]
+    );
+}
+
+#[test]
+fn reconcile_skip_skips_only_the_reconcile_step() {
+    let side = both(
+        &Case::new("reconcileskip")
+            .env("GHA2DB_RECONCILESKIP", "1")
+            .metrics_only(),
+    )
+    .unwrap();
+    assert_eq!(side.out.code(), 0);
+    let out = stdout_lines(&side);
+    assert!(
+        !out.contains(&"Reconcile with peer databases".to_string()),
+        "{out:?}"
+    );
+    assert_eq!(
+        names(&side),
+        [
+            "gha2db",
+            "get_repos",
+            "ghapi2db",
+            "structure",
+            "calc_metric",
+            "calc_metric",
+            "vars"
+        ]
+    );
+}
+
+#[test]
+fn reconcile_dbs_runs_between_ghapi2db_and_structure_with_the_sync_env() {
+    let side = both(&Case::new("reconcileenv").metrics_only()).unwrap();
+    assert_eq!(side.out.code(), 0);
+    let calls = calls(&side);
+    let idx = calls
+        .iter()
+        .position(|c| c.name() == "reconcile_dbs")
+        .expect("reconcile_dbs call");
+    assert_eq!(calls[idx - 1].name(), "ghapi2db");
+    assert_eq!(calls[idx + 1].name(), "structure");
+    let rc = &calls[idx];
+    assert!(rc.args().is_empty(), "{:?}", rc.args());
+    // inherits the sync environment (project, database) like ghapi2db, nothing extra
+    assert_eq!(
+        rc.env("GHA2DB_PROJECT"),
+        calls[idx - 1].env("GHA2DB_PROJECT")
+    );
+    assert_eq!(rc.env("PG_DB"), calls[idx - 1].env("PG_DB"));
+    assert_eq!(rc.env, calls[idx - 1].env);
+    assert_eq!(rc.env("GHA2DB_SKIPTABLE"), None);
+    let out = stdout_lines(&side);
+    let pos = |needle: &str| out.iter().position(|l| l == needle);
+    let (a, b, c) = (
+        pos("Update data from GitHub API"),
+        pos("Reconcile with peer databases"),
+        pos("Update structure"),
+    );
+    assert!(a.is_some() && b.is_some() && c.is_some(), "{out:?}");
+    assert!(a < b && b < c, "{out:?}");
+}
+
+#[test]
 fn structure_failure_is_fatal() {
     let side = both(&Case::new("structurefail").script("structure", "exit 1")).unwrap();
     assert_eq!(side.out.code(), 2);
     assert_eq!(
         names(&side),
-        ["gha2db", "get_repos", "ghapi2db", "structure"]
+        [
+            "gha2db",
+            "get_repos",
+            "ghapi2db",
+            "reconcile_dbs",
+            "structure"
+        ]
     );
 }
 
@@ -1060,6 +1189,7 @@ fn calc_metric_failure_is_fatal() {
             "gha2db",
             "get_repos",
             "ghapi2db",
+            "reconcile_dbs",
             "structure",
             "calc_metric",
             "calc_metric"
@@ -1801,6 +1931,7 @@ fn no_project_uses_the_shared_metrics_dir_and_skips_annotations() {
             "gha2db",
             "get_repos",
             "ghapi2db",
+            "reconcile_dbs",
             "structure",
             "tags",
             "columns",
@@ -2139,6 +2270,7 @@ fn run_columns_forces_the_final_columns() {
             "gha2db",
             "get_repos",
             "ghapi2db",
+            "reconcile_dbs",
             "structure",
             "calc_metric",
             "calc_metric",
@@ -2163,6 +2295,7 @@ fn skip_columns_wins_over_reset_tsdb() {
             "gha2db",
             "get_repos",
             "ghapi2db",
+            "reconcile_dbs",
             "structure",
             "tags",
             "annotations",

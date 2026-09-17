@@ -1,9 +1,9 @@
 GO_LIB_FILES=pg_conn.go error.go mgetc.go map.go threads.go gha.go json.go time.go context.go exec.go structure.go log.go hash.go unicode.go const.go string.go annotations.go env.go ghapi.go io.go tags.go trailers.go yaml.go ts_points.go convert.go restore.go signal.go ghawriter.go
-GO_BIN_FILES=cmd/structure/structure.go cmd/runq/runq.go cmd/gha2db/gha2db.go cmd/calc_metric/calc_metric.go cmd/gha2db_sync/gha2db_sync.go cmd/import_affs/import_affs.go cmd/annotations/annotations.go cmd/tags/tags.go cmd/webhook/webhook.go cmd/devstats/devstats.go cmd/get_repos/get_repos.go cmd/get_repos/fetch_commits.go cmd/merge_dbs/merge_dbs.go cmd/replacer/replacer.go cmd/vars/vars.go cmd/ghapi2db/ghapi2db.go cmd/ghapi2db/restore.go cmd/ghapi2db/heartbeat.go cmd/ghapi2db/feed.go cmd/ghapi2db/issues.go cmd/columns/columns.go cmd/hide_data/hide_data.go cmd/sqlitedb/sqlitedb.go cmd/website_data/website_data.go cmd/sync_issues/sync_issues.go cmd/api/api.go cmd/tsplit/tsplit.go cmd/splitcrons/splitcrons.go
+GO_BIN_FILES=cmd/structure/structure.go cmd/runq/runq.go cmd/gha2db/gha2db.go cmd/calc_metric/calc_metric.go cmd/gha2db_sync/gha2db_sync.go cmd/import_affs/import_affs.go cmd/annotations/annotations.go cmd/tags/tags.go cmd/webhook/webhook.go cmd/devstats/devstats.go cmd/get_repos/get_repos.go cmd/get_repos/fetch_commits.go cmd/merge_dbs/merge_dbs.go cmd/reconcile_dbs/reconcile_dbs.go cmd/replacer/replacer.go cmd/vars/vars.go cmd/ghapi2db/ghapi2db.go cmd/ghapi2db/restore.go cmd/ghapi2db/heartbeat.go cmd/ghapi2db/feed.go cmd/ghapi2db/issues.go cmd/columns/columns.go cmd/hide_data/hide_data.go cmd/sqlitedb/sqlitedb.go cmd/website_data/website_data.go cmd/sync_issues/sync_issues.go cmd/api/api.go cmd/tsplit/tsplit.go cmd/splitcrons/splitcrons.go
 GO_TEST_FILES=context_test.go gha_test.go map_test.go mgetc_test.go threads_test.go time_test.go unicode_test.go string_test.go regexp_test.go annotations_test.go env_test.go convert_test.go error_test.go
 GO_DBTEST_FILES=pg_test.go series_test.go
 GO_LIBTEST_FILES=test/compare.go test/time.go
-GO_BIN_CMDS=github.com/cncf/devstatscode/cmd/structure github.com/cncf/devstatscode/cmd/runq github.com/cncf/devstatscode/cmd/gha2db github.com/cncf/devstatscode/cmd/calc_metric github.com/cncf/devstatscode/cmd/gha2db_sync github.com/cncf/devstatscode/cmd/import_affs github.com/cncf/devstatscode/cmd/annotations github.com/cncf/devstatscode/cmd/tags github.com/cncf/devstatscode/cmd/webhook github.com/cncf/devstatscode/cmd/devstats github.com/cncf/devstatscode/cmd/get_repos github.com/cncf/devstatscode/cmd/merge_dbs github.com/cncf/devstatscode/cmd/replacer github.com/cncf/devstatscode/cmd/vars github.com/cncf/devstatscode/cmd/ghapi2db github.com/cncf/devstatscode/cmd/columns github.com/cncf/devstatscode/cmd/hide_data github.com/cncf/devstatscode/cmd/sqlitedb github.com/cncf/devstatscode/cmd/website_data github.com/cncf/devstatscode/cmd/sync_issues github.com/cncf/devstatscode/cmd/api github.com/cncf/devstatscode/cmd/tsplit github.com/cncf/devstatscode/cmd/splitcrons
+GO_BIN_CMDS=github.com/cncf/devstatscode/cmd/structure github.com/cncf/devstatscode/cmd/runq github.com/cncf/devstatscode/cmd/gha2db github.com/cncf/devstatscode/cmd/calc_metric github.com/cncf/devstatscode/cmd/gha2db_sync github.com/cncf/devstatscode/cmd/import_affs github.com/cncf/devstatscode/cmd/annotations github.com/cncf/devstatscode/cmd/tags github.com/cncf/devstatscode/cmd/webhook github.com/cncf/devstatscode/cmd/devstats github.com/cncf/devstatscode/cmd/get_repos github.com/cncf/devstatscode/cmd/merge_dbs github.com/cncf/devstatscode/cmd/reconcile_dbs github.com/cncf/devstatscode/cmd/replacer github.com/cncf/devstatscode/cmd/vars github.com/cncf/devstatscode/cmd/ghapi2db github.com/cncf/devstatscode/cmd/columns github.com/cncf/devstatscode/cmd/hide_data github.com/cncf/devstatscode/cmd/sqlitedb github.com/cncf/devstatscode/cmd/website_data github.com/cncf/devstatscode/cmd/sync_issues github.com/cncf/devstatscode/cmd/api github.com/cncf/devstatscode/cmd/tsplit github.com/cncf/devstatscode/cmd/splitcrons
 BUILD_TIME=`date -u '+%Y-%m-%d_%I:%M:%S%p'`
 COMMIT=`git rev-parse HEAD`
 HOSTNAME=`uname -a | sed "s/ /_/g"`
@@ -26,7 +26,7 @@ GO_VET=go vet
 GO_IMPORTS=goimports -w
 GO_ERRCHECK=errcheck -asserts -ignore '[FS]?[Pp]rint*' -ignoretests
 GO_TEST=go test
-BINARIES=structure gha2db calc_metric gha2db_sync import_affs annotations tags webhook devstats get_repos merge_dbs replacer vars ghapi2db columns hide_data website_data sync_issues runq api sqlitedb tsplit splitcrons
+BINARIES=structure gha2db calc_metric gha2db_sync import_affs annotations tags webhook devstats get_repos merge_dbs reconcile_dbs replacer vars ghapi2db columns hide_data website_data sync_issues runq api sqlitedb tsplit splitcrons
 CRON_SCRIPTS=cron/cron_db_backup.sh cron/sysctl_config.sh cron/backup_artificial.sh
 UTIL_SCRIPTS=devel/wait_for_command.sh devel/cronctl.sh devel/sync_lock.sh devel/sync_unlock.sh devel/db.sh
 GIT_SCRIPTS=git/git_reset_pull.sh git/git_files.sh git/git_tags.sh git/last_tag.sh git/git_loc.sh git/git_commits.sh git/git_commits_range.sh
@@ -76,6 +76,9 @@ get_repos: cmd/get_repos/get_repos.go cmd/get_repos/fetch_commits.go ${GO_LIB_FI
 
 merge_dbs: cmd/merge_dbs/merge_dbs.go ${GO_LIB_FILES}
 	 ${GO_ENV} ${GO_BUILD} -o merge_dbs cmd/merge_dbs/merge_dbs.go
+
+reconcile_dbs: cmd/reconcile_dbs/reconcile_dbs.go ${GO_LIB_FILES}
+	 ${GO_ENV} ${GO_BUILD} -o reconcile_dbs cmd/reconcile_dbs/reconcile_dbs.go
 
 vars: cmd/vars/vars.go ${GO_LIB_FILES}
 	 ${GO_ENV} ${GO_BUILD} -o vars cmd/vars/vars.go

@@ -395,6 +395,25 @@ func sync(ctx *lib.Ctx, args []string) {
 			}
 		}
 
+		// Pull the events the peer database(s) (project <-> shared_db) have for our repositories and we lack
+		// (before 'structure' so the copied rows get their repo groups and derived tables in this sync)
+		if !ctx.SkipReconcile {
+			lib.Printf("Reconcile with peer databases\n")
+			ctx.ExecFatal = false
+			_, err = lib.ExecCommand(
+				ctx,
+				[]string{
+					cmdPrefix + "reconcile_dbs",
+				},
+				nil,
+			)
+			ctx.ExecFatal = true
+			if err != nil {
+				lib.Printf("Error executing reconcile_dbs: %+v\n", err)
+				fmt.Fprintf(os.Stderr, "Error executing reconcile_dbs: %+v\n", err)
+			}
+		}
+
 		// Eventual postprocess SQL's from 'structure' call
 		lib.Printf("Update structure\n")
 		// Recompute views and DB summaries

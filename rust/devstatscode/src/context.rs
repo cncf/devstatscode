@@ -408,6 +408,8 @@ pub struct Ctx {
     pub ghapi_all_repos: bool,
     /// From GHA2DB_GETREPOSSKIP, get_repos tool, if set then tool does nothing
     pub skip_get_repos: bool,
+    /// From GHA2DB_RECONCILESKIP, gha2db_sync tool, if set then the reconcile_dbs step (project DB <- shared DB / shared DB <- project DBs missing events reconciliation, runs after ghapi2db and before structure) is skipped
+    pub skip_reconcile: bool,
     /// From GHA2DB_CSVOUT, runq tool, if set, saves result in this file
     pub csv_file: String,
     /// From GHA2DB_COMPUTE_ALL, all tools, if set then no period decisions are taken based on time, but all possible periods are recalculated
@@ -652,6 +654,7 @@ impl Ctx {
 
         // Skip ghapi2db and/or get_repos
         self.skip_get_repos = env_set("GHA2DB_GETREPOSSKIP");
+        self.skip_reconcile = env_set("GHA2DB_RECONCILESKIP");
         self.skip_ghapi = env_set("GHA2DB_GHAPISKIP");
         self.skip_api_events = env_set("GHA2DB_GHAPISKIPEVENTS");
         self.skip_api_issues = env_set("GHA2DB_GHAPISKIPISSUES");
@@ -1223,6 +1226,7 @@ impl Ctx {
             ("SkipAPIIssuesPRs", self.skip_api_issues_prs.to_string()),
             ("GHAPIAllRepos", self.ghapi_all_repos.to_string()),
             ("SkipGetRepos", self.skip_get_repos.to_string()),
+            ("SkipReconcile", self.skip_reconcile.to_string()),
             ("CSVFile", self.csv_file.clone()),
             ("ComputeAll", self.compute_all.to_string()),
             ("ActorsFilter", self.actors_filter.to_string()),
@@ -1764,9 +1768,10 @@ mod tests {
         },
         Case {
             name: "Setting skip GHAPI and GetRepos",
-            env: &[("GHA2DB_GETREPOSSKIP", "1"), ("GHA2DB_GHAPISKIP", "1"), ("GHA2DB_GHAPISKIPEVENTS", "1"), ("GHA2DB_GHAPISKIPISSUES", "1"), ("GHA2DB_GHAPISKIPPRS", "1"), ("GHA2DB_GHAPISKIPCOMMITS", "1"), ("GHA2DB_GHAPISKIPLICENSES", "1"), ("GHA2DB_GHAPIFORCELICENSES", "1"), ("GHA2DB_GHAPISKIPLANGS", "1"), ("GHA2DB_GHAPIFORCELANGS", "1"), ("GHA2DB_GHAPISKIPCOMMENTS", "1"), ("GHA2DB_GHAPISKIPREVIEWS", "1"), ("GHA2DB_GHAPISKIPFORKS", "1"), ("GHA2DB_GHAPISKIPRELEASES", "1"), ("GHA2DB_GHAPISKIPSTARS", "1"), ("GHA2DB_GHAPISKIPREPOSTATS", "1"), ("GHA2DB_GHAPISKIPREPOEVENTS", "1"), ("GHA2DB_GHAPISKIPISSUESPRS", "1"), ("GHA2DB_GHAPI_ERROR_FATAL", "1"), ("GHA2DB_NO_AUTOFETCHCOMMITS", "1")],
+            env: &[("GHA2DB_GETREPOSSKIP", "1"), ("GHA2DB_RECONCILESKIP", "1"), ("GHA2DB_GHAPISKIP", "1"), ("GHA2DB_GHAPISKIPEVENTS", "1"), ("GHA2DB_GHAPISKIPISSUES", "1"), ("GHA2DB_GHAPISKIPPRS", "1"), ("GHA2DB_GHAPISKIPCOMMITS", "1"), ("GHA2DB_GHAPISKIPLICENSES", "1"), ("GHA2DB_GHAPIFORCELICENSES", "1"), ("GHA2DB_GHAPISKIPLANGS", "1"), ("GHA2DB_GHAPIFORCELANGS", "1"), ("GHA2DB_GHAPISKIPCOMMENTS", "1"), ("GHA2DB_GHAPISKIPREVIEWS", "1"), ("GHA2DB_GHAPISKIPFORKS", "1"), ("GHA2DB_GHAPISKIPRELEASES", "1"), ("GHA2DB_GHAPISKIPSTARS", "1"), ("GHA2DB_GHAPISKIPREPOSTATS", "1"), ("GHA2DB_GHAPISKIPREPOEVENTS", "1"), ("GHA2DB_GHAPISKIPISSUESPRS", "1"), ("GHA2DB_GHAPI_ERROR_FATAL", "1"), ("GHA2DB_NO_AUTOFETCHCOMMITS", "1")],
             set: |c| {
                 c.skip_get_repos = true;
+                c.skip_reconcile = true;
                 c.skip_ghapi = true;
                 c.skip_api_events = true;
                 c.skip_api_issues = true;
@@ -2579,7 +2584,7 @@ mod tests {
         assert!(s.contains(" MaxRunDuration:map[] "), "{}", s);
         assert!(
             s.contains(
-                " SkipAPIStars:false SkipAPIRepoStats:false SkipAPIRepoEvents:false SkipAPIIssuesPRs:false GHAPIAllRepos:true SkipGetRepos:false "
+                " SkipAPIStars:false SkipAPIRepoStats:false SkipAPIRepoEvents:false SkipAPIIssuesPRs:false GHAPIAllRepos:true SkipGetRepos:false SkipReconcile:false "
             ),
             "{}",
             s

@@ -15,7 +15,7 @@ GOPATH ?= $(HOME)/go
 BINDIR ?= $(GOPATH)/bin
 
 # Ported so far (one crate per cmd/<name>; keep in sync with [workspace] members in Cargo.toml).
-BINARIES = tsplit replacer splitcrons structure tags runq vars columns devstats hide_data website_data webhook sqlitedb merge_dbs gha2db_sync import_affs calc_metric annotations get_repos sync_issues ghapi2db gha2db api
+BINARIES = tsplit replacer splitcrons structure tags runq vars columns devstats hide_data website_data webhook sqlitedb merge_dbs reconcile_dbs gha2db_sync import_affs calc_metric annotations get_repos sync_issues ghapi2db gha2db api
 
 .PHONY: all build $(BINARIES) test test-rust-only check fmt install clean cleanup
 

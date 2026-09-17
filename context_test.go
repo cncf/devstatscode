@@ -210,6 +210,7 @@ func TestInit(t *testing.T) {
 		WebsiteData:              false,
 		SkipUpdateEvents:         false,
 		SkipGetRepos:             false,
+		SkipReconcile:            false,
 		SkipTags:                 false,
 		SkipAnnotations:          false,
 		SkipColumns:              false,
@@ -689,6 +690,7 @@ func TestInit(t *testing.T) {
 			"Setting skip GHAPI and GetRepos",
 			map[string]string{
 				"GHA2DB_GETREPOSSKIP":        "1",
+				"GHA2DB_RECONCILESKIP":       "1",
 				"GHA2DB_GHAPISKIP":           "1",
 				"GHA2DB_GHAPISKIPEVENTS":     "1",
 				"GHA2DB_GHAPISKIPISSUES":     "1",
@@ -714,6 +716,7 @@ func TestInit(t *testing.T) {
 				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"SkipGetRepos":      true,
+					"SkipReconcile":     true,
 					"SkipGHAPI":         true,
 					"SkipAPIEvents":     true,
 					"SkipAPIIssues":     true,

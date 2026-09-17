@@ -1,0 +1,20 @@
+[package]
+name = "reconcile_dbs"
+description = "Pull the events the peer DevStats database(s) (project <-> shared_db) have for this database's repositories and this database lacks — Rust port of cmd/reconcile_dbs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "reconcile_dbs"
+path = "src/main.rs"
+
+[dependencies]
+devstatscode = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+devstats-compat = { workspace = true }
+tempfile = { workspace = true }

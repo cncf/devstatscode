@@ -28,7 +28,8 @@ the difference.
 | `webhook`    | `cmd/webhook`     | `cmd/webhook`     | 5 / 21 (HTTP servers)  |
 | `sqlitedb`   | `cmd/sqlitedb`    | `cmd/sqlitedb`    | 5 / 36 (SQLite)        |
 | `merge_dbs`  | `cmd/merge_dbs`   | `cmd/merge_dbs`   | 4 / 49 (PostgreSQL)    |
-| `gha2db_sync` | `cmd/gha2db_sync` | `cmd/gha2db_sync` | 7 / 71 (PostgreSQL)   |
+| `reconcile_dbs` | `cmd/reconcile_dbs` | `cmd/reconcile_dbs` | 15 / 33 (PostgreSQL) |
+| `gha2db_sync` | `cmd/gha2db_sync` | `cmd/gha2db_sync` | 7 / 74 (PostgreSQL)   |
 | `import_affs` | `cmd/import_affs` | `cmd/import_affs` | 6 / 47 (PostgreSQL)   |
 | `calc_metric` | `cmd/calc_metric` | `cmd/calc_metric` | 6 / 98 (PostgreSQL)   |
 | `annotations` | `cmd/annotations` | `cmd/annotations` | 5 / 73 (PostgreSQL + git) |
@@ -38,7 +39,8 @@ the difference.
 | `gha2db`     | `cmd/gha2db`      | `cmd/gha2db`      | 5 (+9 lib) / 60 (PostgreSQL + fake GH Archive) |
 | `api`        | `cmd/api`         | `cmd/api`         | 10 / 17 scenarios ≈ 330 requests (HTTP servers + PostgreSQL) |
 
-All 23 binaries of `cmd/*` are ported.
+All 24 binaries of `cmd/*` are ported (`reconcile_dbs` is a 2026-09 addition
+written in Go and Rust at the same time).
 
 Beyond the test suites the Rust binaries were validated live in the
 `devstats-test` Kubernetes namespace (2026-09-12) side by side with the Go
@@ -111,7 +113,7 @@ the real `%[%bot]%`-style patterns).
 
 ```sh
 cd rust
-./compile.sh                 # release build, stripped: target/<os>/release/{tsplit,replacer,splitcrons,structure,tags,runq,vars,columns,devstats,hide_data,website_data,webhook,sqlitedb,merge_dbs,gha2db_sync,import_affs,calc_metric,annotations,get_repos,sync_issues,ghapi2db,gha2db,api}
+./compile.sh                 # release build, stripped: target/<os>/release/{tsplit,replacer,splitcrons,structure,tags,runq,vars,columns,devstats,hide_data,website_data,webhook,sqlitedb,merge_dbs,reconcile_dbs,gha2db_sync,import_affs,calc_metric,annotations,get_repos,sync_issues,ghapi2db,gha2db,api}
 BINDIR=$GOPATH/bin ./compile.sh   # ... and copy them there (same as `make install`)
 make / make install          # equivalents via the Makefile
 ../cleanup.sh                # afterwards: drop every build/test artifact (cargo deps/incremental/
@@ -733,6 +735,46 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     names a random one (Rust the alphabetically first); the interleaving of
     the per-table messages with `PARALLEL` > 1 is scheduling dependent on
     both sides; yaml syntax error wording (yaml.v2 vs the Rust decoder).
+* `reconcile_dbs`
+  * `cmd/reconcile_dbs/reconcile_dbs.go` transcribed (both written together,
+    2026-09): pulls the GitHub events (and their event-scoped rows) that the
+    peer DevStats database(s) have for the repositories this database tracks
+    but this database lacks — the GH Archive feed is common, the API restores
+    (`ghapi2db`, `get_repos` orphan commits) differ per database. Modes:
+    project (`PG_DB` → its `shared_db` from `projects.yaml`, project found by
+    `GHA2DB_PROJECT` or `psql_db`), shared (`PG_DB` is the `shared_db` of
+    enabled projects — all their `psql_db`, ordered by `order`/name,
+    unavailable ones skipped), explicit (`GHA2DB_RECONCILE_DBS=a,b`).
+    Scope: repositories in both `gha_repos`; window `GHA2DB_RECONCILE_RANGE`
+    (interval, default `90 days`); native ids (`0 < id < 2^48`) and synthetic
+    orphan pushes (`id < 0`), artificial ids (`>= 2^48`) only with
+    `GHA2DB_RECONCILE_ARTIFICIAL=1`. Stateless idempotency via per
+    (repo, day) digests (count, sum of ids) — only the source's differing
+    buckets are diffed by id, so a second run copies nothing. Per batch (one
+    target transaction): orphan pushes whose commits already exist are
+    skipped, `gha_events` + payloads/commits/roles/issues/PRs/labels/
+    comments/reviews/… are copied with `insert … on conflict do nothing`,
+    the referenced `gha_repos` (repo groups left to `structure`), `gha_orgs`,
+    `gha_labels` and — without `GHA2DB_AFFILIATIONS_DB` — `gha_actors` too,
+    the copied pushes take over the commits of the synthetic orphan events
+    (emptied ones removed, `is_distinct` recomputed) and the targeted
+    postprocess (`util_sql/postprocess_{texts,labels,issues_prs}_ids.sql`)
+    runs for the affected events. `GHA2DB_RECONCILE_DRY_RUN=1`,
+    `GHA2DB_RECONCILE_SKIP_DBS=a,b`; `gha2db_sync` runs it (non-fatally)
+    after `ghapi2db` and before `structure` unless `GHA2DB_RECONCILESKIP`
+    (Ctx `SkipReconcile`).
+  * Go⇄Rust tests: `cmd/reconcile_dbs/tests/compat.rs` — 33 cases on scratch
+    source/target databases (`compat/fixtures/structure/full_structure.sql`
+    schema, deterministic seeded world, see
+    `compat/fixtures/reconcile_dbs/README.md`): explicit, project and shared
+    modes with `projects.yaml` (disabled/overridden projects, ghost DBs),
+    idempotent second runs, dry run, artificial events, window ranges, two
+    sources, orphan skipping, commit takeover, empty sources, missing
+    databases/yaml, invalid ranges, `GHA2DB_CTXOUT`. Compared: exit code,
+    stdout (`since <ts>`, failing-query argument echoes and durations
+    masked), `Error:`/`PqError:` stderr lines and every table of the target
+    database.
+  * Deviations: none known.
 * `gha2db_sync`
   * `cmd/gha2db_sync/gha2db_sync.go` transcribed: the per-project arguments
     (`GHA2DB_PROJECT` looked up in `projects.yaml` — `GHA2DB_PROJECTS_YAML`,
@@ -741,6 +783,7 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     call, the `gha_parsed`/`gha_events` max-date probe (`GHA2DB_STARTDT`,
     `GHA2DB_DEFAULT_START_DATE`) and the `gha2db` → `get_repos` (with
     `GHA2DB_PROCESS_COMMITS`/`GHA2DB_PROCESS_REPOS`) → `ghapi2db` →
+    `reconcile_dbs` (non-fatal, `GHA2DB_RECONCILESKIP` skips it) →
     `structure` (`GHA2DB_SKIPTABLE`… env) → `vars` chain (`GHA2DB_SKIPPDB`
     skips it), the randomised `dailyRecalcHour` logic gating `tags`,
     `annotations` and `columns` (`GHA2DB_SKIP_TAGS/ANNOTATIONS/COLUMNS`,

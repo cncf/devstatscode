@@ -672,6 +672,24 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
             }
         }
 
+        // Pull the events the peer database(s) (project <-> shared_db) have for our
+        // repositories and we lack (before `structure` so the copied rows get their
+        // repo groups and derived tables in this sync; non fatal)
+        if !ctx.skip_reconcile {
+            printf!("Reconcile with peer databases\n");
+            ctx.exec_fatal = false;
+            let res = exec_command(
+                ctx,
+                &[format!("{cmd_prefix}reconcile_dbs")],
+                &BTreeMap::new(),
+            );
+            ctx.exec_fatal = true;
+            if let Err(err) = res {
+                printf!("Error executing reconcile_dbs: {}\n", err);
+                eprintln!("Error executing reconcile_dbs: {}", err);
+            }
+        }
+
         // Eventual postprocess SQLs from the `structure` call
         printf!("Update structure\n");
         let mut env: BTreeMap<String, String> = BTreeMap::new();

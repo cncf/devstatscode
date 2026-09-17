@@ -26,6 +26,7 @@ members = [
     "cmd/ghapi2db",
     "cmd/gha2db",
     "cmd/api",
+    "cmd/reconcile_dbs",
 ]
 
 [workspace.package]
