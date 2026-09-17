@@ -2097,6 +2097,106 @@ fn a_second_run_after_filtering_copies_nothing_more() {
     ));
 }
 
+/// `GHA2DB_RECONCILE_HIST=1`: the project's historical rules
+/// (`hist_command_line`, the biggest scope it ever had) decide instead of the
+/// daily `command_line`; a project without them keeps the daily rules.
+#[test]
+fn historical_rules_pull_the_repositories_the_project_used_to_track() {
+    // solo/repo4 (E6) was in the project's scope once: the folded double-quoted
+    // `hist_command_line` (the way long lists are wrapped in projects.yaml) takes it.
+    let Some(rs) = both(
+        &filter_case(
+            "filterhist",
+            "['org1']",
+            "    hist_command_line: [\"org1,\\\n       solo\"]\n",
+        )
+        .env("GHA2DB_RECONCILE_HIST", "1"),
+    ) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert!(rs.has_line(
+        "reconcile_dbs: <dbs>_tgt: filter: project 'alpha' (historical rules): 2 org(s), any repo, 0 excluded repo(s), exact false, actors filter false"
+    ));
+    assert!(!rs.has_line_starting(&format!("{P}: filtered out ")));
+    assert!(
+        rs.has_line(
+            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 5 event(s), inserted 23 row(s), filtered out 0 event(s), skipped 1 orphan event(s), taken over 0 commit(s)"
+        ),
+        "{:#?}",
+        rs.lines()
+    );
+    assert_eq!(
+        rs.event_ids(),
+        [O2.id, T1.id, E1.id, E2.id, E3.id, E6.id, E7.id]
+    );
+
+    // The daily run of the same project does not take it (hist rules are opt-in) ...
+    let Some(rs) = both(&filter_case(
+        "filterhistoff",
+        "['org1']",
+        "    hist_command_line: ['org1,solo']\n",
+    )) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert!(rs.has_line(&filter_line("alpha", "1 org(s)", "any repo", 0, false)));
+    assert_eq!(rs.event_ids(), [O2.id, T1.id, E1.id, E2.id, E3.id, E7.id]);
+
+    // ... and a project without `hist_command_line` uses its `command_line` (and says so).
+    let Some(rs) =
+        both(&filter_case("filterhistnone", "['org1']", "").env("GHA2DB_RECONCILE_HIST", "1"))
+    else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert!(rs.has_line(
+        "reconcile_dbs: <dbs>_tgt: filter: project 'alpha' (historical rules: none, using command_line): 1 org(s), any repo, 0 excluded repo(s), exact false, actors filter false"
+    ));
+    assert!(rs.has_line(&format!(
+        "{P}: filtered out 1 event(s) outside project 'alpha' org/repo/actor rules (native 1, orphan 0, artificial 0)"
+    )));
+    assert_eq!(rs.event_ids(), [O2.id, T1.id, E1.id, E2.id, E3.id, E7.id]);
+
+    // Historical org and repo lists (two element form) and a `regexp:` on the full name.
+    let Some(rs) = both(
+        &filter_case(
+            "filterhistrepo",
+            "['org1', 'repo1']",
+            "    hist_command_line:\n      - 'org1,solo'\n      - \"repo1,\\\n         repo4\"\n",
+        )
+        .env("GHA2DB_RECONCILE_HIST", "1"),
+    ) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert!(rs.has_line(
+        "reconcile_dbs: <dbs>_tgt: filter: project 'alpha' (historical rules): 2 org(s), 2 repo(s), 0 excluded repo(s), exact false, actors filter false"
+    ));
+    assert!(rs.has_line(&format!(
+        "{P}: filtered out 3 event(s) outside project 'alpha' org/repo/actor rules (native 2, orphan 1, artificial 0)"
+    )));
+    assert_eq!(rs.event_ids(), [T1.id, E1.id, E2.id, E6.id]);
+    let Some(rs) = both(
+        &filter_case(
+            "filterhistre",
+            r"['regexp:^org1\/repo2$']",
+            "    hist_command_line:\n      - \"regexp:(?:^org1/repo2$)|\\\n         ^(?:solo/repo4)$\"\n",
+        )
+        .env("GHA2DB_RECONCILE_HIST", "1"),
+    ) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert!(rs.has_line(
+        "reconcile_dbs: <dbs>_tgt: filter: project 'alpha' (historical rules): org regexp '(?:^org1/repo2$)|^(?:solo/repo4)$', any repo, 0 excluded repo(s), exact false, actors filter false"
+    ));
+    assert!(rs.has_line(&format!(
+        "{P}: filtered out 2 event(s) outside project 'alpha' org/repo/actor rules (native 1, orphan 1, artificial 0)"
+    )));
+    assert_eq!(rs.event_ids(), [O2.id, T1.id, E1.id, E3.id, E6.id, E7.id]);
+}
+
 /// Explicit sources do not switch the rules off: when `projects.yaml` is
 /// present, the target's project filters what is pulled (dry run here, so the
 /// target stays untouched).

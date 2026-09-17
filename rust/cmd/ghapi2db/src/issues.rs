@@ -540,7 +540,7 @@ fn restore_issues_prs_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
 
 /// Go `syncIssuesPRs`: issues and pull requests sweep pass.
 pub fn sync_issues_prs(ctx: &mut Ctx) -> RestoreStats {
-    let stats = restore_pass(ctx, ApiPass::IssuesPrs, restore_issues_prs_repo);
+    let stats = restore_pass(ctx, ApiPass::IssuesPrs, &restore_issues_prs_repo);
     printf!(
         "{}: upgraded {} stub rows of {} pull requests, attached {} issue rows\n",
         ApiPass::IssuesPrs.label(),

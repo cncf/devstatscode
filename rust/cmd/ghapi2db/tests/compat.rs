@@ -842,6 +842,9 @@ struct Case {
     util_sql: bool,
     /// Create a second database and pass it as `GHA2DB_AFFILIATIONS_DB`.
     affs_db: bool,
+    /// `projects.yaml` content written to the working directory (with
+    /// `GHA2DB_LOCAL=1`); `{db}` is replaced by the side's database name.
+    projects_yaml: Option<String>,
 }
 
 impl Case {
@@ -892,6 +895,7 @@ impl Case {
             compare_data: true,
             util_sql: false,
             affs_db: false,
+            projects_yaml: None,
         }
     }
     fn loose(mut self, prefix: &str) -> Self {
@@ -962,6 +966,13 @@ impl Case {
     }
     fn affs_db(mut self) -> Self {
         self.affs_db = true;
+        self
+    }
+    fn projects_yaml(mut self, yaml: &str) -> Self {
+        self.projects_yaml = Some(yaml.to_string());
+        if !self.env.iter().any(|(k, _)| k == "GHA2DB_LOCAL") {
+            self.env.push(("GHA2DB_LOCAL".to_string(), "1".to_string()));
+        }
         self
     }
 }
@@ -1199,6 +1210,13 @@ fn run_side(bin: &Path, case: &Case, suffix: &str) -> Option<Side> {
     if let Some(csv) = &case.hide {
         fs::create_dir_all(dir.path().join("hide")).unwrap();
         fs::write(dir.path().join("hide").join("hide.csv"), csv).unwrap();
+    }
+    if let Some(yaml) = &case.projects_yaml {
+        fs::write(
+            dir.path().join("projects.yaml"),
+            yaml.replace("{db}", &db.name),
+        )
+        .unwrap();
     }
     if case.util_sql {
         fs::create_dir_all(dir.path().join("util_sql")).unwrap();
@@ -7952,6 +7970,277 @@ fn repo_events_honour_the_gha2db_actor_filters() {
             s.count("select count(*) from gha_actors where login = 'bob'"),
             1
         );
+    });
+}
+
+/// Project mode yaml: `test` (the harness' `GHA2DB_PROJECT`) owns the side's
+/// database with the given `command_line` (and extra yaml lines); a second
+/// project owns the repositories that moved away.
+fn feed_filter_yaml(command_line: &str, extra: &str) -> String {
+    format!(
+        "---\nprojects:\n  test:\n    name: Test\n    psql_db: {{db}}\n    command_line: {command_line}\n{extra}    order: 1\n  moved:\n    name: Moved\n    psql_db: otherdb\n    command_line: ['moved']\n    order: 2\n"
+    )
+}
+
+const FEED_FILTER_LINE: &str = "ghapi2db repo events: filter: project 'test': 1 org(s), any repo, 0 excluded repo(s), exact false, actors filter false";
+
+/// The feed pass writes native events like gha2db does, so it applies the
+/// project's org/repo rules (bug 75): the feeds of the repositories the
+/// project's gha2db would never ingest (a repository renamed into another
+/// organization keeps its id in gha_repos) are not fetched, and events of
+/// such repositories found in another feed are not written.
+#[test]
+fn repo_events_apply_the_project_org_repo_rules() {
+    let sides = check(
+        Case::new("fe_filter", Pass::RepoEvents)
+            .env("GHA2DB_DEBUG", "1")
+            // two repos in the legacy scope: Go walks a map (order-free output)
+            .unordered()
+            .loose("Unique repos: ")
+            .projects_yaml(&feed_filter_yaml("['org']", ""))
+            .seed(&seed_repo(501, "moved/repo2", None))
+            .seed(&seed_event(
+                1001,
+                "IssuesEvent",
+                "moved/repo2",
+                501,
+                (11, "alice"),
+                "2020-02-02T10:00:00Z",
+            ))
+            .setup(|gh| {
+                // org/repo's feed also carries an event recorded under the repository's
+                // former name (GH Archive has it under that name too - gha2db would not
+                // ingest it either)
+                let mut page = feed_mixed_page();
+                page.as_array_mut().unwrap().insert(
+                    0,
+                    feed_event(
+                        9000007,
+                        "WatchEvent",
+                        (REPO_ID, "old/repo"),
+                        (12, "bob"),
+                        "2020-05-03T10:06:00Z",
+                        json!({"action": "started"}),
+                    ),
+                );
+                gh.get_ok(&feed_page_path(REPO, 1), &page);
+                // moved/repo2's own feed must not be asked for at all
+                gh.get_ok(
+                    &feed_page_path("moved/repo2", 1),
+                    &feed_watch_events(
+                        (501, "moved/repo2"),
+                        9300001,
+                        3,
+                        "2020-05-03T10:00:00Z",
+                        None,
+                    ),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, FEED_FILTER_LINE);
+        s.expect_line(
+            0,
+            "ghapi2db repo events: moved/repo2: outside project 'test' org/repo rules, skipping the feed",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: WatchEvent 9000007 by bob is outside project 'test' org/repo/actor rules, skipping",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: page 1: 7 events, oldest 2020-05-03 09:00:00 +0000 UTC, restored so far 6",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 2 repos, 1 pages, checked 7, restored 6",
+        );
+        s.expect_line(0, FEED_MIXED_TYPES);
+        s.expect_line(
+            0,
+            "ghapi2db repo events: filtered out 1 repo(s) and 1 event(s) outside project 'test' org/repo/actor rules",
+        );
+        assert_eq!(
+            s.column("select id::text from gha_events where id >= 9000000 order by id"),
+            vec![
+                "9000001".to_string(),
+                "9000002".to_string(),
+                "9000003".to_string(),
+                "9000004".to_string(),
+                "9000005".to_string(),
+                "9000006".to_string()
+            ]
+        );
+        let reqs = s.requests();
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/moved/repo2/")),
+            "{reqs:?}"
+        );
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/org/repo/events?page=1&")),
+            "{reqs:?}"
+        );
+    });
+}
+
+/// The project's `env` (exclude list, actor rules) is applied like
+/// gha2db_sync does and the `regexp:` form matches the full name; nothing is
+/// filtered (and nothing said about it) when no enabled project owns the
+/// database.
+#[test]
+fn repo_events_apply_the_project_env_and_regexp_rules() {
+    // Exclude list and actor rules from the project's env: org/excluded's feed is skipped,
+    // bob's comment and star are checked but not written.
+    let sides = check(
+        Case::new("fe_filter_env", Pass::RepoEvents)
+            .unordered()
+            .projects_yaml(&feed_filter_yaml(
+                "['org']",
+                "    env:\n      GHA2DB_EXCLUDE_REPOS: org/excluded\n      GHA2DB_ACTORS_FILTER: '1'\n      GHA2DB_ACTORS_FORBID: '^bob$'\n",
+            ))
+            .seed(&seed_repo(502, "org/excluded", None))
+            .seed(&seed_event(
+                1002,
+                "IssuesEvent",
+                "org/excluded",
+                502,
+                (11, "alice"),
+                "2020-02-02T10:00:00Z",
+            ))
+            .setup(|gh| {
+                gh.get_ok(&feed_page_path(REPO, 1), &feed_mixed_page());
+                gh.get_ok(
+                    &feed_page_path("org/excluded", 1),
+                    &feed_watch_events((502, "org/excluded"), 9300001, 3, "2020-05-03T10:00:00Z", None),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db repo events: filter: project 'test': 1 org(s), any repo, 1 excluded repo(s), exact false, actors filter true",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 2 repos, 1 pages, checked 6, restored 4",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: restored events by type: ForkEvent 1, IssuesEvent 1, PullRequestEvent 1, PushEvent 1",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: filtered out 1 repo(s) and 2 event(s) outside project 'test' org/repo/actor rules",
+        );
+        assert_eq!(s.count("select count(*) from gha_comments"), 0);
+        assert_eq!(
+            s.count("select count(*) from gha_events where id >= 9000000"),
+            4
+        );
+        let reqs = s.requests();
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/excluded/")),
+            "{reqs:?}"
+        );
+    });
+
+    // ... unless ENV_SET says the environment was prepared already (by `devstats`).
+    let sides = check(
+        Case::new("fe_filter_envset", Pass::RepoEvents)
+            .env("ENV_SET", "1")
+            .projects_yaml(&feed_filter_yaml(
+                "['org']",
+                "    env:\n      GHA2DB_EXCLUDE_REPOS: org/repo\n",
+            ))
+            .setup(|gh| {
+                gh.get_ok(&feed_page_path(REPO, 1), &feed_mixed_page());
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, FEED_FILTER_LINE);
+        s.expect_line(0, FEED_MIXED_SUMMARY);
+        s.expect_line(
+            0,
+            "ghapi2db repo events: filtered out 0 repo(s) and 0 event(s) outside project 'test' org/repo/actor rules",
+        );
+    });
+
+    // `regexp:` on the full repository name.
+    let sides = check(
+        Case::new("fe_filter_re", Pass::RepoEvents)
+            .projects_yaml(&feed_filter_yaml(r"['regexp:^org\/(repo|x)$']", ""))
+            .setup(|gh| {
+                gh.get_ok(&feed_page_path(REPO, 1), &feed_mixed_page());
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            r"ghapi2db repo events: filter: project 'test': org regexp '^org\/(repo|x)$', any repo, 0 excluded repo(s), exact false, actors filter false",
+        );
+        s.expect_line(0, FEED_MIXED_SUMMARY);
+        s.expect_line(
+            0,
+            "ghapi2db repo events: filtered out 0 repo(s) and 0 event(s) outside project 'test' org/repo/actor rules",
+        );
+    });
+    let sides = check(
+        Case::new("fe_filter_remiss", Pass::RepoEvents)
+            .projects_yaml(&feed_filter_yaml(r"['regexp:^org\/other$']", ""))
+            .setup(|gh| {
+                gh.get_ok(&feed_page_path(REPO, 1), &feed_mixed_page());
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 1 repos, 0 pages, checked 0, restored 0",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: filtered out 1 repo(s) and 0 event(s) outside project 'test' org/repo/actor rules",
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where id >= 9000000"),
+            0
+        );
+        // the filtered repository's feed is never asked for (only the rate limit poll)
+        assert!(api_requests(s).is_empty(), "{:?}", s.requests());
+    });
+
+    // No enabled project owns the database (GHA2DB_PROJECT names one of another database,
+    // the owner is disabled): nothing is filtered, the debug line says why.
+    let sides = check(
+        Case::new("fe_filter_none", Pass::RepoEvents)
+            .env("GHA2DB_DEBUG", "1")
+            .projects_yaml(
+                "---\nprojects:\n  test:\n    psql_db: otherdb\n    command_line: ['x']\n  owner:\n    psql_db: {db}\n    disabled: true\n    command_line: ['y']\n",
+            )
+            .setup(|gh| {
+                gh.get_ok(&feed_page_path(REPO, 1), &feed_mixed_page());
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db repo events: filter: none (no enabled project uses this database in ./projects.yaml)",
+        );
+        s.expect_line(0, FEED_MIXED_SUMMARY);
+        s.expect_no_prefix(0, "ghapi2db repo events: filtered out ");
+    });
+    // No projects.yaml at all (local mode): the same, silently without debug.
+    let sides = check(
+        Case::new("fe_filter_noyaml", Pass::RepoEvents)
+            .env("GHA2DB_LOCAL", "1")
+            .setup(|gh| {
+                gh.get_ok(&feed_page_path(REPO, 1), &feed_mixed_page());
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_no_prefix(0, "ghapi2db repo events: filter: ");
+        s.expect_line(0, FEED_MIXED_SUMMARY);
+        s.expect_no_prefix(0, "ghapi2db repo events: filtered out ");
     });
 }
 

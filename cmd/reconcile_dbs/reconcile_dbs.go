@@ -32,7 +32,9 @@ package main
 // repository that moved to another org (it keeps its id, so it is in both `gha_repos`) is therefore
 // not pulled from a database that tracks the new org. The target project is GHA2DB_PROJECT when its
 // `psql_db` is PG_DB, else the first enabled project with `psql_db` = PG_DB; when there is none (or
-// projects.yaml is absent in explicit mode) nothing is filtered.
+// projects.yaml is absent in explicit mode) nothing is filtered. GHA2DB_RECONCILE_HIST=1 applies the
+// project's historical rules instead (`hist_command_line`: the biggest scope the project ever had, so
+// events of repositories it used to track are pulled too; `command_line` when the project has none).
 //
 // Stateless idempotency: per (repo_id, day) digests (count, sum of ids) on both sides; only the
 // differing buckets are diffed by id; a second run copies nothing.
@@ -50,13 +52,12 @@ package main
 //
 // GHA2DB_RECONCILE_DRY_RUN=1 computes and reports everything without writing.
 // GHA2DB_RECONCILE_SKIP_DBS=a,b skips the listed sources. GHA2DB_RECONCILESKIP makes gha2db_sync skip the tool.
+// GHA2DB_RECONCILE_HIST=1 uses the project's historical org/repo rules (see above).
 
 import (
 	"database/sql"
 	"fmt"
-	"io/ioutil"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,7 +65,6 @@ import (
 
 	lib "github.com/cncf/devstatscode"
 	"github.com/lib/pq"
-	yaml "gopkg.in/yaml.v2"
 )
 
 // maxParams is the maximum number of bind parameters a single Postgres query can use.
@@ -144,17 +144,6 @@ type sourceStats struct {
 	tables      map[string]*tableStats
 }
 
-// projectFilter - the ingestion rules of the target project: what its own gha2db accepts (see lib.RepoHit, lib.ActorHit)
-type projectFilter struct {
-	name   string // project name, "" - no project: nothing is filtered
-	detail string // why nothing is filtered (when name is "")
-	forg   map[string]struct{}
-	frepo  map[string]struct{}
-	orgRE  *regexp.Regexp
-	repoRE *regexp.Regexp
-	ctx    *lib.Ctx // context initialized with the project's `env` applied (exclude list, exact mode, actor filters)
-}
-
 // config - tool configuration from the environment
 type config struct {
 	mode       string
@@ -164,7 +153,8 @@ type config struct {
 	rangeStr   string
 	dryRun     bool
 	artificial bool
-	filter     projectFilter
+	hist       bool              // GHA2DB_RECONCILE_HIST: the target project's historical rules (`hist_command_line`)
+	filter     lib.ProjectFilter // the target project's ingestion rules (see lib.NewProjectFilter)
 }
 
 func envFlag(name string) bool {
@@ -401,108 +391,6 @@ func isNoDBError(err error) bool {
 	return strings.Contains(msg, "database") && strings.Contains(msg, "does not exist")
 }
 
-// readProjects - projects.yaml (GHA2DB_PROJECTS_YAML) from the data directory (or ./ in local mode)
-func readProjects(ctx *lib.Ctx) (*lib.AllProjects, string) {
-	path := projectsPath(ctx)
-	data, err := ioutil.ReadFile(path)
-	lib.FatalOnError(err)
-	var projects lib.AllProjects
-	lib.FatalOnError(yaml.Unmarshal(data, &projects))
-	return &projects, path
-}
-
-// projectsPath - path of projects.yaml: GHA2DB_PROJECTS_YAML in the data directory (or ./ in local mode)
-func projectsPath(ctx *lib.Ctx) string {
-	dataPrefix := ctx.DataDir
-	if ctx.Local {
-		dataPrefix = "./"
-	}
-	return dataPrefix + ctx.ProjectsYaml
-}
-
-// readProjectsIfPresent - like readProjects, but a missing file is not an error (nil projects)
-func readProjectsIfPresent(ctx *lib.Ctx) (*lib.AllProjects, string) {
-	path := projectsPath(ctx)
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil, path
-		}
-		lib.FatalOnError(err)
-	}
-	return readProjects(ctx)
-}
-
-// parseFilterArg - one `command_line` item of a project the way gha2db gets it from gha2db_sync (comma split,
-// trimmed, re-joined) and parses it: `regexp:` prefix - a regexp, else a set of names (empty - no restriction)
-func parseFilterArg(arg string) (map[string]struct{}, *regexp.Regexp) {
-	stripFunc := func(x string) string { return strings.TrimSpace(x) }
-	joined := strings.Join(lib.StringsMapToArray(stripFunc, strings.Split(arg, ",")), ",")
-	if strings.HasPrefix(joined, "regexp:") {
-		return nil, regexp.MustCompile(joined[7:])
-	}
-	return lib.StringsMapToSet(stripFunc, strings.Split(joined, ",")), nil
-}
-
-// newProjectFilter - the ingestion rules of the target database's project (none when projects is nil or no
-// enabled project uses the database); the project's `env` is applied like gha2db_sync does (unless ENV_SET)
-func newProjectFilter(ctx *lib.Ctx, projects *lib.AllProjects, target, path string) projectFilter {
-	if projects == nil {
-		return projectFilter{detail: "no " + path}
-	}
-	name, project := projectForDB(ctx, projects, target)
-	if project == nil {
-		return projectFilter{detail: fmt.Sprintf("no enabled project uses this database in %s", path)}
-	}
-	if os.Getenv("ENV_SET") == "" {
-		for envK, envV := range project.Env {
-			lib.FatalOnError(os.Setenv(envK, envV))
-		}
-	}
-	var fctx lib.Ctx
-	fctx.Init()
-	filter := projectFilter{name: name, ctx: &fctx}
-	orgArg, repoArg := "", ""
-	if len(project.CommandLine) > 0 {
-		orgArg = project.CommandLine[0]
-	}
-	if len(project.CommandLine) > 1 {
-		repoArg = project.CommandLine[1]
-	}
-	filter.forg, filter.orgRE = parseFilterArg(orgArg)
-	filter.frepo, filter.repoRE = parseFilterArg(repoArg)
-	return filter
-}
-
-// hit - would the target project's gha2db ingest an event of this repository by this actor?
-func (f *projectFilter) hit(repoName, actorLogin string) bool {
-	if f.name == "" {
-		return true
-	}
-	return lib.RepoHit(f.ctx, repoName, f.forg, f.frepo, f.orgRE, f.repoRE) && lib.ActorHit(f.ctx, actorLogin)
-}
-
-// namesInfo - "any org" / "3 org(s)" / "org regexp '...'"
-func namesInfo(kind string, names map[string]struct{}, re *regexp.Regexp) string {
-	if re != nil {
-		return fmt.Sprintf("%s regexp '%s'", kind, re.String())
-	}
-	if len(names) == 0 {
-		return "any " + kind
-	}
-	return fmt.Sprintf("%d %s(s)", len(names), kind)
-}
-
-// info - human readable filter description
-func (f *projectFilter) info() string {
-	if f.name == "" {
-		return fmt.Sprintf("none (%s)", f.detail)
-	}
-	return fmt.Sprintf(
-		"project '%s': %s, %s, %d excluded repo(s), exact %v, actors filter %v",
-		f.name, namesInfo("org", f.forg, f.orgRE), namesInfo("repo", f.frepo, f.repoRE), len(f.ctx.ExcludeRepos), f.ctx.Exact, f.ctx.ActorsFilter,
-	)
-}
-
 // sharedDBSources - `psql_db` of the enabled projects with `shared_db` = target (ordered by order, name, db; unique)
 func sharedDBSources(ctx *lib.Ctx, projects *lib.AllProjects, target string) []string {
 	type projectDB struct {
@@ -545,34 +433,6 @@ func sharedDBSources(ctx *lib.Ctx, projects *lib.AllProjects, target string) []s
 	return dbs
 }
 
-// projectForDB - the project of the target database: GHA2DB_PROJECT when it names an enabled project with
-// that database, else the first (order, name) enabled project with `psql_db` = target
-func projectForDB(ctx *lib.Ctx, projects *lib.AllProjects, target string) (string, *lib.Project) {
-	if ctx.Project != "" {
-		if project, ok := projects.Projects[ctx.Project]; ok && !lib.IsProjectDisabled(ctx, ctx.Project, project.Disabled) {
-			if strings.TrimSpace(project.PDB) == target {
-				return ctx.Project, &project
-			}
-		}
-	}
-	bestName := ""
-	var best *lib.Project
-	for name, project := range projects.Projects {
-		if lib.IsProjectDisabled(ctx, name, project.Disabled) {
-			continue
-		}
-		if strings.TrimSpace(project.PDB) != target {
-			continue
-		}
-		if best == nil || project.Order < best.Order || (project.Order == best.Order && name < bestName) {
-			p := project
-			best = &p
-			bestName = name
-		}
-	}
-	return bestName, best
-}
-
 // resolveConfig - mode, sources and knobs from the environment (and projects.yaml when needed)
 // Returns false when there is nothing to reconcile (message already printed).
 func resolveConfig(ctx *lib.Ctx, target string) (config, bool) {
@@ -580,6 +440,7 @@ func resolveConfig(ctx *lib.Ctx, target string) (config, bool) {
 		rangeStr:   strings.TrimSpace(os.Getenv("GHA2DB_RECONCILE_RANGE")),
 		dryRun:     envFlag("GHA2DB_RECONCILE_DRY_RUN"),
 		artificial: envFlag("GHA2DB_RECONCILE_ARTIFICIAL"),
+		hist:       envFlag("GHA2DB_RECONCILE_HIST"),
 	}
 	if cfg.rangeStr == "" {
 		cfg.rangeStr = defaultRange
@@ -599,16 +460,16 @@ func resolveConfig(ctx *lib.Ctx, target string) (config, bool) {
 		cfg.detail = "GHA2DB_RECONCILE_DBS"
 		cfg.sources = explicit
 		cfg.explicit = true
-		projects, path = readProjectsIfPresent(ctx)
+		projects, path = lib.ReadProjectsIfPresent(ctx)
 	} else {
-		projects, path = readProjects(ctx)
+		projects, path = lib.ReadProjects(ctx)
 		shared := sharedDBSources(ctx, projects, target)
 		if len(shared) > 0 {
 			cfg.mode = "shared"
 			cfg.detail = fmt.Sprintf("projects with shared_db '%s' in %s", target, path)
 			cfg.sources = shared
 		} else {
-			name, project := projectForDB(ctx, projects, target)
+			name, project := lib.ProjectForDB(ctx, projects, target)
 			if project == nil {
 				lib.Printf("reconcile_dbs: %s: no enabled project uses this database in %s, nothing to reconcile\n", target, path)
 				return cfg, false
@@ -623,7 +484,7 @@ func resolveConfig(ctx *lib.Ctx, target string) (config, bool) {
 			cfg.sources = []string{sharedDB}
 		}
 	}
-	cfg.filter = newProjectFilter(ctx, projects, target, path)
+	cfg.filter = lib.NewProjectFilter(ctx, projects, target, path, cfg.hist)
 	skipDBs := parseDBList(os.Getenv("GHA2DB_RECONCILE_SKIP_DBS"))
 	if len(skipDBs) > 0 {
 		skip := make(map[string]struct{})
@@ -782,9 +643,9 @@ func orphanEventsToSkip(ctx *lib.Ctx, src, tgt *sql.DB, orphans []int64) map[int
 
 // eventsToFilterOut - the given source events the target project would not ingest itself: their repository
 // name (`dup_repo_name`) or actor (`dup_actor_login`) fails the project's gha2db rules (lib.RepoHit, lib.ActorHit)
-func eventsToFilterOut(ctx *lib.Ctx, src *sql.DB, filter *projectFilter, ids []int64) map[int64]struct{} {
+func eventsToFilterOut(ctx *lib.Ctx, src *sql.DB, filter *lib.ProjectFilter, ids []int64) map[int64]struct{} {
 	out := make(map[int64]struct{})
-	if filter.name == "" || len(ids) == 0 {
+	if !filter.Active() || len(ids) == 0 {
 		return out
 	}
 	for _, chunk := range chunkInt64(ids, idBatch) {
@@ -800,7 +661,7 @@ func eventsToFilterOut(ctx *lib.Ctx, src *sql.DB, filter *projectFilter, ids []i
 				actorLogin string
 			)
 			lib.FatalOnError(rows.Scan(&id, &repoName, &actorLogin))
-			if !filter.hit(repoName, actorLogin) {
+			if !filter.Hit(repoName, actorLogin) {
 				out[id] = struct{}{}
 			}
 		}
@@ -1074,7 +935,7 @@ func reconcileSource(ctx *lib.Ctx, cfg *config, tgt, src *sql.DB, target, source
 		missing = toCopy
 		lib.Printf(
 			"%s: filtered out %d event(s) outside project '%s' org/repo/actor rules (native %d, orphan %d, artificial %d)\n",
-			prefix, stats.filtered, cfg.filter.name, fNative, fOrphan, fArtificial,
+			prefix, stats.filtered, cfg.filter.Name, fNative, fOrphan, fArtificial,
 		)
 	}
 	if len(missing) == 0 {
@@ -1212,7 +1073,7 @@ func reconcileDBs() {
 		"reconcile_dbs: %s: mode %s (%s), %d source(s): %s, since %s (range '%s'), classes: %s, dry run: %v\n",
 		target, cfg.mode, cfg.detail, len(cfg.sources), strings.Join(cfg.sources, ", "), dtFrom, cfg.rangeStr, classesInfo(cfg.artificial), cfg.dryRun,
 	)
-	lib.Printf("reconcile_dbs: %s: filter: %s\n", target, cfg.filter.info())
+	lib.Printf("reconcile_dbs: %s: filter: %s\n", target, cfg.filter.Info())
 	targetRepos := repoIDs(tgt, &ctx)
 
 	total := sourceStats{}

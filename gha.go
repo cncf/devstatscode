@@ -28,8 +28,13 @@ type AllProjects struct {
 }
 
 // Project contain mapping from project name to its command line used to sync it
+// HistCommandLine - the biggest org/repo scope the project ever had (every `gha2db` invocation of its
+// `psql.sh`, renamed/moved repositories under their old names, ...) in the `command_line` format; used by
+// the historical mode of tools that re-check what the project would ingest (reconcile_dbs), optional -
+// tools fall back to `command_line` when missing
 type Project struct {
 	CommandLine      []string          `yaml:"command_line"`
+	HistCommandLine  []string          `yaml:"hist_command_line"`
 	StartDate        *time.Time        `yaml:"start_date"`
 	PDB              string            `yaml:"psql_db"`
 	Disabled         bool              `yaml:"disabled"`

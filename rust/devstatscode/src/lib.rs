@@ -70,6 +70,7 @@ pub mod log;
 pub mod map;
 pub mod mgetc;
 pub mod pg;
+pub mod project_filter;
 pub mod projects;
 pub mod restore;
 pub mod rng;

@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use devstatscode::gha::{actor_hit, zero_time, Event};
 use devstatscode::ghawriter::write_to_db;
 use devstatscode::gofmt;
+use devstatscode::project_filter::{new_project_filter, read_projects_if_present, ProjectFilter};
 use devstatscode::{printf, Ctx};
 
 use crate::heartbeat::{tracked_repo, ApiPass};
@@ -27,9 +28,23 @@ fn oldest_string(oldest: Option<DateTime<Utc>>) -> String {
 }
 
 /// Go `restoreRepoEventsRepo`: write the events of one repository's feed.
-fn restore_repo_events_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
+fn restore_repo_events_repo(job: &RepoJob<'_>, filter: &ProjectFilter, stats: &mut RestoreStats) {
     let (gc, c, ctx) = (job.gc, job.c, job.ctx);
     let name = ApiPass::RepoEvents.label();
+    // bug 75: gha_repos also holds repositories the project's gha2db never ingests (renamed into another
+    // organization, historical scope, another project sharing the database) - their feeds are not written either
+    if !filter.repo_hit(job.org_repo) {
+        stats.filtered_repos += 1;
+        if ctx.debug > 0 {
+            printf!(
+                "{}: {}: outside project '{}' org/repo rules, skipping the feed\n",
+                name,
+                job.org_repo,
+                filter.name
+            );
+        }
+        return;
+    }
     for page in 1..=FEED_MAX_PAGES {
         let mut events: Option<Vec<Box<serde_json::value::RawValue>>> = None;
         let info = format!("{}: {} events page {}", name, job.org_repo, page);
@@ -98,6 +113,22 @@ fn restore_repo_events_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
             if !actor_hit(ctx, &ev.actor.login) {
                 continue;
             }
+            // and the project's org/repo/actor rules (bug 75)
+            if !filter.hit(&ev.repo.name, &ev.actor.login) {
+                stats.filtered_events += 1;
+                if ctx.debug > 0 {
+                    printf!(
+                        "{}: {}: {} {} by {} is outside project '{}' org/repo/actor rules, skipping\n",
+                        name,
+                        job.org_repo,
+                        ev.type_,
+                        ev.id,
+                        ev.actor.login,
+                        filter.name
+                    );
+                }
+                continue;
+            }
             if write_to_db(c, ctx, &ev, job.maybe_hide) == 0 {
                 continue;
             }
@@ -141,5 +172,26 @@ fn restore_repo_events_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
 
 /// Go `syncRepoEvents`: the repository events feed pass.
 pub fn sync_repo_events(ctx: &mut Ctx) -> RestoreStats {
-    restore_pass(ctx, ApiPass::RepoEvents, restore_repo_events_repo)
+    let name = ApiPass::RepoEvents.label();
+    // the feed writes native events with the gha2db writer, so it accepts exactly what the project's own
+    // gha2db accepts from the archives: its projects.yaml `command_line` org/repo rules and actor filters
+    // (bug 75) - no rules when there is no projects.yaml or no enabled project uses this database
+    let (projects, path) = read_projects_if_present(ctx);
+    let filter = new_project_filter(ctx, projects.as_ref(), &ctx.pg_db, &path, false);
+    if filter.active() || ctx.debug > 0 {
+        printf!("{}: filter: {}\n", name, filter.info());
+    }
+    let stats = restore_pass(ctx, ApiPass::RepoEvents, &|job, stats| {
+        restore_repo_events_repo(job, &filter, stats)
+    });
+    if filter.active() {
+        printf!(
+            "{}: filtered out {} repo(s) and {} event(s) outside project '{}' org/repo/actor rules\n",
+            name,
+            stats.filtered_repos,
+            stats.filtered_events,
+            filter.name
+        );
+    }
+    stats
 }

@@ -41,6 +41,9 @@ type restoreStats struct {
 	stubRows  int
 	stubPRs   int
 	issueRows int
+	// repo events feed: repositories and events outside the project's org/repo/actor rules (bug 75)
+	filteredRepos  int
+	filteredEvents int
 }
 
 // addType - count one restored event of the given type
@@ -82,6 +85,8 @@ func (st *restoreStats) merge(o restoreStats) {
 	st.stubRows += o.stubRows
 	st.stubPRs += o.stubPRs
 	st.issueRows += o.issueRows
+	st.filteredRepos += o.filteredRepos
+	st.filteredEvents += o.filteredEvents
 	if !o.minDt.IsZero() {
 		st.mark(o.minDt)
 	}

@@ -28,14 +28,14 @@ the difference.
 | `webhook`    | `cmd/webhook`     | `cmd/webhook`     | 5 / 21 (HTTP servers)  |
 | `sqlitedb`   | `cmd/sqlitedb`    | `cmd/sqlitedb`    | 5 / 36 (SQLite)        |
 | `merge_dbs`  | `cmd/merge_dbs`   | `cmd/merge_dbs`   | 4 / 49 (PostgreSQL)    |
-| `reconcile_dbs` | `cmd/reconcile_dbs` | `cmd/reconcile_dbs` | 19 / 41 (PostgreSQL) |
+| `reconcile_dbs` | `cmd/reconcile_dbs` | `cmd/reconcile_dbs` | 14 (+6 lib) / 42 (PostgreSQL) |
 | `gha2db_sync` | `cmd/gha2db_sync` | `cmd/gha2db_sync` | 7 / 74 (PostgreSQL)   |
 | `import_affs` | `cmd/import_affs` | `cmd/import_affs` | 6 / 47 (PostgreSQL)   |
 | `calc_metric` | `cmd/calc_metric` | `cmd/calc_metric` | 6 / 98 (PostgreSQL)   |
 | `annotations` | `cmd/annotations` | `cmd/annotations` | 5 / 73 (PostgreSQL + git) |
 | `get_repos`  | `cmd/get_repos`   | `cmd/get_repos`   | 3 / 117 (PostgreSQL + git) |
 | `sync_issues` | `cmd/sync_issues` | `cmd/sync_issues` | 10 / 53 (PostgreSQL + fake GitHub API) |
-| `ghapi2db`   | `cmd/ghapi2db`    | `cmd/ghapi2db`    | 121 (PostgreSQL + fake GitHub REST/GraphQL API) |
+| `ghapi2db`   | `cmd/ghapi2db`    | `cmd/ghapi2db`    | 132 (PostgreSQL + fake GitHub REST/GraphQL API) |
 | `gha2db`     | `cmd/gha2db`      | `cmd/gha2db`      | 5 (+9 lib) / 60 (PostgreSQL + fake GH Archive) |
 | `api`        | `cmd/api`         | `cmd/api`         | 10 / 17 scenarios ≈ 330 requests (HTTP servers + PostgreSQL) |
 
@@ -751,7 +751,15 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `GHA2DB_EXCLUDE_REPOS`, `GHA2DB_EXACT`, actors filter — `RepoHit` /
     `ActorHit` on a fresh Ctx with the project's `env` applied unless
     `ENV_SET`; reported as the `filter:` header line and per-source
-    `filtered out N event(s) …` lines); window `GHA2DB_RECONCILE_RANGE`
+    `filtered out N event(s) …` lines). The filter is the shared
+    `lib.ProjectFilter` (`project_filter.go` /
+    `devstatscode::project_filter`, also used by the `ghapi2db` repository
+    events feed): `GHA2DB_RECONCILE_HIST=1` switches it to the project's
+    `hist_command_line` (the widest org/repo scope the project ever had,
+    every organisation and repository it tracked at any time, projects.yaml
+    2026-09) and falls back to `command_line` when a project has none — the
+    `filter:` line says `(historical rules)` or `(historical rules: none,
+    using command_line)`; window `GHA2DB_RECONCILE_RANGE`
     (interval, default `90 days`); native ids (`0 < id < 2^48`) and synthetic
     orphan pushes (`id < 0`), artificial ids (`>= 2^48`) only with
     `GHA2DB_RECONCILE_ARTIFICIAL=1`. Stateless idempotency via per
@@ -769,7 +777,7 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `GHA2DB_RECONCILE_SKIP_DBS=a,b`; `gha2db_sync` runs it (non-fatally)
     after `ghapi2db` and before `structure` unless `GHA2DB_RECONCILESKIP`
     (Ctx `SkipReconcile`).
-  * Go⇄Rust tests: `cmd/reconcile_dbs/tests/compat.rs` — 41 cases on scratch
+  * Go⇄Rust tests: `cmd/reconcile_dbs/tests/compat.rs` — 42 cases on scratch
     source/target databases (`compat/fixtures/structure/full_structure.sql`
     schema, deterministic seeded world, see
     `compat/fixtures/reconcile_dbs/README.md`): explicit, project and shared
@@ -778,7 +786,9 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     sources, orphan skipping, commit takeover, project org/repo/regexp/
     exclude/actor filtering (with `ENV_SET`, in project, shared — the shared
     database's own project rules, also with `GHA2DB_PROJECT` naming a child —
-    and explicit modes, dry run, no owning project), empty sources, missing
+    and explicit modes, dry run, no owning project, historical rules with
+    `GHA2DB_RECONCILE_HIST` — on/off, project without `hist_command_line`,
+    repo and regexp forms), empty sources, missing
     databases/yaml, invalid ranges, `GHA2DB_CTXOUT`. Compared: exit code,
     stdout (`since <ts>`, failing-query argument echoes and durations
     masked), `Error:`/`PqError:` stderr lines and every table of the target
@@ -1284,7 +1294,25 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     (`GHA2DB_ACTORS_FILTER`/`ALLOW`/`FORBID`) included, all event types
     (`PushEvent` stubs without commits and 5-field PR stubs too). Ids GH Archive already
     delivered are skipped, a different event under a known id logs the
-    writer's `event id collision` line. Paging follows the `Link: next`
+    writer's `event id collision` line. The pass applies the project's own
+    org/repo/actor ingestion rules (bug 75, 2026-09-17, Go and Rust alike):
+    the shared `ProjectFilter` is built once from `projects.yaml` (the
+    enabled project whose `psql_db` is `PG_DB`, `GHA2DB_PROJECT` first; its
+    `env` applied unless `ENV_SET`, the daily `command_line` rules — never
+    the historical ones), printed as `ghapi2db repo events: filter: …` when
+    active (or with `GHA2DB_DEBUG`); a repository outside the rules is not
+    asked for its feed at all (debug `… <org/repo>: outside project 'p'
+    org/repo rules, skipping the feed`), an event of the feed whose
+    `repo.name`/actor fail them — a former name of the repository, a
+    forbidden actor — is dropped (debug `… <type> <id> by <login> is
+    outside project 'p' org/repo/actor rules, skipping`), summary `ghapi2db
+    repo events: filtered out N repo(s) and N event(s) outside project 'p'
+    org/repo/actor rules`. Without a `projects.yaml` or an owning enabled
+    project nothing is filtered (`filter: none (…)` with debug). Before this
+    a repository that moved out of the project's organisation — `gha_repos`
+    keeps it under its historical name — got its current events restored
+    into the project database although `gha2db` would have skipped them
+    (discovered by the `reconcile_dbs` filter statistics on production). Paging follows the `Link: next`
     header only, up to page 3 (GitHub answers 422 for page 4): the live feed
     is ordered by id — which is no longer monotonic in time — and filtered
     after pagination (a "full" page holds 84–96 events while more follow), so
@@ -1392,7 +1420,7 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `sync_issues` run with the cache disabled (so the asserted `/rate_limit`
     request counts stay deterministic) plus five `rate_limits_cache_*`
     scenarios with it enabled.
-  * Go⇄Rust tests: `cmd/ghapi2db/tests/compat.rs` — 130 scenarios, each side on
+  * Go⇄Rust tests: `cmd/ghapi2db/tests/compat.rs` — 132 scenarios, each side on
     a scratch database (`full_structure.sql` + seeded events/repos/actors)
     against its own scripted fake GitHub REST + GraphQL server: skip-all;
     licenses (found / not found / already set / force / debug `Stringify`
@@ -1435,7 +1463,7 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     across runs and renames, in-place upgrade of GHA stub rows, the newest
     event under any name as the anchor incl. artificial ids, `REPO=` / legacy
     scope / unknown heartbeat → `GET /repos/{o}/{r}` with go-github's `Accept`
-    header, untracked id warning and 404 → unavailable); repo events (9
+    header, untracked id warning and 404 → unavailable); repo events (11
     `repo_events_*` scenarios: a mixed six-type page written with native ids
     into `gha_events`/`gha_issues`/`gha_issues_labels`/`gha_comments`/
     `gha_pull_requests`/`gha_forkees`/`gha_payloads`/`gha_actors`, a page
@@ -1446,7 +1474,12 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     object attributed to the feed's repository, `REPO=` with
     hide.csv anonymisation, the gha2db actor filters
     (`GHA2DB_ACTORS_FILTER/ALLOW/FORBID`), the heartbeat "no activity" gate
-    incl. the star-count signal, and the targeted postprocess filling
+    incl. the star-count signal, the project org/repo rules of a tempdir
+    `projects.yaml` (`GHA2DB_LOCAL`): an out-of-org repository whose feed is
+    never requested, an event under the repository's former name dropped,
+    the project's `env` actors filter applied unless `ENV_SET`, `regexp:`
+    rules hitting and missing, no owning enabled project and no yaml at all
+    filtering nothing, and the targeted postprocess filling
     `gha_texts` from the restored ids); issues/PRs sweep (9 `issues_prs_*`
     scenarios: stub rows upgraded from `GET /pulls/{n}` with the issue row
     attached and no synthetic events, a listing synthesizing unknown issues

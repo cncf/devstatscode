@@ -24,6 +24,12 @@ pub struct AllProjects {
 pub struct Project {
     #[serde(rename = "command_line", deserialize_with = "yde::str_seq")]
     pub command_line: Vec<String>,
+    /// Go `HistCommandLine`: the biggest org/repo scope the project ever had (every `gha2db`
+    /// invocation of its `psql.sh`, renamed/moved repositories under their old names, ...) in the
+    /// `command_line` format; used by the historical mode of tools that re-check what the project
+    /// would ingest (reconcile_dbs), optional - tools fall back to `command_line` when missing.
+    #[serde(rename = "hist_command_line", deserialize_with = "yde::str_seq")]
+    pub hist_command_line: Vec<String>,
     #[serde(rename = "start_date", deserialize_with = "yde::opt_time")]
     pub start_date: Option<DateTime<FixedOffset>>,
     #[serde(rename = "psql_db", deserialize_with = "yde::string")]

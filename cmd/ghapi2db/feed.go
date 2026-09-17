@@ -43,8 +43,17 @@ func feedPage(gctx context.Context, gc *ghClients, org, repo string, page int) (
 }
 
 // restoreRepoEventsRepo - write the events of one repository's feed with the gha2db writer
-func restoreRepoEventsRepo(gctx context.Context, gc *ghClients, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, shas map[string]string, stats *restoreStats) {
+func restoreRepoEventsRepo(gctx context.Context, gc *ghClients, c *sql.DB, ctx *lib.Ctx, filter *lib.ProjectFilter, org, repo, orgRepo string, repoID int64, shas map[string]string, stats *restoreStats) {
 	name := passRepoEvents.label()
+	// bug 75: gha_repos also holds repositories the project's gha2db never ingests (renamed into another
+	// organization, historical scope, another project sharing the database) - their feeds are not written either
+	if !filter.RepoHit(orgRepo) {
+		stats.filteredRepos++
+		if ctx.Debug > 0 {
+			lib.Printf("%s: %s: outside project '%s' org/repo rules, skipping the feed\n", name, orgRepo, filter.Name)
+		}
+		return
+	}
 	for page := 1; page <= feedMaxPages; page++ {
 		var (
 			events []json.RawMessage
@@ -90,6 +99,14 @@ func restoreRepoEventsRepo(gctx context.Context, gc *ghClients, c *sql.DB, ctx *
 			if !lib.ActorHit(ctx, ev.Actor.Login) {
 				continue
 			}
+			// and the project's org/repo/actor rules (bug 75)
+			if !filter.Hit(ev.Repo.Name, ev.Actor.Login) {
+				stats.filteredEvents++
+				if ctx.Debug > 0 {
+					lib.Printf("%s: %s: %s %s by %s is outside project '%s' org/repo/actor rules, skipping\n", name, orgRepo, ev.Type, ev.ID, ev.Actor.Login, filter.Name)
+				}
+				continue
+			}
 			if lib.WriteToDB(c, ctx, &ev, shas) == 0 {
 				continue
 			}
@@ -119,7 +136,20 @@ func restoreRepoEventsRepo(gctx context.Context, gc *ghClients, c *sql.DB, ctx *
 // syncRepoEvents - repository events feed pass
 func syncRepoEvents(ctx *lib.Ctx) restoreStats {
 	shas := lib.GetHidden(ctx, lib.HideCfgFile)
-	return restorePass(ctx, passRepoEvents, func(gctx context.Context, gc *ghClients, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
-		restoreRepoEventsRepo(gctx, gc, c, ctx, org, repo, orgRepo, repoID, shas, stats)
+	name := passRepoEvents.label()
+	// the feed writes native events with the gha2db writer, so it accepts exactly what the project's own
+	// gha2db accepts from the archives: its projects.yaml `command_line` org/repo rules and actor filters
+	// (bug 75) - no rules when there is no projects.yaml or no enabled project uses this database
+	projects, path := lib.ReadProjectsIfPresent(ctx)
+	filter := lib.NewProjectFilter(ctx, projects, ctx.PgDB, path, false)
+	if filter.Active() || ctx.Debug > 0 {
+		lib.Printf("%s: filter: %s\n", name, filter.Info())
+	}
+	stats := restorePass(ctx, passRepoEvents, func(gctx context.Context, gc *ghClients, c *sql.DB, ctx *lib.Ctx, org, repo, orgRepo string, repoID int64, orgID interface{}, recentDt time.Time, maybeHide func(string) string, stats *restoreStats) {
+		restoreRepoEventsRepo(gctx, gc, c, ctx, &filter, org, repo, orgRepo, repoID, shas, stats)
 	})
+	if filter.Active() {
+		lib.Printf("%s: filtered out %d repo(s) and %d event(s) outside project '%s' org/repo/actor rules\n", name, stats.filteredRepos, stats.filteredEvents, filter.Name)
+	}
+	return stats
 }

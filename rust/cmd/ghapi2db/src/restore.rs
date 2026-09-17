@@ -54,6 +54,9 @@ pub struct RestoreStats {
     pub stub_rows: usize,
     pub stub_prs: usize,
     pub issue_rows: usize,
+    /// repo events feed: repositories and events outside the project's org/repo/actor rules (bug 75)
+    pub filtered_repos: usize,
+    pub filtered_events: usize,
 }
 
 impl RestoreStats {
@@ -88,6 +91,8 @@ impl RestoreStats {
         self.stub_rows += o.stub_rows;
         self.stub_prs += o.stub_prs;
         self.issue_rows += o.issue_rows;
+        self.filtered_repos += o.filtered_repos;
+        self.filtered_events += o.filtered_events;
         if let Some(m) = o.min_dt {
             self.mark(m);
         }
@@ -286,7 +291,8 @@ pub struct RepoJob<'a> {
     pub maybe_hide: MaybeHide<'a>,
 }
 
-pub type RestoreRepoFunc = fn(&RepoJob<'_>, &mut RestoreStats);
+/// A restore function (shared by the worker threads; the feed pass captures its project filter).
+pub type RestoreRepoFunc<'f> = &'f (dyn Fn(&RepoJob<'_>, &mut RestoreStats) + Sync);
 
 /// Go `numberFromURL`: the trailing number of an API URL (0 when absent).
 fn number_from_url(url: Option<&str>) -> i64 {
@@ -484,7 +490,7 @@ struct PassRate {
 
 /// Go `restorePass`: run `process` for every recent repository (the Go
 /// goroutine pool), summing the statistics.
-pub fn restore_pass(ctx: &mut Ctx, pass: ApiPass, process: RestoreRepoFunc) -> RestoreStats {
+pub fn restore_pass(ctx: &mut Ctx, pass: ApiPass, process: RestoreRepoFunc<'_>) -> RestoreStats {
     let name = pass.label();
     let params = get_api_params(ctx, pass);
     let maybe_hide = maybe_hide_func(get_hidden(ctx, HIDE_CFG_FILE));
@@ -1426,21 +1432,21 @@ fn restore_releases_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
 }
 
 pub fn sync_comments(ctx: &mut Ctx) -> RestoreStats {
-    restore_pass(ctx, ApiPass::Comments, restore_comments_repo)
+    restore_pass(ctx, ApiPass::Comments, &restore_comments_repo)
 }
 
 pub fn sync_reviews(ctx: &mut Ctx) -> RestoreStats {
-    restore_pass(ctx, ApiPass::Reviews, restore_reviews_repo)
+    restore_pass(ctx, ApiPass::Reviews, &restore_reviews_repo)
 }
 
 pub fn sync_forks(ctx: &mut Ctx) -> RestoreStats {
-    restore_pass(ctx, ApiPass::Forks, restore_forks_repo)
+    restore_pass(ctx, ApiPass::Forks, &restore_forks_repo)
 }
 
 pub fn sync_stars(ctx: &mut Ctx) -> RestoreStats {
-    restore_pass(ctx, ApiPass::Stars, restore_stars_repo)
+    restore_pass(ctx, ApiPass::Stars, &restore_stars_repo)
 }
 
 pub fn sync_releases(ctx: &mut Ctx) -> RestoreStats {
-    restore_pass(ctx, ApiPass::Releases, restore_releases_repo)
+    restore_pass(ctx, ApiPass::Releases, &restore_releases_repo)
 }
