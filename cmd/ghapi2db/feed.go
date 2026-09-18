@@ -114,7 +114,8 @@ func restoreRepoEventsRepo(gctx context.Context, gc *ghClients, c *sql.DB, ctx *
 			stats.addType(ev.Type)
 			stats.mark(ev.CreatedAt)
 			if eid, err := strconv.ParseInt(ev.ID, 10, 64); err == nil {
-				stats.eids = append(stats.eids, eid)
+				// the stored (banded) id, see lib.NativeEventID - the targeted postprocess selects by it
+				stats.eids = append(stats.eids, lib.NativeEventID(eid, ev.Type, ev.CreatedAt))
 			}
 			if ctx.Debug > 0 {
 				lib.Printf("%s: %s: restored %s %s (%v)\n", name, orgRepo, ev.Type, ev.ID, ev.CreatedAt)

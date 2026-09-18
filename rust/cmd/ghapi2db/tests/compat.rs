@@ -8346,6 +8346,151 @@ fn repo_events_run_the_targeted_postprocess() {
     });
 }
 
+/// `feed_mixed_page` re-stamped after every native id band epoch
+/// (`2020-05-03T…` → `2030-01-01T…`, payload objects included).
+fn feed_mixed_page_after_epoch() -> Value {
+    serde_json::from_str(
+        &feed_mixed_page()
+            .to_string()
+            .replace("2020-05-03T", "2030-01-01T"),
+    )
+    .unwrap()
+}
+
+#[test]
+fn repo_events_after_the_band_epoch_are_stored_banded() {
+    // Feed events created after the native id band epoch are stored as
+    // `raw id + band * 10^12` (band 2 = PushEvent/CreateEvent/DeleteEvent, band 1 =
+    // the rest) in gha_events and every payload table, the targeted postprocess
+    // selects them by the banded id, a feed id equal to an older event's raw id no
+    // longer collides, the log lines keep the GitHub id, and a second run finds
+    // everything already stored.
+    let sides = check(
+        Case::new("fe_banded", Pass::RepoEvents)
+            .runs(2)
+            .env("GHA2DB_DEBUG", "1")
+            .util_sql()
+            .seed("insert into gha_texts(event_id, body, created_at, repo_id, repo_name, actor_id, actor_login, type) values(1000, 'seed', '2020-02-01 10:00:00', 500, 'org/repo', 11, 'alice', 'IssuesEvent');")
+            .setup(|gh| {
+                let mut page = feed_mixed_page_after_epoch();
+                // the base seed's event 1000 (IssuesEvent, 2020-02-01) reused by GitHub
+                page.as_array_mut().unwrap().push(feed_event(
+                    1000,
+                    "WatchEvent",
+                    (REPO_ID, REPO),
+                    (12, "bob"),
+                    "2030-01-01T08:00:00Z",
+                    json!({"action": "started"}),
+                ));
+                gh.get_ok(&feed_page_path(REPO, 1), &page);
+            }),
+    );
+    both(&sides, |s| {
+        for i in 0..2 {
+            s.expect_no_prefix(i, "event id collision");
+        }
+        // (the `NOW` mask swallows the 2030 stamps up to the closing paren)
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: restored IssuesEvent 9000001 (<now>",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: restored PushEvent 9000005 (<now>",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: org/repo: restored WatchEvent 1000 (<now>",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 1 repos, 1 pages, checked 7, restored 7",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: restored events by type: ForkEvent 1, IssueCommentEvent 1, IssuesEvent 1, PullRequestEvent 1, PushEvent 1, WatchEvent 2",
+        );
+        s.expect_line(
+            0,
+            "targeted postprocess executed for 7 restored event id(s)",
+        );
+        s.expect_line(
+            1,
+            "ghapi2db repo events: processed 1 repos, 1 pages, checked 7, restored 0",
+        );
+        s.expect_no_prefix(1, "ghapi2db repo events: restored events by type: ");
+        // the seed's raw event 1000 and the banded feed events
+        assert_eq!(
+            s.query("select id, type, dup_actor_login, created_at::text from gha_events where id >= 1000 order by id"),
+            vec![
+                vec!["1000".to_string(), "IssuesEvent".to_string(), "alice".to_string(), "2020-02-01 10:00:00".to_string()],
+                vec!["1000000001000".to_string(), "WatchEvent".to_string(), "bob".to_string(), "2030-01-01 08:00:00".to_string()],
+                vec!["1000009000001".to_string(), "IssuesEvent".to_string(), "alice".to_string(), "2030-01-01 09:00:00".to_string()],
+                vec!["1000009000002".to_string(), "IssueCommentEvent".to_string(), "bob".to_string(), "2030-01-01 10:01:00".to_string()],
+                vec!["1000009000003".to_string(), "PullRequestEvent".to_string(), "carol".to_string(), "2030-01-01 10:02:00".to_string()],
+                vec!["1000009000004".to_string(), "WatchEvent".to_string(), "bob".to_string(), "2030-01-01 10:03:00".to_string()],
+                vec!["1000009000006".to_string(), "ForkEvent".to_string(), "carol".to_string(), "2030-01-01 10:05:00".to_string()],
+                vec!["2000009000005".to_string(), "PushEvent".to_string(), "alice".to_string(), "2030-01-01 10:04:00".to_string()],
+            ]
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where created_at >= '2030-01-01' and id < 1000000000000"),
+            0
+        );
+        // payload tables follow the banded id
+        assert_eq!(
+            s.column("select event_id::text from gha_issues order by event_id"),
+            vec!["1000009000001".to_string(), "1000009000002".to_string()]
+        );
+        assert_eq!(
+            s.query("select id, event_id from gha_comments"),
+            vec![vec!["90101".to_string(), "1000009000002".to_string()]]
+        );
+        assert_eq!(
+            s.column("select event_id::text from gha_pull_requests"),
+            vec!["1000009000003".to_string()]
+        );
+        assert_eq!(
+            s.column("select label_id::text from gha_issues_labels where event_id = 1000009000001"),
+            vec!["4001".to_string()]
+        );
+        assert_eq!(
+            s.column("select event_id::text from gha_forkees where id = 700 order by event_id"),
+            vec!["1000009000003".to_string(), "1000009000006".to_string()]
+        );
+        assert_eq!(
+            s.query("select push_id, ref from gha_payloads where event_id = 2000009000005"),
+            vec![vec![
+                "20000000005".to_string(),
+                "refs/heads/main".to_string()
+            ]]
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_payloads where event_id >= 1000000000000"),
+            7
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_payloads where event_id < 1000000000000"),
+            0
+        );
+        // the targeted postprocess ran on the banded ids
+        assert_eq!(
+            s.query("select event_id, body, type from gha_texts where event_id > 1000 order by event_id, body"),
+            vec![
+                vec!["1000009000001".to_string(), "Feed issue".to_string(), "IssuesEvent".to_string()],
+                vec!["1000009000001".to_string(), "Found in the feed".to_string(), "IssuesEvent".to_string()],
+                vec!["1000009000002".to_string(), "Feed issue".to_string(), "IssueCommentEvent".to_string()],
+                vec!["1000009000002".to_string(), "Found in the feed".to_string(), "IssueCommentEvent".to_string()],
+                vec!["1000009000002".to_string(), "Seen in the feed".to_string(), "IssueCommentEvent".to_string()],
+            ]
+        );
+        assert_eq!(
+            s.query("select label_id::text, dup_label_name from gha_issues_labels where event_id = 1000009000001"),
+            vec![vec!["4001".to_string(), "kind/bug".to_string()]]
+        );
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Issues and pull requests sweep (`ghapi2db issues prs`, P1-C)
 // ---------------------------------------------------------------------------

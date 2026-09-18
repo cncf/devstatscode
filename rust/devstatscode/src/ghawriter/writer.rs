@@ -1,6 +1,7 @@
 //! Whole-event writers — port of `ghaPullRequest`, `ghaTeam`,
 //! `writeToDBOldFmt` and `writeToDB` of `cmd/gha2db/gha2db.go`.
 
+use crate::eventid::native_event_id_string;
 use crate::gha::{
     actor_id_or_nil, actor_login_or_nil, comment_id_or_nil, forkee_id_or_nil, issue_id_or_nil,
     milestone_id_or_nil, org_id_or_nil, org_login_or_nil, pull_request_id_or_nil,
@@ -1144,7 +1145,11 @@ pub fn write_to_db_old_fmt(
 /// Go `writeToDB`: write an entire event in the 2015+ format; `1` when
 /// written, `0` when it already existed.
 pub fn write_to_db(db: &PgConn, ctx: &Ctx, ev: &Event, maybe_hide: MaybeHide<'_>) -> i64 {
-    let event_id = ev.id.as_str();
+    // The stored id is the raw GitHub id plus the band of the event's sequence generation
+    // (`crate::eventid`), the ONLY place native event ids are created (gha2db archives
+    // and the ghapi2db repo events feed)
+    let banded_id = native_event_id_string(&ev.id, &ev.type_, *ev.created_at);
+    let event_id = banded_id.as_str();
     if event_exists_collision(db, ctx, event_id, &ev.type_, &ev.repo.name, ev.created_at) {
         return 0;
     }

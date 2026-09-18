@@ -80,6 +80,23 @@ fn fixture_lines(key: &str) -> Vec<String> {
         .collect()
 }
 
+/// The 2025 hour re-stamped after every native id band epoch (see
+/// `devstatscode::eventid`): the events' `created_at` moved from
+/// `2025-11-20T12:` to `2030-01-01T00:` (payload objects keep their dates).
+const H2030: &str = "2030-01-01-0";
+
+fn future_lines() -> Vec<String> {
+    fixture_lines(H2025)
+        .into_iter()
+        .map(|l| {
+            l.replace(
+                "\"created_at\":\"2025-11-20T12:",
+                "\"created_at\":\"2030-01-01T00:",
+            )
+        })
+        .collect()
+}
+
 /// Actor rows resolving the `Signed-off-by:` trailers of the nextcloud
 /// commits of the 2020 hour: by email, by `gha_actors_names`, by
 /// `gha_actors.name`; the remaining trailers stay unresolved.
@@ -1300,6 +1317,137 @@ fn new_event_id_collision() {
                 "select count(*) from gha_events where id = 2489654310 and type = 'WatchEvent'"
             ),
             1
+        );
+    });
+}
+
+#[test]
+fn banded_ids_after_epoch() {
+    // The 2025 hour re-stamped after the native id band epoch: every event is
+    // stored as `raw id + band * 10^12` (band 2 = PushEvent/CreateEvent/
+    // DeleteEvent, band 1 = everything else), every payload row points at the
+    // banded id, an old event stored under the raw id of a new one no longer
+    // makes the writer drop the new one, and a rerun stores nothing twice.
+    let lines = future_lines();
+    let s = check(
+        Case::new("banded")
+            .hour(H2030, vec![Archive::lines(&lines)])
+            .seed("insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values (4805811501, 'WatchEvent', 7, 8, '2021-02-12 18:02:19', null, 'someone', 'some/repo')")
+            .args(&["2030-01-01", "0", "2030-01-01", "0"])
+            .args(&["2030-01-01", "0", "2030-01-01", "0"]),
+    );
+    both(&s, |s| {
+        assert_eq!(s.code(0), Some(0));
+        assert_eq!(s.code(1), Some(0));
+        // (the `NOW` mask turns the 2030 hour into `<now>`)
+        s.expect_line(
+            0,
+            "Parsed: <archive>/<now>.json.gz: 191 JSONs, found 191 matching, events 191",
+        );
+        assert_eq!(s.count_prefix(0, "event id collision"), 0);
+        assert_eq!(s.count_prefix(1, "event id collision"), 0);
+        // the seeded raw 2021 event and the banded 2030 one with the same GitHub id coexist
+        assert_eq!(s.count("select count(*) from gha_events"), 192);
+        assert_eq!(
+            s.count(
+                "select count(*) from gha_events where id = 4805811501 and type = 'WatchEvent'"
+            ),
+            1
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where id = 1004805811501 and type = 'PullRequestReviewEvent' and created_at = '2030-01-01 00:00:00'"),
+            1
+        );
+        // no raw id after the epoch, bands by type
+        assert_eq!(
+            s.count("select count(*) from gha_events where created_at >= '2030-01-01' and id < 1000000000000"),
+            0
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where id / 1000000000000 = 2"),
+            90
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where id / 1000000000000 = 2 and type not in ('PushEvent', 'CreateEvent', 'DeleteEvent')"),
+            0
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where id / 1000000000000 = 1"),
+            101
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where id / 1000000000000 = 1 and type in ('PushEvent', 'CreateEvent', 'DeleteEvent')"),
+            0
+        );
+        assert_eq!(
+            s.count("select count(distinct type) from gha_events where id >= 1000000000000"),
+            16
+        );
+        // `id % 10^12` is the GitHub id (the jsons/ files are named by it)
+        assert_eq!(
+            s.count("select count(*) from gha_events where id >= 1000000000000 and id % 1000000000000 not between 4805811501 and 6110548226"),
+            0
+        );
+        // every `event_id` of every payload table points at a banded event
+        let tables = s.column(
+            "select table_name from information_schema.columns where table_schema = 'public' and column_name = 'event_id' order by 1",
+        );
+        assert!(tables.len() >= 20, "{tables:?}");
+        let mut filled = 0;
+        for t in &tables {
+            let n = s.count(&format!("select count(*) from \"{t}\""));
+            if n > 0 {
+                filled += 1;
+            }
+            assert_eq!(
+                s.count(&format!(
+                    "select count(*) from \"{t}\" where event_id < 1000000000000"
+                )),
+                0,
+                "{t}: raw event_id"
+            );
+            assert_eq!(
+                s.count(&format!("select count(*) from \"{t}\" x where not exists (select 1 from gha_events e where e.id = x.event_id)")),
+                0,
+                "{t}: dangling event_id"
+            );
+        }
+        assert!(filled >= 10, "only {filled} payload tables filled");
+        assert_eq!(s.count("select count(*) from gha_payloads"), 191);
+        assert!(
+            s.count("select count(*) from gha_pull_requests where event_id / 1000000000000 = 1")
+                > 0
+        );
+        assert!(
+            s.count("select count(*) from gha_payloads where event_id / 1000000000000 = 2") > 0
+        );
+        assert_eq!(s.count("select count(*) from gha_parsed"), 1);
+        assert_eq!(
+            s.requests(),
+            vec!["/<now>.json.gz".to_string(), "/<now>.json.gz".to_string()]
+        );
+    });
+}
+
+#[test]
+fn raw_ids_before_epoch() {
+    // The same 2025 hour on its real date: nothing is banded (history untouched).
+    let s =
+        check(
+            Case::new("unbanded")
+                .fixture(H2025)
+                .args(&["2025-11-20", "12", "2025-11-20", "12"]),
+        );
+    both(&s, |s| {
+        assert_eq!(s.code(0), Some(0));
+        assert_eq!(s.count("select count(*) from gha_events"), 191);
+        assert_eq!(
+            s.count("select count(*) from gha_events where id >= 1000000000000"),
+            0
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_payloads where event_id >= 1000000000000"),
+            0
         );
     });
 }

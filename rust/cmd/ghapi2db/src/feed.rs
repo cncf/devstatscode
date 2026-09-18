@@ -6,6 +6,7 @@
 //! either side.
 
 use chrono::{DateTime, Utc};
+use devstatscode::eventid::native_event_id;
 use devstatscode::gha::{actor_hit, zero_time, Event};
 use devstatscode::ghawriter::write_to_db;
 use devstatscode::gofmt;
@@ -136,7 +137,9 @@ fn restore_repo_events_repo(job: &RepoJob<'_>, filter: &ProjectFilter, stats: &m
             stats.add_type(&ev.type_);
             stats.mark(created_at);
             if let Ok(eid) = ev.id.parse::<i64>() {
-                stats.eids.push(eid);
+                // the stored (banded) id, see `eventid::native_event_id` - the targeted
+                // postprocess selects by it
+                stats.eids.push(native_event_id(eid, &ev.type_, created_at));
             }
             if ctx.debug > 0 {
                 printf!(

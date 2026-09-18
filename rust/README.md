@@ -1289,8 +1289,9 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     it reads `GET /repos/{o}/{r}/events?per_page=100&page=1..3` — the very
     objects GH Archive is built from — decodes each element with the gha2db
     `Event` type and writes it with the shared gha2db writer (`lib.WriteToDB`
-    / `devstatscode::ghawriter::write_to_db`) under its **native id, actor and
-    time stamp**, hide.csv anonymisation and the gha2db actor filters
+    / `devstatscode::ghawriter::write_to_db`) under its **native id (banded
+    after the event-id band epoch, see the gha2db notes), actor and time
+    stamp**, hide.csv anonymisation and the gha2db actor filters
     (`GHA2DB_ACTORS_FILTER`/`ALLOW`/`FORBID`) included, all event types
     (`PushEvent` stubs without commits and 5-field PR stubs too). Ids GH Archive already
     delivered are skipped, a different event under a known id logs the
@@ -1536,6 +1537,28 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     rows in every `gha_*` table.
   * `GHA2DB_GHARCHIVE_URL` (new, in Go and Rust): overrides the
     `http://data.gharchive.org/` base URL (tests point it at a fake server).
+  * Native event id bands (2026-09-18, Go `eventid.go` / Rust `eventid.rs`,
+    used by the shared writer for gha2db archives and the ghapi2db `repo
+    events` feed alike): GitHub restarted its event id sequence on
+    2025-10-09 and now runs two parallel ones (issues / PRs / comments /
+    reviews / forks / stars / releases / ... and a separate
+    `PushEvent`/`CreateEvent`/`DeleteEvent` one), so new ids collide with
+    2016-2025 ids and with each other and the writer had to drop the newer
+    event (`event id collision` line). Since the compiled-in epoch
+    (`NativeIDBandRules[0].Since` / `NATIVE_ID_BAND_RULES[0].since`, first
+    rule whose `Since <= created_at` wins, none = band 0 = the raw id) the
+    stored id is `raw GitHub id + band * 10^12` (`NativeIDBandBase`): band 1
+    for the first family, band 2 for `Push`/`Create`/`Delete`, so `id / 10^12`
+    is the band and `id % 10^12` the GitHub id; all bands stay below `2^48`
+    (281 fit), i.e. inside the "native" class every id-classifying code path
+    (merge_dbs, reconcile_dbs, the artificial-id resolvers) already treats as
+    plain event ids. History before the epoch is untouched, `gha_events.id`
+    and all 23 `event_id` columns of one event carry the same banded value,
+    ghapi2db's targeted postprocess (`stats.eids`) uses it too. If GitHub
+    changes its sequences again (the megacheck `eventids` section watches
+    for banded-id collisions), **prepend** a rule with a newer `Since` and
+    never-used band numbers to both lists - bands are never reused so old
+    rows keep their meaning.
   * Go⇄Rust tests: `cmd/gha2db/tests/compat.rs` — 60 scenarios, each side on
     a scratch database against its own fake GH Archive server
     (`compat/src/gharchive.rs`) serving gzipped fixtures cut from real hours
@@ -2115,6 +2138,20 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
   synthetic events without commits and shas having both a real
   (`is_distinct = false`) and a synthetic row — the takeover only fires when a
   real row is inserted.
+* `lib` `WriteToDB` / `ghawriter::write_to_db` + `ghapi2db` feed (2026-09-18):
+  GitHub's event id sequence restarted on 2025-10-09 (and `PushEvent` /
+  `CreateEvent` / `DeleteEvent` now use a second, parallel sequence), so new
+  events reuse ids of 2016-2025 events and of each other; the writer's
+  existence check saw a *different* stored event under the same id and
+  dropped the new one (`event id collision`, ~0.05 % of the feed, more on
+  dense DBs like `allprj`, 16 cross-family collisions in 5 prod days). Fix in
+  both implementations: native ids born after a compiled-in epoch are stored
+  as `raw id + band * 10^12` (`eventid.go` / `eventid.rs`, band 1 for the
+  first family, band 2 for `Push`/`Create`/`Delete`; rules are a newest-first
+  list, new GitHub sequences get a prepended rule with fresh bands). The
+  `event id collision` line is left as it is, the megacheck `eventids`
+  section reports post-epoch raw ids (a stale image still writing), band /
+  type mismatches and banded-id collisions (a further GitHub change).
 
 ### Rust-only bugs found after go-live (Go was correct)
 

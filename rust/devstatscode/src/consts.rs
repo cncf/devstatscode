@@ -49,6 +49,15 @@ pub const ARTIFICIAL_ISSUE_ID_BASE: i64 = ARTIFICIAL_ID_BASE + 28_000_000_000_00
 pub const ARTIFICIAL_PR_ID_BASE: i64 = ARTIFICIAL_ID_BASE + 32_000_000_000_000;
 /// Event ids >= this are 'sync' events; artificial sub-bands must stay below.
 pub const SYNC_EVENT_ID_THRESHOLD: i64 = 329_900_000_000_000;
+/// Width of one native (GitHub sourced) event id band: 10^12 (Go `NativeIDBandBase`).
+/// GitHub restarted its event id sequence on 2025-10-09 and since then allocates ids
+/// from two independent sequences (Push/Create/Delete vs every other type) that reuse
+/// the 2016-2025 ids and each other's ids; native events created at/after the epoch
+/// of a [`crate::eventid::NATIVE_ID_BAND_RULES`] rule are stored as
+/// `raw id + band * NATIVE_ID_BAND_BASE` (band 0 = raw id for everything older, so
+/// history is untouched). 2^48 / 10^12 = 281 bands fit below [`ARTIFICIAL_ID_BASE`],
+/// so banded ids stay 'native' (`0 < id < 2^48`) for every consumer.
+pub const NATIVE_ID_BAND_BASE: i64 = 1_000_000_000_000;
 
 pub const ABUSE: &str = "abuse";
 pub const NOT_FOUND: &str = "not_found";

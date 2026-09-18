@@ -560,10 +560,16 @@ restoring; skip historical-alias clones when the current-name clone exists. **DO
   earlier, write the new event under a derived id (e.g. `id + 2^47`, an otherwise unused range: native
   `< 2^47`, artificial `≥ 2^48`, restored `< 0`) instead of dropping it — same for gha2db on the archives and
   for the `repo events` pass. Needs a decision on the id range first; the drop is logged today.
-  **DEFERRED (not implemented)**: measured loss 8 of 15,810 feed events (≈ 0.05 %, pre-existing and identical
-  for gha2db on the archives); a derived-id range would change the meaning of "native = `0 < id < 2^48`" that
-  the whole code base (and the bug-68 resolver) relies on — a data-model decision for the project owner, not a
-  bug fix. The `event id collision` warning stays so the rate can be watched.
+  **IMPLEMENTED 2026-09-18 in a different shape (native event id bands)**: instead of a derived id on collision,
+  *every* native id born at/after a compiled-in epoch is stored as `raw GitHub id + band * 10^12` (Go
+  `eventid.go`, Rust `eventid.rs`; band 1 for the issue/PR/comment/review/... sequence, band 2 for the parallel
+  `PushEvent`/`CreateEvent`/`DeleteEvent` sequence; a newest-first rule list where the first `Since <= created_at`
+  wins, no rule = band 0 = raw id). Bands stay below `2^48`, so "native = `0 < id < 2^48`" keeps its meaning
+  everywhere (writer existence check, merge_dbs, reconcile_dbs, the bug-68 resolver); history before the epoch
+  is untouched; gha2db on the archives and the `repo events` pass use the same writer and the feed's targeted
+  postprocess (`stats.eids`) uses the banded ids too. The `event id collision` line stays; the megacheck
+  `eventids` section (devstats `devel/mega_health_check.sh`) reports post-epoch raw ids (stale image), band/type
+  mismatches and banded-id collisions (= GitHub changed its sequences again -> prepend a rule with fresh bands).
 
 ---
 
@@ -636,8 +642,8 @@ waiting logic so the run only stretches when the pool is exhausted by other proj
      date_trunc('year', created_at), min(id), max(id) from gha_events where 0 < id and id < 2^48`). Consequence
      for *every* writer of native ids (gha2db on the archives as much as this pass): a new event whose id equals
      an old one is dropped with the writer's `event id collision` line (8 of 15,810 feed events here, ~0.05 %;
-     denser DBs like `allprj` lose proportionally more). Pre-existing, GitHub-side; a mitigation (write the
-     colliding event under a derived id when the stored event is years apart) is listed as optional P3-E above.
+     denser DBs like `allprj` lose proportionally more). Pre-existing, GitHub-side; fixed 2026-09-18 by the
+     native event id bands (`raw id + band * 10^12` after a compiled-in epoch, see P3-E above).
   3. Restored events reach back as far as the feed does (`kubernetes/website`: 2025-03; small repos: whole
      months) — intended, GH Archive never delivered them and the ids/time stamps are native.
   4. The second run (paging fixed: `processed 360 repos, 605 pages, checked 36372, restored 19402`, k/k 3 pages

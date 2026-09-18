@@ -1727,7 +1727,9 @@ func WriteToDBOldFmt(db *sql.DB, ctx *Ctx, eventID string, ev *EventOld, shas ma
 
 // WriteToDB - write entire GHA event (in a new 2015+ format) into Postgres DB, returns 1 when written, 0 when the event already exists
 func WriteToDB(db *sql.DB, ctx *Ctx, ev *Event, shas map[string]string) int {
-	eventID := ev.ID
+	// The stored id is the raw GitHub id plus the band of the event's sequence generation (eventid.go),
+	// the ONLY place native event ids are created (gha2db archives and the ghapi2db repo events feed)
+	eventID := NativeEventIDString(ev.ID, ev.Type, ev.CreatedAt)
 	if eventExistsCollision(db, ctx, eventID, ev.Type, ev.Repo.Name, ev.CreatedAt) {
 		return 0
 	}

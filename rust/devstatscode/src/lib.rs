@@ -17,6 +17,7 @@
 //! | [`convert`] | `convert.go` |
 //! | [`env`]     | `env.go` |
 //! | [`error`]   | `error.go` |
+//! | [`eventid`] | `eventid.go` (native event id bands) |
 //! | [`exec`]    | `exec.go` |
 //! | [`gobase64`] | Go `encoding/base64` `StdEncoding` decoding (Go error positions) |
 //! | [`gofmt`]   | Go `fmt` `%v` renderings used in outputs |
@@ -50,6 +51,7 @@ pub mod context;
 pub mod convert;
 pub mod env;
 pub mod error;
+pub mod eventid;
 pub mod exec;
 pub mod gha;
 pub mod ghapi;

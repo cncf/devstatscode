@@ -21,6 +21,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
+use std::thread;
 
 pub mod gharchive;
 pub mod github;
@@ -352,12 +353,17 @@ pub fn run(bin: &Path, inv: &Invocation<'_>) -> Outcome {
     let mut child = cmd
         .spawn()
         .unwrap_or_else(|e| panic!("cannot spawn {}: {e}", bin.display()));
-    {
-        let mut stdin = child.stdin.take().expect("piped stdin");
+    // Feed stdin from another thread while the outputs are drained: a child that
+    // answers while it reads (a probe echoing every line) would otherwise block
+    // on a full stdout pipe while we block writing the rest of its input.
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let input = inv.stdin.clone();
+    let feeder = thread::spawn(move || {
         // The child may exit before reading everything (usage errors) — ignore EPIPE.
-        let _ = stdin.write_all(&inv.stdin);
-    }
+        let _ = stdin.write_all(&input);
+    });
     let out = child.wait_with_output().expect("wait for child");
+    let _ = feeder.join();
     Outcome {
         code: out.status.code(),
         signal: out.status.signal(),

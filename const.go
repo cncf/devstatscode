@@ -111,6 +111,16 @@ const ArtificialPRIDBase int64 = ArtificialIDBase + 32000000000000
 // SyncEventIDThreshold - event ids >= this are 'sync' events; artificial sub-bands must stay below
 const SyncEventIDThreshold int64 = 329900000000000
 
+// NativeIDBandBase - width of one native (GitHub sourced) event id band: 10^12.
+// GitHub restarted its event id sequence on 2025-10-09 (ids fell from ~5.6e10 to ~4e9) and since then allocates ids
+// from two independent sequences (PushEvent/CreateEvent/DeleteEvent vs every other type) that reuse the 2016-2025 ids
+// and each other's ids, so a raw id alone no longer identifies an event. Native events created at/after the epoch of a
+// NativeIDBandRules rule are stored (gha_events.id and every *.event_id) as `raw id + band*NativeIDBandBase`, see
+// eventid.go: band 0 (the raw id) for everything older than every rule, so history is untouched, bands 1, 2, ... for
+// the current sequences. Raw ids stay below 10^12 for decades and 2^48/10^12 = 281 bands fit below ArtificialIDBase,
+// so banded ids remain 'native' (0 < id < 2^48) for every consumer; `id / 10^12` is the band, `id % 10^12` the raw id.
+const NativeIDBandBase int64 = 1000000000000
+
 // Abuse - common constant string
 const Abuse string = "abuse"
 

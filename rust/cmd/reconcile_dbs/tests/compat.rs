@@ -125,6 +125,13 @@ const O2: Ev = ev(-5002, 102, 4, Kind::Push(&[SHA_C]));
 /// Target-only native push (commit B).
 const T1: Ev = ev(1000, 101, 12, Kind::Push(&[SHA_B]));
 
+// Banded world: native events stored as `raw id + band * 10^12` (events
+// created after the event-id band epoch, see `eventid.rs`).
+/// Band 1 (`IssuesEvent`) native issue missing in the target.
+const B1: Ev = ev(1_000_000_001_008, 102, 5, Kind::Issue);
+/// Band 2 (`PushEvent`) native push missing in the target.
+const B2: Ev = ev(2_000_000_001_009, 101, 4, Kind::Push(&[SHA_D]));
+
 // Takeover world.
 /// Synthetic push in the target with commit X (emptied by the takeover).
 const S1: Ev = ev(-6001, 101, 6, Kind::Push(&[SHA_X]));
@@ -890,6 +897,93 @@ fn explicit_copies_the_missing_events_and_is_idempotent() {
     assert_eq!(
         rs.query("select issue_id || ':' || pull_request_id || ':' || number from gha_issues_pull_requests"),
         [format!("{}:{}:7", 70000 + E3.id, 80000 + E7.id)]
+    );
+}
+
+#[test]
+fn banded_native_ids_are_copied_as_natives_and_are_idempotent() {
+    // Events stored with a band (`raw id + band * 10^12`, well below the
+    // artificial base 2^48) are natives: they are copied with all their
+    // rows, the targeted postprocess picks them by the banded id and a
+    // second run has nothing left to do.
+    let target = Db::new(&[101, 102, 104], &[11], &[], &[21], &[E1, T1]).texts(&[T1.id]);
+    let source = Db::new(&[101, 102, 104], &[11], &[5], &[21, 22], &[E1, T1, B1, B2]);
+    let Some(rs) = both(
+        &Case::new("banded")
+            .db("tgt", target)
+            .db("src", source)
+            .env("GHA2DB_RECONCILE_DBS", "{db:src}")
+            .runs(2),
+    ) else {
+        return;
+    };
+    assert_eq!(rs.code(), Some(0));
+    assert_eq!(
+        rs.lines(),
+        [
+            header(
+                "explicit (GHA2DB_RECONCILE_DBS)",
+                "<dbs>_src",
+                "90 days",
+                "native, orphan",
+                false
+            ),
+            NO_FILTER.to_string(),
+            format!("{P}: scope 3 repo(s) (target 3, source 3)"),
+            format!("{P}: buckets: source 4, target 2, differing 2"),
+            format!("{P}: events: source-only 2 (native 2, orphan 0, artificial 0), target-only 0"),
+            format!("{P}: table gha_events: rows 2, inserted 2"),
+            format!("{P}: table gha_payloads: rows 2, inserted 2"),
+            format!("{P}: table gha_commits: rows 1, inserted 1"),
+            format!("{P}: table gha_commits_roles: rows 2, inserted 2"),
+            format!("{P}: table gha_comments: rows 1, inserted 1"),
+            format!("{P}: table gha_issues: rows 1, inserted 1"),
+            format!("{P}: table gha_issues_labels: rows 1, inserted 1"),
+            format!("{P}: table gha_repos: rows 2, inserted 0"),
+            format!("{P}: table gha_orgs: rows 1, inserted 0"),
+            format!("{P}: table gha_labels: rows 1, inserted 1"),
+            format!("{P}: table gha_actors: rows 2, inserted 1"),
+            format!("{P}: copied 2 event(s), inserted 12 row(s), postprocess 2 event id(s)"),
+            "targeted postprocess executed for 2 restored event id(s)".to_string(),
+            "reconcile_dbs: <dbs>_tgt: 1 source(s), copied 2 event(s), inserted 12 row(s), filtered out 0 event(s), skipped 0 orphan event(s), taken over 0 commit(s)".to_string(),
+            "Time: <duration>".to_string(),
+        ]
+    );
+    // Second run: nothing differs any more.
+    assert_eq!(rs.outs[1].code, Some(0));
+    assert!(rs
+        .lines_of(1)
+        .contains(&format!("{P}: buckets: source 4, target 4, differing 0")));
+    assert!(rs.lines_of(1).contains(
+        &"reconcile_dbs: <dbs>_tgt: 1 source(s), copied 0 event(s), inserted 0 row(s), filtered out 0 event(s), skipped 0 orphan event(s), taken over 0 commit(s)".to_string()
+    ));
+    assert_eq!(rs.event_ids(), [T1.id, E1.id, B1.id, B2.id]);
+    assert_eq!(
+        rs.commits(),
+        [
+            (SHA_B.to_string(), T1.id, true),
+            (SHA_D.to_string(), B2.id, true),
+        ]
+    );
+    assert_eq!(
+        rs.query("select event_id || ':' || body from gha_texts order by event_id, body"),
+        [
+            format!("{}:text of {}", T1.id, T1.id),
+            format!("{}:Comment body {}", B1.id, B1.id),
+            format!("{}:Issue body {}", B1.id, B1.id),
+            format!("{}:Issue title {}", B1.id, B1.id),
+            format!("{}:commit ddddddd of {}", B2.id, B2.id),
+        ]
+    );
+    assert_eq!(
+        rs.query(
+            "select issue_id || ':' || event_id || ':' || label_name from gha_issues_events_labels"
+        ),
+        [format!("{}:{}:bug", 70000 + B1.id, B1.id)]
+    );
+    assert_eq!(
+        rs.query("select login from gha_actors order by id"),
+        ["alice", "bob"]
     );
 }
 
