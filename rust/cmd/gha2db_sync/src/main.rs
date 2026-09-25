@@ -908,6 +908,9 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
                         series_name_or_func.push_str(&period_aggr);
                     }
                     let sql_file = format!("{metrics_dir}/{}.sql", metric.metric_sql);
+                    // the previous period's final point is computed by the first sync after the boundary together with the current one,
+                    // when that sync did not succeed the recalculation starts at the previous period again (time series only)
+                    let mut calc_from = from_date;
                     let recalc = if metric.always_recalc {
                         true
                     } else {
@@ -944,6 +947,36 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
                                 metric.name
                             );
                             recalc = true;
+                            if !metric.histogram {
+                                if let Some(prev_start) = gotime::previous_period_start(
+                                    ctx,
+                                    &period_aggr,
+                                    range_start,
+                                    to.wall_as_utc(),
+                                ) {
+                                    if prev_start < calc_from.t {
+                                        calc_from = GoTime::utc(prev_start);
+                                        if let Some(start_from) = metric.start_from {
+                                            if calc_from.t < start_from {
+                                                calc_from = GoTime::parsed(start_from);
+                                            }
+                                        }
+                                        if metric.last_hours > 0 {
+                                            let dt = GoTime::now_minus_hours(metric.last_hours);
+                                            if calc_from.t < dt.t {
+                                                calc_from = dt;
+                                            }
+                                        }
+                                        printf!(
+                                            "Period \"{}\" of metric {} recalculated from {} (previous period start) instead of {}\n",
+                                            period_aggr,
+                                            metric.name,
+                                            calc_from.ymdh(),
+                                            from_date.ymdh()
+                                        );
+                                    }
+                                }
+                            }
                         }
                         recalc
                     };
@@ -1015,7 +1048,7 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
                             format!("{cmd_prefix}calc_metric"),
                             series_name_or_func,
                             sql_file,
-                            from_date.ymdh(),
+                            calc_from.ymdh(),
                             to.ymdh(),
                             period_aggr,
                             e_params.join(","),

@@ -38,7 +38,9 @@ use devstats_compat::{
 use devstatscode::chrono::{DateTime, Local, Timelike, Utc};
 use devstatscode::computed::period_computed_key;
 use devstatscode::pg::SqlArg;
-use devstatscode::time::{day_start, hour_start, month_start, quarter_start, year_start};
+use devstatscode::time::{
+    day_start, hour_start, month_start, quarter_start, week_start, year_start,
+};
 use tempfile::TempDir;
 
 fn go_bin() -> Option<PathBuf> {
@@ -1491,6 +1493,122 @@ fn markers_decide_the_periods_not_due_by_the_calendar() {
     assert!(
         !out.iter()
             .any(|l| l.contains("hist false of metric Daily was not computed")),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn marker_repair_recalculates_from_the_previous_period_start() {
+    // The first sync after a period boundary computes the previous period's final point together
+    // with the current one; when it was lost (no marker since the period started) the repair must
+    // start at the previous period start, not at the newest TSDB hour (already in the current period).
+    // Histogram metrics are not time series: they keep the newest TSDB hour.
+    let now = now_wall();
+    let this_hour = hour_start(now);
+    let week = week_start(now);
+    let start_from = week - devstatscode::chrono::Duration::days(2);
+    let yaml = format!(
+        r#"---
+metrics:
+  - name: Events hourly
+    series_name_or_func: events_h
+    sql: events
+    periods: h
+  - name: Daily
+    series_name_or_func: daily
+    sql: daily
+    periods: d
+  - name: Weekly
+    series_name_or_func: weekly
+    sql: weekly
+    periods: w
+  - name: Weekly marked
+    series_name_or_func: marked
+    sql: marked
+    periods: w
+  - name: Quarterly
+    series_name_or_func: quarterly
+    sql: quarterly
+    periods: q
+    aggregate: 1,2
+  - name: Weekly from
+    series_name_or_func: wfrom
+    sql: wfrom
+    periods: w
+    start_from: {}
+  - name: Weekly last hours
+    series_name_or_func: wlast
+    sql: wlast
+    periods: w
+    last_hours: 5
+  - name: Hist
+    series_name_or_func: hist
+    sql: hist
+    periods: m
+    histogram: true
+"#,
+        start_from.format("%Y-%m-%dT%H:%M:%SZ")
+    );
+    let case = markers(
+        synced_this_hour(Case::new("repairfrom").metrics(&yaml).metrics_only()),
+        &[(p1_key("marked", "marked", "w"), this_hour)],
+    );
+    let side = both(&case).unwrap();
+    assert_eq!(side.out.code(), 0, "{}", side.out.stderr_str());
+    let ymdh = devstatscode::time::to_ymdh_date;
+    let mut got: Vec<(String, String, String)> = metric_calls(&side)
+        .iter()
+        .map(|m| (m[0].clone(), m[4].clone(), m[2].clone()))
+        .collect();
+    got.sort();
+    let prev_week = ymdh((week - devstatscode::chrono::Duration::days(7)).fixed_offset());
+    let prev_quarter = ymdh(
+        quarter_start(quarter_start(now) - devstatscode::chrono::Duration::seconds(1))
+            .fixed_offset(),
+    );
+    let prev_day = ymdh((day_start(now) - devstatscode::chrono::Duration::days(1)).fixed_offset());
+    let last_hours = ymdh((Local::now() - devstatscode::chrono::Duration::hours(5)).fixed_offset());
+    assert_eq!(
+        got,
+        [
+            ("daily".to_string(), "d".to_string(), prev_day.clone()),
+            ("events_h".to_string(), "h".to_string(), now_ymdh()),
+            ("hist".to_string(), "m".to_string(), now_ymdh()),
+            (
+                "quarterly".to_string(),
+                "q".to_string(),
+                prev_quarter.clone()
+            ),
+            (
+                "quarterly".to_string(),
+                "q2".to_string(),
+                prev_quarter.clone()
+            ),
+            ("weekly".to_string(), "w".to_string(), prev_week.clone()),
+            (
+                "wfrom".to_string(),
+                "w".to_string(),
+                ymdh(start_from.fixed_offset())
+            ),
+            ("wlast".to_string(), "w".to_string(), last_hours),
+        ]
+    );
+    let out = stdout_lines(&side);
+    for expected in [
+        format!("Period \"w\" of metric Weekly recalculated from {prev_week} (previous period start) instead of {}", now_ymdh()),
+        format!("Period \"d\" of metric Daily recalculated from {prev_day} (previous period start) instead of {}", now_ymdh()),
+        format!("Period \"q2\" of metric Quarterly recalculated from {prev_quarter} (previous period start) instead of {}", now_ymdh()),
+        format!("Period \"w\" of metric Weekly from recalculated from {} (previous period start) instead of {}", ymdh(start_from.fixed_offset()), now_ymdh()),
+        "Period \"m\", hist true of metric Hist was not computed successfully since the current period started, recalculating".to_string(),
+        "Skipping recalculating period \"w\", hist false for date to <now>, computePeriods: map[], metric: Weekly marked".to_string(),
+    ] {
+        assert!(out.contains(&expected), "{expected}\n{out:?}");
+    }
+    assert!(
+        !out.iter()
+            .any(|l| l.contains("of metric Hist recalculated from")
+                || l.contains("of metric Weekly marked recalculated from")
+                || l.contains("of metric Events hourly recalculated from")),
         "{out:?}"
     );
 }

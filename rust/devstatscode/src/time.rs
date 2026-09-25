@@ -182,6 +182,26 @@ pub fn period_start_at(
     Some(period_start(dt + off) - off)
 }
 
+/// Start of the period (see `period_class`) preceding the one containing `dt`.
+/// The first sync after a period boundary computes the final point of the previous period
+/// together with the current one; when it did not succeed (`gha_computed` marker missing,
+/// see `computed::is_period_computed`) the recalculation must start there again.
+/// `None` for periods without a calendar period (`range:*`, unknown).
+pub fn previous_period_start(
+    ctx: &Ctx,
+    period: &str,
+    range_start: Option<DateTime<Utc>>,
+    dt: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let start = period_start_at(ctx, period, range_start, dt)?;
+    period_start_at(
+        ctx,
+        period_class(period, range_start, dt),
+        None,
+        start - chrono::Duration::seconds(1),
+    )
+}
+
 /// True when the sync ending at `to` is the first one after a day boundary;
 /// `from` is where the previous sync ended (newest TSDB hour already computed).
 /// Used to run tags/columns/annotations once per day regardless of the sync frequency.
@@ -1980,6 +2000,98 @@ mod tests {
                 dt,
                 tm_offset
             );
+        }
+    }
+
+    /// 1:1 port of Go `TestPreviousPeriodStart`.
+    #[test]
+    fn previous_period_start_go_table() {
+        // Friday
+        const DT: &[i32] = &[2026, 9, 25, 10, 58, 33];
+        const NO: &[i32] = &[];
+        // (period, range_start (empty: zero), tm_offset, dt, expected (empty: None = no calendar period))
+        type Row<'a> = (&'a str, &'a [i32], i64, &'a [i32], &'a [i32]);
+        let test_cases: &[Row] = &[
+            ("h", NO, 0, DT, &[2026, 9, 25, 9]),
+            ("d", NO, 0, DT, &[2026, 9, 24]),
+            ("d7", NO, 0, DT, &[2026, 9, 24]),
+            ("w", NO, 0, DT, &[2026, 9, 14]),
+            ("w2", NO, 0, DT, &[2026, 9, 14]),
+            ("m", NO, 0, DT, &[2026, 8, 1]),
+            ("q", NO, 0, DT, &[2026, 4, 1]),
+            ("y", NO, 0, DT, &[2025, 1, 1]),
+            // exactly at the boundary the previous period is the one that just ended
+            ("h", NO, 0, &[2026, 9, 25, 10], &[2026, 9, 25, 9]),
+            ("d", NO, 0, &[2026, 9, 21], &[2026, 9, 20]),
+            ("w", NO, 0, &[2026, 9, 21], &[2026, 9, 14]),
+            ("w", NO, 0, &[2026, 9, 20, 23, 59, 59], &[2026, 9, 7]),
+            ("m", NO, 0, &[2026, 3, 1], &[2026, 2, 1]),
+            ("q", NO, 0, &[2026, 1, 1], &[2025, 10, 1]),
+            ("y", NO, 0, &[2026, 1, 1], &[2025, 1, 1]),
+            // the crash scenario: sync ending Monday 03:00 after the Monday 00:00 boundary sync was lost
+            ("w", NO, 0, &[2026, 9, 21, 3], &[2026, 9, 14]),
+            ("m", NO, 0, &[2026, 10, 1, 3], &[2026, 9, 1]),
+            // GHA2DB_TMOFFSET: boundaries on the shifted clock
+            ("d", NO, 2, &[2026, 9, 25, 21, 59], &[2026, 9, 23, 22]),
+            ("d", NO, 2, &[2026, 9, 25, 22], &[2026, 9, 24, 22]),
+            ("w", NO, -11, &[2026, 9, 21, 3], &[2026, 9, 7, 11]),
+            ("m", NO, -11, &[2026, 10, 1, 3], &[2026, 8, 1, 11]),
+            // histogram quick ranges follow their class
+            ("a_0_1", NO, 0, DT, &[2026, 9, 24]),
+            ("a_2_n", &[2026, 8, 1], 0, DT, &[2026, 8, 1]),
+            ("c_i_n", &[2026, 1, 1], 0, DT, &[2026, 4, 1]),
+            ("c_n", &[2012, 7, 1], 0, DT, &[2025, 1, 1]),
+            // no calendar period
+            ("range:2020-01-01,2020-02-01", NO, 0, DT, NO),
+            ("", NO, 0, DT, NO),
+            ("x", NO, 0, DT, NO),
+        ];
+        assert_eq!(test_cases.len(), 28);
+        let mut ctx = Ctx::default();
+        for (index, (period, range_start, tm_offset, dt, expected)) in test_cases.iter().enumerate()
+        {
+            ctx.tm_offset = *tm_offset;
+            let range_start = if range_start.is_empty() {
+                None
+            } else {
+                Some(ft(range_start))
+            };
+            let got = previous_period_start(&ctx, period, range_start, ft(dt));
+            let expected = if expected.is_empty() {
+                None
+            } else {
+                Some(ft(expected))
+            };
+            assert_eq!(
+                got,
+                expected,
+                "test number {}, period '{}', range start {:?}, dt {:?}, offset {}",
+                index + 1,
+                period,
+                range_start,
+                dt,
+                tm_offset
+            );
+            // the previous period ends where the current one starts
+            if let Some(got) = got {
+                let start = period_start_at(&ctx, period, range_start, ft(dt)).unwrap();
+                let next = period_start_at(
+                    &ctx,
+                    period_class(period, range_start, ft(dt)),
+                    None,
+                    got + chrono::Duration::seconds(1),
+                )
+                .unwrap();
+                assert!(
+                    next == got && got < start,
+                    "test number {}, previous period start {:?} for period '{}' is not a period start before {:?} (got {:?})",
+                    index + 1,
+                    got,
+                    period,
+                    start,
+                    next
+                );
+            }
         }
     }
 

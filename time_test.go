@@ -510,6 +510,89 @@ func TestPeriodStartAt(t *testing.T) {
 	}
 }
 
+func TestPreviousPeriodStart(t *testing.T) {
+	ft := testlib.YMDHMS
+	// Friday
+	dt := ft(2026, 9, 25, 10, 58, 33)
+	var testCases = []struct {
+		period     string
+		rangeStart time.Time
+		tmOffset   int
+		dt         time.Time
+		expected   time.Time
+		ok         bool
+	}{
+		{period: "h", dt: dt, expected: ft(2026, 9, 25, 9), ok: true},
+		{period: "d", dt: dt, expected: ft(2026, 9, 24), ok: true},
+		{period: "d7", dt: dt, expected: ft(2026, 9, 24), ok: true},
+		{period: "w", dt: dt, expected: ft(2026, 9, 14), ok: true},
+		{period: "w2", dt: dt, expected: ft(2026, 9, 14), ok: true},
+		{period: "m", dt: dt, expected: ft(2026, 8, 1), ok: true},
+		{period: "q", dt: dt, expected: ft(2026, 4, 1), ok: true},
+		{period: "y", dt: dt, expected: ft(2025, 1, 1), ok: true},
+		// exactly at the boundary the previous period is the one that just ended
+		{period: "h", dt: ft(2026, 9, 25, 10), expected: ft(2026, 9, 25, 9), ok: true},
+		{period: "d", dt: ft(2026, 9, 21), expected: ft(2026, 9, 20), ok: true},
+		{period: "w", dt: ft(2026, 9, 21), expected: ft(2026, 9, 14), ok: true},
+		{period: "w", dt: ft(2026, 9, 20, 23, 59, 59), expected: ft(2026, 9, 7), ok: true},
+		{period: "m", dt: ft(2026, 3, 1), expected: ft(2026, 2, 1), ok: true},
+		{period: "q", dt: ft(2026, 1, 1), expected: ft(2025, 10, 1), ok: true},
+		{period: "y", dt: ft(2026, 1, 1), expected: ft(2025, 1, 1), ok: true},
+		// the crash scenario: sync ending Monday 03:00 after the Monday 00:00 boundary sync was lost
+		{period: "w", dt: ft(2026, 9, 21, 3), expected: ft(2026, 9, 14), ok: true},
+		{period: "m", dt: ft(2026, 10, 1, 3), expected: ft(2026, 9, 1), ok: true},
+		// GHA2DB_TMOFFSET: boundaries on the shifted clock
+		{period: "d", tmOffset: 2, dt: ft(2026, 9, 25, 21, 59), expected: ft(2026, 9, 23, 22), ok: true},
+		{period: "d", tmOffset: 2, dt: ft(2026, 9, 25, 22), expected: ft(2026, 9, 24, 22), ok: true},
+		{period: "w", tmOffset: -11, dt: ft(2026, 9, 21, 3), expected: ft(2026, 9, 7, 11), ok: true},
+		{period: "m", tmOffset: -11, dt: ft(2026, 10, 1, 3), expected: ft(2026, 8, 1, 11), ok: true},
+		// histogram quick ranges follow their class
+		{period: "a_0_1", dt: dt, expected: ft(2026, 9, 24), ok: true},
+		{period: "a_2_n", rangeStart: ft(2026, 8, 1), dt: dt, expected: ft(2026, 8, 1), ok: true},
+		{period: "c_i_n", rangeStart: ft(2026, 1, 1), dt: dt, expected: ft(2026, 4, 1), ok: true},
+		{period: "c_n", rangeStart: ft(2012, 7, 1), dt: dt, expected: ft(2025, 1, 1), ok: true},
+		// no calendar period
+		{period: "range:2020-01-01,2020-02-01", dt: dt, ok: false},
+		{period: "", dt: dt, ok: false},
+		{period: "x", dt: dt, ok: false},
+	}
+	var ctx lib.Ctx
+	ctx.Init()
+	ctx.TestMode = true
+	for index, test := range testCases {
+		ctx.TmOffset = test.tmOffset
+		got, ok := lib.PreviousPeriodStart(&ctx, test.period, test.rangeStart, test.dt)
+		if ok != test.ok {
+			t.Errorf(
+				"test number %d, expected ok '%v' for period '%s', range start '%v', dt '%v', offset %d, got '%v'",
+				index+1, test.ok, test.period, test.rangeStart, test.dt, test.tmOffset, ok,
+			)
+			continue
+		}
+		if !ok {
+			if !got.IsZero() {
+				t.Errorf("test number %d, expected zero time for period '%s', got '%v'", index+1, test.period, got)
+			}
+			continue
+		}
+		if !got.Equal(test.expected) {
+			t.Errorf(
+				"test number %d, expected '%v' for period '%s', range start '%v', dt '%v', offset %d, got '%v'",
+				index+1, test.expected, test.period, test.rangeStart, test.dt, test.tmOffset, got,
+			)
+		}
+		// the previous period ends where the current one starts
+		start, _ := lib.PeriodStartAt(&ctx, test.period, test.rangeStart, test.dt)
+		next, _ := lib.PeriodStartAt(&ctx, lib.PeriodClass(test.period, test.rangeStart, test.dt), time.Time{}, got.Add(time.Second))
+		if !next.Equal(got) || !got.Before(start) {
+			t.Errorf(
+				"test number %d, previous period start '%v' for period '%s' is not a period start before '%v' (got '%v')",
+				index+1, got, test.period, start, next,
+			)
+		}
+	}
+}
+
 func TestDescriblePeriodInHours(t *testing.T) {
 	// Test cases
 	var testCases = []struct {

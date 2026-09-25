@@ -668,6 +668,9 @@ func sync(ctx *lib.Ctx, args []string) {
 					}
 					sqlFile := fmt.Sprintf("%s/%s.sql", metricsDir, metric.MetricSQL)
 					var recalc bool
+					// the previous period's final point is computed by the first sync after the boundary together with the current one,
+					// when that sync did not succeed the recalculation starts at the previous period again (time series only)
+					calcFrom := fromDate
 					if metric.AlwaysRecalc {
 						recalc = true
 					} else {
@@ -677,6 +680,21 @@ func sync(ctx *lib.Ctx, args []string) {
 						if !recalc && ctx.ComputePeriods == nil && !lib.IsPeriodComputed(con, ctx, lib.PeriodComputedKey(seriesNameOrFunc, sqlFile, periodAggr), periodAggr, quickRangeStarts[period], to) {
 							lib.Printf("Period \"%s\", hist %v of metric %s was not computed successfully since the current period started, recalculating\n", periodAggr, metric.Histogram, metric.Name)
 							recalc = true
+							if !metric.Histogram {
+								if prevStart, ok := lib.PreviousPeriodStart(ctx, periodAggr, quickRangeStarts[period], to); ok && prevStart.Before(calcFrom) {
+									calcFrom = prevStart
+									if metric.StartFrom != nil && calcFrom.Before(*metric.StartFrom) {
+										calcFrom = *metric.StartFrom
+									}
+									if metric.LastHours > 0 {
+										dt := time.Now().Add(time.Hour * time.Duration(-metric.LastHours))
+										if calcFrom.Before(dt) {
+											calcFrom = dt
+										}
+									}
+									lib.Printf("Period \"%s\" of metric %s recalculated from %v (previous period start) instead of %v\n", periodAggr, metric.Name, lib.ToYMDHDate(calcFrom), lib.ToYMDHDate(fromDate))
+								}
+							}
 						}
 					}
 					if ctx.Debug > 0 {
@@ -728,7 +746,7 @@ func sync(ctx *lib.Ctx, args []string) {
 								cmdPrefix + "calc_metric",
 								seriesNameOrFunc,
 								sqlFile,
-								lib.ToYMDHDate(fromDate),
+								lib.ToYMDHDate(calcFrom),
 								lib.ToYMDHDate(to),
 								periodAggr,
 								strings.Join(eParams, ","),

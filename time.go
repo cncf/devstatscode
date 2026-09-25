@@ -199,6 +199,18 @@ func PeriodStartAt(ctx *Ctx, period string, rangeStart, dt time.Time) (time.Time
 	return periodStart(dt.Add(off)).Add(-off), true
 }
 
+// PreviousPeriodStart - when the period (see PeriodClass) preceding the one containing 'dt' started
+// the first sync after a period boundary computes the final point of the previous period together with the current one,
+// when it did not succeed ('gha_computed' marker missing, see IsPeriodComputed) the recalculation must start there again
+// false for periods without a calendar period ('range:*', unknown)
+func PreviousPeriodStart(ctx *Ctx, period string, rangeStart, dt time.Time) (time.Time, bool) {
+	start, ok := PeriodStartAt(ctx, period, rangeStart, dt)
+	if !ok {
+		return time.Time{}, false
+	}
+	return PeriodStartAt(ctx, PeriodClass(period, rangeStart, dt), time.Time{}, start.Add(-time.Second))
+}
+
 // DayBoundaryCrossed - true when the sync ending at 'to' is the first one after a day boundary,
 // 'from' is where the previous sync ended (newest TSDB hour already computed)
 // used to run tags/columns/annotations once per day regardless of the sync frequency
