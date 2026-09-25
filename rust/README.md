@@ -812,7 +812,9 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `calc_metric` invocations: `periods` × `aggregate` with `skip`,
     `ComputePeriodAtThisDate` (calendar boundary crossing between the last
     `sevents_h` hour and the sync start, `gha_computed` success markers
-    written by `calc_metric`, `GHA2DB_COMPUTE_ALL`, `GHA2DB_FORCE_PERIODS`
+    written by `calc_metric` — a missing marker recalculates time series
+    from the previous period start, `PreviousPeriodStart` —,
+    `GHA2DB_COMPUTE_ALL`, `GHA2DB_FORCE_PERIODS`
     keyed by the bare period, `always_recalc`),
     `annotations_ranges`, `add_period_to_name`, `multi_value`, `escape_value_name`,
     `desc`, `series_name_map`, `drop:` (`GHA2DB_ENABLE_METRICS_DROP`), the
