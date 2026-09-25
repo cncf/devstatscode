@@ -7,20 +7,21 @@
 //! `calc_metric` / `vars` shell scripts that record their arguments and the
 //! interesting part of their environment — and fail on demand) against their
 //! own scratch project database (`dbtest_gha2db_sync_<case>_<go|rs>` with the
-//! `gha_parsed`, `sevents_h` and `tquick_ranges` tables the sync reads) and
-//! the shared `devstats` logs database (whose old `gha_logs` rows the sync
-//! clears). Compared: exit code, stdout (durations, `time.Now()` values, the
-//! random `hour=N` and the database name masked), the `Error: '…'` lines of
-//! fatal errors, the recorded command invocations (sorted when the case runs
+//! `gha_parsed`, `sevents_h`, `tquick_ranges` and `gha_computed` tables the
+//! sync reads) and the shared `devstats` logs database (whose old `gha_logs`
+//! rows the sync clears). Compared: exit code, stdout (durations, `time.Now()`
+//! values and the database name masked), the `Error: '…'` lines of fatal
+//! errors, the recorded command invocations (sorted when the case runs
 //! histograms in parallel or randomizes the metric order) and whether the
 //! seeded old log row was cleared.
 //!
-//! Everything random in the Go program is pinned or masked: `GHA2DB_SKIP_RAND`
-//! (metric order), `GHA2DB_COMPUTE_ALL` / `GHA2DB_FORCE_PERIODS` /
-//! `always_recalc` / hour-daily periods (which periods are due), the
-//! `hour=N` mask (the random daily hour of `tags`/`annotations`/`columns` —
-//! their outcome only depends on the current local hour, the same for both
-//! runs). A case is re-run when the local hour changed between the two runs.
+//! Which periods are due is a pure function of the previous (`sevents_h`) and
+//! current sync dates plus the `gha_computed` markers, so the default seed
+//! (2020) makes every period due; the marker cases seed `sevents_h` with the
+//! current hour instead. Everything random in the Go program is pinned or
+//! masked: `GHA2DB_SKIP_RAND` (metric order), `GHA2DB_COMPUTE_ALL` /
+//! `GHA2DB_FORCE_PERIODS` / `always_recalc`, the current hour (`to`). A case
+//! is re-run when the local hour changed between the two runs.
 //!
 //! Needs a PostgreSQL server (`test.sh` finds one; skipped otherwise).
 
@@ -34,8 +35,10 @@ use devstats_compat::pg::{self as cpg, TestDb};
 use devstats_compat::{
     fixture, go_binary, mask_go_durations, mask_go_now, run, rust_binary, Invocation, Outcome,
 };
-use devstatscode::chrono::{Local, Timelike};
+use devstatscode::chrono::{DateTime, Local, Timelike, Utc};
+use devstatscode::computed::period_computed_key;
 use devstatscode::pg::SqlArg;
+use devstatscode::time::{day_start, hour_start, month_start, quarter_start, year_start};
 use tempfile::TempDir;
 
 fn go_bin() -> Option<PathBuf> {
@@ -60,11 +63,12 @@ const COMMANDS: &[&str] = &[
 ];
 
 /// The tables the sync reads, as `structure` / `tags` / `calc_metric` create
-/// them.
+/// them (`gha_computed` holds the markers of successful `calc_metric` runs).
 const DDL: &[&str] = &[
     "create table gha_parsed(dt timestamp not null, primary key(dt))",
     "create table sevents_h(time timestamp primary key, period text not null default '', value bigint)",
     "create table tquick_ranges(time timestamp primary key, quick_ranges_suffix text not null default '', quick_ranges_name text, quick_ranges_data text)",
+    "create table gha_computed(metric text not null, dt timestamp not null, primary key(metric, dt))",
 ];
 /// The default seed: GHA data parsed up to 2020-03-04 05:00, the `events_h`
 /// series computed up to 2020-03-01 03:00 and three quick ranges.
@@ -72,9 +76,9 @@ const SEED: &[&str] = &[
     "insert into gha_parsed(dt) values('2020-03-04 03:00:00'), ('2020-03-04 05:00:00'), ('2020-03-04 04:00:00')",
     "insert into sevents_h(time, value) values('2020-03-01 01:00:00', 1), ('2020-03-01 03:00:00', 3), ('2020-03-01 02:00:00', 2)",
     "insert into tquick_ranges(time, quick_ranges_suffix, quick_ranges_name, quick_ranges_data) values\
- ('2020-01-01 00:00:03', 'a_0_1', 'v1.0 - v1.1', 'a;;2019-01-01;2019-06-01'),\
- ('2020-01-01 00:00:01', 'd7', 'Last week', 'd;7'),\
- ('2020-01-01 00:00:02', 'a_1_n', 'v1.1 - now', 'a;;2019-06-01;')",
+ ('2020-01-01 00:00:03', 'a_0_1', 'v1.0 - v1.1', 'a_0_1;;2019-01-01 00:00:00;2019-06-01 00:00:00'),\
+ ('2020-01-01 00:00:01', 'd7', 'Last week', 'd7;7 days;;'),\
+ ('2020-01-01 00:00:02', 'a_1_n', 'v1.1 - now', 'a_1_n;;2019-06-01 00:00:00;2020-03-05 00:00:00')",
 ];
 
 /// The default `metrics.yaml`: hourly / daily metrics (always due), one
@@ -452,28 +456,9 @@ fn leak(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
 }
 
-/// Mask `hour=N` (the random daily recalculation hour).
-fn mask_hour(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(pos) = rest.find("hour=") {
-        let start = pos + "hour=".len();
-        let digits = rest[start..]
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .count();
-        out.push_str(&rest[..start]);
-        out.push_str("<h>");
-        rest = &rest[start + digits..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// stdout with durations, `time.Now()` values, the random hour and the
-/// database name masked.
+/// stdout with durations, `time.Now()` values and the database name masked.
 fn normalize_stdout(side: &Side, sorted: bool) -> Vec<String> {
-    let text = side.mask(&mask_hour(&mask_go_now(&mask_go_durations(&side.stdout()))));
+    let text = side.mask(&mask_go_now(&mask_go_durations(&side.stdout())));
     let mut lines: Vec<String> = text.lines().map(String::from).collect();
     if sorted {
         lines.sort();
@@ -664,6 +649,37 @@ fn stdout_lines(side: &Side) -> Vec<String> {
 /// `to` of the sync as `calc_metric` receives it: the current local hour.
 fn now_ymdh() -> String {
     devstatscode::time::to_ymdh_date(Local::now().fixed_offset())
+}
+
+/// The current local wall clock (the sync's `to`).
+fn now_wall() -> DateTime<Utc> {
+    devstatscode::time::wall_as_utc(&Local::now())
+}
+
+/// A `timestamp` literal.
+fn ts(dt: DateTime<Utc>) -> String {
+    devstatscode::time::to_ymdhms_date(dt)
+}
+
+/// Seed the newest TSDB hour (`from`) at the current hour: nothing but `h*` is due by the
+/// calendar rules, the `gha_computed` markers decide.
+fn synced_this_hour(case: Case) -> Case {
+    case.sql("delete from sevents_h").sql(&format!(
+        "insert into sevents_h(time, value) values('{}', 1)",
+        ts(hour_start(now_wall()))
+    ))
+}
+
+/// Seed `gha_computed` markers: `(key, dt)`.
+fn markers(mut case: Case, rows: &[(String, DateTime<Utc>)]) -> Case {
+    for (key, dt) in rows {
+        case = case.sql(&format!(
+            "insert into gha_computed(metric, dt) values('{}', '{}')",
+            key,
+            ts(*dt)
+        ));
+    }
+    case
 }
 
 // ---------------------------------------------------------------------------
@@ -1392,38 +1408,269 @@ fn force_periods_with_reset_tsdb_still_skips() {
     assert_eq!(metrics[0][5], "multivalue,merge_series:dstats");
 }
 
-#[test]
-fn recalc_reciprocal_one_recomputes_everything_not_due() {
-    let yaml = r#"---
+const MARKER_YAML: &str = r#"---
 metrics:
+  - name: Events hourly
+    series_name_or_func: events_h
+    sql: events
+    periods: h
+  - name: Daily
+    series_name_or_func: daily
+    sql: daily
+    periods: d
+  - name: Weekly
+    series_name_or_func: weekly
+    sql: weekly
+    periods: w
   - name: Quarterly
     series_name_or_func: quarterly
     sql: quarterly
     periods: q
-  - name: Yearly
-    series_name_or_func: yearly
-    sql: yearly
+    aggregate: 1,2
+  - name: Named
+    series_name_or_func: named
+    sql: named
     periods: y
+    add_period_to_name: true
 "#;
-    // Non-histogram `q` / `y` are the only periods whose "due now" decision
-    // is a pure function of the date (no `Probab`): they are due only in the
-    // first days of a quarter / year. `GHA2DB_RECALC_RECIPROCAL=1` (a 1/1
-    // chance) makes the reciprocal recalculation deterministic too.
-    let side = both(
-        &Case::new("reciprocal")
-            .metrics(yaml)
-            .env("GHA2DB_RECALC_RECIPROCAL", "1")
-            .metrics_only(),
-    )
-    .unwrap();
-    assert_eq!(side.out.code(), 0);
-    let series: Vec<String> = metric_calls(&side).iter().map(|m| m[0].clone()).collect();
-    assert_eq!(series, ["quarterly", "yearly"]);
-    let tomorrow = Local::now() + devstatscode::chrono::Duration::days(1);
-    if !(1..=4).contains(&devstatscode::chrono::Datelike::day(&tomorrow)) {
-        let out = stdout_lines(&side);
-        assert!(out.contains(&"Recalculating period due to reciprocal \"q\", hist false for date to <now>, computePeriods: map[], metric: Quarterly".to_string()), "{out:?}");
-        assert!(out.contains(&"Recalculating period due to reciprocal \"y\", hist false for date to <now>, computePeriods: map[], metric: Yearly".to_string()), "{out:?}");
+
+/// The `gha_computed` key of a `p1` metric (`GHA2DB_LOCAL`: `./metrics/p1/<sql>.sql`).
+fn p1_key(series: &str, sql: &str, period: &str) -> String {
+    period_computed_key(series, &format!("./metrics/p1/{sql}.sql"), period)
+}
+
+fn series_periods(side: &Side) -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = metric_calls(side)
+        .iter()
+        .map(|m| (m[0].clone(), m[4].clone()))
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn markers_decide_the_periods_not_due_by_the_calendar() {
+    // Nothing but `h` is due by the calendar (synced this hour): a period is skipped only
+    // when a `gha_computed` marker of its exact key was written since the period started
+    let now = now_wall();
+    let case = markers(
+        synced_this_hour(Case::new("markers").metrics(MARKER_YAML).metrics_only()),
+        &[
+            (p1_key("daily", "daily", "d"), hour_start(now)),
+            (p1_key("quarterly", "quarterly", "q2"), hour_start(now)),
+            // stale: written before the current quarter started
+            (
+                p1_key("quarterly", "quarterly", "q"),
+                quarter_start(now) - devstatscode::chrono::Duration::hours(1),
+            ),
+            // `add_period_to_name`: the key uses the suffixed series name
+            (p1_key("named_y", "named", "y"), year_start(now)),
+            (p1_key("named", "named", "y"), hour_start(now)),
+        ],
+    );
+    let side = both(&case).unwrap();
+    assert_eq!(side.out.code(), 0, "{}", side.out.stderr_str());
+    assert_eq!(
+        series_periods(&side),
+        [
+            ("events_h".to_string(), "h".to_string()),
+            ("quarterly".to_string(), "q".to_string()),
+            ("weekly".to_string(), "w".to_string()),
+        ]
+    );
+    let out = stdout_lines(&side);
+    for expected in [
+        "Period \"w\", hist false of metric Weekly was not computed successfully since the current period started, recalculating",
+        "Period \"q\", hist false of metric Quarterly was not computed successfully since the current period started, recalculating",
+        "Skipping recalculating period \"d\", hist false for date to <now>, computePeriods: map[], metric: Daily",
+        "Skipping recalculating period \"q2\", hist false for date to <now>, computePeriods: map[], metric: Quarterly",
+        "Skipping recalculating period \"y\", hist false for date to <now>, computePeriods: map[], metric: Named",
+    ] {
+        assert!(out.contains(&expected.to_string()), "{expected}\n{out:?}");
+    }
+    assert!(
+        !out.iter()
+            .any(|l| l.contains("hist false of metric Daily was not computed")),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn force_periods_and_compute_all_ignore_the_markers() {
+    let now = now_wall();
+    // GHA2DB_FORCE_PERIODS: exactly the listed periods, markers are neither consulted nor needed
+    let case = markers(
+        synced_this_hour(
+            Case::new("forcemark")
+                .metrics(MARKER_YAML)
+                .env("GHA2DB_FORCE_PERIODS", "d:f")
+                .metrics_only(),
+        ),
+        &[(p1_key("daily", "daily", "d"), hour_start(now))],
+    );
+    let side = both(&case).unwrap();
+    assert_eq!(side.out.code(), 0, "{}", side.out.stderr_str());
+    assert_eq!(
+        series_periods(&side),
+        [("daily".to_string(), "d".to_string())]
+    );
+    let out = stdout_lines(&side);
+    assert!(out.contains(&"Skipping recalculating period \"w\", hist false for date to <now>, computePeriods: map[d:map[false:{}]], metric: Weekly".to_string()), "{out:?}");
+    assert!(
+        !out.iter()
+            .any(|l| l.contains("was not computed successfully")),
+        "{out:?}"
+    );
+
+    // GHA2DB_COMPUTE_ALL: everything, markers or not
+    let case = markers(
+        synced_this_hour(
+            Case::new("allmark")
+                .metrics(MARKER_YAML)
+                .env("GHA2DB_COMPUTE_ALL", "1")
+                .metrics_only(),
+        ),
+        &[
+            (p1_key("daily", "daily", "d"), hour_start(now)),
+            (p1_key("weekly", "weekly", "w"), hour_start(now)),
+        ],
+    );
+    let side = both(&case).unwrap();
+    assert_eq!(side.out.code(), 0, "{}", side.out.stderr_str());
+    assert_eq!(
+        series_periods(&side),
+        [
+            ("daily".to_string(), "d".to_string()),
+            ("events_h".to_string(), "h".to_string()),
+            ("named_y".to_string(), "y".to_string()),
+            ("quarterly".to_string(), "q".to_string()),
+            ("quarterly".to_string(), "q2".to_string()),
+            ("weekly".to_string(), "w".to_string()),
+        ]
+    );
+}
+
+const RANGES_YAML: &str = r#"---
+metrics:
+  - name: Hist ranges
+    series_name_or_func: hranges
+    sql: hranges
+    periods: d
+    histogram: true
+    annotations_ranges: true
+"#;
+
+/// Quick ranges of every class (`quick_ranges_data` as `annotations` writes it): the
+/// past `a_0_1`, ranges ending now 10 days (d), 60 days (m), 200 days (q) and years (y)
+/// long, one with an unknown start (d) and the plain `d7`.
+fn quick_ranges_of_every_class(case: Case, now: DateTime<Utc>) -> Case {
+    let tomorrow = ts(devstatscode::time::next_day_start(now));
+    let ago = |days: i64| ts(now - devstatscode::chrono::Duration::days(days));
+    case.sql("delete from tquick_ranges").sql(&format!(
+        "insert into tquick_ranges(time, quick_ranges_suffix, quick_ranges_name, quick_ranges_data) values\
+ ('2020-01-01 00:00:01', 'd7', 'Last week', 'd7;7 days;;'),\
+ ('2020-01-01 00:00:02', 'a_0_1', 'v1.0 - v1.1', 'a_0_1;;2019-01-01 00:00:00;2019-06-01 00:00:00'),\
+ ('2020-01-01 00:00:03', 'a_1_n', 'v1.1 - now', 'a_1_n;;{};{tomorrow}'),\
+ ('2020-01-01 00:00:04', 'a_2_n', 'v1.2 - now', 'a_2_n;;{};{tomorrow}'),\
+ ('2020-01-01 00:00:05', 'a_3_n', 'v1.3 - now', 'a_3_n;;{};{tomorrow}'),\
+ ('2020-01-01 00:00:06', 'c_n', 'Since joining CNCF', 'c_n;;2019-06-01 00:00:00;{tomorrow}'),\
+ ('2020-01-01 00:00:07', 'c_i_n', 'Since incubating', 'c_i_n;;;{tomorrow}')",
+        ago(10),
+        ago(60),
+        ago(200),
+    ))
+}
+
+/// The class period start of every quick range of `quick_ranges_of_every_class`.
+fn range_period_starts(now: DateTime<Utc>) -> Vec<(&'static str, DateTime<Utc>)> {
+    vec![
+        ("d7", day_start(now)),
+        ("a_0_1", day_start(now)),
+        ("a_1_n", day_start(now)),
+        ("a_2_n", month_start(now)),
+        ("a_3_n", quarter_start(now)),
+        ("c_n", year_start(now)),
+        ("c_i_n", day_start(now)),
+    ]
+}
+
+#[test]
+fn quick_ranges_ending_now_follow_the_class_given_by_their_length() {
+    let now = now_wall();
+    let hour = devstatscode::chrono::Duration::hours(1);
+    // markers written when each range's class period started: everything is skipped
+    let rows: Vec<(String, DateTime<Utc>)> = range_period_starts(now)
+        .into_iter()
+        .map(|(sfx, dt)| (p1_key("hranges", "hranges", sfx), dt))
+        .collect();
+    let case = markers(
+        quick_ranges_of_every_class(
+            synced_this_hour(
+                Case::new("qrclass")
+                    .metrics(RANGES_YAML)
+                    .env("GHA2DB_ST", "1")
+                    .metrics_only(),
+            ),
+            now,
+        ),
+        &rows,
+    );
+    let side = both(&case).unwrap();
+    assert_eq!(side.out.code(), 0, "{}", side.out.stderr_str());
+    assert!(
+        series_periods(&side).is_empty(),
+        "{:?}",
+        series_periods(&side)
+    );
+    let out = stdout_lines(&side);
+    assert!(
+        out.contains(
+            &"Quick ranges: [d7 a_0_1 a_1_n a_2_n a_3_n c_n c_i_n], compute periods: map[]"
+                .to_string()
+        ),
+        "{out:?}"
+    );
+    for sfx in ["d7", "a_0_1", "a_1_n", "a_2_n", "a_3_n", "c_n", "c_i_n"] {
+        let expected = format!("Skipping recalculating period \"{sfx}\", hist true for date to <now>, computePeriods: map[], metric: Hist ranges");
+        assert!(out.contains(&expected), "{expected}\n{out:?}");
+    }
+
+    // markers written an hour before today started: the daily ranges are recalculated, the
+    // monthly / quarterly / yearly ones only when their period started today
+    let rows: Vec<(String, DateTime<Utc>)> = range_period_starts(now)
+        .iter()
+        .map(|(sfx, _)| (p1_key("hranges", "hranges", sfx), day_start(now) - hour))
+        .collect();
+    let case = markers(
+        quick_ranges_of_every_class(
+            synced_this_hour(
+                Case::new("qrmixed")
+                    .metrics(RANGES_YAML)
+                    .env("GHA2DB_ST", "1")
+                    .metrics_only(),
+            ),
+            now,
+        ),
+        &rows,
+    );
+    let side = both(&case).unwrap();
+    assert_eq!(side.out.code(), 0, "{}", side.out.stderr_str());
+    let mut expected: Vec<(String, String)> = range_period_starts(now)
+        .into_iter()
+        .filter(|(_, start)| *start >= day_start(now))
+        .map(|(sfx, _)| ("hranges".to_string(), sfx.to_string()))
+        .collect();
+    expected.sort();
+    assert!(expected.len() >= 4, "{expected:?}");
+    assert_eq!(series_periods(&side), expected);
+    let out = stdout_lines(&side);
+    for (sfx, start) in range_period_starts(now) {
+        let line = if start >= day_start(now) {
+            format!("Period \"{sfx}\", hist true of metric Hist ranges was not computed successfully since the current period started, recalculating")
+        } else {
+            format!("Skipping recalculating period \"{sfx}\", hist true for date to <now>, computePeriods: map[], metric: Hist ranges")
+        };
+        assert!(out.contains(&line), "{line}\n{out:?}");
     }
 }
 
@@ -1942,7 +2189,7 @@ fn no_project_uses_the_shared_metrics_dir_and_skips_annotations() {
         ]
     );
     let out = stdout_lines(&side);
-    assert!(out.contains(&"Skipping `annotations` recalculation, it is only computed once per day hour=<h> or if tags were ran during this sync".to_string()), "{out:?}");
+    assert!(out.contains(&"Skipping `annotations` recalculation, it is only computed once per day, on the first sync after a day boundary, or if tags were ran during this sync".to_string()), "{out:?}");
     assert_eq!(
         calls(&side)[1].env("GHA2DB_PROJECTS_COMMITS").as_deref(),
         Some("")
@@ -2307,30 +2554,41 @@ fn skip_columns_wins_over_reset_tsdb() {
 }
 
 #[test]
-fn hour_dependent_stages_agree() {
-    // Without reset the daily stages depend on the current hour: both
-    // implementations must take the same decision (their messages are
-    // compared with the random hour masked).
-    let side = both(&Case::new("hourly")).unwrap();
+fn daily_stages_run_on_the_first_sync_after_a_day_boundary() {
+    // The default seed's newest TSDB hour is in 2020: a day boundary was crossed since
+    let side = both(&Case::new("dayfirst")).unwrap();
     assert_eq!(side.out.code(), 0);
     let n = names(&side);
+    assert!(n.contains(&"tags".to_string()), "{n:?}");
+    assert!(n.contains(&"annotations".to_string()), "{n:?}");
+    assert_eq!(n.iter().filter(|x| *x == "columns").count(), 2, "{n:?}");
+}
+
+#[test]
+fn daily_stages_are_skipped_within_the_same_day() {
+    let side = both(&synced_this_hour(Case::new("sameday"))).unwrap();
+    assert_eq!(side.out.code(), 0);
+    let n = names(&side);
+    assert!(!n.contains(&"tags".to_string()), "{n:?}");
+    assert!(!n.contains(&"annotations".to_string()), "{n:?}");
+    assert!(!n.contains(&"columns".to_string()), "{n:?}");
     let out = stdout_lines(&side);
-    if Local::now().hour() < 6 {
-        assert!(n.contains(&"tags".to_string()), "{n:?}");
-        assert!(n.contains(&"annotations".to_string()), "{n:?}");
-        assert_eq!(n.iter().filter(|x| *x == "columns").count(), 2, "{n:?}");
-    } else {
-        assert!(!n.contains(&"tags".to_string()), "{n:?}");
-        assert!(
-            out.contains(
-                &"Skipping `tags` recalculation, it is only computed once per day hour=<h>"
-                    .to_string()
-            ),
-            "{out:?}"
-        );
-        assert!(out.contains(&"Skipping `annotations` recalculation, it is only computed once per day hour=<h> or if tags were ran during this sync".to_string()), "{out:?}");
-        assert!(out.contains(&"Skipping `columns` recalculation, it is only computed once per day, hour=<h> or if tags were ran during this sync".to_string()), "{out:?}");
+    for expected in [
+        "Skipping `tags` recalculation, it is only computed once per day, on the first sync after a day boundary",
+        "Skipping `annotations` recalculation, it is only computed once per day, on the first sync after a day boundary, or if tags were ran during this sync",
+        "Skipping `columns` recalculation, it is only computed once per day, on the first sync after a day boundary, or if tags were ran during this sync",
+        // the daily metric has no marker yet: recalculated although not due by the calendar
+        "Period \"d\", hist false of metric Daily stats was not computed successfully since the current period started, recalculating",
+    ] {
+        assert!(out.contains(&expected.to_string()), "{expected}\n{out:?}");
     }
+    assert_eq!(
+        series_periods(&side),
+        [
+            ("events_h".to_string(), "h".to_string()),
+            ("multi_row_single_column".to_string(), "d".to_string()),
+        ]
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -492,18 +492,12 @@ pub struct Ctx {
     pub commits_files_stats_enabled: bool,
     /// True, can be disabled by GHA2DB_SKIP_COMMITS_LOC, get_repos tool
     pub commits_loc_stats_enabled: bool,
-    /// From GHA2DB_RECALC_RECIPROCAL: 1/RecalcReciprocal of recalc metric at given datetime, even if it should be calculated at this datetime, default 24 (means 4.1(6)%, or about once/day)
-    pub recalc_reciprocal: i64,
     /// From GHA2DB_MAX_HIST: maximum histogram concurrency, default: 0 - means unlimited
     pub max_histograms: i64,
     /// From GHA2DB_MAX_RUN_DURATION, how log given programs can run and exist status after timeout, for example "tags:1h:0,calc_metric:12h:1"
     pub max_run_duration: BTreeMap<String, [i64; 2]>,
-    /// Use rand to decide if a given date period must be calculated at this date or not.
-    pub rand_compute_at_this_date: bool,
     /// From GHA2DB_REFRESH_COMMIT_ROLES - will process all commiths in DB and for every single one of them it will generate gha_commits_roles entries.
     pub refresh_commit_roles: bool,
-    /// If set, then tags and columns will only be computed at random 0-5 hour, otherwise always when hour<6.
-    pub allow_rand_tags_cols_compute: bool,
     /// From GHA2DB_ALLOW_METRIC_FAIL - if set, then calc_metric will not exit on first failed metric, but will try to compute all metrics.
     pub allow_metric_fail: bool,
     /// From GHA2DB_FETCH_COMMITS_MODE get_repos tool, mode to reconstruct gha_commits from git history for PushEvents: 0-disabled, 1-missing only (default), 2-missing+truncated
@@ -549,8 +543,6 @@ impl Ctx {
         self.exec_quiet = false;
         self.exec_output = false;
         self.can_reconnect = true;
-        self.rand_compute_at_this_date = true;
-        self.allow_rand_tags_cols_compute = false;
 
         // Commits analysis
         self.commits_files_stats_enabled = !env_set("GHA2DB_SKIP_COMMITS_FILES");
@@ -1068,12 +1060,6 @@ impl Ctx {
         // CSV file
         self.csv_file = getenv("GHA2DB_CSVOUT");
 
-        // RecalcReciprocal
-        self.recalc_reciprocal = match env_int("GHA2DB_RECALC_RECIPROCAL") {
-            Some(rr) if rr > 0 => rr,
-            _ => 24,
-        };
-
         // MaxHistograms
         self.max_histograms = 0;
         if let Some(mh) = env_int("GHA2DB_MAX_HIST") {
@@ -1286,18 +1272,9 @@ impl Ctx {
                 "CommitsLOCStatsEnabled",
                 self.commits_loc_stats_enabled.to_string(),
             ),
-            ("RecalcReciprocal", self.recalc_reciprocal.to_string()),
             ("MaxHistograms", self.max_histograms.to_string()),
             ("MaxRunDuration", map_arr2_string(&self.max_run_duration)),
-            (
-                "RandComputeAtThisDate",
-                self.rand_compute_at_this_date.to_string(),
-            ),
             ("RefreshCommitRoles", self.refresh_commit_roles.to_string()),
-            (
-                "AllowRandTagsColsCompute",
-                self.allow_rand_tags_cols_compute.to_string(),
-            ),
             ("AllowMetricFail", self.allow_metric_fail.to_string()),
             ("FetchCommitsMode", self.fetch_commits_mode.to_string()),
             ("GitCommitsBatch", self.git_commits_batch.to_string()),
@@ -1316,16 +1293,13 @@ impl Ctx {
 
     /// Go `CopyContext`: a copy of the context without the runtime-only
     /// fields (`DefaultHostname`, `SharedDB`, `ProjectMainRepo`,
-    /// `RandComputeAtThisDate`, `RefreshCommitRoles`,
-    /// `AllowRandTagsColsCompute`), which stay at their zero values.
+    /// `RefreshCommitRoles`), which stay at their zero values.
     pub fn copy_context(&self) -> Ctx {
         Ctx {
             default_hostname: String::new(),
             shared_db: String::new(),
             project_main_repo: String::new(),
-            rand_compute_at_this_date: false,
             refresh_commit_roles: false,
-            allow_rand_tags_cols_compute: false,
             ..self.clone()
         }
     }
@@ -1463,8 +1437,6 @@ mod tests {
             can_reconnect: true,
             commits_files_stats_enabled: true,
             commits_loc_stats_enabled: true,
-            rand_compute_at_this_date: true,
-            recalc_reciprocal: 24,
             max_histograms: 0,
             fetch_commits_mode: 1,
             git_commits_batch: 1000,
@@ -2416,34 +2388,6 @@ mod tests {
             },
         },
         Case {
-            name: "Setting recalc reciprocal to 1",
-            env: &[("GHA2DB_RECALC_RECIPROCAL", "1")],
-            set: |c| {
-                c.recalc_reciprocal = 1;
-            },
-        },
-        Case {
-            name: "Setting recalc reciprocal to 100",
-            env: &[("GHA2DB_RECALC_RECIPROCAL", "100")],
-            set: |c| {
-                c.recalc_reciprocal = 100;
-            },
-        },
-        Case {
-            name: "Setting recalc reciprocal to 0",
-            env: &[("GHA2DB_RECALC_RECIPROCAL", "0")],
-            set: |c| {
-                c.recalc_reciprocal = 24;
-            },
-        },
-        Case {
-            name: "Setting recalc reciprocal to -2",
-            env: &[("GHA2DB_RECALC_RECIPROCAL", "-2")],
-            set: |c| {
-                c.recalc_reciprocal = 24;
-            },
-        },
-        Case {
             name: "Setting max histograms to 16",
             env: &[("GHA2DB_MAX_HIST", "16")],
             set: |c| {
@@ -2491,11 +2435,10 @@ mod tests {
             },
         },
         ];
-        assert_eq!(cases.len(), 127);
+        assert_eq!(cases.len(), 123);
         let default = default_context();
         for (index, case) in cases.iter().enumerate() {
             let mut expected = default.copy_context();
-            expected.rand_compute_at_this_date = true;
             (case.set)(&mut expected);
             let mut env: Vec<(&str, &str)> = case.env.to_vec();
             // GitHubOAuth depends on /etc/github/oauth* files, force a known value
@@ -2538,16 +2481,12 @@ mod tests {
         ctx.default_hostname = "devstats.cncf.io".to_string();
         ctx.shared_db = "shared".to_string();
         ctx.project_main_repo = "k/k".to_string();
-        ctx.rand_compute_at_this_date = true;
         ctx.refresh_commit_roles = true;
-        ctx.allow_rand_tags_cols_compute = true;
         let copy = ctx.copy_context();
         assert_eq!(copy.default_hostname, "");
         assert_eq!(copy.shared_db, "");
         assert_eq!(copy.project_main_repo, "");
-        assert!(!copy.rand_compute_at_this_date);
         assert!(!copy.refresh_commit_roles);
-        assert!(!copy.allow_rand_tags_cols_compute);
         assert_eq!(copy.data_dir, ctx.data_dir);
         assert_eq!(copy.trials, ctx.trials);
         assert_eq!(copy.max_running_flag_age, ctx.max_running_flag_age);

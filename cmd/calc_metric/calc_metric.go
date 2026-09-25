@@ -1226,6 +1226,11 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 			nIntervals,
 			cfg,
 		)
+		if !ctx.SkipTSDB {
+			sqlc := lib.PgConn(&ctx)
+			lib.SetPeriodComputed(sqlc, &ctx, lib.PeriodComputedKey(seriesNameOrFunc, sqlFile, intervalAbbr), lib.TimeParseAny(to))
+			lib.FatalOnError(sqlc.Close())
+		}
 		return
 	}
 
@@ -1355,6 +1360,9 @@ func calcMetric(seriesNameOrFunc, sqlFile, from, to, intervalAbbr string, cfg *c
 		}
 	}
 	// Finished
+	if !ctx.SkipTSDB {
+		lib.SetPeriodComputed(sqlc, &ctx, lib.PeriodComputedKey(seriesNameOrFunc, sqlFile, intervalAbbr), lib.TimeParseAny(to))
+	}
 	lib.Printf("All done.\n")
 }
 

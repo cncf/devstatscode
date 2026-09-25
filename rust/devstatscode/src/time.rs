@@ -3,6 +3,7 @@
 //!
 //! All calendar arithmetic is done in UTC, exactly like the Go code.
 
+use std::collections::HashMap;
 use std::process;
 use std::time::Duration;
 
@@ -11,7 +12,6 @@ use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Timelike, Utc, Weekday};
 use crate::consts;
 use crate::context::Ctx;
 use crate::error::fatalf;
-use crate::rng;
 
 /// A `time.Time -> time.Time` function (interval start/next/prev).
 pub type TimeFn = fn(DateTime<Utc>) -> DateTime<Utc>;
@@ -79,17 +79,131 @@ pub fn range_hours(from: DateTime<Utc>, to: DateTime<Utc>) -> String {
     format!("{:.6}", hours)
 }
 
-/// Return true with `percent` % probability.
-pub fn probab(percent: i64) -> bool {
-    ((rng::next_u64() % 100) as i64) < percent
+/// True when `from` and `to` (both shifted by `ctx.tm_offset` hours) belong to
+/// different intervals, as defined by `interval_start` (`day_start`, `week_start`, ...).
+fn boundary_crossed(
+    ctx: &Ctx,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    interval_start: fn(DateTime<Utc>) -> DateTime<Utc>,
+) -> bool {
+    let off = chrono::Duration::hours(ctx.tm_offset);
+    interval_start(from + off) < interval_start(to + off)
 }
 
-/// For some longer periods, only recalculate them on specific dates/times.
-/// See `time_test.go` / the unit tests for the schedule.
+/// Lengths of a month, quarter and year in hours (as in `interval_hours`).
+const MONTH_HOURS: f64 = 730.5;
+const QUARTER_HOURS: f64 = 2191.5;
+const YEAR_HOURS: f64 = 8766.0;
+
+/// Go `PeriodClass`: calendar period (`"h"`, `"d"`, `"w"`, `"m"`, `"q"`, `"y"`) deciding when
+/// `period` is due (`compute_period_at_this_date`) and since when a `gha_computed` marker proves
+/// it was computed (`period_start_at`).
+/// `h*`, `d*`, `w*`, `m*`, `q*`, `y*`: their first letter (multiples like `d7` or `y10` follow
+/// their base period). Histogram quick ranges ending now (`a_i_n`, `c_n`, `c_i_n`, `c_g_n`): by
+/// their length from `range_start` to `to` (hour precision): d up to a month (730.5h), m up to a
+/// quarter (2191.5h), q up to a year (8766h), y when longer (d when `range_start` is unknown).
+/// Other histogram quick ranges (`a_i_j`, `c_b`, `c_j_i`, `c_i_g`, `c_j_g` - fully in the past):
+/// d, `calc_metric` skips them once computed (`skip_past`), so they are only attempted once a day.
+/// `""` for anything else (`range:*`, unknown).
+pub fn period_class(
+    period: &str,
+    range_start: Option<DateTime<Utc>>,
+    to: DateTime<Utc>,
+) -> &'static str {
+    match period.chars().next() {
+        Some('h') => "h",
+        Some('d') => "d",
+        Some('w') => "w",
+        Some('m') => "m",
+        Some('q') => "q",
+        Some('y') => "y",
+        Some('a') | Some('c') => {
+            let range_start = match range_start {
+                Some(rs) if period.ends_with("_n") => rs,
+                _ => return "d",
+            };
+            let d = hour_start(to) - range_start;
+            let hours = d
+                .num_nanoseconds()
+                .map(|n| n as f64 / 3.6e12)
+                .unwrap_or_else(|| d.num_milliseconds() as f64 / 3.6e6);
+            if hours <= MONTH_HOURS {
+                "d"
+            } else if hours <= QUARTER_HOURS {
+                "m"
+            } else if hours <= YEAR_HOURS {
+                "q"
+            } else {
+                "y"
+            }
+        }
+        _ => "",
+    }
+}
+
+/// Go `QuickRangeStarts`: start dates of the histogram quick ranges by suffix, from the
+/// `quick_ranges_data` tag values written by `annotations` (`suffix;period;from;to`, `from` and
+/// `to` are set only for annotation/CNCF date ranges).
+pub fn quick_range_starts(quick_ranges_data: &[String]) -> HashMap<String, DateTime<Utc>> {
+    let mut starts = HashMap::new();
+    for data in quick_ranges_data {
+        let ary: Vec<&str> = data.split(';').collect();
+        if ary.len() == 4 && ary[1].is_empty() && !ary[2].is_empty() {
+            starts.insert(ary[0].to_string(), time_parse_any(ary[2]));
+        }
+    }
+    starts
+}
+
+/// Go `PeriodStartAt`: when the period (see `period_class`) containing `dt` started: the
+/// calendar boundary found on the clock shifted by `ctx.tm_offset` hours, returned as an
+/// instant; `range_start` is the start of a histogram quick range (`None` otherwise).
+/// `None` for periods without a calendar period (`range:*`, unknown).
+/// `gha_computed` markers written by `calc_metric` at or after this instant prove the period
+/// was computed since it started, see `computed.rs`.
+pub fn period_start_at(
+    ctx: &Ctx,
+    period: &str,
+    range_start: Option<DateTime<Utc>>,
+    dt: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let period_start: fn(DateTime<Utc>) -> DateTime<Utc> =
+        match period_class(period, range_start, dt) {
+            "h" => hour_start,
+            "d" => day_start,
+            "w" => week_start,
+            "m" => month_start,
+            "q" => quarter_start,
+            "y" => year_start,
+            _ => return None,
+        };
+    let off = chrono::Duration::hours(ctx.tm_offset);
+    Some(period_start(dt + off) - off)
+}
+
+/// True when the sync ending at `to` is the first one after a day boundary;
+/// `from` is where the previous sync ended (newest TSDB hour already computed).
+/// Used to run tags/columns/annotations once per day regardless of the sync frequency.
+pub fn day_boundary_crossed(ctx: &Ctx, from: DateTime<Utc>, to: DateTime<Utc>) -> bool {
+    boundary_crossed(ctx, from, to, day_start)
+}
+
+/// Decides if a given period must be (re)calculated by the sync ending at `to` when the
+/// previous sync ended at `from` (newest TSDB hour already computed, `ctx.default_start_date`
+/// when resetting). Rules are independent of the sync frequency: no time-of-day checks,
+/// no randomness (see `period_class`):
+/// `h`: always; `d`: first sync after a day boundary; `w`: first sync after a week
+/// boundary (weeks start on Monday); `m`: month boundary; `q`: quarter boundary;
+/// `y`: year boundary; histogram quick ranges (`a_*`, `c_*`, `range_start` is their start
+/// date) follow the class given by `period_class`.
+/// See `time_test.go` / the unit tests.
 pub fn compute_period_at_this_date(
     ctx: &Ctx,
     period: &str,
-    idt: DateTime<Utc>,
+    range_start: Option<DateTime<Utc>>,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
     hist: bool,
 ) -> bool {
     if ctx.compute_all {
@@ -101,98 +215,22 @@ pub fn compute_period_at_this_date(
             Some(data) => data.contains(&hist),
         };
     }
-    let dt = hour_start(idt);
-    // dtc: date with current hour start, dtn: tomorrow with current hour start,
-    // dth: current date with tz offset
-    let dtc = dt;
-    let dtn = dt + chrono::Duration::days(1);
-    let dth = dt + chrono::Duration::hours(ctx.tm_offset);
-    let h = dth.hour() as i64;
-    let ch = dtc.hour() as i64;
-    let period_start = &period[0..1.min(period.len())];
-    if period_start == "h" {
-        return true;
-    } else if period_start == "d" {
-        if period.len() == 1 {
-            return true;
-        }
-        if ctx.rand_compute_at_this_date {
-            return probab(25);
-        }
-        return h == 1 || h == 6 || h == 9 || h == 13 || h == 18 || h == 21;
-    } else if hist && period_start == "a" {
-        // histograms between annotations or the final one "a_num_n"
-        let period_end = tail2(period);
-        if period_end == "_n" {
-            if ctx.rand_compute_at_this_date {
-                return probab(25);
-            }
-            return h == 1 || h == 8 || h == 15 || h == 13 || h == 20;
-        }
-        if ctx.rand_compute_at_this_date {
-            return probab(15);
-        }
-        return h == 2 || h == 3;
-    } else if hist && period_start == "c" {
-        // histograms between maturity levels: "c_n", "c_g_n", "c_i_n"
-        if ctx.rand_compute_at_this_date {
-            if tail2(period) == "_n" {
-                return probab(25);
-            }
-            return probab(15);
-        }
-        return h == 3 || h == 4;
+    let mut class = period_class(period, range_start, to);
+    // Quick ranges are only defined for histograms
+    if !hist && (period.starts_with('a') || period.starts_with('c')) {
+        class = "";
     }
-    if hist {
-        if period_start == "w" {
-            if ctx.rand_compute_at_this_date {
-                return probab(30);
-            }
-            return h % 7 == 0;
-        } else if period_start == "m" || period_start == "q" || period_start == "y" {
-            if ctx.rand_compute_at_this_date {
-                return probab(15);
-            }
-            return h == 23 || h == 18;
-        }
-    } else {
-        let wday = go_weekday(dtc);
-        if period_start == "w" {
-            if ctx.rand_compute_at_this_date {
-                return probab(60) && h >= 12 && (0..=2).contains(&wday);
-            }
-            return ch == 23 && wday == 0;
-        } else if period_start == "m" {
-            if ctx.rand_compute_at_this_date {
-                let dom = dtn.day();
-                return probab(80) && h < 12 && (1..=4).contains(&dom);
-            }
-            return ch == 23 && dtn.day() == 1;
-        } else if period_start == "q" {
-            if ctx.rand_compute_at_this_date {
-                let dom = dtn.day();
-                return h > 12 && (1..=4).contains(&dom) && dtn.month() % 3 == 1;
-            }
-            return ch == 23 && dtn.day() == 1 && dtn.month() % 3 == 1;
-        } else if period_start == "y" {
-            if ctx.rand_compute_at_this_date {
-                let dom = dtn.day();
-                return h < 12 && (1..=4).contains(&dom) && dtn.month() == 1;
-            }
-            return ch == 23 && dtn.day() == 1 && dtn.month() == 1;
-        }
-    }
-    fatalf(format_args!(
-        "ComputePeriodAtThisDate: unknown period: '{}', hist: {}",
-        period, hist
-    ))
-}
-
-fn tail2(s: &str) -> &str {
-    if s.len() >= 2 {
-        &s[s.len() - 2..]
-    } else {
-        s
+    match class {
+        "h" => true,
+        "d" => boundary_crossed(ctx, from, to, day_start),
+        "w" => boundary_crossed(ctx, from, to, week_start),
+        "m" => boundary_crossed(ctx, from, to, month_start),
+        "q" => boundary_crossed(ctx, from, to, quarter_start),
+        "y" => boundary_crossed(ctx, from, to, year_start),
+        _ => fatalf(format_args!(
+            "ComputePeriodAtThisDate: unknown period: '{}', hist: {}",
+            period, hist
+        )),
     }
 }
 
@@ -904,253 +942,1045 @@ mod tests {
         );
     }
 
+    /// 1:1 port of Go `TestComputePeriodAtThisDate`: every period of a class, histogram or
+    /// not (quick ranges are histograms only), for each sync scenario; then the `compute_all` /
+    /// `compute_periods` overrides and the histogram quick ranges (past ranges daily, ranges
+    /// ending now by their length).
+    /// 2026-09-20 is a Sunday, 2026-09-21 a Monday, 2026-10-01 a Thursday, 2026-11-01 a Sunday,
+    /// 2027-01-01 a Friday, 2029-01-01 a Monday.
     #[test]
-    fn compute_period_at_this_date_table() {
-        // (tm_offset, period, dt parts, expected)
-        let cases: &[(i64, &str, &[i32], bool)] = &[
-            (0, "h", &[2017, 12, 19], true),
-            (0, "h", &[2017, 12, 19, 3], true),
-            (0, "h", &[2017, 12, 19, 5, 45, 17], true),
-            (0, "h2", &[2017, 12, 19], true),
-            (0, "h12", &[2017, 12, 19, 3], true),
-            (0, "h240", &[2017, 12, 19, 5, 45, 17], true),
-            (0, "d", &[2017, 12, 19], true),
-            (0, "d", &[2017, 12, 19, 3], true),
-            (0, "d", &[2017, 12, 19, 5, 45, 17], true),
-            (0, "d2", &[2017, 12, 19], false),
-            (0, "d3", &[2017, 12, 19, 3], false),
-            (0, "d7", &[2017, 12, 19, 6, 45, 17], true),
-            (0, "d7", &[2017, 12, 19, 9, 45, 17], true),
-            (0, "d7", &[2017, 12, 19, 13, 45, 17], true),
-            (0, "d14", &[2017, 12, 19, 13, 45, 17], true),
-            (0, "d14", &[2017, 12, 19, 12, 45, 17], false),
-            (0, "a_13_n", &[2017, 12, 19], false),
-            (0, "a_13_n", &[2017, 12, 19, 1], true),
-            (0, "a_13_n", &[2017, 12, 19, 2, 11], false),
-            (0, "a_13_n", &[2017, 12, 19, 4, 11], false),
-            (0, "a_12_13", &[2017, 12, 19], false),
-            (0, "a_0_1", &[2017, 12, 19, 1], false),
-            (0, "a_10_11", &[2017, 12, 19, 2, 11], true),
-            (0, "a_10_11", &[2017, 12, 19, 4, 11], false),
-            (0, "w", &[2017, 12, 19], true),
-            (0, "w", &[2017, 12, 19, 1], false),
-            (0, "w", &[2017, 12, 19, 20, 13], false),
-            (0, "w3", &[2017, 12, 19, 20, 13], false),
-            (0, "w3", &[2017, 12, 19, 14, 13], true),
-            (0, "m", &[2017, 12, 19, 23], true),
-            (0, "q", &[2017, 12, 19, 23], true),
-            (0, "y", &[2017, 12, 19, 23], true),
-            (0, "y2", &[2017, 12, 19, 23], true),
-            (0, "y3", &[2017, 12, 19, 23], true),
-            (0, "y5", &[2017, 12, 19, 23], true),
-            (0, "m2", &[2017, 12, 19, 23], true),
-            (0, "m6", &[2017, 12, 19, 23], true),
-            (0, "q3", &[2017, 12, 19, 23], true),
-            (0, "y10", &[2017, 12, 19, 23], true),
-            (0, "m", &[2017, 12, 19, 1], false),
-            (0, "q", &[2017, 12, 19, 2], false),
-            (0, "y", &[2017, 12, 19, 3], false),
-            (0, "y2", &[2017, 12, 19, 3], false),
-            (0, "y3", &[2017, 12, 19, 3], false),
-            (0, "y4", &[2017, 12, 19, 3], false),
-            (0, "m2", &[2017, 12, 19, 4], false),
-            (0, "m6", &[2017, 12, 19, 4], false),
-            (0, "q3", &[2017, 12, 19, 5], false),
-            (0, "y10", &[2017, 12, 19, 5], false),
-            (5, "h", &[2017, 12, 19, 19], true),
-            (5, "h", &[2017, 12, 19, 22], true),
-            (5, "h", &[2017, 12, 19, 0, 45, 17], true),
-            (5, "h2", &[2017, 12, 19, 19], true),
-            (5, "h12", &[2017, 12, 19, 22], true),
-            (5, "h240", &[2017, 12, 19, 2, 45, 17], true),
-            (5, "d", &[2017, 12, 19, 19], true),
-            (5, "d", &[2017, 12, 19, 22], true),
-            (5, "d", &[2017, 12, 19, 0, 45, 17], true),
-            (5, "d2", &[2017, 12, 19, 19], false),
-            (5, "d3", &[2017, 12, 19, 22], false),
-            (5, "d7", &[2017, 12, 19, 1, 45, 17], true),
-            (5, "d14", &[2017, 12, 19, 8, 45, 17], true),
-            (5, "d14", &[2017, 12, 19, 7, 45, 17], false),
-            (5, "a_13_n", &[2017, 12, 19, 19], false),
-            (5, "a_13_n", &[2017, 12, 19, 20], true),
-            (5, "a_13_n", &[2017, 12, 19, 21, 11], false),
-            (5, "a_13_n", &[2017, 12, 19, 23, 11], false),
-            (5, "a_12_13", &[2017, 12, 19, 19], false),
-            (5, "a_0_1", &[2017, 12, 19, 20], false),
-            (5, "a_10_11", &[2017, 12, 19, 21, 11], true),
-            (5, "a_10_11", &[2017, 12, 19, 23, 11], false),
-            (5, "w", &[2017, 12, 19, 19], true),
-            (5, "w", &[2017, 12, 19, 20], false),
-            (5, "w", &[2017, 12, 19, 15, 13], false),
-            (5, "w3", &[2017, 12, 19, 15, 13], false),
-            (5, "w3", &[2017, 12, 19, 2, 13], true),
-            (5, "w3", &[2017, 12, 19, 9, 13], true),
-            (5, "m", &[2017, 12, 19, 18], true),
-            (5, "q", &[2017, 12, 19, 18], true),
-            (5, "y", &[2017, 12, 19, 18], true),
-            (5, "y5", &[2017, 12, 19, 18], true),
-            (5, "m2", &[2017, 12, 19, 18], true),
-            (5, "m6", &[2017, 12, 19, 18], true),
-            (5, "q3", &[2017, 12, 19, 18], true),
-            (5, "y10", &[2017, 12, 19, 18], true),
-            (5, "m", &[2017, 12, 19, 20], false),
-            (5, "q", &[2017, 12, 19, 21], false),
-            (5, "y", &[2017, 12, 19, 22], false),
-            (5, "y3", &[2017, 12, 19, 22], false),
-            (5, "m2", &[2017, 12, 19, 23], false),
-            (5, "m6", &[2017, 12, 19, 23], false),
-            (5, "q3", &[2017, 12, 19], false),
-            (5, "y10", &[2017, 12, 19], false),
-            (-10, "h", &[2017, 12, 19, 10], true),
-            (-10, "h", &[2017, 12, 19, 13], true),
-            (-10, "h", &[2017, 12, 19, 15, 45, 17], true),
-            (-10, "h2", &[2017, 12, 19, 10], true),
-            (-10, "h12", &[2017, 12, 19, 3], true),
-            (-10, "h240", &[2017, 12, 19, 15, 45, 17], true),
-            (-10, "d", &[2017, 12, 19, 10], true),
-            (-10, "d", &[2017, 12, 19, 13], true),
-            (-10, "d", &[2017, 12, 19, 15, 45, 17], true),
-            (-10, "d2", &[2017, 12, 19, 10], false),
-            (-10, "d3", &[2017, 12, 19, 13], false),
-            (-10, "d7", &[2017, 12, 19, 4, 45, 17], true),
-            (-10, "d7", &[2017, 12, 19, 23, 45, 17], true),
-            (-10, "d7", &[2017, 12, 19, 7, 45, 17], true),
-            (-10, "d14", &[2017, 12, 19, 23, 45, 17], true),
-            (-10, "d14", &[2017, 12, 19, 22, 45, 17], false),
-            (-10, "a_13_n", &[2017, 12, 19, 10], false),
-            (-10, "a_13_n", &[2017, 12, 19, 11], true),
-            (-10, "a_13_n", &[2017, 12, 19, 12, 11], false),
-            (-10, "a_13_n", &[2017, 12, 19, 14, 11], false),
-            (-10, "a_12_13", &[2017, 12, 19, 10], false),
-            (-10, "a_0_1", &[2017, 12, 19, 11], false),
-            (-10, "a_10_11", &[2017, 12, 19, 12, 11], true),
-            (-10, "a_10_11", &[2017, 12, 19, 14, 11], false),
-            (-10, "w", &[2017, 12, 19, 10], true),
-            (-10, "w", &[2017, 12, 19, 11], false),
-            (-10, "w", &[2017, 12, 19, 6, 13], false),
-            (-10, "w3", &[2017, 12, 19, 6, 13], false),
-            (-10, "w3", &[2017, 12, 19, 7, 13], true),
-            (-10, "w3", &[2017, 12, 19, 8, 13], false),
-            (-10, "m", &[2017, 12, 19, 9], true),
-            (-10, "q", &[2017, 12, 19, 9], true),
-            (-10, "y", &[2017, 12, 19, 9], true),
-            (-10, "y2", &[2017, 12, 19, 9], true),
-            (-10, "m2", &[2017, 12, 19, 9], true),
-            (-10, "m6", &[2017, 12, 19, 9], true),
-            (-10, "q3", &[2017, 12, 19, 9], true),
-            (-10, "y10", &[2017, 12, 19, 9], true),
-            (-10, "m", &[2017, 12, 19, 11], false),
-            (-10, "q", &[2017, 12, 19, 12], false),
-            (-10, "y", &[2017, 12, 19, 13], false),
-            (-10, "m2", &[2017, 12, 19, 14], false),
-            (-10, "m6", &[2017, 12, 19, 14], false),
-            (-10, "q3", &[2017, 12, 19, 15], false),
-            (-10, "y10", &[2017, 12, 19, 15], false),
+    fn compute_period_at_this_date_go_table() {
+        // Periods of each class, quick ranges ending now start `days` before `to` (0: unknown start)
+        let periods_by_class: BTreeMap<&str, &[(&str, i64)]> = BTreeMap::from([
+            ("h", &[("h", 0), ("h24", 0)][..]),
+            (
+                "d",
+                &[
+                    ("d", 0),
+                    ("d7", 0),
+                    ("d10", 0),
+                    ("a_3_n", 10),
+                    ("c_n", 30),
+                    ("a_0_1", 400),
+                    ("c_b", 0),
+                    ("c_j_i", 0),
+                    ("a_5_n", 0),
+                ][..],
+            ),
+            ("w", &[("w", 0), ("w2", 0)][..]),
+            (
+                "m",
+                &[("m", 0), ("m6", 0), ("a_2_n", 31), ("c_i_n", 90)][..],
+            ),
+            (
+                "q",
+                &[("q", 0), ("q2", 0), ("a_1_n", 92), ("c_g_n", 365)][..],
+            ),
+            (
+                "y",
+                &[
+                    ("y", 0),
+                    ("y2", 0),
+                    ("y10", 0),
+                    ("y100", 0),
+                    ("a_0_n", 366),
+                    ("c_n", 3650),
+                ][..],
+            ),
+        ]);
+        let classes = ["h", "d", "w", "m", "q", "y"];
+        // (name, tm_offset, from, to, expected per class h,d,w,m,q,y)
+        type Scenario<'a> = (&'a str, i64, &'a [i32], &'a [i32], [bool; 6]);
+        let scenarios: &[Scenario] = &[
+            (
+                "hourly sync, same day",
+                0,
+                &[2026, 9, 21, 9],
+                &[2026, 9, 21, 10, 4],
+                [true, false, false, false, false, false],
+            ),
+            (
+                "hourly sync, Wednesday midnight",
+                0,
+                &[2026, 9, 22, 23],
+                &[2026, 9, 23, 0, 4],
+                [true, true, false, false, false, false],
+            ),
+            (
+                "hourly sync, Monday midnight",
+                0,
+                &[2026, 9, 20, 23],
+                &[2026, 9, 21, 0, 4],
+                [true, true, true, false, false, false],
+            ),
+            (
+                "hourly sync, Oct 1st midnight (Thursday)",
+                0,
+                &[2026, 9, 30, 23],
+                &[2026, 10, 1, 0, 4],
+                [true, true, false, true, true, false],
+            ),
+            (
+                "hourly sync, Nov 1st midnight (Sunday, weeks start on Monday)",
+                0,
+                &[2026, 10, 31, 23],
+                &[2026, 11, 1, 0, 4],
+                [true, true, false, true, false, false],
+            ),
+            (
+                "hourly sync, Jan 1st 2027 midnight (Friday)",
+                0,
+                &[2026, 12, 31, 23],
+                &[2027, 1, 1, 0, 4],
+                [true, true, false, true, true, true],
+            ),
+            (
+                "hourly sync, Jan 1st 2029 midnight (Monday)",
+                0,
+                &[2028, 12, 31, 23],
+                &[2029, 1, 1, 0, 4],
+                [true, true, true, true, true, true],
+            ),
+            (
+                "daily sync, Tuesday",
+                0,
+                &[2026, 9, 21, 9],
+                &[2026, 9, 22, 9, 58],
+                [true, true, false, false, false, false],
+            ),
+            (
+                "daily sync, Monday",
+                0,
+                &[2026, 9, 20, 9],
+                &[2026, 9, 21, 9, 58],
+                [true, true, true, false, false, false],
+            ),
+            (
+                "daily sync, Oct 1st late evening",
+                0,
+                &[2026, 9, 30, 22],
+                &[2026, 10, 1, 22, 35],
+                [true, true, false, true, true, false],
+            ),
+            (
+                "daily sync, Monday sync missed, Tuesday still concludes the week",
+                0,
+                &[2026, 9, 20, 9],
+                &[2026, 9, 22, 9, 58],
+                [true, true, true, false, false, false],
+            ),
+            (
+                "daily sync, 5 days gap over a week and a month boundary",
+                0,
+                &[2026, 9, 26, 9],
+                &[2026, 10, 1, 9, 58],
+                [true, true, true, true, true, false],
+            ),
+            (
+                "4 syncs/day, 1st sync on Monday",
+                0,
+                &[2026, 9, 20, 21],
+                &[2026, 9, 21, 3, 4],
+                [true, true, true, false, false, false],
+            ),
+            (
+                "4 syncs/day, 2nd sync on Monday",
+                0,
+                &[2026, 9, 21, 3],
+                &[2026, 9, 21, 9, 4],
+                [true, false, false, false, false, false],
+            ),
+            (
+                "4 syncs/day, 1st sync on Oct 1st",
+                0,
+                &[2026, 9, 30, 21],
+                &[2026, 10, 1, 3, 4],
+                [true, true, false, true, true, false],
+            ),
+            (
+                "4 syncs/day, 2nd sync on Oct 1st",
+                0,
+                &[2026, 10, 1, 3],
+                &[2026, 10, 1, 9, 4],
+                [true, false, false, false, false, false],
+            ),
+            (
+                "4 syncs/day, 4th sync on Oct 1st",
+                0,
+                &[2026, 10, 1, 15],
+                &[2026, 10, 1, 21, 4],
+                [true, false, false, false, false, false],
+            ),
+            (
+                "reset TSDB (from = default start date)",
+                0,
+                &[2012, 7, 1],
+                &[2026, 9, 25, 10],
+                [true, true, true, true, true, true],
+            ),
+            (
+                "same hour",
+                0,
+                &[2026, 9, 25, 10],
+                &[2026, 9, 25, 10, 30],
+                [true, false, false, false, false, false],
+            ),
+            (
+                "from after to",
+                0,
+                &[2026, 9, 26, 11],
+                &[2026, 9, 25, 10],
+                [true, false, false, false, false, false],
+            ),
+            (
+                "tz offset -6 moves the day boundary: 2nd Monday sync becomes the 1st",
+                -6,
+                &[2026, 9, 21, 3],
+                &[2026, 9, 21, 9, 4],
+                [true, true, true, false, false, false],
+            ),
+            (
+                "tz offset +2 moves the month boundary before midnight UTC",
+                2,
+                &[2026, 9, 30, 21],
+                &[2026, 9, 30, 23, 4],
+                [true, true, false, true, true, false],
+            ),
+            (
+                "tz offset +2, boundary already crossed by the previous sync",
+                2,
+                &[2026, 9, 30, 23],
+                &[2026, 10, 1, 1, 4],
+                [true, false, false, false, false, false],
+            ),
         ];
-        let mut ctx = Ctx {
-            rand_compute_at_this_date: false,
-            ..Ctx::default()
-        };
-        for (i, (off, period, dt, want)) in cases.iter().enumerate() {
-            ctx.tm_offset = *off;
-            let got = compute_period_at_this_date(&ctx, period, ft(dt), true);
+        assert_eq!(scenarios.len(), 23);
+        let mut ctx = Ctx::default();
+        let mut checked = 0;
+        for (index, (name, tm_offset, from, to, expected)) in scenarios.iter().enumerate() {
+            ctx.tm_offset = *tm_offset;
+            ctx.compute_all = false;
+            ctx.compute_periods = None;
+            for (ci, class) in classes.iter().enumerate() {
+                for (period, days) in periods_by_class[class] {
+                    let range_start = if *days > 0 {
+                        Some(ft(to) - chrono::Duration::days(*days))
+                    } else {
+                        None
+                    };
+                    let hists: &[bool] = if period.starts_with('a') || period.starts_with('c') {
+                        &[true]
+                    } else {
+                        &[false, true]
+                    };
+                    for hist in hists {
+                        let got = compute_period_at_this_date(
+                            &ctx,
+                            period,
+                            range_start,
+                            ft(from),
+                            ft(to),
+                            *hist,
+                        );
+                        assert_eq!(
+                            got,
+                            expected[ci],
+                            "scenario {} '{}', period '{}', range start {:?}, hist {}, from {:?}, to {:?}",
+                            index + 1,
+                            name,
+                            period,
+                            range_start,
+                            hist,
+                            from,
+                            to
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 23 * (15 * 2 + 12));
+
+        // (tm_offset, period, range_start (empty: zero), from, to, hist, expected, compute_all, compute_periods)
+        type Row<'a> = (
+            i64,
+            &'a str,
+            &'a [i32],
+            &'a [i32],
+            &'a [i32],
+            bool,
+            bool,
+            bool,
+            &'a [(&'a str, &'a [bool])],
+        );
+        const NO: &[i32] = &[];
+        let test_cases: &[Row] = &[
+            // GHA2DB_COMPUTE_ALL: everything
+            (
+                0,
+                "y",
+                NO,
+                &[2026, 9, 25, 10],
+                &[2026, 9, 25, 10, 30],
+                false,
+                true,
+                true,
+                &[],
+            ),
+            (
+                0,
+                "d",
+                NO,
+                &[2026, 9, 25, 10],
+                &[2026, 9, 25, 10, 30],
+                true,
+                true,
+                true,
+                &[],
+            ),
+            (
+                0,
+                "a_13_n",
+                NO,
+                &[2026, 9, 25, 10],
+                &[2026, 9, 25, 10, 30],
+                true,
+                true,
+                true,
+                &[],
+            ),
+            (
+                0,
+                "a_0_1",
+                NO,
+                &[2026, 9, 25, 10],
+                &[2026, 9, 25, 10, 30],
+                true,
+                true,
+                true,
+                &[],
+            ),
+            // GHA2DB_FORCE_PERIODS: only the listed period/hist combinations, keyed by the period name
+            (
+                0,
+                "y",
+                NO,
+                &[2026, 9, 25, 10],
+                &[2026, 9, 25, 10, 30],
+                false,
+                true,
+                false,
+                &[("y", &[false])],
+            ),
+            (
+                0,
+                "y",
+                NO,
+                &[2026, 9, 25, 10],
+                &[2026, 9, 25, 10, 30],
+                false,
+                false,
+                false,
+                &[("y", &[true])],
+            ),
+            (
+                0,
+                "y",
+                NO,
+                &[2026, 9, 25, 10],
+                &[2026, 9, 25, 10, 30],
+                false,
+                false,
+                false,
+                &[("m", &[false])],
+            ),
+            (
+                0,
+                "y",
+                NO,
+                &[2026, 9, 25, 10],
+                &[2026, 9, 25, 10, 30],
+                true,
+                false,
+                false,
+                &[("y", &[false])],
+            ),
+            (
+                0,
+                "y",
+                NO,
+                &[2026, 9, 25, 10],
+                &[2026, 9, 25, 10, 30],
+                true,
+                true,
+                false,
+                &[("y", &[true])],
+            ),
+            (
+                0,
+                "d",
+                NO,
+                &[2012, 7, 1],
+                &[2026, 9, 25, 10],
+                false,
+                false,
+                false,
+                &[("d", &[true])],
+            ),
+            (
+                0,
+                "d",
+                NO,
+                &[2012, 7, 1],
+                &[2026, 9, 25, 10],
+                true,
+                true,
+                false,
+                &[("d", &[true])],
+            ),
+            (
+                0,
+                "h",
+                NO,
+                &[2012, 7, 1],
+                &[2026, 9, 25, 10],
+                false,
+                false,
+                false,
+                &[("d", &[false])],
+            ),
+            (
+                0,
+                "a_0_1",
+                NO,
+                &[2012, 7, 1],
+                &[2026, 9, 25, 10],
+                true,
+                true,
+                false,
+                &[("a_0_1", &[true])],
+            ),
+            (
+                0,
+                "a_0_n",
+                &[2012, 7, 1],
+                &[2012, 7, 1],
+                &[2026, 9, 25, 10],
+                true,
+                false,
+                false,
+                &[("a_0_1", &[true])],
+            ),
+            // quick ranges fully in the past (a_i_j, c_b, c_j_i, c_i_g, c_j_g): daily, their start date does not matter
+            (
+                0,
+                "a_0_1",
+                &[2015, 1, 1],
+                &[2026, 9, 25, 9],
+                &[2026, 9, 25, 10, 4],
+                true,
+                false,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "a_0_1",
+                &[2015, 1, 1],
+                &[2026, 9, 24, 23],
+                &[2026, 9, 25, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "a_12_13",
+                NO,
+                &[2026, 9, 24, 23],
+                &[2026, 9, 25, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "c_b",
+                NO,
+                &[2026, 9, 25, 9],
+                &[2026, 9, 25, 10, 4],
+                true,
+                false,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "c_b",
+                NO,
+                &[2026, 9, 24, 23],
+                &[2026, 9, 25, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "c_j_i",
+                &[2016, 1, 1],
+                &[2026, 9, 24, 23],
+                &[2026, 9, 25, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "c_i_g",
+                &[2016, 1, 1],
+                &[2026, 9, 25, 9],
+                &[2026, 9, 25, 10, 4],
+                true,
+                false,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "c_j_g",
+                &[2016, 1, 1],
+                &[2026, 9, 24, 23],
+                &[2026, 9, 25, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            // quick ranges ending now with an unknown start: daily
+            (
+                0,
+                "a_5_n",
+                NO,
+                &[2026, 9, 25, 9],
+                &[2026, 9, 25, 10, 4],
+                true,
+                false,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "a_5_n",
+                NO,
+                &[2026, 9, 24, 23],
+                &[2026, 9, 25, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "c_n",
+                NO,
+                &[2026, 9, 24, 23],
+                &[2026, 9, 25, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            // quick ranges ending now, up to a month long: daily
+            (
+                0,
+                "a_3_n",
+                &[2026, 9, 15],
+                &[2026, 9, 25, 9],
+                &[2026, 9, 25, 10, 4],
+                true,
+                false,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "a_3_n",
+                &[2026, 9, 15],
+                &[2026, 9, 24, 23],
+                &[2026, 9, 25, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "a_3_n",
+                &[2026, 9, 15],
+                &[2026, 9, 21, 3],
+                &[2026, 9, 21, 9, 4],
+                true,
+                false,
+                false,
+                &[],
+            ),
+            (
+                -6,
+                "a_3_n",
+                &[2026, 9, 15],
+                &[2026, 9, 21, 3],
+                &[2026, 9, 21, 9, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            // exactly a month (730.5h up to the hour of 'to'): daily, a minute longer: monthly
+            (
+                0,
+                "a_1_n",
+                &[2026, 8, 25, 13, 30],
+                &[2026, 9, 24, 23],
+                &[2026, 9, 25, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "a_1_n",
+                &[2026, 8, 25, 13, 29],
+                &[2026, 9, 24, 23],
+                &[2026, 9, 25, 0, 4],
+                true,
+                false,
+                false,
+                &[],
+            ),
+            // quick ranges ending now, up to a quarter long: monthly
+            (
+                0,
+                "a_2_n",
+                &[2026, 8, 1],
+                &[2026, 9, 24, 23],
+                &[2026, 9, 25, 0, 4],
+                true,
+                false,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "a_2_n",
+                &[2026, 8, 1],
+                &[2026, 8, 31, 23],
+                &[2026, 9, 1, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "c_n",
+                &[2026, 7, 10],
+                &[2026, 9, 20, 23],
+                &[2026, 9, 21, 0, 4],
+                true,
+                false,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "c_n",
+                &[2026, 7, 10],
+                &[2026, 9, 30, 23],
+                &[2026, 10, 1, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            // quick ranges ending now, up to a year long: quarterly
+            (
+                0,
+                "c_i_n",
+                &[2026, 1, 1],
+                &[2026, 8, 31, 23],
+                &[2026, 9, 1, 0, 4],
+                true,
+                false,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "c_i_n",
+                &[2026, 1, 1],
+                &[2026, 6, 30, 23],
+                &[2026, 7, 1, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "a_4_n",
+                &[2025, 12, 1],
+                &[2026, 9, 30, 23],
+                &[2026, 10, 1, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            // quick ranges ending now, longer than a year: yearly
+            (
+                0,
+                "c_g_n",
+                &[2020, 3, 1],
+                &[2026, 9, 30, 23],
+                &[2026, 10, 1, 0, 4],
+                true,
+                false,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "c_g_n",
+                &[2020, 3, 1],
+                &[2025, 12, 31, 23],
+                &[2026, 1, 1, 0, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "a_0_n",
+                &[2012, 7, 1],
+                &[2012, 7, 1],
+                &[2026, 9, 25, 10],
+                true,
+                true,
+                false,
+                &[],
+            ),
+            (
+                0,
+                "a_0_n",
+                &[2012, 7, 1],
+                &[2026, 9, 24, 23],
+                &[2026, 9, 25, 0, 4],
+                true,
+                false,
+                false,
+                &[],
+            ),
+            (
+                3,
+                "a_0_n",
+                &[2012, 7, 1],
+                &[2026, 12, 31, 20],
+                &[2026, 12, 31, 21, 4],
+                true,
+                true,
+                false,
+                &[],
+            ),
+        ];
+        assert_eq!(test_cases.len(), 43);
+        for (index, (tm_offset, period, range_start, from, to, hist, expected, compute_all, cps)) in
+            test_cases.iter().enumerate()
+        {
+            ctx.tm_offset = *tm_offset;
+            ctx.compute_all = *compute_all;
+            ctx.compute_periods = if cps.is_empty() {
+                None
+            } else {
+                Some(
+                    cps.iter()
+                        .map(|(p, hs)| {
+                            (
+                                p.to_string(),
+                                hs.iter().copied().collect::<BTreeSet<bool>>(),
+                            )
+                        })
+                        .collect(),
+                )
+            };
+            let range_start = if range_start.is_empty() {
+                None
+            } else {
+                Some(ft(range_start))
+            };
+            let got =
+                compute_period_at_this_date(&ctx, period, range_start, ft(from), ft(to), *hist);
             assert_eq!(
                 got,
-                *want,
-                "case {} period {period} offset {off} dt {dt:?}",
-                i + 1
+                *expected,
+                "test number {}, period '{}', range start {:?}, hist {}, from {:?}, to {:?}",
+                index + 1,
+                period,
+                range_start,
+                hist,
+                from,
+                to
             );
         }
-        // compute_all forces everything, compute_periods restricts
-        ctx.compute_all = true;
-        assert!(compute_period_at_this_date(
-            &ctx,
-            "y10",
-            ft(&[2017, 12, 19, 11, 12, 13]),
-            true
-        ));
-        ctx.compute_all = false;
-        let mut cp = BTreeMap::new();
-        cp.insert("y10".to_string(), BTreeSet::from([true]));
-        ctx.compute_periods = Some(cp);
-        assert!(compute_period_at_this_date(
-            &ctx,
-            "y10",
-            ft(&[2017, 12, 19, 11]),
-            true
-        ));
-        assert!(!compute_period_at_this_date(
-            &ctx,
-            "y10",
-            ft(&[2017, 12, 19, 11]),
-            false
-        ));
-        assert!(!compute_period_at_this_date(
-            &ctx,
-            "w",
-            ft(&[2017, 12, 19, 11]),
-            true
-        ));
     }
 
+    /// 1:1 port of Go `TestPeriodClass`.
     #[test]
-    fn non_hist_charts_schedule() {
-        let ctx = Ctx {
-            rand_compute_at_this_date: false,
-            ..Ctx::default()
-        };
-        // weekly chart: Sunday 23:00 (2017-12-17 is a Sunday)
-        assert!(compute_period_at_this_date(
-            &ctx,
-            "w",
-            ft(&[2017, 12, 17, 23]),
-            false
-        ));
-        assert!(!compute_period_at_this_date(
-            &ctx,
-            "w",
-            ft(&[2017, 12, 18, 23]),
-            false
-        ));
-        // monthly chart: last hour of the month
-        assert!(compute_period_at_this_date(
-            &ctx,
-            "m",
-            ft(&[2017, 11, 30, 23]),
-            false
-        ));
-        assert!(!compute_period_at_this_date(
-            &ctx,
-            "m",
-            ft(&[2017, 11, 29, 23]),
-            false
-        ));
-        // quarterly: last hour of a quarter
-        assert!(compute_period_at_this_date(
-            &ctx,
-            "q",
-            ft(&[2017, 12, 31, 23]),
-            false
-        ));
-        assert!(!compute_period_at_this_date(
-            &ctx,
-            "q",
-            ft(&[2017, 11, 30, 23]),
-            false
-        ));
-        // yearly
-        assert!(compute_period_at_this_date(
-            &ctx,
-            "y",
-            ft(&[2017, 12, 31, 23]),
-            false
-        ));
-        assert!(!compute_period_at_this_date(
-            &ctx,
-            "y",
-            ft(&[2017, 9, 30, 23]),
-            false
-        ));
+    fn period_class_go_table() {
+        // Friday 10:58:33, lengths are measured up to the hour start: 10:00
+        const TO: &[i32] = &[2026, 9, 25, 10, 58, 33];
+        const NO: &[i32] = &[];
+        // (period, range_start (empty: zero), to, expected)
+        let test_cases: &[(&str, &[i32], &[i32], &str)] = &[
+            // calendar periods: their first letter, multiples follow their base period
+            ("h", NO, TO, "h"),
+            ("h24", NO, TO, "h"),
+            ("d", NO, TO, "d"),
+            ("d7", NO, TO, "d"),
+            ("d10", NO, TO, "d"),
+            ("w", NO, TO, "w"),
+            ("w2", NO, TO, "w"),
+            ("m", NO, TO, "m"),
+            ("m6", NO, TO, "m"),
+            ("q", NO, TO, "q"),
+            ("q2", NO, TO, "q"),
+            ("y", NO, TO, "y"),
+            ("y2", NO, TO, "y"),
+            ("y10", NO, TO, "y"),
+            ("y100", NO, TO, "y"),
+            ("d", &[2012, 7, 1], TO, "d"),
+            // quick ranges fully in the past: daily whatever their start
+            ("a_0_1", NO, TO, "d"),
+            ("a_0_1", &[2015, 1, 1], TO, "d"),
+            ("a_12_13", &[2026, 9, 20], TO, "d"),
+            ("c_b", NO, TO, "d"),
+            ("c_j_i", &[2016, 1, 1], TO, "d"),
+            ("c_i_g", &[2016, 1, 1], TO, "d"),
+            ("c_j_g", &[2016, 1, 1], TO, "d"),
+            // quick ranges ending now: by their length, daily when the start is unknown
+            ("a_3_n", NO, TO, "d"),
+            ("c_n", NO, TO, "d"),
+            ("a_3_n", &[2026, 9, 25, 9, 59], TO, "d"),
+            ("a_3_n", &[2026, 9, 25, 10, 30], TO, "d"),
+            ("a_3_n", &[2026, 9, 26], TO, "d"),
+            // exactly a month (730.5h) and a minute more
+            ("a_3_n", &[2026, 8, 25, 23, 30], TO, "d"),
+            ("a_3_n", &[2026, 8, 25, 23, 29], TO, "m"),
+            // minutes of 'to' are ignored: 10:58:33 - 08-25 23:45 is longer than a month, 10:00 - 23:45 is not
+            ("a_3_n", &[2026, 8, 25, 23, 45], TO, "d"),
+            ("a_3_n", &[2026, 8, 25, 23, 45], &[2026, 9, 25, 11], "m"),
+            // exactly a quarter (2191.5h) and a minute more
+            ("c_n", &[2026, 6, 26, 2, 30], TO, "m"),
+            ("c_n", &[2026, 6, 26, 2, 29], TO, "q"),
+            // exactly a year (8766h) and a minute more
+            ("c_i_n", &[2025, 9, 25, 4], TO, "q"),
+            ("c_i_n", &[2025, 9, 25, 3, 59], TO, "y"),
+            ("c_g_n", &[2016, 3, 10], TO, "y"),
+            ("a_0_n", &[2012, 7, 1], TO, "y"),
+            ("a_0_n", &[2012, 7, 1], &[2012, 7, 20], "d"),
+            // no calendar period
+            ("", NO, TO, ""),
+            ("x", NO, TO, ""),
+            ("D", NO, TO, ""),
+            ("H", NO, TO, ""),
+            ("range:2020-01-01,2020-02-01", NO, TO, ""),
+            ("range:2020-01-01,2020-02-01", &[2020, 1, 1], TO, ""),
+        ];
+        assert_eq!(test_cases.len(), 45);
+        for (index, (period, range_start, to, expected)) in test_cases.iter().enumerate() {
+            let range_start = if range_start.is_empty() {
+                None
+            } else {
+                Some(ft(range_start))
+            };
+            let got = period_class(period, range_start, ft(to));
+            assert_eq!(
+                got,
+                *expected,
+                "test number {}, period '{}', range start {:?}, to {:?}",
+                index + 1,
+                period,
+                range_start,
+                to
+            );
+        }
+    }
+
+    /// 1:1 port of Go `TestQuickRangeStarts`.
+    #[test]
+    fn quick_range_starts_go_table() {
+        // 'quick_ranges_data' tag values as written by 'annotations': suffix;period;from;to
+        let data: Vec<String> = [
+            "d;1 day;;",
+            "d7;7 days;;",
+            "w;1 week;;",
+            "y100;100 years;;",
+            "a_0_1;;2019-01-01 00:00:00;2019-06-01 00:00:00",
+            "a_1_n;;2019-06-01 12:30:45;2026-09-26 00:00:00",
+            "c_b;;2012-07-01 00:00:00;2018-03-01 00:00:00",
+            "c_n;;2018-03-01 00:00:00;2026-09-26 00:00:00",
+            "",
+            "garbage",
+            "x;;",
+            "a_2_n;;;2026-09-26 00:00:00",
+            "a_3_n;d;2019-01-01 00:00:00;2026-09-26 00:00:00",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let expected: HashMap<String, DateTime<Utc>> = HashMap::from([
+            ("a_0_1".to_string(), ft(&[2019, 1, 1])),
+            ("a_1_n".to_string(), ft(&[2019, 6, 1, 12, 30, 45])),
+            ("c_b".to_string(), ft(&[2012, 7, 1])),
+            ("c_n".to_string(), ft(&[2018, 3, 1])),
+        ]);
+        assert_eq!(quick_range_starts(&data), expected);
+        assert!(quick_range_starts(&[]).is_empty());
+    }
+
+    /// 1:1 port of Go `TestDayBoundaryCrossed`.
+    #[test]
+    fn day_boundary_crossed_go_table() {
+        // (tm_offset, from, to, expected)
+        let test_cases: &[(i64, &[i32], &[i32], bool)] = &[
+            (0, &[2026, 9, 21, 9], &[2026, 9, 21, 10, 4], false),
+            (0, &[2026, 9, 20, 23], &[2026, 9, 21, 0, 4], true),
+            (0, &[2026, 9, 20, 21], &[2026, 9, 21, 3, 4], true),
+            (0, &[2026, 9, 21, 3], &[2026, 9, 21, 9, 4], false),
+            (0, &[2026, 9, 21, 9], &[2026, 9, 22, 9, 58], true),
+            (0, &[2026, 9, 21, 9], &[2026, 9, 25, 9, 58], true),
+            (0, &[2012, 7, 1], &[2026, 9, 25, 10], true),
+            (0, &[2026, 9, 25, 10], &[2026, 9, 25, 10], false),
+            (0, &[2026, 9, 26, 11], &[2026, 9, 25, 10], false),
+            (-6, &[2026, 9, 21, 3], &[2026, 9, 21, 9, 4], true),
+            (2, &[2026, 9, 30, 21], &[2026, 9, 30, 23, 4], true),
+            (2, &[2026, 9, 30, 23], &[2026, 10, 1, 1, 4], false),
+        ];
+        assert_eq!(test_cases.len(), 12);
+        let mut ctx = Ctx::default();
+        for (index, (tm_offset, from, to, expected)) in test_cases.iter().enumerate() {
+            ctx.tm_offset = *tm_offset;
+            let got = day_boundary_crossed(&ctx, ft(from), ft(to));
+            assert_eq!(
+                got,
+                *expected,
+                "test number {}, from {:?}, to {:?}",
+                index + 1,
+                from,
+                to
+            );
+        }
+    }
+
+    /// 1:1 port of Go `TestPeriodStartAt`.
+    #[test]
+    fn period_start_at_go_table() {
+        // Friday
+        const DT: &[i32] = &[2026, 9, 25, 10, 58, 33];
+        const NO: &[i32] = &[];
+        // (period, range_start (empty: zero), tm_offset, dt, expected (empty: None = no calendar period))
+        type Row<'a> = (&'a str, &'a [i32], i64, &'a [i32], &'a [i32]);
+        let test_cases: &[Row] = &[
+            ("h", NO, 0, DT, &[2026, 9, 25, 10]),
+            ("h24", NO, 0, DT, &[2026, 9, 25, 10]),
+            ("d", NO, 0, DT, &[2026, 9, 25]),
+            ("d7", NO, 0, DT, &[2026, 9, 25]),
+            ("d10", NO, 0, DT, &[2026, 9, 25]),
+            ("w", NO, 0, DT, &[2026, 9, 21]),
+            ("w2", NO, 0, DT, &[2026, 9, 21]),
+            ("m", NO, 0, DT, &[2026, 9, 1]),
+            ("m6", NO, 0, DT, &[2026, 9, 1]),
+            ("q", NO, 0, DT, &[2026, 7, 1]),
+            ("q2", NO, 0, DT, &[2026, 7, 1]),
+            ("y", NO, 0, DT, &[2026, 1, 1]),
+            ("y2", NO, 0, DT, &[2026, 1, 1]),
+            ("y10", NO, 0, DT, &[2026, 1, 1]),
+            ("y100", NO, 0, DT, &[2026, 1, 1]),
+            // weeks start on Monday: Sunday belongs to the previous Monday's week, Monday 00:00 starts a new one
+            ("w", NO, 0, &[2026, 9, 20, 23, 59, 59], &[2026, 9, 14]),
+            ("w", NO, 0, &[2026, 9, 21], &[2026, 9, 21]),
+            ("q", NO, 0, &[2026, 10, 1], &[2026, 10, 1]),
+            ("y", NO, 0, &[2026, 12, 31, 23, 59, 59], &[2026, 1, 1]),
+            // hour-precision 'to' as passed by gha2db_sync to calc_metric gives the same period start
+            ("d", NO, 0, &[2026, 9, 25, 10], &[2026, 9, 25]),
+            ("h", NO, 0, &[2026, 9, 25, 10], &[2026, 9, 25, 10]),
+            // GHA2DB_TMOFFSET: the boundary is found on the shifted clock, the result is the instant it happened
+            ("h", NO, 2, DT, &[2026, 9, 25, 10]),
+            ("d", NO, 14, DT, &[2026, 9, 25, 10]),
+            ("d", NO, -11, DT, &[2026, 9, 24, 11]),
+            ("d", NO, 2, &[2026, 9, 25, 21, 59], &[2026, 9, 24, 22]),
+            ("d", NO, 2, &[2026, 9, 25, 22], &[2026, 9, 25, 22]),
+            ("w", NO, -11, &[2026, 9, 21, 3], &[2026, 9, 14, 11]),
+            ("m", NO, -11, &[2026, 10, 1, 3], &[2026, 9, 1, 11]),
+            ("y", NO, 3, &[2026, 12, 31, 22], &[2026, 12, 31, 21]),
+            // histogram quick ranges: past ranges and ranges with an unknown start are daily
+            ("a_0_1", NO, 0, DT, &[2026, 9, 25]),
+            ("a_0_1", &[2015, 1, 1], 0, DT, &[2026, 9, 25]),
+            ("c_b", NO, 0, DT, &[2026, 9, 25]),
+            ("c_j_g", &[2016, 1, 1], 0, DT, &[2026, 9, 25]),
+            ("a_5_n", NO, 0, DT, &[2026, 9, 25]),
+            // ranges ending now by their length
+            ("a_3_n", &[2026, 9, 15], 0, DT, &[2026, 9, 25]),
+            ("a_2_n", &[2026, 8, 1], 0, DT, &[2026, 9, 1]),
+            ("c_i_n", &[2026, 1, 1], 0, DT, &[2026, 7, 1]),
+            ("c_g_n", &[2020, 3, 1], 0, DT, &[2026, 1, 1]),
+            ("c_n", &[2012, 7, 1], 0, DT, &[2026, 1, 1]),
+            (
+                "a_2_n",
+                &[2026, 8, 1],
+                2,
+                &[2026, 9, 30, 23, 30],
+                &[2026, 9, 30, 22],
+            ),
+            // no calendar period
+            ("range:2020-01-01,2020-02-01", NO, 0, DT, NO),
+            ("range:2020-01-01,2020-02-01", &[2020, 1, 1], 0, DT, NO),
+            ("", NO, 0, DT, NO),
+            ("x", NO, 0, DT, NO),
+            ("D", NO, 0, DT, NO),
+        ];
+        assert_eq!(test_cases.len(), 45);
+        let mut ctx = Ctx::default();
+        for (index, (period, range_start, tm_offset, dt, expected)) in test_cases.iter().enumerate()
+        {
+            ctx.tm_offset = *tm_offset;
+            let range_start = if range_start.is_empty() {
+                None
+            } else {
+                Some(ft(range_start))
+            };
+            let got = period_start_at(&ctx, period, range_start, ft(dt));
+            let expected = if expected.is_empty() {
+                None
+            } else {
+                Some(ft(expected))
+            };
+            assert_eq!(
+                got,
+                expected,
+                "test number {}, period '{}', range start {:?}, dt {:?}, offset {}",
+                index + 1,
+                period,
+                range_start,
+                dt,
+                tm_offset
+            );
+        }
     }
 
     #[test]
@@ -1626,12 +2456,6 @@ mod tests {
         assert!(parse_go_float("x").is_err());
     }
 
-    #[test]
-    fn probab_bounds() {
-        assert!(!probab(0));
-        assert!(probab(100));
-    }
-
     /// 1:1 port of Go `TestIntervalHours`.
     #[test]
     fn interval_hours_go_table() {
@@ -1666,523 +2490,6 @@ mod tests {
                 "test number {}, period '{}'",
                 index + 1,
                 period
-            );
-        }
-    }
-
-    /// 1:1 port of Go `TestComputePeriodAtThisDate` (all rows, incl. the
-    /// non-histogram schedule and the `computeAll` / `computePeriods` overrides).
-    #[test]
-    fn compute_period_at_this_date_go_table() {
-        // (tm_offset, period, dt, hist, expected, compute_all, compute_periods)
-        type Row<'a> = (
-            i64,
-            &'a str,
-            &'a [i32],
-            bool,
-            bool,
-            bool,
-            &'a [(&'a str, &'a [bool])],
-        );
-        let test_cases: &[Row] = &[
-            (0, "h", &[2017, 12, 19], true, true, false, &[]),
-            (0, "h", &[2017, 12, 19, 3], true, true, false, &[]),
-            (0, "h", &[2017, 12, 19, 5, 45, 17], true, true, false, &[]),
-            (0, "h2", &[2017, 12, 19], true, true, false, &[]),
-            (0, "h12", &[2017, 12, 19, 3], true, true, false, &[]),
-            (
-                0,
-                "h240",
-                &[2017, 12, 19, 5, 45, 17],
-                true,
-                true,
-                false,
-                &[],
-            ),
-            (0, "d", &[2017, 12, 19], true, true, false, &[]),
-            (0, "d", &[2017, 12, 19, 3], true, true, false, &[]),
-            (0, "d", &[2017, 12, 19, 5, 45, 17], true, true, false, &[]),
-            (0, "d2", &[2017, 12, 19], true, false, false, &[]),
-            (0, "d3", &[2017, 12, 19, 3], true, false, false, &[]),
-            (0, "d7", &[2017, 12, 19, 6, 45, 17], true, true, false, &[]),
-            (0, "d7", &[2017, 12, 19, 9, 45, 17], true, true, false, &[]),
-            (0, "d7", &[2017, 12, 19, 13, 45, 17], true, true, false, &[]),
-            (
-                0,
-                "d14",
-                &[2017, 12, 19, 13, 45, 17],
-                true,
-                true,
-                false,
-                &[],
-            ),
-            (
-                0,
-                "d14",
-                &[2017, 12, 19, 12, 45, 17],
-                true,
-                false,
-                false,
-                &[],
-            ),
-            (0, "a_13_n", &[2017, 12, 19], true, false, false, &[]),
-            (0, "a_13_n", &[2017, 12, 19, 1], true, true, false, &[]),
-            (0, "a_13_n", &[2017, 12, 19, 2, 11], true, false, false, &[]),
-            (0, "a_13_n", &[2017, 12, 19, 4, 11], true, false, false, &[]),
-            (0, "a_12_13", &[2017, 12, 19], true, false, false, &[]),
-            (0, "a_0_1", &[2017, 12, 19, 1], true, false, false, &[]),
-            (0, "a_10_11", &[2017, 12, 19, 2, 11], true, true, false, &[]),
-            (
-                0,
-                "a_10_11",
-                &[2017, 12, 19, 4, 11],
-                true,
-                false,
-                false,
-                &[],
-            ),
-            (0, "w", &[2017, 12, 19], true, true, false, &[]),
-            (0, "w", &[2017, 12, 19, 1], true, false, false, &[]),
-            (0, "w", &[2017, 12, 19, 20, 13], true, false, false, &[]),
-            (0, "w3", &[2017, 12, 19, 20, 13], true, false, false, &[]),
-            (0, "w3", &[2017, 12, 19, 14, 13], true, true, false, &[]),
-            (0, "m", &[2017, 12, 19, 23], true, true, false, &[]),
-            (0, "q", &[2017, 12, 19, 23], true, true, false, &[]),
-            (0, "y", &[2017, 12, 19, 23], true, true, false, &[]),
-            (0, "y2", &[2017, 12, 19, 23], true, true, false, &[]),
-            (0, "y3", &[2017, 12, 19, 23], true, true, false, &[]),
-            (0, "y5", &[2017, 12, 19, 23], true, true, false, &[]),
-            (0, "m2", &[2017, 12, 19, 23], true, true, false, &[]),
-            (0, "m6", &[2017, 12, 19, 23], true, true, false, &[]),
-            (0, "q3", &[2017, 12, 19, 23], true, true, false, &[]),
-            (0, "y10", &[2017, 12, 19, 23], true, true, false, &[]),
-            (0, "m", &[2017, 12, 19, 1], true, false, false, &[]),
-            (0, "q", &[2017, 12, 19, 2], true, false, false, &[]),
-            (0, "y", &[2017, 12, 19, 3], true, false, false, &[]),
-            (0, "y2", &[2017, 12, 19, 3], true, false, false, &[]),
-            (0, "y3", &[2017, 12, 19, 3], true, false, false, &[]),
-            (0, "y4", &[2017, 12, 19, 3], true, false, false, &[]),
-            (0, "m2", &[2017, 12, 19, 4], true, false, false, &[]),
-            (0, "m6", &[2017, 12, 19, 4], true, false, false, &[]),
-            (0, "q3", &[2017, 12, 19, 5], true, false, false, &[]),
-            (0, "y10", &[2017, 12, 19, 5], true, false, false, &[]),
-            (5, "h", &[2017, 12, 19, 19], true, true, false, &[]),
-            (5, "h", &[2017, 12, 19, 22], true, true, false, &[]),
-            (5, "h", &[2017, 12, 19, 0, 45, 17], true, true, false, &[]),
-            (5, "h2", &[2017, 12, 19, 19], true, true, false, &[]),
-            (5, "h12", &[2017, 12, 19, 22], true, true, false, &[]),
-            (
-                5,
-                "h240",
-                &[2017, 12, 19, 2, 45, 17],
-                true,
-                true,
-                false,
-                &[],
-            ),
-            (5, "d", &[2017, 12, 19, 19], true, true, false, &[]),
-            (5, "d", &[2017, 12, 19, 22], true, true, false, &[]),
-            (5, "d", &[2017, 12, 19, 0, 45, 17], true, true, false, &[]),
-            (5, "d2", &[2017, 12, 19, 19], true, false, false, &[]),
-            (5, "d3", &[2017, 12, 19, 22], true, false, false, &[]),
-            (5, "d7", &[2017, 12, 19, 1, 45, 17], true, true, false, &[]),
-            (5, "d14", &[2017, 12, 19, 8, 45, 17], true, true, false, &[]),
-            (
-                5,
-                "d14",
-                &[2017, 12, 19, 7, 45, 17],
-                true,
-                false,
-                false,
-                &[],
-            ),
-            (5, "a_13_n", &[2017, 12, 19, 19], true, false, false, &[]),
-            (5, "a_13_n", &[2017, 12, 19, 20], true, true, false, &[]),
-            (
-                5,
-                "a_13_n",
-                &[2017, 12, 19, 21, 11],
-                true,
-                false,
-                false,
-                &[],
-            ),
-            (
-                5,
-                "a_13_n",
-                &[2017, 12, 19, 23, 11],
-                true,
-                false,
-                false,
-                &[],
-            ),
-            (5, "a_12_13", &[2017, 12, 19, 19], true, false, false, &[]),
-            (5, "a_0_1", &[2017, 12, 19, 20], true, false, false, &[]),
-            (
-                5,
-                "a_10_11",
-                &[2017, 12, 19, 21, 11],
-                true,
-                true,
-                false,
-                &[],
-            ),
-            (
-                5,
-                "a_10_11",
-                &[2017, 12, 19, 23, 11],
-                true,
-                false,
-                false,
-                &[],
-            ),
-            (5, "w", &[2017, 12, 19, 19], true, true, false, &[]),
-            (5, "w", &[2017, 12, 19, 20], true, false, false, &[]),
-            (5, "w", &[2017, 12, 19, 15, 13], true, false, false, &[]),
-            (5, "w3", &[2017, 12, 19, 15, 13], true, false, false, &[]),
-            (5, "w3", &[2017, 12, 19, 2, 13], true, true, false, &[]),
-            (5, "w3", &[2017, 12, 19, 9, 13], true, true, false, &[]),
-            (5, "m", &[2017, 12, 19, 18], true, true, false, &[]),
-            (5, "q", &[2017, 12, 19, 18], true, true, false, &[]),
-            (5, "y", &[2017, 12, 19, 18], true, true, false, &[]),
-            (5, "y5", &[2017, 12, 19, 18], true, true, false, &[]),
-            (5, "m2", &[2017, 12, 19, 18], true, true, false, &[]),
-            (5, "m6", &[2017, 12, 19, 18], true, true, false, &[]),
-            (5, "q3", &[2017, 12, 19, 18], true, true, false, &[]),
-            (5, "y10", &[2017, 12, 19, 18], true, true, false, &[]),
-            (5, "m", &[2017, 12, 19, 20], true, false, false, &[]),
-            (5, "q", &[2017, 12, 19, 21], true, false, false, &[]),
-            (5, "y", &[2017, 12, 19, 22], true, false, false, &[]),
-            (5, "y3", &[2017, 12, 19, 22], true, false, false, &[]),
-            (5, "m2", &[2017, 12, 19, 23], true, false, false, &[]),
-            (5, "m6", &[2017, 12, 19, 23], true, false, false, &[]),
-            (5, "q3", &[2017, 12, 19], true, false, false, &[]),
-            (5, "y10", &[2017, 12, 19], true, false, false, &[]),
-            (-10, "h", &[2017, 12, 19, 10], true, true, false, &[]),
-            (-10, "h", &[2017, 12, 19, 13], true, true, false, &[]),
-            (
-                -10,
-                "h",
-                &[2017, 12, 19, 15, 45, 17],
-                true,
-                true,
-                false,
-                &[],
-            ),
-            (-10, "h2", &[2017, 12, 19, 10], true, true, false, &[]),
-            (-10, "h12", &[2017, 12, 19, 3], true, true, false, &[]),
-            (
-                -10,
-                "h240",
-                &[2017, 12, 19, 15, 45, 17],
-                true,
-                true,
-                false,
-                &[],
-            ),
-            (-10, "d", &[2017, 12, 19, 10], true, true, false, &[]),
-            (-10, "d", &[2017, 12, 19, 13], true, true, false, &[]),
-            (
-                -10,
-                "d",
-                &[2017, 12, 19, 15, 45, 17],
-                true,
-                true,
-                false,
-                &[],
-            ),
-            (-10, "d2", &[2017, 12, 19, 10], true, false, false, &[]),
-            (-10, "d3", &[2017, 12, 19, 13], true, false, false, &[]),
-            (
-                -10,
-                "d7",
-                &[2017, 12, 19, 4, 45, 17],
-                true,
-                true,
-                false,
-                &[],
-            ),
-            (
-                -10,
-                "d7",
-                &[2017, 12, 19, 23, 45, 17],
-                true,
-                true,
-                false,
-                &[],
-            ),
-            (
-                -10,
-                "d7",
-                &[2017, 12, 19, 7, 45, 17],
-                true,
-                true,
-                false,
-                &[],
-            ),
-            (
-                -10,
-                "d14",
-                &[2017, 12, 19, 23, 45, 17],
-                true,
-                true,
-                false,
-                &[],
-            ),
-            (
-                -10,
-                "d14",
-                &[2017, 12, 19, 22, 45, 17],
-                true,
-                false,
-                false,
-                &[],
-            ),
-            (-10, "a_13_n", &[2017, 12, 19, 10], true, false, false, &[]),
-            (-10, "a_13_n", &[2017, 12, 19, 11], true, true, false, &[]),
-            (
-                -10,
-                "a_13_n",
-                &[2017, 12, 19, 12, 11],
-                true,
-                false,
-                false,
-                &[],
-            ),
-            (
-                -10,
-                "a_13_n",
-                &[2017, 12, 19, 14, 11],
-                true,
-                false,
-                false,
-                &[],
-            ),
-            (-10, "a_12_13", &[2017, 12, 19, 10], true, false, false, &[]),
-            (-10, "a_0_1", &[2017, 12, 19, 11], true, false, false, &[]),
-            (
-                -10,
-                "a_10_11",
-                &[2017, 12, 19, 12, 11],
-                true,
-                true,
-                false,
-                &[],
-            ),
-            (
-                -10,
-                "a_10_11",
-                &[2017, 12, 19, 14, 11],
-                true,
-                false,
-                false,
-                &[],
-            ),
-            (-10, "w", &[2017, 12, 19, 10], true, true, false, &[]),
-            (-10, "w", &[2017, 12, 19, 11], true, false, false, &[]),
-            (-10, "w", &[2017, 12, 19, 6, 13], true, false, false, &[]),
-            (-10, "w3", &[2017, 12, 19, 6, 13], true, false, false, &[]),
-            (-10, "w3", &[2017, 12, 19, 7, 13], true, true, false, &[]),
-            (-10, "w3", &[2017, 12, 19, 8, 13], true, false, false, &[]),
-            (-10, "m", &[2017, 12, 19, 9], true, true, false, &[]),
-            (-10, "q", &[2017, 12, 19, 9], true, true, false, &[]),
-            (-10, "y", &[2017, 12, 19, 9], true, true, false, &[]),
-            (-10, "y2", &[2017, 12, 19, 9], true, true, false, &[]),
-            (-10, "m2", &[2017, 12, 19, 9], true, true, false, &[]),
-            (-10, "m6", &[2017, 12, 19, 9], true, true, false, &[]),
-            (-10, "q3", &[2017, 12, 19, 9], true, true, false, &[]),
-            (-10, "y10", &[2017, 12, 19, 9], true, true, false, &[]),
-            (-10, "m", &[2017, 12, 19, 11], true, false, false, &[]),
-            (-10, "q", &[2017, 12, 19, 12], true, false, false, &[]),
-            (-10, "y", &[2017, 12, 19, 13], true, false, false, &[]),
-            (-10, "m2", &[2017, 12, 19, 14], true, false, false, &[]),
-            (-10, "m6", &[2017, 12, 19, 14], true, false, false, &[]),
-            (-10, "q3", &[2017, 12, 19, 15], true, false, false, &[]),
-            (-10, "y10", &[2017, 12, 19, 15], true, false, false, &[]),
-            (0, "y10", &[2017, 12, 19, 11, 12, 13], true, true, true, &[]),
-            (-10, "w", &[2018, 9, 14, 10], false, false, false, &[]),
-            (-10, "w", &[2018, 9, 14, 11], false, false, false, &[]),
-            (-10, "w", &[2018, 9, 17, 9], false, false, false, &[]),
-            (10, "w", &[2018, 9, 16, 13], false, false, false, &[]),
-            (10, "w", &[2018, 9, 16, 23], false, true, false, &[]),
-            (10, "w", &[2018, 9, 17, 23], false, false, false, &[]),
-            (-10, "w", &[2018, 9, 17, 23], false, false, false, &[]),
-            (10, "w", &[2018, 9, 15, 23], false, false, false, &[]),
-            (-10, "w", &[2018, 9, 15, 23], false, false, false, &[]),
-            (0, "w", &[2018, 9, 23, 23], false, true, false, &[]),
-            (0, "w", &[2018, 9, 24, 0], false, false, false, &[]),
-            (0, "w", &[2018, 9, 16, 13], false, false, false, &[]),
-            (0, "m", &[2017, 12, 19, 23], false, false, false, &[]),
-            (0, "m", &[2017, 12, 19, 1], false, false, false, &[]),
-            (0, "m", &[2017, 12, 1, 23], false, false, false, &[]),
-            (0, "m", &[2017, 11, 30, 23], false, true, false, &[]),
-            (0, "m", &[2017, 12, 1, 1], false, false, false, &[]),
-            (0, "q", &[2017, 12, 19, 23], false, false, false, &[]),
-            (0, "q", &[2017, 12, 19, 2], false, false, false, &[]),
-            (0, "q", &[2017, 12, 1, 23], false, false, false, &[]),
-            (0, "q", &[2017, 11, 30, 23], false, false, false, &[]),
-            (0, "q", &[2017, 12, 31, 23], false, true, false, &[]),
-            (0, "q", &[2017, 9, 30, 23], false, true, false, &[]),
-            (0, "q", &[2017, 12, 1, 2], false, false, false, &[]),
-            (0, "q", &[2017, 4, 19, 23], false, false, false, &[]),
-            (0, "q", &[2017, 4, 19, 2], false, false, false, &[]),
-            (0, "q", &[2017, 7, 1, 23], false, false, false, &[]),
-            (0, "q", &[2017, 6, 30, 23], false, true, false, &[]),
-            (0, "q", &[2017, 7, 1, 2], false, false, false, &[]),
-            (0, "y", &[2017, 12, 19, 23], false, false, false, &[]),
-            (0, "y", &[2017, 12, 19, 3], false, false, false, &[]),
-            (0, "y", &[2017, 12, 1, 23], false, false, false, &[]),
-            (0, "y", &[2017, 12, 31, 23], false, true, false, &[]),
-            (0, "y", &[2017, 10, 31, 23], false, false, false, &[]),
-            (0, "y", &[2017, 12, 1, 3], false, false, false, &[]),
-            (0, "y", &[2017, 10, 1, 23], false, false, false, &[]),
-            (0, "y", &[2017, 10, 1, 3], false, false, false, &[]),
-            (0, "y", &[2016, 12, 31, 23], false, true, false, &[]),
-            (0, "y", &[2017, 1, 1, 23], false, false, false, &[]),
-            (0, "y", &[2017, 1, 1, 3], false, false, false, &[]),
-            (
-                0,
-                "y",
-                &[2017, 1, 1, 3],
-                false,
-                true,
-                false,
-                &[("y", &[false])],
-            ),
-            (
-                0,
-                "y",
-                &[2017, 1, 1, 3],
-                false,
-                false,
-                false,
-                &[("y", &[true])],
-            ),
-            (
-                0,
-                "y",
-                &[2017, 1, 1, 3],
-                false,
-                false,
-                false,
-                &[("m", &[false])],
-            ),
-            (
-                0,
-                "y",
-                &[2017, 1, 1, 23],
-                false,
-                true,
-                false,
-                &[("y", &[false])],
-            ),
-            (
-                0,
-                "y",
-                &[2017, 1, 1, 23],
-                false,
-                false,
-                false,
-                &[("y", &[true])],
-            ),
-            (
-                0,
-                "y",
-                &[2017, 1, 1, 23],
-                false,
-                false,
-                false,
-                &[("m", &[false])],
-            ),
-            (
-                0,
-                "y",
-                &[2017, 1, 1, 3],
-                true,
-                false,
-                false,
-                &[("y", &[false])],
-            ),
-            (
-                0,
-                "y",
-                &[2017, 1, 1, 3],
-                true,
-                true,
-                false,
-                &[("y", &[true])],
-            ),
-            (
-                0,
-                "y",
-                &[2017, 1, 1, 3],
-                true,
-                false,
-                false,
-                &[("m", &[false])],
-            ),
-            (
-                0,
-                "y",
-                &[2017, 1, 1, 23],
-                true,
-                false,
-                false,
-                &[("y", &[false])],
-            ),
-            (
-                0,
-                "y",
-                &[2017, 1, 1, 23],
-                true,
-                true,
-                false,
-                &[("y", &[true])],
-            ),
-            (
-                0,
-                "y",
-                &[2017, 1, 1, 23],
-                true,
-                false,
-                false,
-                &[("m", &[false])],
-            ),
-        ];
-        assert_eq!(test_cases.len(), 191);
-        // Go: ctx.Init(); ctx.TestMode = true; ctx.RandComputeAtThisDate = false
-        let mut ctx = Ctx {
-            test_mode: true,
-            rand_compute_at_this_date: false,
-            ..Ctx::default()
-        };
-        for (index, (tm_offset, period, dt, hist, expected, compute_all, compute_periods)) in
-            test_cases.iter().enumerate()
-        {
-            ctx.tm_offset = *tm_offset;
-            ctx.compute_all = *compute_all;
-            ctx.compute_periods = if compute_periods.is_empty() {
-                None
-            } else {
-                Some(
-                    compute_periods
-                        .iter()
-                        .map(|(k, v)| {
-                            (k.to_string(), v.iter().copied().collect::<BTreeSet<bool>>())
-                        })
-                        .collect(),
-                )
-            };
-            let got = compute_period_at_this_date(&ctx, period, ft(dt), *hist);
-            assert_eq!(
-                got,
-                *expected,
-                "test number {}, expected '{}' from period '{}', hist '{}' for date '{:?}'",
-                index + 1,
-                expected,
-                period,
-                hist,
-                dt
             );
         }
     }

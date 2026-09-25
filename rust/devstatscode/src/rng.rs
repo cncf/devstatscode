@@ -3,7 +3,7 @@
 //!
 //! xoshiro256** seeded from `std::hash::RandomState` (per-process random) and
 //! the wall clock; no external dependency. Not cryptographic — none of the Go
-//! uses (`Probab`, `RandString`, task shuffling) need that.
+//! uses (`RandString`, task shuffling, retry sleeps) need that.
 
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::sync::Mutex;

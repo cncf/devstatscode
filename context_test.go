@@ -303,9 +303,6 @@ func TestInit(t *testing.T) {
 		CommitsLOCStatsEnabled:   true,
 		EnableMetricsDrop:        false,
 		RefreshCommitRoles:       false,
-		RandComputeAtThisDate:    true,
-		AllowRandTagsColsCompute: false,
-		RecalcReciprocal:         24,
 		MaxHistograms:            0,
 		FetchCommitsMode:         1,
 		GitCommitsBatch:          1000,
@@ -1843,42 +1840,6 @@ func TestInit(t *testing.T) {
 			),
 		},
 		{
-			"Setting recalc reciprocal to 1",
-			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "1"},
-			dynamicSetFields(
-				t,
-				defaultContext.CopyContext(),
-				map[string]interface{}{"RecalcReciprocal": 1},
-			),
-		},
-		{
-			"Setting recalc reciprocal to 100",
-			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "100"},
-			dynamicSetFields(
-				t,
-				defaultContext.CopyContext(),
-				map[string]interface{}{"RecalcReciprocal": 100},
-			),
-		},
-		{
-			"Setting recalc reciprocal to 0",
-			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "0"},
-			dynamicSetFields(
-				t,
-				defaultContext.CopyContext(),
-				map[string]interface{}{"RecalcReciprocal": 24},
-			),
-		},
-		{
-			"Setting recalc reciprocal to -2",
-			map[string]string{"GHA2DB_RECALC_RECIPROCAL": "-2"},
-			dynamicSetFields(
-				t,
-				defaultContext.CopyContext(),
-				map[string]interface{}{"RecalcReciprocal": 24},
-			),
-		},
-		{
 			"Setting max histograms to 16",
 			map[string]string{"GHA2DB_MAX_HIST": "16"},
 			dynamicSetFields(
@@ -1941,8 +1902,6 @@ func TestInit(t *testing.T) {
 	// Execute test cases
 	for index, test := range testCases {
 		var gotContext lib.Ctx
-		test.expectedContext.RandComputeAtThisDate = true
-		// test.expectedContext.AllowRandTagsColsCompute = false
 
 		// Because GitHubOAuth is depending on /etc/github/oauth* files
 		// We can't test this, because user test environment can have those files or not

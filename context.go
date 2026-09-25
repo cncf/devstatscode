@@ -169,12 +169,9 @@ type Ctx struct {
 	CanReconnect             bool                         // True, unless connecting to a custom database, in this case there can be multiple threads sharing context and we don't want to write to a random database
 	CommitsFilesStatsEnabled bool                         // True, can be disabled by GHA2DB_SKIP_COMMITS_FILES, get_repos tool
 	CommitsLOCStatsEnabled   bool                         // True, can be disabled by GHA2DB_SKIP_COMMITS_LOC, get_repos tool
-	RecalcReciprocal         int                          // From GHA2DB_RECALC_RECIPROCAL: 1/RecalcReciprocal of recalc metric at given datetime, even if it should be calculated at this datetime, default 24 (means 4.1(6)%, or about once/day)
 	MaxHistograms            int                          // From GHA2DB_MAX_HIST: maximum histogram concurrency, default: 0 - means unlimited
 	MaxRunDuration           map[string][2]int            // From GHA2DB_MAX_RUN_DURATION, how log given programs can run and exist status after timeout, for example "tags:1h:0,calc_metric:12h:1"
-	RandComputeAtThisDate    bool                         // Use rand to decide if a given date period must be calculated at this date or not.
 	RefreshCommitRoles       bool                         // From GHA2DB_REFRESH_COMMIT_ROLES - will process all commiths in DB and for every single one of them it will generate gha_commits_roles entries.
-	AllowRandTagsColsCompute bool                         // If set, then tags and columns will only be computed at random 0-5 hour, otherwise always when hour<6.
 	AllowMetricFail          bool                         // From GHA2DB_ALLOW_METRIC_FAIL - if set, then calc_metric will not exit on first failed metric, but will try to compute all metrics.
 	FetchCommitsMode         int                          // From GHA2DB_FETCH_COMMITS_MODE get_repos tool, mode to reconstruct gha_commits from git history for PushEvents: 0-disabled, 1-missing only (default), 2-missing+truncated
 	GitCommitsBatch          int                          // From GHA2DB_GIT_COMMITS_BATCH get_repos tool, max number of commit SHAs passed to git_commits.sh in one call, default 1000
@@ -214,8 +211,6 @@ func (ctx *Ctx) Init() {
 	ctx.ExecQuiet = false
 	ctx.ExecOutput = false
 	ctx.CanReconnect = true
-	ctx.RandComputeAtThisDate = true
-	ctx.AllowRandTagsColsCompute = false
 
 	/// Commits analysis
 	ctx.CommitsFilesStatsEnabled = os.Getenv("GHA2DB_SKIP_COMMITS_FILES") == ""
@@ -958,19 +953,6 @@ func (ctx *Ctx) Init() {
 	// CSV file
 	ctx.CSVFile = os.Getenv("GHA2DB_CSVOUT")
 
-	// RecalcReciprocal
-	if os.Getenv("GHA2DB_RECALC_RECIPROCAL") == "" {
-		ctx.RecalcReciprocal = 24
-	} else {
-		rr, err := strconv.Atoi(os.Getenv("GHA2DB_RECALC_RECIPROCAL"))
-		FatalNoLog(err)
-		if rr > 0 {
-			ctx.RecalcReciprocal = rr
-		} else {
-			ctx.RecalcReciprocal = 24
-		}
-	}
-
 	// MaxHistograms
 	if os.Getenv("GHA2DB_MAX_HIST") != "" {
 		mh, err := strconv.Atoi(os.Getenv("GHA2DB_MAX_HIST"))
@@ -1146,7 +1128,6 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		CommitsFilesStatsEnabled: ctx.CommitsFilesStatsEnabled,
 		CommitsLOCStatsEnabled:   ctx.CommitsLOCStatsEnabled,
 		EnableMetricsDrop:        ctx.EnableMetricsDrop,
-		RecalcReciprocal:         ctx.RecalcReciprocal,
 		MaxHistograms:            ctx.MaxHistograms,
 		FetchCommitsMode:         ctx.FetchCommitsMode,
 		GitCommitsBatch:          ctx.GitCommitsBatch,

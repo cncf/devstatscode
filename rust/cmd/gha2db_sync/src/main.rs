@@ -32,8 +32,8 @@ use devstatscode::exec::exec_command;
 use devstatscode::pg::api::{fatal_on_pg_err, get_tag_values, query_row_sql, table_exists};
 use devstatscode::yamlv2::de as yde;
 use devstatscode::{
-    fatal_on_err, fatal_on_error, fatalf, gofmt, io, log, pg, printf, projects, rng, signal,
-    threads, time as gotime, Ctx,
+    computed, fatal_on_err, fatal_on_error, fatalf, gofmt, io, log, pg, printf, projects, rng,
+    signal, threads, time as gotime, Ctx,
 };
 use serde::Deserialize;
 
@@ -606,7 +606,6 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
     // Create date range — just to get into the next GHA hour
     let mut from = max_dt_pg;
     let to = GoTime::now();
-    let now_hour = Local::now().hour() as i64;
     let from_date = gotime::to_ymd_date(from.t);
     let from_hour = from.t.hour().to_string();
     let to_date = gotime::to_ymd_date(to.t);
@@ -700,18 +699,7 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
     }
 
     // Calc metric
-    // This is only correct when we are able to run all syncs every hour,
-    // otherwise ctx.rand_compute_at_this_date is set.
-    let mut daily_recalc_hour: i64 = 0;
     let mut ran_tags = false;
-    if ctx.rand_compute_at_this_date {
-        daily_recalc_hour = rng::intn(6) as i64;
-    }
-    // If set, tags and columns are only computed at a random 0-5 hour,
-    // otherwise always when hour < 6.
-    if !ctx.allow_rand_tags_cols_compute && now_hour < 6 {
-        daily_recalc_hour = now_hour;
-    }
     if !ctx.skip_tsdb {
         let mut metrics_dir = format!("{data_prefix}metrics");
         if !ctx.project.is_empty() {
@@ -725,10 +713,13 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
             from = max_dt_tsdb;
         }
         printf!("TS range: {} - {}\n", from.ymdh(), to.ymdh());
+        // tags/annotations/columns are recomputed once per day: on the first sync after a day boundary
+        let daily_recalc = ctx.reset_tsdb
+            || gotime::day_boundary_crossed(ctx, from.wall_as_utc(), to.wall_as_utc());
 
         // TSDB tags (repo groups template variable currently)
         if !ctx.skip_tags {
-            if ctx.reset_tsdb || now_hour == daily_recalc_hour {
+            if daily_recalc {
                 printf!("Run tags\n");
                 let res = exec_command(ctx, &[format!("{cmd_prefix}tags")], &BTreeMap::new());
                 fatal_on_err(res);
@@ -736,8 +727,7 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
                 printf!("Run tags finished, will also run columns later\n");
             } else {
                 printf!(
-                    "Skipping `tags` recalculation, it is only computed once per day hour={}\n",
-                    daily_recalc_hour
+                    "Skipping `tags` recalculation, it is only computed once per day, on the first sync after a day boundary\n"
                 );
             }
         }
@@ -751,23 +741,26 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
 
         // Annotations
         if !ctx.skip_annotations {
-            if !ctx.project.is_empty()
-                && (ctx.reset_tsdb || now_hour == daily_recalc_hour || ran_tags)
-            {
+            if !ctx.project.is_empty() && (daily_recalc || ran_tags) {
                 printf!("Run annotations\n");
                 let res =
                     exec_command(ctx, &[format!("{cmd_prefix}annotations")], &BTreeMap::new());
                 fatal_on_err(res);
             } else {
                 printf!(
-                    "Skipping `annotations` recalculation, it is only computed once per day hour={} or if tags were ran during this sync\n",
-                    daily_recalc_hour
+                    "Skipping `annotations` recalculation, it is only computed once per day, on the first sync after a day boundary, or if tags were ran during this sync\n"
                 );
             }
         }
 
         // Get quick ranges from the TSDB (filled by the annotations command)
         let quick_ranges = get_tag_values(&con, ctx, "quick_ranges", "quick_ranges_suffix");
+        let quick_range_starts = gotime::quick_range_starts(&get_tag_values(
+            &con,
+            ctx,
+            "quick_ranges",
+            "quick_ranges_data",
+        ));
         printf!(
             "Quick ranges: {}, compute periods: {}\n",
             gofmt::slice(&quick_ranges),
@@ -909,33 +902,51 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
                         }
                         continue;
                     }
-                    let mut recalc = if metric.always_recalc {
+                    let mut series_name_or_func = metric.series_name_or_func.clone();
+                    if metric.add_period_to_name {
+                        series_name_or_func.push('_');
+                        series_name_or_func.push_str(&period_aggr);
+                    }
+                    let sql_file = format!("{metrics_dir}/{}.sql", metric.metric_sql);
+                    let recalc = if metric.always_recalc {
                         true
                     } else {
-                        gotime::compute_period_at_this_date(
+                        let range_start = quick_range_starts.get(period.as_str()).copied();
+                        let mut recalc = gotime::compute_period_at_this_date(
                             ctx,
                             period,
+                            range_start,
+                            from.wall_as_utc(),
                             to.wall_as_utc(),
                             metric.histogram,
-                        )
-                    };
-                    // The sync probability can be less than 100% and that may
-                    // cause gaps: eventually recalculate even if not due.
-                    if !recalc && ctx.compute_periods.is_none() {
-                        let val = rng::intn(ctx.recalc_reciprocal.max(1) as u64);
-                        if val == 0 {
+                        );
+                        // Not due by the calendar rules: still recalculate when there is no `gha_computed` marker
+                        // of a successful `calc_metric` run since the current period started (crashed sync, allowed failure, ...)
+                        if !recalc
+                            && ctx.compute_periods.is_none()
+                            && !computed::is_period_computed(
+                                &con,
+                                ctx,
+                                &computed::period_computed_key(
+                                    &series_name_or_func,
+                                    &sql_file,
+                                    &period_aggr,
+                                ),
+                                &period_aggr,
+                                range_start,
+                                to.wall_as_utc(),
+                            )
+                        {
                             printf!(
-                                "Recalculating period due to reciprocal \"{}{}\", hist {} for date to {}, computePeriods: {}, metric: {}\n",
-                                period,
-                                aggr_suffix,
+                                "Period \"{}\", hist {} of metric {} was not computed successfully since the current period started, recalculating\n",
+                                period_aggr,
                                 metric.histogram,
-                                to.v(),
-                                compute_periods_string(&ctx.compute_periods),
                                 metric.name
                             );
                             recalc = true;
                         }
-                    }
+                        recalc
+                    };
                     if ctx.debug > 0 {
                         printf!(
                             "Recalculate period \"{}{}\", hist {} for date to {}: {}\n",
@@ -958,11 +969,6 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
                         );
                         continue;
                     }
-                    let mut series_name_or_func = metric.series_name_or_func.clone();
-                    if metric.add_period_to_name {
-                        series_name_or_func.push('_');
-                        series_name_or_func.push_str(&period_aggr);
-                    }
                     // Histogram metrics usually take long but execute a single
                     // query, so they are collected and run at the end, each in
                     // its own thread.
@@ -974,7 +980,6 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
                         drop_processed = true;
                     }
                     let env_map = process_env_map(&metric.env_map, &period_aggr);
-                    let sql_file = format!("{metrics_dir}/{}.sql", metric.metric_sql);
                     if metric.histogram {
                         printf!(
                             "Scheduled histogram metric {}, period {}, desc: '{}', aggregate: '{}' ...\n",
@@ -1089,14 +1094,13 @@ fn sync(ctx: &mut Ctx, args: &[String]) {
 
         // TSDB: ensure that the calculated metrics have all columns from tags
         if !ctx.skip_columns {
-            if ctx.run_columns || ctx.reset_tsdb || ran_tags || now_hour == daily_recalc_hour {
+            if ctx.run_columns || daily_recalc || ran_tags {
                 printf!("Run columns\n");
                 let res = exec_command(ctx, &[format!("{cmd_prefix}columns")], &BTreeMap::new());
                 fatal_on_err(res);
             } else {
                 printf!(
-                    "Skipping `columns` recalculation, it is only computed once per day, hour={} or if tags were ran during this sync\n",
-                    daily_recalc_hour
+                    "Skipping `columns` recalculation, it is only computed once per day, on the first sync after a day boundary, or if tags were ran during this sync\n"
                 );
             }
         }

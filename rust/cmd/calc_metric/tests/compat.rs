@@ -633,7 +633,14 @@ fn count_daily() {
     assert_eq!(lc.len(), 1);
     assert_eq!(lc[0].0, "count d");
     assert!(lc[0].1.starts_with("cnt ") && lc[0].1.ends_with("/count.sql 2015-08-01 2015-08-03 d"));
-    assert!(rs.computed().is_empty());
+    // the marker of the successful run: its key and the hour of 'to'
+    assert_eq!(
+        rs.computed(),
+        vec![(
+            "calc_metric/count.sql cnt d".to_string(),
+            "2015-08-03 00:00:00".to_string()
+        )]
+    );
     rs.expect_line(0, BANNER);
     rs.expect_line(0, "Using single threaded version");
     rs.expect_line(
@@ -2000,7 +2007,13 @@ fn hist_daily() {
         ])
     );
     assert_eq!(rs.last_computed()[0].0, "hist_by_type d");
-    assert!(rs.computed().is_empty());
+    assert_eq!(
+        rs.computed(),
+        vec![(
+            "calc_metric/hist_by_type.sql hbt d".to_string(),
+            "2015-08-13 00:00:00".to_string()
+        )]
+    );
     rs.expect_line(
         0,
         "calc_metric.go: Histogram running interval 'day,d' n:1 anno:false past:false multi:false",
@@ -2109,13 +2122,20 @@ fn hist_annotations_range() {
         ]
     );
     assert_eq!(rs.column("shbtf", "period", "name"), strs(&["a_0_1"; 5]));
-    // a past range is marked as computed (key: last two path components)
+    // a past range is marked as computed (key: last two path components) and the run
+    // itself gets its marker
     assert_eq!(
         rs.computed(),
-        vec![(
-            "calc_metric/hist_by_type_fromto.sql".to_string(),
-            "2015-08-06 00:00:00".to_string()
-        )]
+        vec![
+            (
+                "calc_metric/hist_by_type_fromto.sql".to_string(),
+                "2015-08-06 00:00:00".to_string()
+            ),
+            (
+                "calc_metric/hist_by_type_fromto.sql hbtf a_0_1".to_string(),
+                "2015-08-13 00:00:00".to_string()
+            )
+        ]
     );
     assert_eq!(rs.last_computed()[0].0, "hist_by_type_fromto a_0_1");
     rs.expect_line(
@@ -2146,7 +2166,13 @@ fn hist_annotations_period_day() {
         rs.query("select name, value::text from shbtr order by name"),
         vec![strs(&["PushEvent", "1"])]
     );
-    assert!(rs.computed().is_empty());
+    assert_eq!(
+        rs.computed(),
+        vec![(
+            "calc_metric/hist_by_type_range.sql hbtr d".to_string(),
+            "2015-08-13 00:00:00".to_string()
+        )]
+    );
 }
 
 #[test]
@@ -2195,7 +2221,19 @@ fn hist_annotations_skip_past() {
         "Skipping past quick range: 2015-08-06 00:00:00-2015-08-10 00:00:00 (already computed)",
     );
     assert_eq!(rs.count("shbtf"), 5);
-    assert_eq!(rs.computed().len(), 1);
+    assert_eq!(
+        rs.computed(),
+        vec![
+            (
+                "calc_metric/hist_by_type_fromto.sql".to_string(),
+                "2015-08-10 00:00:00".to_string()
+            ),
+            (
+                "calc_metric/hist_by_type_fromto.sql hbtf a_1_2".to_string(),
+                "2015-08-13 00:00:00".to_string()
+            )
+        ]
+    );
 }
 
 #[test]
@@ -2215,8 +2253,14 @@ fn hist_annotations_range_reaching_the_future() {
     };
     assert_eq!(rs.code(0), Some(0));
     assert_eq!(rs.count("shbtf"), 5);
-    // not marked: the range is still open
-    assert!(rs.computed().is_empty());
+    // no past-range marker: the range is still open; the run marker only
+    assert_eq!(
+        rs.computed(),
+        vec![(
+            "calc_metric/hist_by_type_fromto.sql hbtf c_n".to_string(),
+            "2015-08-13 00:00:00".to_string()
+        )]
+    );
 }
 
 #[test]
@@ -2269,7 +2313,14 @@ fn hist_explicit_range_period() {
         rs.last_computed()[0].0,
         "hist_by_type_fromto range:2015-08-01 00:00:00,2015-08-10 00:00:00"
     );
-    assert!(rs.computed().is_empty());
+    // the run marker keeps the period as given on the command line
+    assert_eq!(
+        rs.computed(),
+        vec![(
+            "calc_metric/hist_by_type_fromto.sql hbtf range:2015-08-01,2015-08-10".to_string(),
+            "2015-08-13 00:00:00".to_string()
+        )]
+    );
 }
 
 #[test]
@@ -2336,10 +2387,16 @@ fn hist_multi_row_single_column() {
     );
     assert_eq!(
         rs.computed(),
-        vec![(
-            "calc_metric/hist_multi.sql".to_string(),
-            "2015-08-10 00:00:00".to_string()
-        )]
+        vec![
+            (
+                "calc_metric/hist_multi.sql".to_string(),
+                "2015-08-10 00:00:00".to_string()
+            ),
+            (
+                "calc_metric/hist_multi.sql multi_row_single_column a_1_2".to_string(),
+                "2015-08-13 00:00:00".to_string()
+            )
+        ]
     );
 }
 

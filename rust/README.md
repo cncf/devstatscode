@@ -804,14 +804,16 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `GHA2DB_PROCESS_COMMITS`/`GHA2DB_PROCESS_REPOS`) → `ghapi2db` →
     `reconcile_dbs` (non-fatal, `GHA2DB_RECONCILESKIP` skips it) →
     `structure` (`GHA2DB_SKIPTABLE`… env) → `vars` chain (`GHA2DB_SKIPPDB`
-    skips it), the randomised `dailyRecalcHour` logic gating `tags`,
+    skips it), the first-sync-after-a-day-boundary gate on `tags`,
     `annotations` and `columns` (`GHA2DB_SKIP_TAGS/ANNOTATIONS/COLUMNS`,
     `GHA2DB_RUN_COLUMNS`), `GHA2DB_RESETTSDB`/`GHA2DB_RESETRANGES`,
     `GHA2DB_TSDB_PROJECT`, the quick ranges / TS range computation and the
     `metrics.yaml` (`GHA2DB_METRICS_YAML`, `/shared/` fallback) driven
     `calc_metric` invocations: `periods` × `aggregate` with `skip`,
-    `ComputePeriodAtThisDate` (`GHA2DB_COMPUTE_ALL`, `GHA2DB_FORCE_PERIODS`
-    keyed by the bare period, `GHA2DB_RECALC_RECIPROCAL`, `always_recalc`),
+    `ComputePeriodAtThisDate` (calendar boundary crossing between the last
+    `sevents_h` hour and the sync start, `gha_computed` success markers
+    written by `calc_metric`, `GHA2DB_COMPUTE_ALL`, `GHA2DB_FORCE_PERIODS`
+    keyed by the bare period, `always_recalc`),
     `annotations_ranges`, `add_period_to_name`, `multi_value`, `escape_value_name`,
     `desc`, `series_name_map`, `drop:` (`GHA2DB_ENABLE_METRICS_DROP`), the
     `env:` map with the `[a-z]+:` period-conditional keys, `GHA2DB_SKIP_RAND`
@@ -826,8 +828,8 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     per side plus an old row in `devstats.gha_logs` to observe `ClearDBLogs`;
     the whole default flow, cron (`PATH`/`GHA2DB_DATADIR`) vs local mode,
     every skip/force knob, dates and quick ranges, metric filtering, period
-    and aggregate combinations, `FORCE_PERIODS`, `COMPUTE_ALL`, reciprocal
-    recalcs, histograms in ST and MT modes with tolerated/fatal failures and
+    and aggregate combinations, `FORCE_PERIODS`, `COMPUTE_ALL`, `gha_computed`
+    markers, histograms in ST and MT modes with tolerated/fatal failures and
     `wait_after_fail`, env maps, `series_name_map`/`desc`/`drop`, all the
     fatal paths (missing/unknown project or yaml, bad periods/aggregates,
     failing sub-commands, invalid env keys). Compared: exit code, stdout

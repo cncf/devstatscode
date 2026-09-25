@@ -3,16 +3,13 @@ package devstatscode
 import (
 	"database/sql"
 	"fmt"
-	"math/rand"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
 
-var (
-	gSeeded bool
-)
+var ()
 
 // IntervalHours - return number of hour from for a given interval
 func IntervalHours(period string) string {
@@ -115,18 +112,112 @@ func ProgressInfo(i, n int, start time.Time, last *time.Time, period time.Durati
 	}
 }
 
-// Probab - return true with percent % probablity
-func Probab(percent int) bool {
-	if !gSeeded {
-		rand.Seed(time.Now().UnixNano())
-		gSeeded = true
-	}
-	return rand.Intn(100) < percent
+// boundaryCrossed - true when 'from' and 'to' (both shifted by ctx.TmOffset hours) belong to
+// different intervals, as defined by the interval start function (DayStart, WeekStart, ...)
+func boundaryCrossed(ctx *Ctx, from, to time.Time, intervalStart func(time.Time) time.Time) bool {
+	off := time.Hour * time.Duration(ctx.TmOffset)
+	return intervalStart(from.Add(off)).Before(intervalStart(to.Add(off)))
 }
 
-// ComputePeriodAtThisDate - for some longer periods, only recalculate them on specific dates/times
+// Lengths of a month, quarter and year in hours (as in IntervalHours)
+const (
+	monthHours   = 730.5
+	quarterHours = 2191.5
+	yearHours    = 8766.0
+)
+
+// PeriodClass - calendar period ("h", "d", "w", "m", "q", "y") deciding when 'period' is due (ComputePeriodAtThisDate)
+// and since when a 'gha_computed' marker proves it was computed (PeriodStartAt)
+// h*, d*, w*, m*, q*, y*: their first letter (multiples like 'd7' or 'y10' follow their base period)
+// histogram quick ranges ending now (a_i_n, c_n, c_i_n, c_g_n): by their length from 'rangeStart' to 'to' (hour precision):
+// d up to a month (730.5h), m up to a quarter (2191.5h), q up to a year (8766h), y when longer (d when 'rangeStart' is unknown)
+// other histogram quick ranges (a_i_j, c_b, c_j_i, c_i_g, c_j_g - fully in the past): d, 'calc_metric' skips them once
+// computed ('skip_past'), so they are only attempted once a day
+// "" for anything else ('range:*', unknown)
+func PeriodClass(period string, rangeStart, to time.Time) string {
+	if period == "" {
+		return ""
+	}
+	switch period[0:1] {
+	case "h", "d", "w", "m", "q", "y":
+		return period[0:1]
+	case "a", "c":
+		if !strings.HasSuffix(period, "_n") || rangeStart.IsZero() {
+			return "d"
+		}
+		hours := HourStart(to).Sub(rangeStart).Hours()
+		if hours <= monthHours {
+			return "d"
+		}
+		if hours <= quarterHours {
+			return "m"
+		}
+		if hours <= yearHours {
+			return "q"
+		}
+		return "y"
+	}
+	return ""
+}
+
+// QuickRangeStarts - start dates of the histogram quick ranges by suffix, from the 'quick_ranges_data' tag values
+// written by 'annotations' ('suffix;period;from;to', 'from' and 'to' are set only for annotation/CNCF date ranges)
+func QuickRangeStarts(quickRangesData []string) map[string]time.Time {
+	starts := make(map[string]time.Time)
+	for _, data := range quickRangesData {
+		ary := strings.Split(data, ";")
+		if len(ary) == 4 && ary[1] == "" && ary[2] != "" {
+			starts[ary[0]] = TimeParseAny(ary[2])
+		}
+	}
+	return starts
+}
+
+// PeriodStartAt - when the period (see PeriodClass) containing 'dt' started: the calendar boundary found on the clock
+// shifted by ctx.TmOffset hours, returned as an instant, 'rangeStart' is the start of a histogram quick range (zero otherwise)
+// false for periods without a calendar period ('range:*', unknown)
+// 'gha_computed' markers written by 'calc_metric' at or after this instant prove the period was computed since it started, see computed.go
+func PeriodStartAt(ctx *Ctx, period string, rangeStart, dt time.Time) (time.Time, bool) {
+	var periodStart func(time.Time) time.Time
+	switch PeriodClass(period, rangeStart, dt) {
+	case "h":
+		periodStart = HourStart
+	case "d":
+		periodStart = DayStart
+	case "w":
+		periodStart = WeekStart
+	case "m":
+		periodStart = MonthStart
+	case "q":
+		periodStart = QuarterStart
+	case "y":
+		periodStart = YearStart
+	default:
+		return time.Time{}, false
+	}
+	off := time.Hour * time.Duration(ctx.TmOffset)
+	return periodStart(dt.Add(off)).Add(-off), true
+}
+
+// DayBoundaryCrossed - true when the sync ending at 'to' is the first one after a day boundary,
+// 'from' is where the previous sync ended (newest TSDB hour already computed)
+// used to run tags/columns/annotations once per day regardless of the sync frequency
+func DayBoundaryCrossed(ctx *Ctx, from, to time.Time) bool {
+	return boundaryCrossed(ctx, from, to, DayStart)
+}
+
+// ComputePeriodAtThisDate - decides if a given period must be (re)calculated by the sync ending at 'to'
+// when the previous sync ended at 'from' (newest TSDB hour already computed, ctx.DefaultStartDate when resetting)
+// Rules are independent of the sync frequency: no time-of-day checks, no randomness (see PeriodClass)
+// h: always
+// d: first sync after a day boundary
+// w: first sync after a week boundary (weeks start on Monday)
+// m: first sync after a month boundary
+// q: first sync after a quarter boundary
+// y: first sync after a year boundary
+// histogram quick ranges (a_*, c_*, 'rangeStart' is their start date) follow the class given by PeriodClass
 // see: time_test.go
-func ComputePeriodAtThisDate(ctx *Ctx, period string, idt time.Time, hist bool) bool {
+func ComputePeriodAtThisDate(ctx *Ctx, period string, rangeStart, from, to time.Time, hist bool) bool {
 	if ctx.ComputeAll {
 		return true
 	}
@@ -138,109 +229,24 @@ func ComputePeriodAtThisDate(ctx *Ctx, period string, idt time.Time, hist bool) 
 		_, ok = data[hist]
 		return ok
 	}
-	dt := HourStart(idt)
-	// dtc: date with current hour start
-	// dtn: tomorrow with current hour start
-	// dth: current data with tz offset
-	dtc := dt
-	dtn := dt.AddDate(0, 0, 1)
-	dth := dt.Add(time.Hour * time.Duration(ctx.TmOffset))
-	// h: current hour with tz offset
-	// ch: current hour without tz offset
-	h := dth.Hour()
-	ch := dtc.Hour()
-	// Empty period (misconfigured 'periods:' in metrics.yaml) must not panic, it falls
-	// through to the 'unknown period' fatal error below
-	periodStart := ""
-	if len(period) > 0 {
-		periodStart = period[0:1]
+	class := PeriodClass(period, rangeStart, to)
+	// Quick ranges are only defined for histograms
+	if !hist && (strings.HasPrefix(period, "a") || strings.HasPrefix(period, "c")) {
+		class = ""
 	}
-	// last 2 characters of the period, the period itself when shorter
-	periodEnd := period
-	if len(period) > 2 {
-		periodEnd = period[len(period)-2:]
-	}
-	if periodStart == "h" {
-		// hour(s)
+	switch class {
+	case "h":
 		return true
-	} else if periodStart == "d" {
-		// day(s)
-		if len(period) == 1 {
-			return true
-		}
-		if ctx.RandComputeAtThisDate {
-			return Probab(25)
-		}
-		return h == 1 || h == 6 || h == 9 || h == 13 || h == 18 || h == 21
-	} else if hist && periodStart == "a" {
-		// histograms between annotations or the final one "a_num_n"
-		if periodEnd == "_n" {
-			if ctx.RandComputeAtThisDate {
-				return Probab(25)
-			}
-			return h == 1 || h == 8 || h == 15 || h == 13 || h == 20
-		}
-		if ctx.RandComputeAtThisDate {
-			return Probab(15)
-		}
-		return h == 2 || h == 3
-	} else if hist && periodStart == "c" {
-		// histograms between maturity level or the final sandbox/incubation/graduation - now "c_n", "c_g_n", "c_i_n"
-		if ctx.RandComputeAtThisDate {
-			if periodEnd == "_n" {
-				return Probab(25)
-			}
-			return Probab(15)
-		}
-		return h == 3 || h == 4
-	}
-	// others
-	if hist {
-		// other histograms
-		if periodStart == "w" {
-			// weekly histograms
-			if ctx.RandComputeAtThisDate {
-				return Probab(30)
-			}
-			return h%7 == 0
-		} else if periodStart == "m" || periodStart == "q" || periodStart == "y" {
-			// monthly histograms
-			if ctx.RandComputeAtThisDate {
-				return Probab(15)
-			}
-			return h == 23 || h == 18
-		}
-	} else {
-		// other charts
-		if periodStart == "w" {
-			// weekly charts
-			if ctx.RandComputeAtThisDate {
-				wday := int(dtc.Weekday())
-				return Probab(60) && h >= 12 && wday >= 0 && wday <= 2
-			}
-			return ch == 23 && int(dtc.Weekday()) == 0
-		} else if periodStart == "m" {
-			// monthly charts
-			if ctx.RandComputeAtThisDate {
-				dom := dtn.Day()
-				return Probab(80) && h < 12 && dom >= 1 && dom <= 4
-			}
-			return ch == 23 && dtn.Day() == 1
-		} else if periodStart == "q" {
-			// quarterly charts
-			if ctx.RandComputeAtThisDate {
-				dom := dtn.Day()
-				return h > 12 && dom >= 1 && dom <= 4 && dtn.Month()%3 == 1
-			}
-			return ch == 23 && dtn.Day() == 1 && dtn.Month()%3 == 1
-		} else if periodStart == "y" {
-			// yearly charts
-			if ctx.RandComputeAtThisDate {
-				dom := dtn.Day()
-				return h < 12 && dom >= 1 && dom <= 4 && dtn.Month() == 1
-			}
-			return ch == 23 && dtn.Day() == 1 && dtn.Month() == 1
-		}
+	case "d":
+		return boundaryCrossed(ctx, from, to, DayStart)
+	case "w":
+		return boundaryCrossed(ctx, from, to, WeekStart)
+	case "m":
+		return boundaryCrossed(ctx, from, to, MonthStart)
+	case "q":
+		return boundaryCrossed(ctx, from, to, QuarterStart)
+	case "y":
+		return boundaryCrossed(ctx, from, to, YearStart)
 	}
 	Fatalf("ComputePeriodAtThisDate: unknown period: '%s', hist: %v", period, hist)
 	return false

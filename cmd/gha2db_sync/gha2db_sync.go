@@ -322,7 +322,6 @@ func sync(ctx *lib.Ctx, args []string) {
 	// Just to get into next GHA hour
 	from := maxDtPg
 	to := time.Now()
-	nowHour := time.Now().Hour()
 	fromDate := lib.ToYMDDate(from)
 	fromHour := strconv.Itoa(from.Hour())
 	toDate := lib.ToYMDDate(to)
@@ -431,15 +430,7 @@ func sync(ctx *lib.Ctx, args []string) {
 	}
 
 	// Calc metric
-	dailyRecalcHour := 0 // This is only correct when we are able to run all syncs every hour, otherwise set ctx.RandComputeAtThisDate to true
 	ranTags := false
-	if ctx.RandComputeAtThisDate {
-		dailyRecalcHour = rand.Intn(6)
-	}
-	// AllowRandTagsColsCompute - If set, then tags and columns will only be computed at random 0-5 hour, otherwise always when hour<6.
-	if !ctx.AllowRandTagsColsCompute && nowHour < 6 {
-		dailyRecalcHour = nowHour
-	}
 	if !ctx.SkipTSDB {
 		metricsDir := dataPrefix + "metrics"
 		if ctx.Project != "" {
@@ -452,17 +443,19 @@ func sync(ctx *lib.Ctx, args []string) {
 			from = maxDtTSDB
 		}
 		lib.Printf("TS range: %s - %s\n", lib.ToYMDHDate(from), lib.ToYMDHDate(to))
+		// tags/annotations/columns are recomputed once per day: on the first sync after a day boundary
+		dailyRecalc := ctx.ResetTSDB || lib.DayBoundaryCrossed(ctx, from, to)
 
 		// TSDB tags (repo groups template variable currently)
 		if !ctx.SkipTags {
-			if ctx.ResetTSDB || nowHour == dailyRecalcHour {
+			if dailyRecalc {
 				lib.Printf("Run tags\n")
 				_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "tags"}, nil)
 				lib.FatalOnError(err)
 				ranTags = true
 				lib.Printf("Run tags finished, will also run columns later\n")
 			} else {
-				lib.Printf("Skipping `tags` recalculation, it is only computed once per day hour=%d\n", dailyRecalcHour)
+				lib.Printf("Skipping `tags` recalculation, it is only computed once per day, on the first sync after a day boundary\n")
 			}
 		}
 		// When resetting all TSDB data, adding new TS points will race for update TSDB structure
@@ -479,7 +472,7 @@ func sync(ctx *lib.Ctx, args []string) {
 
 		// Annotations
 		if !ctx.SkipAnnotations {
-			if ctx.Project != "" && (ctx.ResetTSDB || nowHour == dailyRecalcHour || ranTags) {
+			if ctx.Project != "" && (dailyRecalc || ranTags) {
 				lib.Printf("Run annotations\n")
 				_, err := lib.ExecCommand(
 					ctx,
@@ -490,12 +483,13 @@ func sync(ctx *lib.Ctx, args []string) {
 				)
 				lib.FatalOnError(err)
 			} else {
-				lib.Printf("Skipping `annotations` recalculation, it is only computed once per day hour=%d or if tags were ran during this sync\n", dailyRecalcHour)
+				lib.Printf("Skipping `annotations` recalculation, it is only computed once per day, on the first sync after a day boundary, or if tags were ran during this sync\n")
 			}
 		}
 
 		// Get Quick Ranges from TSDB (it is filled by annotations command)
 		quickRanges := lib.GetTagValues(con, ctx, "quick_ranges", "quick_ranges_suffix")
+		quickRangeStarts := lib.QuickRangeStarts(lib.GetTagValues(con, ctx, "quick_ranges", "quick_ranges_data"))
 		lib.Printf("Quick ranges: %+v, compute periods: %+v\n", quickRanges, ctx.ComputePeriods)
 
 		// Read metrics configuration
@@ -668,17 +662,20 @@ func sync(ctx *lib.Ctx, args []string) {
 						}
 						continue
 					}
+					seriesNameOrFunc := metric.SeriesNameOrFunc
+					if metric.AddPeriodToName {
+						seriesNameOrFunc += "_" + periodAggr
+					}
+					sqlFile := fmt.Sprintf("%s/%s.sql", metricsDir, metric.MetricSQL)
 					var recalc bool
 					if metric.AlwaysRecalc {
 						recalc = true
 					} else {
-						recalc = lib.ComputePeriodAtThisDate(ctx, period, to, metric.Histogram)
-					}
-					// Because sync probab can be less than 100% and that may cause gaps, we should eventually let do recalculation even if that period doesn't need it
-					if !recalc && ctx.ComputePeriods == nil {
-						val := rand.Intn(ctx.RecalcReciprocal)
-						if val == 0 {
-							lib.Printf("Recalculating period due to reciprocal \"%s%s\", hist %v for date to %v, computePeriods: %+v, metric: %s\n", period, aggrSuffix, metric.Histogram, to, ctx.ComputePeriods, metric.Name)
+						recalc = lib.ComputePeriodAtThisDate(ctx, period, quickRangeStarts[period], from, to, metric.Histogram)
+						// Not due by the calendar rules: still recalculate when there is no 'gha_computed' marker
+						// of a successful 'calc_metric' run since the current period started (crashed sync, allowed failure, ...)
+						if !recalc && ctx.ComputePeriods == nil && !lib.IsPeriodComputed(con, ctx, lib.PeriodComputedKey(seriesNameOrFunc, sqlFile, periodAggr), periodAggr, quickRangeStarts[period], to) {
+							lib.Printf("Period \"%s\", hist %v of metric %s was not computed successfully since the current period started, recalculating\n", periodAggr, metric.Histogram, metric.Name)
 							recalc = true
 						}
 					}
@@ -688,10 +685,6 @@ func sync(ctx *lib.Ctx, args []string) {
 					if (!ctx.ResetTSDB || ctx.ComputePeriods != nil) && !recalc {
 						lib.Printf("Skipping recalculating period \"%s%s\", hist %v for date to %v, computePeriods: %+v, metric: %s\n", period, aggrSuffix, metric.Histogram, to, ctx.ComputePeriods, metric.Name)
 						continue
-					}
-					seriesNameOrFunc := metric.SeriesNameOrFunc
-					if metric.AddPeriodToName {
-						seriesNameOrFunc += "_" + periodAggr
 					}
 					// Histogram metrics usualy take long time, but executes single query, so there is no way to
 					// Implement multi threading inside "calc_metric" call for them
@@ -711,7 +704,7 @@ func sync(ctx *lib.Ctx, args []string) {
 							[]string{
 								cmdPrefix + "calc_metric",
 								seriesNameOrFunc,
-								fmt.Sprintf("%s/%s.sql", metricsDir, metric.MetricSQL),
+								sqlFile,
 								lib.ToYMDHDate(fromDate),
 								lib.ToYMDHDate(to),
 								periodAggr,
@@ -734,7 +727,7 @@ func sync(ctx *lib.Ctx, args []string) {
 							[]string{
 								cmdPrefix + "calc_metric",
 								seriesNameOrFunc,
-								fmt.Sprintf("%s/%s.sql", metricsDir, metric.MetricSQL),
+								sqlFile,
 								lib.ToYMDHDate(fromDate),
 								lib.ToYMDHDate(to),
 								periodAggr,
@@ -836,12 +829,12 @@ func sync(ctx *lib.Ctx, args []string) {
 
 		// TSDB ensure that calculated metric have all columns from tags
 		if !ctx.SkipColumns {
-			if ctx.RunColumns || ctx.ResetTSDB || ranTags || nowHour == dailyRecalcHour {
+			if ctx.RunColumns || dailyRecalc || ranTags {
 				lib.Printf("Run columns\n")
 				_, err := lib.ExecCommand(ctx, []string{cmdPrefix + "columns"}, nil)
 				lib.FatalOnError(err)
 			} else {
-				lib.Printf("Skipping `columns` recalculation, it is only computed once per day, hour=%d or if tags were ran during this sync\n", dailyRecalcHour)
+				lib.Printf("Skipping `columns` recalculation, it is only computed once per day, on the first sync after a day boundary, or if tags were ran during this sync\n")
 			}
 		}
 	}

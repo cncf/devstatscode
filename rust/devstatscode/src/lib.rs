@@ -46,6 +46,7 @@
 //! | [`yamlv2`]  | byte-exact `gopkg.in/yaml.v2` encoder (`yaml.Marshal`) |
 
 pub mod annotations;
+pub mod computed;
 pub mod consts;
 pub mod context;
 pub mod convert;

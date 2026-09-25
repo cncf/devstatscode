@@ -30,7 +30,7 @@ use devstatscode::ts_points::{
     add_ts_point, make_ts_points_unique_times, new_ts_point, FieldValue, Fields, TSPoints,
 };
 use devstatscode::{
-    consts, error, fatal_on_err, fatalf, gofmt, io, map as gomap, printf, rng, signal,
+    computed, consts, error, fatal_on_err, fatalf, gofmt, io, map as gomap, printf, rng, signal,
     string as gostring, threads, time as gotime, unicode, Ctx,
 };
 
@@ -1367,6 +1367,16 @@ fn calc_metric(
             cfg,
             g,
         );
+        if !ctx.skip_tsdb {
+            let sqlc = pg::pg_conn(&ctx);
+            computed::set_period_computed(
+                &sqlc,
+                &ctx,
+                &computed::period_computed_key(series_name_or_func, sql_file, interval_abbr),
+                gotime::time_parse_any(to),
+            );
+            sqlc.close();
+        }
         return;
     }
 
@@ -1480,6 +1490,14 @@ fn calc_metric(
                 None,
             );
         }
+    }
+    if !ctx.skip_tsdb {
+        computed::set_period_computed(
+            &sqlc,
+            &ctx,
+            &computed::period_computed_key(series_name_or_func, sql_file, interval_abbr),
+            gotime::time_parse_any(to),
+        );
     }
     printf!("All done.\n");
     drop(_deferred);
