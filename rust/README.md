@@ -116,6 +116,12 @@ cd rust
 ./compile.sh                 # release build, stripped: target/<os>/release/{tsplit,replacer,splitcrons,structure,tags,runq,vars,columns,devstats,hide_data,website_data,webhook,sqlitedb,merge_dbs,reconcile_dbs,gha2db_sync,import_affs,calc_metric,annotations,get_repos,sync_issues,ghapi2db,gha2db,api}
 BINDIR=$GOPATH/bin ./compile.sh   # ... and copy them there (same as `make install`)
 make / make install          # equivalents via the Makefile
+./compile.sh --musl          # static Linux binaries (x86_64-unknown-linux-musl, as the docker images ship them;
+                             # `make static-bins`): target/<os>/x86_64-unknown-linux-musl/release/<name>;
+                             # needs `rustup target add x86_64-unknown-linux-musl` + a musl C compiler
+                             # (Ubuntu: musl-tools). -p NAME builds only cmd/NAME (repeatable).
+make grafana-tools           # static replacer, sqlitedb, runq -> ../../devstats-docker-images/rust-bins
+                             # (RUST_BINS=dir to change), for ../devstats/devel/create_grafana_shared_data.sh
 ../cleanup.sh                # afterwards: drop every build/test artifact (cargo deps/incremental/
                              # fingerprints, debug/, go-bin/, Go build+test caches, *.test, ...)
                              # keeping only the final binaries; -n = dry run, --all = also the

@@ -5,7 +5,8 @@
 # Kept (the final binaries):
 #   Go    ./<name>                        for every name in the Makefile BINARIES list (`make`)
 #   Rust  rust/target/<os>/release/<name> for every rust/cmd/<name> crate (`rust/compile.sh`,
-#         one <os> directory per OS that builds from this shared checkout) and
+#         one <os> directory per OS that builds from this shared checkout),
+#         rust/target/<os>/<triple>/release/<name> (`--target` builds, e.g. `make static-bins`) and
 #         rust/target/release/<name> if cargo was ever run without rust/env.sh
 #   Installed copies in $GOPATH/bin (`make install`) are never touched.
 #
@@ -152,29 +153,35 @@ prune_release() {
   [ "$dry" = 1 ] || rmdir -- "$dir" 2>/dev/null || true
 }
 
-# rust/target/{release, <os>/release} keep their final binaries; everything else goes.
-clean_rust_target() {
-  local t=rust/target e sub
-  [ -d "$t" ] || return 0
-  for e in "$t"/* "$t"/.[!.]* "$t"/..?*; do
+# rust/target/{release, <os>/release, <os>/<triple>/release} keep their final binaries; everything else goes
+# (<triple> = --target builds such as x86_64-unknown-linux-musl from `make static-bins`).
+has_release() {
+  local s
+  [ -d "$1/release" ] && [ ! -L "$1/release" ] && return 0
+  for s in "$1"/*/; do
+    [ -d "${s}release" ] && [ ! -L "${s}release" ] && return 0
+  done
+  return 1
+}
+
+clean_target_dir() {
+  local d=$1 e
+  for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
     [ -e "$e" ] || [ -L "$e" ] || continue
     if [ "${e##*/}" = release ] && [ -d "$e" ] && [ ! -L "$e" ]; then
       prune_release "$e"
-    elif [ -d "$e" ] && [ ! -L "$e" ] && [ -d "$e/release" ] && [ ! -L "$e/release" ]; then
-      for sub in "$e"/* "$e"/.[!.]* "$e"/..?*; do
-        [ -e "$sub" ] || [ -L "$sub" ] || continue
-        if [ "${sub##*/}" = release ] && [ -d "$sub" ] && [ ! -L "$sub" ]; then
-          prune_release "$sub"
-        else
-          remove "$sub"
-        fi
-      done
-      [ "$dry" = 1 ] || rmdir -- "$e" 2>/dev/null || true
+    elif [ -d "$e" ] && [ ! -L "$e" ] && has_release "$e"; then
+      clean_target_dir "$e"
     else
       remove "$e"
     fi
   done
-  [ "$dry" = 1 ] || rmdir -- "$t" 2>/dev/null || true
+  [ "$dry" = 1 ] || rmdir -- "$d" 2>/dev/null || true
+}
+
+clean_rust_target() {
+  [ -d rust/target ] || return 0
+  clean_target_dir rust/target
 }
 
 clean_rust_tree() {
@@ -268,7 +275,7 @@ for b in $go_bins; do
   fi
 done
 [ "$kept_go" -gt 0 ] || echo "  (none built)"
-echo "kept Rust binaries (rust/target/<os>/release/<name>):"
+echo "kept Rust binaries (rust/target/<os>/[<triple>/]release/<name>):"
 if [ ${#kept_rust[@]} -gt 0 ]; then
   ls -la -- ${kept_rust[@]+"${kept_rust[@]}"}
 else
