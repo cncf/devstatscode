@@ -352,6 +352,207 @@ fn default_matches_recorded_go_output() {
 }
 
 #[test]
+fn resplit_matches_recorded_go_output() {
+    // RESPLIT_ALL=1 is the pre-preserve-mode behaviour: recorded before that mode existed.
+    let r = ok(&Scenario::new().env("RESPLIT_ALL", "1"));
+    let out = r.stdout();
+    assert!(!out.contains("keeping current schedules"));
+    assert!(!out.contains("[kept]") && !out.contains("[placed:"));
+    let want_out = compat::fixture_bytes(&format!("{FIX}/expected-resplit.stdout"));
+    assert_eq!(out, String::from_utf8(want_out).unwrap());
+    let want_yaml = compat::fixture_bytes(&format!("{FIX}/expected-resplit.yaml"));
+    assert_eq!(r.yaml.as_deref(), Some(want_yaml.as_slice()));
+    let want_log = compat::fixture_bytes(&format!("{FIX}/expected-resplit.kubectl.log"));
+    assert_eq!(
+        r.log.as_deref(),
+        Some(String::from_utf8(want_log).unwrap().as_str())
+    );
+}
+
+// ---------------------------------------------------------------- preserve mode (default)
+
+const PRESERVE_TEST_CJS: &str = "devstats-kubernetes\ndevstats-affiliations-kubernetes\ndevstats-prometheus\ndevstats-affiliations-prometheus\ndevstats-envoy\ndevstats-affiliations-envoy\ndevstats-tikv\ndevstats-affiliations-tikv\n";
+const PRESERVE_PROD_CJS: &str = "devstats-kubernetes\ndevstats-affiliations-kubernetes\ndevstats-prometheus\ndevstats-affiliations-prometheus\ndevstats-istio\ndevstats-affiliations-istio\ndevstats-envoy\ndevstats-affiliations-envoy\ndevstats-helm\ndevstats-affiliations-helm\ndevstats-tikv\ndevstats-affiliations-tikv\ndevstats-spiffe\ndevstats-affiliations-spiffe\ndevstats-nats\ndevstats-affiliations-nats\ndevstats-jenkins\ndevstats-affiliations-jenkins\ndevstats-rkt\ndevstats-affiliations-rkt\n";
+
+fn preserve() -> Scenario {
+    Scenario::new()
+        .values("values-preserve.yaml")
+        .cronjobs(PRESERVE_TEST_CJS, PRESERVE_PROD_CJS)
+        .env("MONTHLY", "1")
+}
+
+/// `(context, cronjob, schedule)` of every schedule patch, in call order.
+fn schedule_patches(res: &RunResult) -> Vec<(String, String, String)> {
+    res.log_lines()
+        .iter()
+        .filter(|l| l.first().map(String::as_str) == Some("patch"))
+        .filter_map(|l| {
+            let sched = l
+                .last()?
+                .strip_prefix("{\"spec\":{\"schedule\":\"")?
+                .strip_suffix("\"}}")?;
+            Some((l[3].clone(), l[l.len() - 3].clone(), sched.to_string()))
+        })
+        .collect()
+}
+
+#[test]
+fn preserve_keeps_valid_schedules() {
+    let r = ok(&preserve());
+    let out = r.stdout();
+    assert!(out.contains("test: keeping current schedules: kept 1 sync, 0 daily, 2 affs; placed 2 sync, 1 daily, 2 affs (RESPLIT_ALL=1 recomputes all, PLACE=proj1,proj2 forces projects)\n"));
+    assert!(out.contains("prod: keeping current schedules: kept 3 sync, 2 daily, 6 affs; placed 3 sync, 1 daily, 3 affs (RESPLIT_ALL=1 recomputes all, PLACE=proj1,proj2 forces projects)\n"));
+    // test: kubernetes' prod-style sync is not a daily cron of the test env (dailies from 2:04), envoy repeats
+    // prometheus' crons, tikv has none
+    for want in [
+        "sync='4 2 * * *' DAILY gap=20.5h ranges='26 hours' affs='4 3 1 * *' gap=87.4h [placed: sync '4 0,6,12,18 * * *' invalid for this mode, affs kept]\n",
+        "sync='29 3,9,15,21 * * *' gap=196m affs='29 18 4 * *' gap=363.5h [kept]\n",
+        "sync='57 0,6,12,18 * * *' gap=139m affs='57 21 19 * *' gap=218.5h [placed: sync '29 3,9,15,21 * * *' collides with prometheus, affs '29 18 4 * *' collides with prometheus]\n",
+        "sync='28 3,9,15,21 * * *' gap=1m affs='28 0 1 * *' gap=2.6h [placed: sync new, affs new]\n",
+        // prod: 5 fully valid projects keep both crons, tikv duplicates prometheus, spiffe is new, nats has an
+        // hourly sync and a weekly affs cron, jenkins (daily) has an hourly sync but a valid affs cron
+        "sync='4 3 * * *' DAILY gap=15.3h ranges='26 hours' affs='4 11 1 * *' gap=10.0h [kept]\n",
+        "sync='4 0,6,12,18 * * *' gap=111m affs='4 21 1 * *' gap=49.4h [kept]\n",
+        "sync='50 20 * * *' DAILY gap=3.0h ranges='26 hours' affs='50 4 5 * *' gap=72.7h [kept]\n",
+        "sync='30 2,8,14,20 * * *' gap=62m affs='30 5 8 * *' gap=98.6h [kept]\n",
+        "sync='6 5,11,17,23 * * *' gap=54m affs='6 8 12 * *' gap=166.5h [kept]\n",
+        "sync='36 3,9,15,21 * * *' gap=81m affs='36 6 19 * *' gap=1.5h [placed: sync '4 0,6,12,18 * * *' collides with prometheus, affs '4 21 1 * *' collides with prometheus]\n",
+        "sync='59 1,7,13,19 * * *' gap=27m affs='59 16 26 * *' gap=66.1h [placed: sync new, affs new]\n",
+        "sync='5 5,11,17,23 * * *' gap=1m affs='5 8 19 * *' gap=176.9h [placed: sync '35 * * * *' invalid for this mode, affs '45 14 * * 4' invalid for this mode]\n",
+        "sync='26 19 * * *' DAILY gap=1.3h ranges='26 hours' affs='30 22 3 * *' gap=30.3h [placed: sync '18 * * * *' invalid for this mode, affs kept]\n",
+    ] {
+        assert!(out.contains(want), "missing {want:?} in:\n{out}");
+    }
+    // only the placed schedules are patched
+    let want: Vec<(String, String, String)> = [
+        ("test", "devstats-kubernetes", "4 2 * * *"),
+        ("test", "devstats-affiliations-envoy", "57 21 19 * *"),
+        ("test", "devstats-envoy", "57 0,6,12,18 * * *"),
+        ("test", "devstats-affiliations-tikv", "28 0 1 * *"),
+        ("test", "devstats-tikv", "28 3,9,15,21 * * *"),
+        ("prod", "devstats-affiliations-tikv", "36 6 19 * *"),
+        ("prod", "devstats-tikv", "36 3,9,15,21 * * *"),
+        ("prod", "devstats-affiliations-spiffe", "59 16 26 * *"),
+        ("prod", "devstats-spiffe", "59 1,7,13,19 * * *"),
+        ("prod", "devstats-affiliations-nats", "5 8 19 * *"),
+        ("prod", "devstats-nats", "5 5,11,17,23 * * *"),
+        ("prod", "devstats-jenkins", "26 19 * * *"),
+    ]
+    .iter()
+    .map(|(c, n, s)| (c.to_string(), n.to_string(), s.to_string()))
+    .collect();
+    assert_eq!(schedule_patches(&r), want);
+    let yaml = String::from_utf8(r.yaml.clone().unwrap()).unwrap();
+    // kept crons untouched, placed ones replaced, not-alive (opentracing) and suspended (rkt) projects untouched
+    for want in [
+        "  cronTest: 4 2 * * *\n  cronProd: 4 3 * * *\n  affCronTest: 4 3 1 * *\n  affCronProd: 4 11 1 * *\n",
+        "  cronTest: 28 3,9,15,21 * * *\n  cronProd: 36 3,9,15,21 * * *\n  affCronTest: 28 0 1 * *\n  affCronProd: 36 6 19 * *\n",
+        "  cronTest: \"\"\n  cronProd: 8 0,6,12,18 * * *\n  affCronTest: \"\"\n  affCronProd: 8 9 20 * *\n",
+        "  cronTest: \"\"\n  cronProd: 11 0,6,12,18 * * *\n  affCronTest: \"\"\n  affCronProd: 11 9 21 * *\n  suspendCronProd: true\n",
+    ] {
+        assert!(yaml.contains(want), "missing {want:?} in:\n{yaml}");
+    }
+}
+
+#[test]
+fn preserve_is_idempotent() {
+    let first = ok(&preserve());
+    let tmp = tempfile::tempdir().unwrap();
+    let again = tmp.path().join("again.yaml");
+    fs::write(&again, first.yaml.as_deref().unwrap()).unwrap();
+    let r = ok(&preserve().values_path(again));
+    let out = r.stdout();
+    assert!(out.contains("test: keeping current schedules: kept 3 sync, 1 daily, 4 affs; placed 0 sync, 0 daily, 0 affs"));
+    assert!(out.contains("prod: keeping current schedules: kept 6 sync, 3 daily, 9 affs; placed 0 sync, 0 daily, 0 affs"));
+    assert!(!out.contains("[placed:"));
+    assert!(
+        schedule_patches(&r).is_empty(),
+        "{:?}",
+        schedule_patches(&r)
+    );
+    assert_eq!(r.yaml, first.yaml);
+    // suspend flags (28 alive cronjobs, rkt included) and the 4 daily env patches are still (re)applied every run
+    assert_eq!(count_verb(&r, "patch"), 32);
+}
+
+#[test]
+fn preserve_place_and_resplit() {
+    // PLACE forces projects out of their (valid) slots; the others stay put - and the freed slot makes the
+    // previously colliding duplicate (tikv repeats prometheus' crons) a kept one
+    let r = ok(&preserve().env("PLACE", " prometheus ,helm,,nosuch"));
+    let out = r.stdout();
+    assert!(out.contains("prod: keeping current schedules: kept 2 sync, 2 daily, 5 affs; placed 4 sync, 1 daily, 4 affs"));
+    assert!(out.contains("test: keeping current schedules: kept 1 sync, 0 daily, 2 affs; placed 2 sync, 1 daily, 2 affs"));
+    assert!(out.contains("  prometheus               db=prometheus       size=    13.97Gb weight= 122474.5 share=  8.0% sync='38 3,9,15,21 * * *' gap=107m affs='38 0 15 * *' gap=243.8h [placed: sync PLACE, affs PLACE]\n"));
+    assert!(out.contains("sync='29 1,7,13,19 * * *' gap=57m affs='29 4 25 * *' gap=102.6h [placed: sync PLACE, affs PLACE]\n"));
+    let line = |needle: &str| {
+        out.lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no line with {needle:?} in:\n{out}"))
+            .to_string()
+    };
+    let k8s = line("sync='4 3 * * *' DAILY");
+    assert!(
+        k8s.contains("affs='4 11 1 * *'") && k8s.ends_with("[kept]"),
+        "{k8s}"
+    );
+    let tikv = line("  tikv                     db=tikv             size=     5.68Gb");
+    assert!(
+        tikv.contains("sync='4 0,6,12,18 * * *'")
+            && tikv.contains("affs='4 21 1 * *'")
+            && tikv.ends_with("[kept]"),
+        "{tikv}"
+    );
+    let patched: Vec<String> = schedule_patches(&r)
+        .into_iter()
+        .filter(|p| p.0 == "prod")
+        .map(|p| p.1)
+        .collect();
+    assert!(patched.contains(&"devstats-prometheus".to_string()));
+    assert!(patched.contains(&"devstats-affiliations-helm".to_string()));
+    assert!(!patched.contains(&"devstats-kubernetes".to_string()));
+    assert!(!patched.contains(&"devstats-tikv".to_string()));
+    // PLACE naming no scheduled project changes nothing vs the plain default run
+    let plain = ok(&preserve());
+    let r = ok(&preserve().env("PLACE", "nosuch,opentracing"));
+    assert_eq!(r.yaml, plain.yaml);
+    assert_eq!(r.log, plain.log);
+    // RESPLIT_ALL recomputes everything: no keep/place report, every alive schedule recomputed
+    let r = ok(&preserve().env("RESPLIT_ALL", "1"));
+    let out = r.stdout();
+    assert!(!out.contains("keeping current schedules"));
+    assert!(!out.contains("[kept]") && !out.contains("[placed:"));
+    assert!(out.contains("prod: 9 alive projects (3 daily)"));
+    assert!(schedule_patches(&r).len() > 12);
+    assert_ne!(r.yaml, plain.yaml);
+}
+
+#[test]
+fn preserve_fallback_without_kept_entries() {
+    // weekly mode: the monthly affs crons are invalid; in test nothing is kept -> full weighted split of the
+    // affs, in prod nats' weekly '45 14 * * 4' is the only kept one; the sync crons (mode independent) stay
+    let r = ok(&preserve().envs(&[("MONTHLY", "")]));
+    let out = r.stdout();
+    assert!(out.contains("sync happens from HH:04, every 6 hours; affs spread over 7 days\n"));
+    assert!(out.contains("test: keeping current schedules: kept 1 sync, 0 daily, 0 affs; placed 2 sync, 1 daily, 4 affs"));
+    assert!(out.contains("prod: keeping current schedules: kept 3 sync, 2 daily, 1 affs; placed 3 sync, 1 daily, 8 affs"));
+    assert!(out.contains("affs '4 11 1 * *' invalid for this mode]\n"));
+    assert!(out.contains("sync='4 0,6,12,18 * * *' gap=111m affs='"));
+    assert!(out.contains("[placed: sync kept, affs '4 21 1 * *' invalid for this mode]\n"));
+    assert!(out.contains("affs='45 14 * * 4' gap="));
+    assert!(out.contains("[placed: sync '35 * * * *' invalid for this mode, affs kept]\n"));
+    assert!(!out.contains("[kept]"));
+    // other GHA_OFFSET / SYNC_HOURS: current sync crons are invalid for the new grid (istio's '50 20 * * *'
+    // still is a valid daily cron with offset 10), the affs crons do not depend on them
+    let r = ok(&preserve().envs(&[("GHA_OFFSET", "10"), ("SYNC_HOURS", "4")]));
+    let out = r.stdout();
+    assert!(out.contains("test: keeping current schedules: kept 0 sync, 0 daily, 2 affs; placed 3 sync, 1 daily, 2 affs"));
+    assert!(out.contains("prod: keeping current schedules: kept 0 sync, 1 daily, 6 affs; placed 6 sync, 2 daily, 3 affs"));
+    assert!(out.contains("sync='40 23 * * *' DAILY gap=13.9h ranges='26 hours' affs='4 11 1 * *' gap=10.0h [placed: sync '4 3 * * *' invalid for this mode, affs kept]\n"));
+    assert!(out.contains("sync='50 20 * * *' DAILY gap="));
+}
+
+#[test]
 fn debug_output() {
     let r = ok(&Scenario::new().env("DEBUG", "1"));
     let out = r.stdout();
@@ -620,7 +821,7 @@ fn kubectl_failures() {
     assert!(out.contains("[kubectl patch cronjob --context prod -n devstats-prod devstats-affiliations-istio -p {\"spec\":{\"suspend\":false}}]: error: exit status 1\n"));
     assert!(out.contains("devstats-affiliations-istio -p {\"spec\":{\"schedule\":\""));
     assert!(out.contains("cronjobs.batch \"devstats-affiliations-istio\" not found\n"));
-    assert!(out.contains("devstats-affiliations-istio -p {\"spec\":{\"schedule\":\"40 3 * * 5\"}}]: error: exit status 1\n"));
+    assert!(out.contains("devstats-affiliations-istio -p {\"spec\":{\"schedule\":\"50 4 * * 5\"}}]: error: exit status 1\n"));
     assert!(!out.contains("devstats-affiliations-cncf -p {\"spec\":{\"suspend\":false}}]: error"));
     ok(&Scenario::new()
         .fail("fail-get")

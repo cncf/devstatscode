@@ -28,6 +28,11 @@
 #   then the affs run starts, having max 16h before the next daily sync; affs take longer than syncs) [1,23].
 # ARCHIVED projects (archived: true in values.yaml) never count: they are excluded from all splits (freeing
 #   schedule space) and their leftover cronjobs (if any) get suspend=true pushed.
+# RESPLIT_ALL=1 (new algorithm: recompute every schedule from scratch). By default schedules already in values.yaml
+#   that are valid for the current mode (GHA_OFFSET/SYNC_HOURS/MONTHLY grid) and don't collide are KEPT; only
+#   new/colliding/invalid projects are placed into the gaps between them (biggest gap per unit of weight, split
+#   proportionally), so re-running the tool changes nothing until a project is added.
+# PLACE=proj1,proj2 (new algorithm: re-place these projects even when their current schedules are valid).
 # CTX_TEST=test, CTX_PROD=prod (new algorithm: kubectl contexts for test/prod envs; use '-' for current context;
 #   defaults 'test'/'prod' match in-cluster kubeconfigs; from outside use e.g. CTX_TEST=linode-test CTX_PROD=prod).
 # MONTHLY=1 (use 4-weeks - 28 days schedule instead of weekly one).

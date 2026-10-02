@@ -1,0 +1,26 @@
+read values.yaml
+new algorithm: probing alive cronjobs & DB sizes (OLD_ALGORITHM=1 for legacy mode, NO_DB_SIZES=1 for even weights)
+weights: SPLIT_ALGO=geom, weight = size^0.5
+sync happens from HH:04, every 6 hours; affs spread over 7 days
+test: 4 alive projects (0 daily), algo geom, sync space 336 minutes (every 6h), daily space 1232 minutes (import at 10 1 * * *, dailies from 2:04), affs space 9408 minutes (7 days):
+test: affs anchored to own sync: regular projects mid-gap (sync slot +180m), daily projects sync +8h (NO_AFFS_ANCHOR=1 for legacy independent placement)
+  cncf                     db=cncf             size=     3.07Gb weight=  57445.6 share= 53.5% sync='4 0,6,12,18 * * *' gap=1m affs='4 3 * * 0' gap=87.2h
+  envoy                    db=envoy            size=     2.33Gb weight=  50000.0 share= 46.5% sync='15 3,9,15,21 * * *' gap=156m affs='15 18 * * 3' gap=74.7h
+  tikv                     db=tikv             size=     0.00Gb weight=     11.1 share=  0.0% sync='59 5,11,17,23 * * *' gap=1m affs='59 20 * * 6' gap=0.1h
+  nats                     db=nats             size=     0.00Gb weight=     11.1 share=  0.0% sync='5 0,6,12,18 * * *' gap=178m affs='5 21 * * 6' gap=6.0h
+prod: 12 alive projects (6 daily), algo geom, sync space 336 minutes (every 6h), daily space 1176 minutes (import at 10 2 * * *, dailies from 3:04), affs space 9408 minutes (7 days):
+prod: affs anchored to own sync: regular projects mid-gap (sync slot +180m), daily projects sync +8h (NO_AFFS_ANCHOR=1 for legacy independent placement)
+  kubernetes               db=gha              size=   860.04Gb weight= 960966.6 share= 28.8% sync='4 3 * * *' DAILY gap=6.3h ranges='26 hours' affs='4 11 * * 0' gap=40.0h
+  prometheus               db=prometheus       size=    13.97Gb weight= 122474.5 share=  3.7% sync='4 0,6,12,18 * * *' gap=119m affs='4 3 * * 2' gap=14.7h
+  all                      db=allprj           size=  1851.15Gb weight=1409841.9 share= 42.3% sync='46 9 * * *' DAILY gap=9.2h ranges='26 hours' affs='46 17 * * 2' gap=57.9h
+  istio                    db=istio            size=    20.49Gb weight= 148324.0 share=  4.5% sync='40 19 * * *' DAILY gap=1.0h ranges='26 hours' affs='40 3 * * 5' gap=1.1h
+  jenkins                  db=jenkins          size=     6.52Gb weight=  83666.0 share=  2.5% sync='43 20 * * *' DAILY gap=0.5h ranges='26 hours' affs='43 4 * * 5' gap=0.6h
+  allcdf                   db=allcdf           size=    55.88Gb weight= 244949.0 share=  7.4% sync='19 21 * * *' DAILY gap=1.6h ranges='26 hours' affs='19 5 * * 5' gap=23.9h
+  envoy                    db=envoy            size=     3.26Gb weight=  59160.8 share=  1.8% sync='11 2,8,14,20 * * *' gap=58m affs='11 5 * * 6' gap=1.0h
+  helm                     db=helm             size=     2.70Gb weight=  53851.6 share=  1.6% sync='13 3,9,15,21 * * *' gap=53m affs='13 6 * * 6' gap=0.8h
+  tikv                     db=tikv             size=     5.68Gb weight=  78102.5 share=  2.3% sync='10 4,10,16,22 * * *' gap=76m affs='10 13 * * 6' gap=1.3h
+  spiffe                   db=spiffe           size=     0.82Gb weight=  29627.3 share=  0.9% sync='30 5,11,17,23 * * *' gap=29m affs='30 14 * * 6' gap=6.5h
+  opentelemetry            db=opentelemetry    size=    18.63Gb weight= 141421.4 share=  4.2% sync='4 23 * * *' DAILY gap=0.9h ranges='26 hours' affs='4 7 * * 6' gap=6.1h
+  nats                     db=nats             size=     0.00Gb weight=      1.4 share=  0.0% sync='59 5,11,17,23 * * *' gap=1m affs='59 20 * * 6' gap=14.1h
+patched 65/65 cronjobs
+written new-values.yaml

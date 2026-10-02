@@ -1,0 +1,67 @@
+# Monthly layout for the splitcrons preserve-mode (default) compatibility tests: valid crons are kept,
+# new / colliding / invalid ones are placed into the gaps (see tests/compat.rs `preserve_*`).
+nSyncCPUs: 12
+nAffsCPUs: 8
+affiliationsImportCron: 10 2 * * *
+affiliationsImportCronTest: 10 1 * * *
+projects:
+- proj: kubernetes
+  db: gha
+  domains: [1, 1, 0, 0]
+  cronTest: 4 0,6,12,18 * * *
+  cronProd: 4 3 * * *
+  affCronTest: 4 3 1 * *
+  affCronProd: 4 11 1 * *
+- proj: prometheus
+  db: prometheus
+  domains: [1, 1, 0, 0]
+  cronTest: 29 3,9,15,21 * * *
+  cronProd: 4 0,6,12,18 * * *
+  affCronTest: 29 18 4 * *
+  affCronProd: 4 21 1 * *
+- proj: istio
+  db: istio
+  domains: [0, 1, 0, 0]
+  cronProd: 50 20 * * *
+  affCronProd: 50 4 5 * *
+- proj: envoy
+  db: envoy
+  domains: [1, 1, 0, 0]
+  cronTest: 29 3,9,15,21 * * *
+  cronProd: 30 2,8,14,20 * * *
+  affCronTest: 29 18 4 * *
+  affCronProd: 30 5 8 * *
+- proj: helm
+  db: helm
+  domains: [0, 1, 0, 0]
+  cronProd: 6 5,11,17,23 * * *
+  affCronProd: 6 8 12 * *
+- proj: tikv
+  db: tikv
+  domains: [1, 1, 0, 0]
+  cronProd: 4 0,6,12,18 * * *
+  affCronProd: 4 21 1 * *
+- proj: spiffe
+  db: spiffe
+  domains: [0, 1, 0, 0]
+- proj: nats
+  db: nats
+  domains: [0, 1, 0, 0]
+  cronProd: 35 * * * *
+  affCronProd: 45 14 * * 4
+- proj: jenkins
+  db: jenkins
+  domains: [0, 1, 0, 0]
+  cronProd: 18 * * * *
+  affCronProd: 30 22 3 * *
+- proj: opentracing
+  db: opentracing
+  domains: [0, 1, 0, 0]
+  cronProd: 8 0,6,12,18 * * *
+  affCronProd: 8 9 20 * *
+- proj: rkt
+  db: rkt
+  domains: [0, 1, 0, 0]
+  cronProd: 11 0,6,12,18 * * *
+  affCronProd: 11 9 21 * *
+  suspendCronProd: true

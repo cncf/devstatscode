@@ -90,6 +90,8 @@ var (
 	gDailyRepos   string
 	gAffsAnchor   bool
 	gDailyAffsOff int
+	gResplitAll   bool
+	gPlaceProjs   map[string]bool
 	gPatchEnv     map[string]struct{}
 	gName2Env     map[string]string
 )
@@ -429,6 +431,251 @@ type weightedEntry struct {
 	affsAlive bool    // affiliations cronjob exists in the cluster
 }
 
+// posEntry - a project already placed in a linear (circular) schedule space
+type posEntry struct {
+	idx    int
+	pos    int
+	weight float64
+}
+
+// syncCronOf - linear position -> sync cron: 'M h0,h0+syncHours,... * * *', minute M in [ghaOffset, 60)
+func syncCronOf(pos, ghaOffset, syncHours, almostHour int) string {
+	hourS := pos / almostHour
+	minuteS := (pos % almostHour) + ghaOffset
+	if hourS >= syncHours {
+		hourS = 0
+	}
+	hoursS := ""
+	for h := 0; h < 24; h++ {
+		if h%syncHours == hourS {
+			hoursS += strconv.Itoa(h) + ","
+		}
+	}
+	hoursS = hoursS[:len(hoursS)-1]
+	return fmt.Sprintf("%d %s * * *", minuteS, hoursS)
+}
+
+// dailyCronOf - linear position -> daily sync cron: 'M H * * *', H in [dailyStartHour, 24), minute M in [ghaOffset, 60)
+func dailyCronOf(pos, ghaOffset, dailyStartHour, almostHour int) string {
+	hourD := dailyStartHour + pos/almostHour
+	minuteD := (pos % almostHour) + ghaOffset
+	return fmt.Sprintf("%d %d * * *", minuteD, hourD)
+}
+
+// affsCronOf - absolute affs minute within the period -> affs cron: weekly 'M H * * D' or monthly 'M H D * *'
+func affsCronOf(t int, monthly bool) string {
+	minuteA := t % 60
+	hourA := (t / 60) % 24
+	dayA := t / (24 * 60)
+	if monthly {
+		return fmt.Sprintf("%d %d %d * *", minuteA, hourA, dayA+1)
+	}
+	return fmt.Sprintf("%d %d * * %d", minuteA, hourA, dayA)
+}
+
+// cronInts - parses the given fields of a 5-field cron as ints (false when the cron has not exactly 5 fields or a field is not an int)
+func cronInts(cron string, fields ...int) ([]int, bool) {
+	ary := strings.Fields(cron)
+	if len(ary) != 5 {
+		return nil, false
+	}
+	out := []int{}
+	for _, f := range fields {
+		v, err := strconv.Atoi(strings.Split(ary[f], ",")[0])
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, v)
+	}
+	return out, true
+}
+
+// syncCronPos - inverse of syncCronOf: the sync space position of an existing cron, ok only when the cron
+// is exactly what syncCronOf generates for that position (current GHA_OFFSET/SYNC_HOURS)
+func syncCronPos(cron string, ghaOffset, syncHours, almostHour int) (int, bool) {
+	v, ok := cronInts(cron, 0, 1)
+	if !ok || v[0] < ghaOffset || v[0] >= 60 || v[1] < 0 || v[1] >= syncHours {
+		return 0, false
+	}
+	pos := v[1]*almostHour + (v[0] - ghaOffset)
+	return pos, syncCronOf(pos, ghaOffset, syncHours, almostHour) == cron
+}
+
+// dailyCronPos - inverse of dailyCronOf: the daily space position of an existing daily cron
+func dailyCronPos(cron string, ghaOffset, dailyStartHour, almostHour, dailySpace int) (int, bool) {
+	v, ok := cronInts(cron, 0, 1)
+	if !ok || v[0] < ghaOffset || v[0] >= 60 || v[1] < dailyStartHour || v[1] >= 24 {
+		return 0, false
+	}
+	pos := (v[1]-dailyStartHour)*almostHour + (v[0] - ghaOffset)
+	return pos, pos < dailySpace && dailyCronOf(pos, ghaOffset, dailyStartHour, almostHour) == cron
+}
+
+// affsCronTime - inverse of affsCronOf: the absolute minute within the affs period of an existing affs cron
+// (must be in the current weekly/monthly format)
+func affsCronTime(cron string, monthly bool, periodDays int) (int, bool) {
+	dayField := 4
+	if monthly {
+		dayField = 2
+	}
+	v, ok := cronInts(cron, 0, 1, dayField)
+	if !ok || v[0] < 0 || v[0] >= 60 || v[1] < 0 || v[1] >= 24 {
+		return 0, false
+	}
+	day := v[2]
+	if monthly {
+		day--
+	}
+	if day < 0 || day >= periodDays {
+		return 0, false
+	}
+	t := day*24*60 + v[1]*60 + v[0]
+	return t, affsCronOf(t, monthly) == cron
+}
+
+// affsTimeToPos - absolute affs minute -> position in the (almostHour based) affs space used by the weighted spread
+func affsTimeToPos(t, ghaOffset, almostHour int) int {
+	minute := t%60 - ghaOffset
+	if minute < 0 {
+		minute = 0
+	}
+	return (t/60)*almostHour + minute
+}
+
+// weightedPositions distributes cumulative weighted positions over a space, bumping forward on collisions
+func weightedPositions(list []weightedEntry, space int) map[int]int {
+	total := 0.0
+	for _, e := range list {
+		total += e.weight
+	}
+	out := make(map[int]int)
+	if total <= 0.0 {
+		return out
+	}
+	used := make(map[int]bool)
+	cum := 0.0
+	for _, e := range list {
+		pos := int((cum / total) * float64(space))
+		if pos >= space {
+			pos = space - 1
+		}
+		for used[pos] {
+			pos = (pos + 1) % space
+		}
+		used[pos] = true
+		out[e.idx] = pos
+		cum += e.weight
+	}
+	return out
+}
+
+// placeIntoGaps inserts the new entries (heaviest first, then by project index) between the kept positions:
+// each goes into the gap offering the most time per unit of weight (gap / (gap owner weight + new weight)),
+// splitting that gap proportionally to the weights (the owner keeps the start, the new project gets the end),
+// bumping forward when the position is taken. Returns the positions of the new entries.
+func placeIntoGaps(kept []posEntry, newEntries []weightedEntry, space int) map[int]int {
+	out := make(map[int]int)
+	if len(kept) == 0 || space <= 0 {
+		return out
+	}
+	used := make(map[int]bool)
+	for _, k := range kept {
+		used[k.pos] = true
+	}
+	kept = append([]posEntry{}, kept...)
+	order := make([]weightedEntry, len(newEntries))
+	copy(order, newEntries)
+	sort.SliceStable(order, func(i, j int) bool {
+		if order[i].weight != order[j].weight {
+			return order[i].weight > order[j].weight
+		}
+		return order[i].idx < order[j].idx
+	})
+	for _, e := range order {
+		sort.Slice(kept, func(i, j int) bool {
+			if kept[i].pos != kept[j].pos {
+				return kept[i].pos < kept[j].pos
+			}
+			return kept[i].idx < kept[j].idx
+		})
+		gapOf := func(i int) int {
+			if len(kept) == 1 {
+				return space
+			}
+			return (kept[(i+1)%len(kept)].pos - kept[i].pos + space) % space
+		}
+		bestI, bestScore := 0, -1.0
+		for i, k := range kept {
+			den := k.weight + e.weight
+			if den <= 0.0 {
+				den = 1.0
+			}
+			score := float64(gapOf(i)) / den
+			if score > bestScore {
+				bestI, bestScore = i, score
+			}
+		}
+		owner, gap := kept[bestI], gapOf(bestI)
+		den := owner.weight + e.weight
+		if den <= 0.0 {
+			den = 1.0
+		}
+		off := int(float64(gap) * owner.weight / den)
+		if off > gap-1 {
+			off = gap - 1
+		}
+		if off < 1 {
+			off = 1
+		}
+		pos := (owner.pos + off) % space
+		for i := 0; i < space && used[pos]; i++ {
+			pos = (pos + 1) % space
+		}
+		used[pos] = true
+		out[e.idx] = pos
+		kept = append(kept, posEntry{idx: e.idx, pos: pos, weight: e.weight})
+	}
+	return out
+}
+
+// preservedPositions - default mode positions for one schedule space: every entry whose current cron parses in the
+// current mode (parse) and doesn't repeat a lower-index entry's cron keeps its position, the others (plus PLACE
+// forced ones) are inserted into the gaps between the kept ones. Without any kept entry (first run, mode change)
+// the whole list is split from scratch. Returns the positions and the (re)placement reasons (kept: no entry).
+func preservedPositions(list []weightedEntry, space int, cronOf func(weightedEntry) string, parse func(string) (int, bool)) (map[int]int, map[int]string) {
+	reasons := make(map[int]string)
+	kept := []posEntry{}
+	keptBy := make(map[int]string)
+	toPlace := []weightedEntry{}
+	for _, e := range list {
+		cron := cronOf(e)
+		pos, ok := parse(cron)
+		switch {
+		case gPlaceProjs[e.proj]:
+			reasons[e.idx] = "PLACE"
+		case cron == "":
+			reasons[e.idx] = "new"
+		case !ok:
+			reasons[e.idx] = "'" + cron + "' invalid for this mode"
+		case keptBy[pos] != "":
+			reasons[e.idx] = "'" + cron + "' collides with " + keptBy[pos]
+		default:
+			kept = append(kept, posEntry{idx: e.idx, pos: pos, weight: e.weight})
+			keptBy[pos] = e.proj
+			continue
+		}
+		toPlace = append(toPlace, e)
+	}
+	if len(kept) == 0 {
+		return weightedPositions(list, space), reasons
+	}
+	out := placeIntoGaps(kept, toPlace, space)
+	for _, k := range kept {
+		out[k.idx] = k.pos
+	}
+	return out, reasons
+}
+
 // generateWeightedCronEntries computes and applies schedules for one env (test or prod) using the new algorithm:
 // only projects actually alive in the cluster are scheduled, each gets time proportional to sqrt(its DB size)
 // (geometric mean damping: DB size ratio R -> time ratio sqrt(R)), spread over the whole scheduling period.
@@ -478,26 +725,11 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 	dailySpace := (24 - dailyStartHour) * almostHour
 	// linear position -> sync cron: 'M h0,h0+syncHours,... * * *', minute M in [ghaOffset, 60)
 	posToCronSync := func(pos int) string {
-		hourS := pos / almostHour
-		minuteS := (pos % almostHour) + int(ghaOffset)
-		syncHrs := int(syncHours)
-		if hourS >= syncHrs {
-			hourS = 0
-		}
-		hoursS := ""
-		for h := 0; h < 24; h++ {
-			if h%syncHrs == hourS {
-				hoursS += strconv.Itoa(h) + ","
-			}
-		}
-		hoursS = hoursS[:len(hoursS)-1]
-		return fmt.Sprintf("%d %s * * *", minuteS, hoursS)
+		return syncCronOf(pos, int(ghaOffset), int(syncHours), almostHour)
 	}
 	// linear position -> daily sync cron: 'M H * * *', H in [dailyStartHour, 24), minute M in [ghaOffset, 60)
 	posToCronDaily := func(pos int) string {
-		hourD := dailyStartHour + pos/almostHour
-		minuteD := (pos % almostHour) + int(ghaOffset)
-		return fmt.Sprintf("%d %d * * *", minuteD, hourD)
+		return dailyCronOf(pos, int(ghaOffset), dailyStartHour, almostHour)
 	}
 	// affs anchoring (default): place each project's affs cron relative to its OWN sync cron so affs never
 	// starts close to any of the project's sync slots (close pairs caused monthly provision-guard sync skips
@@ -542,47 +774,69 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 	}
 	// absolute affs minute within the period -> affs cron: weekly 'M H * * D' or monthly 'M H D * *'
 	timeToCronAffs := func(t int) string {
-		minuteA := t % 60
-		hourA := (t / 60) % 24
-		dayA := t / minutesInDay
-		if gMonthly {
-			return fmt.Sprintf("%d %d %d * *", minuteA, hourA, dayA+1)
-		}
-		return fmt.Sprintf("%d %d * * %d", minuteA, hourA, dayA)
+		return affsCronOf(t, gMonthly)
 	}
-	// distribute cumulative weighted positions, bump on collisions
-	positions := func(list []weightedEntry, space int) map[int]int {
-		total := 0.0
-		for _, e := range list {
-			total += e.weight
-		}
-		out := make(map[int]int)
-		if total <= 0.0 {
-			return out
-		}
-		used := make(map[int]bool)
-		cum := 0.0
-		for _, e := range list {
-			pos := int((cum / total) * float64(space))
-			if pos >= space {
-				pos = space - 1
-			}
-			for used[pos] {
-				pos = (pos + 1) % space
-			}
-			used[pos] = true
-			out[e.idx] = pos
-			cum += e.weight
-		}
-		return out
-	}
-	syncPos := positions(regular, syncSpace)
-	dailyPos := positions(daily, dailySpace)
-	affsPos := positions(entries, affsSpace)
-	// final affs times: weighted day + (anchored or legacy) time of day
+	// default (preserve) mode: schedules already in values.yaml that are valid for this mode and don't collide are
+	// kept, only new/colliding/invalid/PLACE'd projects are placed into the gaps; RESPLIT_ALL=1 recomputes everything
+	var syncPos, dailyPos, affsPos map[int]int
+	syncReason, dailyReason, affsReason := map[int]string{}, map[int]string{}, map[int]string{}
 	affsTime := make(map[int]int)
-	for _, e := range entries {
-		affsTime[e.idx] = affsTimeOf(affsPos[e.idx], syncPos[e.idx], dailyPos[e.idx], gDailyProjs[e.proj])
+	if gResplitAll {
+		syncPos = weightedPositions(regular, syncSpace)
+		dailyPos = weightedPositions(daily, dailySpace)
+		affsPos = weightedPositions(entries, affsSpace)
+		// final affs times: weighted day + (anchored or legacy) time of day
+		for _, e := range entries {
+			affsTime[e.idx] = affsTimeOf(affsPos[e.idx], syncPos[e.idx], dailyPos[e.idx], gDailyProjs[e.proj])
+		}
+	} else {
+		cronSync := func(e weightedEntry) string {
+			if test {
+				return values.Projects[e.idx].CronTest
+			}
+			return values.Projects[e.idx].CronProd
+		}
+		cronAffs := func(e weightedEntry) string {
+			if test {
+				return values.Projects[e.idx].AffCronTest
+			}
+			return values.Projects[e.idx].AffCronProd
+		}
+		syncPos, syncReason = preservedPositions(regular, syncSpace, cronSync, func(cron string) (int, bool) {
+			return syncCronPos(cron, int(ghaOffset), int(syncHours), almostHour)
+		})
+		dailyPos, dailyReason = preservedPositions(daily, dailySpace, cronSync, func(cron string) (int, bool) {
+			return dailyCronPos(cron, int(ghaOffset), dailyStartHour, almostHour, dailySpace)
+		})
+		affsPos, affsReason = preservedPositions(entries, affsSpace, cronAffs, func(cron string) (int, bool) {
+			t, ok := affsCronTime(cron, gMonthly, periodDays)
+			return affsTimeToPos(t, int(ghaOffset), almostHour), ok
+		})
+		for _, e := range entries {
+			if _, placed := affsReason[e.idx]; placed {
+				affsTime[e.idx] = affsTimeOf(affsPos[e.idx], syncPos[e.idx], dailyPos[e.idx], gDailyProjs[e.proj])
+			} else {
+				affsTime[e.idx], _ = affsCronTime(cronAffs(e), gMonthly, periodDays)
+			}
+		}
+		// a placed affs time anchored to its own sync slot may hit a kept one minute-exactly: bump it
+		affsPeriod := periodDays * minutesInDay
+		usedT := make(map[int]bool)
+		for _, e := range entries {
+			if _, placed := affsReason[e.idx]; !placed {
+				usedT[affsTime[e.idx]] = true
+			}
+		}
+		for _, e := range entries {
+			if _, placed := affsReason[e.idx]; placed {
+				t := affsTime[e.idx]
+				for usedT[t] {
+					t = (t + 1) % affsPeriod
+				}
+				usedT[t] = true
+				affsTime[e.idx] = t
+			}
+		}
 	}
 	// gap = distance from a project's position to the next scheduled one (wraps around the space)
 	gaps := func(pos map[int]int, space int) map[int]int {
@@ -609,6 +863,9 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 	if gAffsAnchor {
 		fmt.Printf("%s: affs anchored to own sync: regular projects mid-gap (sync slot +%dm), daily projects sync +%dh (NO_AFFS_ANCHOR=1 for legacy independent placement)\n", env, int(syncHours)*30, gDailyAffsOff)
 	}
+	if !gResplitAll {
+		fmt.Printf("%s: keeping current schedules: kept %d sync, %d daily, %d affs; placed %d sync, %d daily, %d affs (RESPLIT_ALL=1 recomputes all, PLACE=proj1,proj2 forces projects)\n", env, len(regular)-len(syncReason), len(daily)-len(dailyReason), len(entries)-len(affsReason), len(syncReason), len(dailyReason), len(affsReason))
+	}
 	for _, e := range entries {
 		isDaily := gDailyProjs[e.proj]
 		var cronS, gapS string
@@ -620,7 +877,26 @@ func generateWeightedCronEntries(values *devstatsValues, test bool, entries []we
 			gapS = fmt.Sprintf("gap=%dm", syncGap[e.idx])
 		}
 		cronA := timeToCronAffs(affsTime[e.idx])
-		fmt.Printf("  %-24s db=%-16s size=%9.2fGb weight=%9.1f share=%5.1f%% sync='%s' %s affs='%s' gap=%.1fh\n", e.proj, e.db, e.sizeGb, e.weight, (e.weight/totalWeight)*100.0, cronS, gapS, cronA, float64(affsGap[e.idx])/60.0)
+		mode := ""
+		if !gResplitAll {
+			reasonS, placedS := syncReason[e.idx]
+			if isDaily {
+				reasonS, placedS = dailyReason[e.idx]
+			}
+			reasonA, placedA := affsReason[e.idx]
+			if !placedS && !placedA {
+				mode = " [kept]"
+			} else {
+				if !placedS {
+					reasonS = "kept"
+				}
+				if !placedA {
+					reasonA = "kept"
+				}
+				mode = " [placed: sync " + reasonS + ", affs " + reasonA + "]"
+			}
+		}
+		fmt.Printf("  %-24s db=%-16s size=%9.2fGb weight=%9.1f share=%5.1f%% sync='%s' %s affs='%s' gap=%.1fh%s\n", e.proj, e.db, e.sizeGb, e.weight, (e.weight/totalWeight)*100.0, cronS, gapS, cronA, float64(affsGap[e.idx])/60.0, mode)
 		if isDaily {
 			// widen ghapi2db/orphan-commits/recent-repos lookbacks to cover the 24h cadence (+overlap)
 			if values.Projects[e.idx].RecentRange != gDailyRange || values.Projects[e.idx].OrphanCommitsRange != gDailyRange || values.Projects[e.idx].RecentReposRange != gDailyRepos {
@@ -1055,6 +1331,14 @@ func generateCronValues(inFile, outFile string) {
 			if proj != "" {
 				gDailyProjs[proj] = true
 			}
+		}
+	}
+	gResplitAll = os.Getenv("RESPLIT_ALL") != ""
+	gPlaceProjs = make(map[string]bool)
+	for _, proj := range strings.Split(os.Getenv("PLACE"), ",") {
+		proj = strings.TrimSpace(proj)
+		if proj != "" {
+			gPlaceProjs[proj] = true
 		}
 	}
 	setPatchEnvMap()

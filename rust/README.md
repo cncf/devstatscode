@@ -16,7 +16,7 @@ the difference.
 |--------------|-------------------|-------------------|------------------------|
 | `tsplit`     | `cmd/tsplit`      | `cmd/tsplit`      | 10 / 10                |
 | `replacer`   | `cmd/replacer`    | `cmd/replacer`    | 10 / 27                |
-| `splitcrons` | `cmd/splitcrons`  | `cmd/splitcrons`  | 3 / 25                 |
+| `splitcrons` | `cmd/splitcrons`  | `cmd/splitcrons`  | 9 / 30                 |
 | `structure`  | `cmd/structure`   | `cmd/structure`   | — / 18 (PostgreSQL)    |
 | `tags`       | `cmd/tags`        | `cmd/tags`        | 2 / 21 (PostgreSQL)    |
 | `runq`       | `cmd/runq`        | `cmd/runq`        | 3 / 49 (PostgreSQL)    |
@@ -224,6 +224,12 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     order (`sort.Slice` over a map); Rust breaks them deterministically
     (position, then project order). Only the informational `gap=` figures can
     differ, and only when two projects share a slot.
+  * Default mode keeps the valid, non-colliding schedules found in
+    `values.yaml` and only places new/colliding/invalid projects into the gaps
+    (`RESPLIT_ALL=1` recomputes everything, `PLACE=p1,p2` forces projects);
+    the kept/placed report, the gap insertion and the idempotency (feeding
+    the output back changes nothing) are compared Go⇄Rust on a dedicated
+    fixture (`values-preserve.yaml`).
   * `kubectl` is invoked with the same argument vectors (checked by a fake
     `kubectl` that logs its calls); the child's stdout/stderr are relayed as
     in Go (`lib.ExecCommand`).

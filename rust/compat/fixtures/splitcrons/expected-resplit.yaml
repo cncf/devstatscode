@@ -38,7 +38,7 @@ projects:
   cronTest: 4 3,9,15,21 * * *
   cronProd: 4 0,6,12,18 * * *
   affCronTest: 0 8 16 * *
-  affCronProd: 4 3 * * 4
+  affCronProd: 4 3 * * 2
   affSkipTemp: "1"
   disk: 3Gi
   domains: [0, 1, 0, 0]
@@ -120,9 +120,9 @@ projects:
   org: All CNCF
   repo: '-'
   cronTest: 4 0,6,12,18 * * *
-  cronProd: 58 9 * * *
+  cronProd: 46 9 * * *
   affCronTest: 0 8 13 * *
-  affCronProd: 58 17 * * 5
+  affCronProd: 46 17 * * 2
   affSkipTemp: "1"
   disk: 1051Gi
   domains: [0, 1, 0, 0]
@@ -145,9 +145,9 @@ projects:
   org: Istio
   repo: istio/istio
   cronTest: 14 3,9,15,21 * * *
-  cronProd: 50 20 * * *
+  cronProd: 40 19 * * *
   affCronTest: 0 8 18 * *
-  affCronProd: 50 4 * * 5
+  affCronProd: 40 3 * * 5
   affSkipTemp: "1"
   disk: 60Gi
   domains: [0, 1, 0, 0]
@@ -168,9 +168,9 @@ projects:
   org: Jenkins
   repo: jenkinsci/jenkins
   cronTest: 41 3,9,15,21 * * *
-  cronProd: 26 9 * * *
+  cronProd: 43 20 * * *
   affCronTest: 0 3 20 * *
-  affCronProd: 30 22 * * 3
+  affCronProd: 43 4 * * 5
   affSkipTemp: "1"
   disk: 32Gi
   domains: [0, 0, 1, 0]
@@ -191,9 +191,9 @@ projects:
   org: All CDF
   repo: '-'
   cronTest: 30 0,6,12,18 * * *
-  cronProd: 58 21 * * *
+  cronProd: 19 21 * * *
   affCronTest: 0 8 21 * *
-  affCronProd: 58 5 * * 2
+  affCronProd: 19 5 * * 5
   affSkipTemp: "1"
   disk: 100Gi
   domains: [0, 0, 1, 0]
@@ -214,10 +214,10 @@ projects:
   icon: envoy
   org: Envoy
   repo: envoyproxy/envoy
-  cronTest: 29 3,9,15,21 * * *
-  cronProd: 30 2,8,14,20 * * *
-  affCronTest: 29 18 * * 3
-  affCronProd: 45 6 * * 2
+  cronTest: 15 3,9,15,21 * * *
+  cronProd: 11 2,8,14,20 * * *
+  affCronTest: 15 18 * * 3
+  affCronProd: 11 5 * * 6
   affSkipTemp: "1"
   disk: 16Gi
   domains: [1, 1, 0, 0]
@@ -235,9 +235,9 @@ projects:
   org: Helm
   repo: helm/helm
   cronTest: 33 3,9,15,21 * * *
-  cronProd: 6 5,11,17,23 * * *
+  cronProd: 13 3,9,15,21 * * *
   affCronTest: 0 14 21 * *
-  affCronProd: 15 10 * * 3
+  affCronProd: 13 6 * * 6
   suspendCronTest: true
   affSkipTemp: "1"
   disk: 5Gi
@@ -255,10 +255,10 @@ projects:
   icon: tikv
   org: TiKV
   repo: tikv/tikv
-  cronTest: 46 3,9,15,21 * * *
-  cronProd: 41 3,9,15,21 * * *
-  affCronTest: 46 0 * * 6
-  affCronProd: 0 22 * * 4
+  cronTest: 59 5,11,17,23 * * *
+  cronProd: 10 4,10,16,22 * * *
+  affCronTest: 59 20 * * 6
+  affCronProd: 10 13 * * 6
   affSkipTemp: ""
   disk: 9Gi
   domains: [1, 1, 1, 1]
@@ -279,9 +279,9 @@ projects:
   org: ""
   repo: ""
   cronTest: ""
-  cronProd: 59 1,7,13,19 * * *
+  cronProd: 30 5,11,17,23 * * *
   affCronTest: ""
-  affCronProd: 59 16 * * 4
+  affCronProd: 30 14 * * 6
   affSkipTemp: ""
   disk: ""
   domains: [0, 1, 0, 0]
@@ -295,9 +295,9 @@ projects:
   org: OpenTelemetry
   repo: open-telemetry/opentelemetry-collector
   cronTest: 50 3,9,15,21 * * *
-  cronProd: 50 19 * * *
+  cronProd: 4 23 * * *
   affCronTest: 0 22 25 * *
-  affCronProd: 30 15 * * 5
+  affCronProd: 4 7 * * 6
   affSkipTemp: "1"
   disk: 20Gi
   domains: [0, 1, 0, 0]
@@ -337,10 +337,10 @@ projects:
   icon: nats
   org: NATS
   repo: nats-io/nats-server
-  cronTest: 37 3,9,15,21 * * *
-  cronProd: 40 3,9,15,21 * * *
-  affCronTest: 37 0 * * 6
-  affCronProd: 45 14 * * 4
+  cronTest: 5 0,6,12,18 * * *
+  cronProd: 59 5,11,17,23 * * *
+  affCronTest: 5 21 * * 6
+  affCronProd: 59 20 * * 6
   affSkipTemp: "1"
   disk: 3Gi
   domains: [1, 1, 0, 0]

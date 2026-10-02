@@ -17,7 +17,8 @@
 //! `OLD_ALGORITHM`, `NO_DB_SIZES`, `SPLIT_ALGO`, `WEIGHT_POWER`, `DAILY_RANGE`,
 //! `DAILY_REPOS_RANGE`, `DAILY_PROJECTS`, `NO_AFFS_ANCHOR`,
 //! `DAILY_AFFS_OFFSET_HOURS`, `PATCH_ENV`, `SIZES_POD`, `CTX_TEST`, `CTX_PROD`,
-//! `KUBERNETES_HOURS`, `ALL_HOURS`, `OFFSET_HOURS`, `DEBUG`), the stdout report
+//! `KUBERNETES_HOURS`, `ALL_HOURS`, `OFFSET_HOURS`, `RESPLIT_ALL`, `PLACE`,
+//! `DEBUG`), the stdout report
 //! is identical, and the written YAML is byte-identical to `gopkg.in/yaml.v2`
 //! output (see `devstatscode::yamlv2`).
 
@@ -213,6 +214,10 @@ struct State {
     daily_repos: String,
     affs_anchor: bool,
     daily_affs_off: i64,
+    /// `RESPLIT_ALL=1`: recompute every schedule from scratch (the default keeps valid ones)
+    resplit_all: bool,
+    /// `PLACE=p1,p2`: projects to (re)place even when their current schedules are fine
+    place_projs: HashSet<String>,
     /// `PATCH_ENV` names; `None` when the variable is unset (Go: nil map).
     patch_env: Option<HashSet<String>>,
 }
@@ -568,7 +573,7 @@ fn consider_patch_env(
 }
 
 /// A single alive project entry in the weighted scheduler (Go `weightedEntry`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct WeightedEntry {
     /// index in `values.projects`
     idx: usize,
@@ -591,6 +596,247 @@ fn sync_hours_list(hour_s: i64, sync_hrs: i64) -> String {
         .map(|h| h.to_string())
         .collect();
     hours.join(",")
+}
+
+/// A project already placed in a linear (circular) schedule space (Go `posEntry`).
+#[derive(Debug, Clone, Copy)]
+struct PosEntry {
+    idx: usize,
+    pos: i64,
+    weight: f64,
+}
+
+/// Linear position -> sync cron: 'M h0,h0+syncHours,... * * *', minute M in [ghaOffset, 60) (Go `syncCronOf`).
+fn sync_cron_of(pos: i64, gha_off: i64, sync_hrs: i64, almost_hour: i64) -> String {
+    let mut hour_s = pos / almost_hour;
+    let minute_s = (pos % almost_hour) + gha_off;
+    if hour_s >= sync_hrs {
+        hour_s = 0;
+    }
+    format!("{minute_s} {} * * *", sync_hours_list(hour_s, sync_hrs))
+}
+
+/// Linear position -> daily sync cron: 'M H * * *', H in [dailyStartHour, 24) (Go `dailyCronOf`).
+fn daily_cron_of(pos: i64, gha_off: i64, daily_start_hour: i64, almost_hour: i64) -> String {
+    let hour_d = daily_start_hour + pos / almost_hour;
+    let minute_d = (pos % almost_hour) + gha_off;
+    format!("{minute_d} {hour_d} * * *")
+}
+
+/// Absolute affs minute within the period -> affs cron: weekly 'M H * * D' or monthly 'M H D * *' (Go `affsCronOf`).
+fn affs_cron_of(t: i64, monthly: bool) -> String {
+    let minute_a = t % 60;
+    let hour_a = (t / 60) % 24;
+    let day_a = t / (24 * 60);
+    if monthly {
+        format!("{minute_a} {hour_a} {} * *", day_a + 1)
+    } else {
+        format!("{minute_a} {hour_a} * * {day_a}")
+    }
+}
+
+/// The given fields of a 5-field cron as ints (`None`: not 5 fields or a field is not an int) (Go `cronInts`).
+fn cron_ints(cron: &str, fields: &[usize]) -> Option<Vec<i64>> {
+    let ary: Vec<&str> = cron.split_whitespace().collect();
+    if ary.len() != 5 {
+        return None;
+    }
+    fields
+        .iter()
+        .map(|&f| gotime::parse_go_int(ary[f].split(',').next().unwrap_or("")).ok())
+        .collect()
+}
+
+/// Inverse of `sync_cron_of`: the sync space position of an existing cron, `Some` only when the cron is
+/// exactly what `sync_cron_of` generates for that position (Go `syncCronPos`).
+fn sync_cron_pos(cron: &str, gha_off: i64, sync_hrs: i64, almost_hour: i64) -> Option<i64> {
+    let v = cron_ints(cron, &[0, 1])?;
+    if v[0] < gha_off || v[0] >= 60 || v[1] < 0 || v[1] >= sync_hrs {
+        return None;
+    }
+    let pos = v[1] * almost_hour + (v[0] - gha_off);
+    (sync_cron_of(pos, gha_off, sync_hrs, almost_hour) == cron).then_some(pos)
+}
+
+/// Inverse of `daily_cron_of`: the daily space position of an existing daily cron (Go `dailyCronPos`).
+fn daily_cron_pos(
+    cron: &str,
+    gha_off: i64,
+    daily_start_hour: i64,
+    almost_hour: i64,
+    daily_space: i64,
+) -> Option<i64> {
+    let v = cron_ints(cron, &[0, 1])?;
+    if v[0] < gha_off || v[0] >= 60 || v[1] < daily_start_hour || v[1] >= 24 {
+        return None;
+    }
+    let pos = (v[1] - daily_start_hour) * almost_hour + (v[0] - gha_off);
+    (pos < daily_space && daily_cron_of(pos, gha_off, daily_start_hour, almost_hour) == cron)
+        .then_some(pos)
+}
+
+/// Inverse of `affs_cron_of`: the absolute minute within the affs period of an existing affs cron
+/// in the current weekly/monthly format (Go `affsCronTime`).
+fn affs_cron_time(cron: &str, monthly: bool, period_days: i64) -> Option<i64> {
+    let day_field = if monthly { 2 } else { 4 };
+    let v = cron_ints(cron, &[0, 1, day_field])?;
+    if v[0] < 0 || v[0] >= 60 || v[1] < 0 || v[1] >= 24 {
+        return None;
+    }
+    let day = if monthly { v[2] - 1 } else { v[2] };
+    if day < 0 || day >= period_days {
+        return None;
+    }
+    let t = day * 24 * 60 + v[1] * 60 + v[0];
+    (affs_cron_of(t, monthly) == cron).then_some(t)
+}
+
+/// Absolute affs minute -> position in the (almostHour based) affs space of the weighted spread (Go `affsTimeToPos`).
+fn affs_time_to_pos(t: i64, gha_off: i64, almost_hour: i64) -> i64 {
+    let minute = std::cmp::max(t % 60 - gha_off, 0);
+    (t / 60) * almost_hour + minute
+}
+
+/// Cumulative weighted positions over a space, bumping forward on collisions (Go `weightedPositions`).
+fn weighted_positions(list: &[&WeightedEntry], space: i64) -> HashMap<usize, i64> {
+    let total: f64 = list.iter().map(|e| e.weight).sum();
+    let mut out = HashMap::new();
+    if total <= 0.0 {
+        return out;
+    }
+    let mut used: HashSet<i64> = HashSet::new();
+    let mut cum = 0.0;
+    for e in list {
+        let mut pos = ((cum / total) * space as f64) as i64;
+        if pos >= space {
+            pos = space - 1;
+        }
+        while used.contains(&pos) {
+            pos = (pos + 1) % space;
+        }
+        used.insert(pos);
+        out.insert(e.idx, pos);
+        cum += e.weight;
+    }
+    out
+}
+
+/// Inserts the new entries (heaviest first, then by project index) between the kept positions: each goes
+/// into the gap offering the most time per unit of weight (gap / (gap owner weight + new weight)), splitting
+/// that gap proportionally to the weights (the owner keeps the start, the new project gets the end), bumping
+/// forward when the position is taken. Returns the positions of the new entries (Go `placeIntoGaps`).
+fn place_into_gaps(
+    kept: &[PosEntry],
+    new_entries: &[&WeightedEntry],
+    space: i64,
+) -> HashMap<usize, i64> {
+    let mut out = HashMap::new();
+    if kept.is_empty() || space <= 0 {
+        return out;
+    }
+    let mut used: HashSet<i64> = kept.iter().map(|k| k.pos).collect();
+    let mut kept: Vec<PosEntry> = kept.to_vec();
+    let mut order: Vec<&WeightedEntry> = new_entries.to_vec();
+    order.sort_by(|a, b| {
+        b.weight
+            .partial_cmp(&a.weight)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.idx.cmp(&b.idx))
+    });
+    for e in order {
+        kept.sort_by_key(|k| (k.pos, k.idx));
+        let gap_of = |kept: &[PosEntry], i: usize| -> i64 {
+            if kept.len() == 1 {
+                return space;
+            }
+            (kept[(i + 1) % kept.len()].pos - kept[i].pos + space) % space
+        };
+        let (mut best_i, mut best_score) = (0usize, -1.0f64);
+        for (i, k) in kept.iter().enumerate() {
+            let mut den = k.weight + e.weight;
+            if den <= 0.0 {
+                den = 1.0;
+            }
+            let score = gap_of(&kept, i) as f64 / den;
+            if score > best_score {
+                best_i = i;
+                best_score = score;
+            }
+        }
+        let (owner, gap) = (kept[best_i], gap_of(&kept, best_i));
+        let mut den = owner.weight + e.weight;
+        if den <= 0.0 {
+            den = 1.0;
+        }
+        let off = (gap as f64 * owner.weight / den) as i64;
+        let off = off.min(gap - 1).max(1);
+        let mut pos = (owner.pos + off) % space;
+        let mut i = 0;
+        while i < space && used.contains(&pos) {
+            pos = (pos + 1) % space;
+            i += 1;
+        }
+        used.insert(pos);
+        out.insert(e.idx, pos);
+        kept.push(PosEntry {
+            idx: e.idx,
+            pos,
+            weight: e.weight,
+        });
+    }
+    out
+}
+
+/// Default mode positions for one schedule space: every entry whose current cron parses in the current
+/// mode and doesn't repeat a lower-index entry's cron keeps its position, the others (plus `PLACE` forced
+/// ones) are inserted into the gaps between the kept ones. Without any kept entry (first run, mode change)
+/// the whole list is split from scratch. Returns the positions and the (re)placement reasons (kept: no
+/// entry) (Go `preservedPositions`).
+fn preserved_positions(
+    list: &[&WeightedEntry],
+    space: i64,
+    place_projs: &HashSet<String>,
+    cron_of: impl Fn(&WeightedEntry) -> String,
+    parse: impl Fn(&str) -> Option<i64>,
+) -> (HashMap<usize, i64>, HashMap<usize, String>) {
+    let mut reasons: HashMap<usize, String> = HashMap::new();
+    let mut kept: Vec<PosEntry> = Vec::new();
+    let mut kept_by: HashMap<i64, String> = HashMap::new();
+    let mut to_place: Vec<&WeightedEntry> = Vec::new();
+    for &e in list {
+        let cron = cron_of(e);
+        let parsed = parse(&cron);
+        let reason = if place_projs.contains(&e.proj) {
+            "PLACE".to_string()
+        } else if cron.is_empty() {
+            "new".to_string()
+        } else if let Some(pos) = parsed {
+            match kept_by.get(&pos) {
+                Some(by) if !by.is_empty() => format!("'{cron}' collides with {by}"),
+                _ => {
+                    kept.push(PosEntry {
+                        idx: e.idx,
+                        pos,
+                        weight: e.weight,
+                    });
+                    kept_by.insert(pos, e.proj.clone());
+                    continue;
+                }
+            }
+        } else {
+            format!("'{cron}' invalid for this mode")
+        };
+        reasons.insert(e.idx, reason);
+        to_place.push(e);
+    }
+    if kept.is_empty() {
+        return (weighted_positions(list, space), reasons);
+    }
+    let mut out = place_into_gaps(&kept, &to_place, space);
+    for k in &kept {
+        out.insert(k.idx, k.pos);
+    }
+    (out, reasons)
 }
 
 /// New (default) algorithm for one env: weighted positions over the sync /
@@ -638,20 +884,11 @@ fn generate_weighted_cron_entries(
     let daily_start_hour = import_hour + 1;
     let daily_space = (24 - daily_start_hour) * almost_hour;
     // linear position -> sync cron: 'M h0,h0+syncHours,... * * *', minute M in [ghaOffset, 60)
-    let pos_to_cron_sync = |pos: i64| -> String {
-        let mut hour_s = pos / almost_hour;
-        let minute_s = (pos % almost_hour) + gha_off;
-        if hour_s >= sync_hrs {
-            hour_s = 0;
-        }
-        format!("{minute_s} {} * * *", sync_hours_list(hour_s, sync_hrs))
-    };
+    let pos_to_cron_sync =
+        |pos: i64| -> String { sync_cron_of(pos, gha_off, sync_hrs, almost_hour) };
     // linear position -> daily sync cron: 'M H * * *', H in [dailyStartHour, 24)
-    let pos_to_cron_daily = |pos: i64| -> String {
-        let hour_d = daily_start_hour + pos / almost_hour;
-        let minute_d = (pos % almost_hour) + gha_off;
-        format!("{minute_d} {hour_d} * * *")
-    };
+    let pos_to_cron_daily =
+        |pos: i64| -> String { daily_cron_of(pos, gha_off, daily_start_hour, almost_hour) };
     // affs anchoring (default): affs placed relative to the project's OWN sync cron
     let minutes_in_day: i64 = 24 * 60;
     let affs_anchor = st.affs_anchor;
@@ -693,56 +930,96 @@ fn generate_weighted_cron_entries(
     };
     // absolute affs minute within the period -> affs cron: weekly 'M H * * D' or monthly 'M H D * *'
     let monthly = st.monthly;
-    let time_to_cron_affs = |t: i64| -> String {
-        let minute_a = t % 60;
-        let hour_a = (t / 60) % 24;
-        let day_a = t / minutes_in_day;
-        if monthly {
-            format!("{minute_a} {hour_a} {} * *", day_a + 1)
-        } else {
-            format!("{minute_a} {hour_a} * * {day_a}")
-        }
-    };
-    // distribute cumulative weighted positions, bump on collisions
-    let positions = |list: &[&WeightedEntry], space: i64| -> HashMap<usize, i64> {
-        let total: f64 = list.iter().map(|e| e.weight).sum();
-        let mut out = HashMap::new();
-        if total <= 0.0 {
-            return out;
-        }
-        let mut used: HashSet<i64> = HashSet::new();
-        let mut cum = 0.0;
-        for e in list {
-            let mut pos = ((cum / total) * space as f64) as i64;
-            if pos >= space {
-                pos = space - 1;
-            }
-            while used.contains(&pos) {
-                pos = (pos + 1) % space;
-            }
-            used.insert(pos);
-            out.insert(e.idx, pos);
-            cum += e.weight;
-        }
-        out
-    };
+    let time_to_cron_affs = |t: i64| -> String { affs_cron_of(t, monthly) };
     let all: Vec<&WeightedEntry> = entries.iter().collect();
-    let sync_pos = positions(&regular, sync_space);
-    let daily_pos = positions(&daily, daily_space);
-    let affs_pos = positions(&all, affs_space);
     let at = |m: &HashMap<usize, i64>, idx: usize| m.get(&idx).copied().unwrap_or(0);
-    // final affs times: weighted day + (anchored or legacy) time of day
+    // default (preserve) mode: schedules already in values.yaml that are valid for this mode and don't collide
+    // are kept, only new/colliding/invalid/PLACE'd projects are placed into the gaps; RESPLIT_ALL=1 recomputes all
+    let (sync_pos, daily_pos, affs_pos): (
+        HashMap<usize, i64>,
+        HashMap<usize, i64>,
+        HashMap<usize, i64>,
+    );
+    let (mut sync_reason, mut daily_reason, mut affs_reason): (
+        HashMap<usize, String>,
+        HashMap<usize, String>,
+        HashMap<usize, String>,
+    ) = (HashMap::new(), HashMap::new(), HashMap::new());
     let mut affs_time: HashMap<usize, i64> = HashMap::new();
-    for e in entries {
-        affs_time.insert(
-            e.idx,
-            affs_time_of(
-                at(&affs_pos, e.idx),
-                at(&sync_pos, e.idx),
-                at(&daily_pos, e.idx),
-                st.daily_projs.contains(&e.proj),
-            ),
-        );
+    if st.resplit_all {
+        sync_pos = weighted_positions(&regular, sync_space);
+        daily_pos = weighted_positions(&daily, daily_space);
+        affs_pos = weighted_positions(&all, affs_space);
+        // final affs times: weighted day + (anchored or legacy) time of day
+        for e in entries {
+            affs_time.insert(
+                e.idx,
+                affs_time_of(
+                    at(&affs_pos, e.idx),
+                    at(&sync_pos, e.idx),
+                    at(&daily_pos, e.idx),
+                    st.daily_projs.contains(&e.proj),
+                ),
+            );
+        }
+    } else {
+        let cron_sync = |e: &WeightedEntry| -> String {
+            if test {
+                values.projects[e.idx].cron_test.clone()
+            } else {
+                values.projects[e.idx].cron_prod.clone()
+            }
+        };
+        let cron_affs = |e: &WeightedEntry| -> String {
+            if test {
+                values.projects[e.idx].aff_cron_test.clone()
+            } else {
+                values.projects[e.idx].aff_cron_prod.clone()
+            }
+        };
+        (sync_pos, sync_reason) =
+            preserved_positions(&regular, sync_space, &st.place_projs, cron_sync, |cron| {
+                sync_cron_pos(cron, gha_off, sync_hrs, almost_hour)
+            });
+        (daily_pos, daily_reason) =
+            preserved_positions(&daily, daily_space, &st.place_projs, cron_sync, |cron| {
+                daily_cron_pos(cron, gha_off, daily_start_hour, almost_hour, daily_space)
+            });
+        (affs_pos, affs_reason) =
+            preserved_positions(&all, affs_space, &st.place_projs, cron_affs, |cron| {
+                affs_cron_time(cron, monthly, period_days)
+                    .map(|t| affs_time_to_pos(t, gha_off, almost_hour))
+            });
+        for e in entries {
+            let t = if affs_reason.contains_key(&e.idx) {
+                affs_time_of(
+                    at(&affs_pos, e.idx),
+                    at(&sync_pos, e.idx),
+                    at(&daily_pos, e.idx),
+                    st.daily_projs.contains(&e.proj),
+                )
+            } else {
+                affs_cron_time(&cron_affs(e), monthly, period_days).unwrap_or(0)
+            };
+            affs_time.insert(e.idx, t);
+        }
+        // a placed affs time anchored to its own sync slot may hit a kept one minute-exactly: bump it
+        let affs_period = period_days * minutes_in_day;
+        let mut used_t: HashSet<i64> = entries
+            .iter()
+            .filter(|e| !affs_reason.contains_key(&e.idx))
+            .map(|e| at(&affs_time, e.idx))
+            .collect();
+        for e in entries {
+            if affs_reason.contains_key(&e.idx) {
+                let mut t = at(&affs_time, e.idx);
+                while used_t.contains(&t) {
+                    t = (t + 1) % affs_period;
+                }
+                used_t.insert(t);
+                affs_time.insert(e.idx, t);
+            }
+        }
     }
     // gap = distance from a project's position to the next scheduled one (wraps around the space).
     // Go sorts by position only, so equal positions (possible for affs times) are ordered by
@@ -778,6 +1055,17 @@ fn generate_weighted_cron_entries(
             st.daily_affs_off
         );
     }
+    if !st.resplit_all {
+        println!(
+            "{env}: keeping current schedules: kept {} sync, {} daily, {} affs; placed {} sync, {} daily, {} affs (RESPLIT_ALL=1 recomputes all, PLACE=proj1,proj2 forces projects)",
+            regular.len() - sync_reason.len(),
+            daily.len() - daily_reason.len(),
+            entries.len() - affs_reason.len(),
+            sync_reason.len(),
+            daily_reason.len(),
+            affs_reason.len()
+        );
+    }
     for e in entries {
         let is_daily = st.daily_projs.contains(&e.proj);
         let (cron_s, gap_s) = if is_daily {
@@ -796,8 +1084,25 @@ fn generate_weighted_cron_entries(
             )
         };
         let cron_a = time_to_cron_affs(at(&affs_time, e.idx));
+        let mut mode = String::new();
+        if !st.resplit_all {
+            let reason_s = if is_daily {
+                daily_reason.get(&e.idx)
+            } else {
+                sync_reason.get(&e.idx)
+            };
+            let reason_a = affs_reason.get(&e.idx);
+            mode = match (reason_s, reason_a) {
+                (None, None) => " [kept]".to_string(),
+                _ => format!(
+                    " [placed: sync {}, affs {}]",
+                    reason_s.map_or("kept", String::as_str),
+                    reason_a.map_or("kept", String::as_str)
+                ),
+            };
+        }
         println!(
-            "  {:<24} db={:<16} size={}Gb weight={} share={}% sync='{cron_s}' {gap_s} affs='{cron_a}' gap={}h",
+            "  {:<24} db={:<16} size={}Gb weight={} share={}% sync='{cron_s}' {gap_s} affs='{cron_a}' gap={}h{mode}",
             e.proj,
             e.db,
             gofw(e.size_gb, 2, 9),
@@ -1308,6 +1613,13 @@ fn generate_cron_values(in_file: &str, out_file: &str) {
             .map(str::to_string)
             .collect();
     }
+    st.resplit_all = env_set("RESPLIT_ALL");
+    st.place_projs = env_str("PLACE")
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
     set_patch_env_map(&mut st);
     // New (default) algorithm: schedule only projects actually alive in each env's cluster,
     // give each time proportional to size^power (SPLIT_ALGO), spread evenly over the whole period.
@@ -1573,5 +1885,273 @@ mod tests {
             String::from_utf8(marshal(&empty.to_node())).unwrap(),
             "nSyncCPUs: 0\nnAffsCPUs: 0\nprojects: []\n"
         );
+    }
+
+    fn we(idx: usize, weight: f64) -> WeightedEntry {
+        WeightedEntry {
+            idx,
+            weight,
+            ..WeightedEntry::default()
+        }
+    }
+
+    fn pe(idx: usize, pos: i64, weight: f64) -> PosEntry {
+        PosEntry { idx, pos, weight }
+    }
+
+    fn refs(list: &[WeightedEntry]) -> Vec<&WeightedEntry> {
+        list.iter().collect()
+    }
+
+    fn positions(pairs: &[(usize, i64)]) -> HashMap<usize, i64> {
+        pairs.iter().copied().collect()
+    }
+
+    #[test]
+    fn sync_cron_round_trip() {
+        for (gha_off, sync_hrs) in [(4, 6), (4, 1), (2, 3), (10, 6), (10, 2)] {
+            let almost_hour = 60 - gha_off;
+            let space = sync_hrs * almost_hour;
+            let mut seen = HashSet::new();
+            for pos in 0..space {
+                let cron = sync_cron_of(pos, gha_off, sync_hrs, almost_hour);
+                assert!(seen.insert(cron.clone()), "duplicate cron {cron:?}");
+                assert_eq!(
+                    sync_cron_pos(&cron, gha_off, sync_hrs, almost_hour),
+                    Some(pos),
+                    "{gha_off}/{sync_hrs}: pos {pos} -> {cron:?}"
+                );
+            }
+        }
+        assert_eq!(sync_cron_of(7, 4, 6, 56), "11 0,6,12,18 * * *");
+        assert_eq!(sync_cron_of(56 * 3 + 5, 4, 6, 56), "9 3,9,15,21 * * *");
+        for cron in [
+            "",
+            "4 3 * * *",
+            "04 0,6,12,18 * * *",
+            "3 0,6,12,18 * * *",
+            "60 0,6,12,18 * * *",
+            "4 6,12,18,0 * * *",
+            "4 0,6,12 * * *",
+            "4 0,6,12,18 * *",
+            "4 0,6,12,18 * * * *",
+            "4 0,6,12,18 1 * *",
+            "x 0,6,12,18 * * *",
+            "4 0 ,6,12,18 * * *",
+            "4 0,6,12,18 * * 1",
+            "4 3 * * 1",
+        ] {
+            assert_eq!(sync_cron_pos(cron, 4, 6, 56), None, "{cron:?}");
+        }
+        // hourly syncs: every hour listed
+        assert_eq!(
+            sync_cron_pos(
+                "4 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23 * * *",
+                4,
+                1,
+                56
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn daily_cron_round_trip() {
+        for (gha_off, daily_start_hour) in [(4, 3), (4, 2), (2, 23), (10, 0)] {
+            let almost_hour = 60 - gha_off;
+            let space = (24 - daily_start_hour) * almost_hour;
+            for pos in 0..space {
+                let cron = daily_cron_of(pos, gha_off, daily_start_hour, almost_hour);
+                assert_eq!(
+                    daily_cron_pos(&cron, gha_off, daily_start_hour, almost_hour, space),
+                    Some(pos),
+                    "{gha_off}/{daily_start_hour}: pos {pos} -> {cron:?}"
+                );
+            }
+        }
+        assert_eq!(daily_cron_of(56 * 6 + 48, 4, 3, 56), "52 9 * * *");
+        for cron in [
+            "",
+            "4 2 * * *",
+            "4 24 * * *",
+            "3 3 * * *",
+            "4 0,6,12,18 * * *",
+            "4 3 1 * *",
+            "4 3 * * 1",
+            "04 3 * * *",
+        ] {
+            assert_eq!(daily_cron_pos(cron, 4, 3, 56, 21 * 56), None, "{cron:?}");
+        }
+    }
+
+    #[test]
+    fn affs_cron_round_trip() {
+        for monthly in [false, true] {
+            let period_days = if monthly { 28 } else { 7 };
+            for tm in (0..period_days * 24 * 60).step_by(7) {
+                let cron = affs_cron_of(tm, monthly);
+                assert_eq!(
+                    affs_cron_time(&cron, monthly, period_days),
+                    Some(tm),
+                    "monthly={monthly}: t {tm} -> {cron:?}"
+                );
+            }
+        }
+        assert_eq!(affs_cron_of(24 * 60 + 9 * 60 + 11, true), "11 9 2 * *");
+        assert_eq!(
+            affs_cron_of(3 * 24 * 60 + 18 * 60 + 15, false),
+            "15 18 * * 3"
+        );
+        // wrong mode, out of period, malformed
+        for cron in [
+            "",
+            "15 18 * * 3",
+            "4 11 0 * *",
+            "4 11 29 * *",
+            "60 11 1 * *",
+            "4 24 1 * *",
+            "4 11 1 * * *",
+            "04 11 1 * *",
+            "4 11 1 1 *",
+            "a 11 1 * *",
+        ] {
+            assert_eq!(affs_cron_time(cron, true, 28), None, "monthly {cron:?}");
+        }
+        for cron in [
+            "",
+            "4 11 1 * *",
+            "15 18 * * 7",
+            "15 18 * * -1",
+            "15 18 1 * 3",
+            "15 18 * 1 3",
+        ] {
+            assert_eq!(affs_cron_time(cron, false, 7), None, "weekly {cron:?}");
+        }
+        // pos space conversion: minute offset relative to GHA_OFFSET, clamped at 0 for earlier minutes
+        assert_eq!(
+            affs_time_to_pos(24 * 60 + 9 * 60 + 11, 4, 56),
+            24 * 56 + 9 * 56 + 7
+        );
+        assert_eq!(affs_time_to_pos(9 * 60 + 2, 4, 56), 9 * 56);
+    }
+
+    #[test]
+    fn weighted_positions_split() {
+        let list = [we(0, 1.0), we(1, 1.0), we(2, 2.0)];
+        assert_eq!(
+            weighted_positions(&refs(&list), 100),
+            positions(&[(0, 0), (1, 25), (2, 50)])
+        );
+        // collisions bump forward, zero total gives nothing
+        let list = [we(0, 1.0), we(1, 1e-9), we(2, 1e-9)];
+        assert_eq!(
+            weighted_positions(&refs(&list), 10),
+            positions(&[(0, 0), (1, 9), (2, 1)])
+        );
+        assert!(weighted_positions(&refs(&[we(0, 0.0)]), 10).is_empty());
+    }
+
+    #[test]
+    fn place_into_gaps_rules() {
+        // one kept entry: the whole space is its gap, split proportionally (owner keeps the start)
+        assert_eq!(
+            place_into_gaps(&[pe(0, 10, 3.0)], &refs(&[we(5, 1.0)]), 100),
+            positions(&[(5, 85)])
+        );
+        // the gap with the most time per weight unit wins
+        let kept = [pe(0, 0, 100.0), pe(1, 30, 1.0), pe(2, 40, 100.0)];
+        assert_eq!(
+            place_into_gaps(&kept, &refs(&[we(9, 1.0)]), 100),
+            positions(&[(9, 35)])
+        );
+        // wrap-around gap (last -> first) and heaviest-first ordering (idx 8 is placed before idx 7)
+        let kept = [pe(0, 10, 1.0), pe(1, 20, 1.0)];
+        assert_eq!(
+            place_into_gaps(&kept, &refs(&[we(7, 1.0), we(8, 3.0)]), 100),
+            positions(&[(8, 42), (7, 93)])
+        );
+        // equal weights: lower index first; offset never below 1 or above gap-1, bump on taken positions
+        let kept = [pe(0, 0, 1.0), pe(1, 2, 1.0), pe(2, 4, 1e9)];
+        assert_eq!(
+            place_into_gaps(&kept, &refs(&[we(4, 1.0), we(3, 1.0)]), 6),
+            positions(&[(3, 1), (4, 3)])
+        );
+        // a huge owner pushes the new entry to the end of its gap; equal gaps: the first one wins
+        let kept = [pe(0, 0, 1e12), pe(1, 50, 1e12)];
+        assert_eq!(
+            place_into_gaps(&kept, &refs(&[we(2, 1.0)]), 100),
+            positions(&[(2, 49)])
+        );
+        assert_eq!((kept[0].idx, kept[1].idx), (0, 1));
+        // zero weights never divide by zero
+        assert_eq!(
+            place_into_gaps(&[pe(0, 0, 0.0)], &refs(&[we(1, 0.0)]), 10),
+            positions(&[(1, 1)])
+        );
+        // nothing kept or no space: nothing placed
+        assert!(place_into_gaps(&[], &refs(&[we(1, 1.0)]), 10).is_empty());
+        assert!(place_into_gaps(&[pe(0, 0, 1.0)], &refs(&[we(1, 1.0)]), 0).is_empty());
+    }
+
+    #[test]
+    fn preserved_positions_rules() {
+        let place_projs: HashSet<String> = ["forced".to_string()].into_iter().collect();
+        let crons: HashMap<usize, &str> = [
+            (0, "4 0,6,12,18 * * *"),
+            (1, "9 0,6,12,18 * * *"),
+            (2, "9 0,6,12,18 * * *"),
+            (3, ""),
+            (4, "8 * * * *"),
+            (5, "30 3,9,15,21 * * *"),
+            (6, "40 3,9,15,21 * * *"),
+        ]
+        .into_iter()
+        .collect();
+        let mut list = vec![
+            we(0, 100.0),
+            we(1, 10.0),
+            we(2, 10.0),
+            we(3, 1.0),
+            we(4, 1.0),
+            we(5, 1.0),
+            we(6, 50.0),
+        ];
+        for (e, name) in list
+            .iter_mut()
+            .zip(["a", "b", "c", "d", "e", "forced", "g"])
+        {
+            e.proj = name.to_string();
+        }
+        let cron_of = |e: &WeightedEntry| crons[&e.idx].to_string();
+        let parse = |cron: &str| sync_cron_pos(cron, 4, 6, 56);
+        let (pos, reasons) = preserved_positions(&refs(&list), 336, &place_projs, cron_of, parse);
+        let want_reasons: HashMap<usize, String> = [
+            (2, "'9 0,6,12,18 * * *' collides with b"),
+            (3, "new"),
+            (4, "'8 * * * *' invalid for this mode"),
+            (5, "PLACE"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k, v.to_string()))
+        .collect();
+        assert_eq!(reasons, want_reasons);
+        // kept ones stay exactly where their crons are
+        assert_eq!((pos[&0], pos[&1], pos[&6]), (0, 5, 3 * 56 + 36));
+        // every entry got a distinct position inside the space
+        let mut seen = HashSet::new();
+        for e in &list {
+            let p = pos[&e.idx];
+            assert!((0..336).contains(&p) && seen.insert(p), "{}: {p}", e.proj);
+        }
+        // nothing kept (all crons empty): full weighted split, every entry reported as placed
+        let empty = |_: &WeightedEntry| String::new();
+        let (pos, reasons) =
+            preserved_positions(&refs(&list[..3]), 336, &place_projs, empty, parse);
+        assert_eq!(pos, weighted_positions(&refs(&list[..3]), 336));
+        assert_eq!(reasons.len(), 3);
+        assert_eq!(reasons[&0], "new");
+        // no entries at all
+        let (pos, reasons) = preserved_positions(&[], 336, &place_projs, empty, parse);
+        assert!(pos.is_empty() && reasons.is_empty());
     }
 }
