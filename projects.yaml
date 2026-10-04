@@ -1739,12 +1739,13 @@ projects:
   karmada:
     order: 110
     name: Karmada
-    status: Incubating
+    status: Graduated
     command_line:
     - 'karmada-io'
     start_date: 2021-04-23T00:00:00Z
     join_date: 2021-09-14T00:00:00Z
     incubating_date: 2023-12-12T00:00:00Z
+    graduated_date: 2026-09-03T00:00:00Z
     psql_db: karmada
     shared_db: allprj
     main_repo: 'karmada-io/karmada'
@@ -3718,7 +3719,7 @@ projects:
     annotation_regexp: '^v\d+\.\d+\.\d*0$'
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
   agones:
-    order: 245
+    order: 246
     name: Agones
     status: Sandbox
     command_line:
@@ -3736,7 +3737,7 @@ projects:
     annotation_regexp: '^v\d+\.\d+\.0$'
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
   velero:
-    order: 246
+    order: 247
     name: Velero
     status: Sandbox
     command_line:
@@ -3753,7 +3754,7 @@ projects:
     annotation_regexp: '^v\d+\.\d+\.0$'
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
   openeverest:
-    order: 247
+    order: 248
     name: OpenEverest
     status: Sandbox
     command_line:
@@ -3768,7 +3769,7 @@ projects:
     annotation_regexp: '^v\d+\.\d+\.0$'
     files_skip_pattern: ''
   nmstate:
-    order: 248
+    order: 249
     name: NMstate
     status: Sandbox
     command_line:
@@ -3781,7 +3782,7 @@ projects:
     annotation_regexp: '^v\d+\.\d+\.\d*0$'
     files_skip_pattern: ''
   higress:
-    order: 249
+    order: 250
     name: Higress
     status: Sandbox
     command_line:
@@ -3796,7 +3797,7 @@ projects:
     annotation_regexp: '^v\d+\.\d+\.0$'
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
   llmd:
-    order: 250
+    order: 251
     name: llm-d
     status: Sandbox
     command_line:
@@ -3809,7 +3810,7 @@ projects:
     annotation_regexp: '^v\d+\.\d+$'
     files_skip_pattern: ''
   tekton:
-    order: 251
+    order: 252
     name: Tekton
     status: Incubating
     command_line:
@@ -3824,7 +3825,7 @@ projects:
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
     shared_db: allprj
   apicurioregistry:
-    order: 252
+    order: 253
     name: "Apicurio Registry"
     status: Sandbox
     command_line:
@@ -3837,7 +3838,7 @@ projects:
     files_skip_pattern: ''
     shared_db: allprj
   kbind:
-    order: 253
+    order: 254
     name: kbind
     status: Sandbox
     command_line:
@@ -3852,7 +3853,7 @@ projects:
     files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
     shared_db: allprj
   curvine:
-    order: 254
+    order: 255
     name: Curvine
     status: Sandbox
     command_line:
@@ -3863,6 +3864,36 @@ projects:
     main_repo: CurvineIO/curvine
     annotation_regexp: '^v\d+\.\d+\.\d+(-alpha)?$'
     files_skip_pattern: ''
+    shared_db: allprj
+  sdc:
+    order: 256
+    name: SDC
+    status: Sandbox
+    command_line:
+      - sdcio
+    hist_command_line:
+      - 'sdcio,iptecharch'
+    start_date: 2023-11-27T00:00:00Z
+    join_date: 2026-08-28T00:00:00Z
+    psql_db: sdc
+    main_repo: sdcio/data-server
+    annotation_regexp: '^v\d+\.\d+\.\d+$'
+    files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
+    shared_db: allprj
+  kuberay:
+    order: 257
+    name: KubeRay
+    status: Sandbox
+    command_line:
+      - ray-project
+    hist_command_line:
+      - 'ray-project'
+    start_date: 2016-09-11T00:00:00Z
+    join_date: 2026-09-29T00:00:00Z
+    psql_db: kuberay
+    main_repo: ray-project/kuberay
+    annotation_regexp: '^v\d+\.\d+\.0$'
+    files_skip_pattern: '(^|/)_?(vendor|Godeps|_workspace)/'
     shared_db: allprj
   opencontainers:
     order: 1200
@@ -4130,7 +4161,7 @@ projects:
          tokenetes,spinframework,k0sproject,SlimPlanet,container2wasm,runmedev,cloudnative-pg,\
          Azure/Fleet-PRSE,Azure/fleet-networking,Azure/fleet,Azure/azure-rest-api-specs-fleet,\
          podman-desktop,podman-container-tools/podman,podman-container-tools/buildah,\
-         podman-container-tools/skopeo,containers/netavark,\
+         podman-container-tools/skopeo,containers/netavark,sdcio,ray-project,\
          containers/aardvark-dns,containers/image,containers/storage,containers/common,\
          containers/conmon,containers/podman-py,cadence-workflow,kagent-dev,urunc-dev,cozystack,\
          kitops-ml,drasi-project,CloudNativeAI,hyperlight-dev,kgateway-dev,bootc-dev,composefs,\
@@ -4178,7 +4209,7 @@ projects:
          prometheus-community,tokenetes,spinframework,k0sproject,SlimPlanet,container2wasm,runmedev,\
          cloudnative-pg,Azure/Fleet-PRSE,Azure/fleet-networking,Azure/fleet,\
          Azure/azure-rest-api-specs-fleet,podman-desktop,podman-container-tools/podman,\
-         podman-container-tools/buildah,podman-container-tools/skopeo,containers/netavark,\
+         podman-container-tools/buildah,podman-container-tools/skopeo,containers/netavark,sdcio,ray-project,\
          containers/aardvark-dns,containers/image,containers/storage,containers/common,\
          containers/conmon,containers/podman-py,cadence-workflow,kagent-dev,urunc-dev,cozystack,\
          kitops-ml,drasi-project,CloudNativeAI,hyperlight-dev,kgateway-dev,bootc-dev,composefs,\
@@ -4281,7 +4312,7 @@ projects:
          vmware-tanzu/velero-plugin-for-aws,vmware-tanzu/velero-plugin-for-gcp,\
          vmware-tanzu/velero-plugin-for-microsoft-azure,vmware-tanzu/velero-plugin-for-csi,\
          vmware-tanzu/velero-csi-plugin,heptio/ark,heptio/velero,percona/everest,alibaba/higress,\
-         kube-bind,sdcio,iptecharch,prometheus/prometheus,mit-ll/python-keylime,mit-ll/keylime,\
+         kube-bind,iptecharch,prometheus/prometheus,mit-ll/python-keylime,mit-ll/keylime,\
          nirmata/kyverno,herbrandson/k8dash,curiefense,docker/distribution,foniod,ingraind,\
          redsift/ingraind,plunder-app/kube-vip,krator-rs,rerpc/rerpc,AxaFrance/SlimFaaS,\
          giuseppe/composefs,cohdi,truefoundry/kubeelasti"

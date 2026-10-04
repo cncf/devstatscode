@@ -26,7 +26,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use devstats_compat::gharchive::{Archive, FakeGHArchive};
+use devstats_compat::gharchive::{gzip, Archive, FakeGHArchive};
 use devstats_compat::pg::{self as cpg, TestDb};
 use devstats_compat::{fixture, go_binary, is_go_duration, run, rust_binary, Invocation, Outcome};
 use devstatscode::hash::hash_strings;
@@ -150,6 +150,7 @@ struct Case {
     st: bool,
     ordered: bool,
     loose: Vec<String>,
+    compare_stdout: bool,
     compare_data: bool,
     compare_errors: bool,
     compare_jsons: bool,
@@ -172,6 +173,7 @@ impl Case {
             st: true,
             ordered: true,
             loose: Vec::new(),
+            compare_stdout: true,
             compare_data: true,
             compare_errors: true,
             compare_jsons: false,
@@ -259,6 +261,15 @@ impl Case {
     /// Skip the `Error: '…'` lines compare (Go panics outside `FatalOnError`).
     fn no_errors_compare(mut self) -> Self {
         self.compare_errors = false;
+        self
+    }
+
+    /// Skip the stdout and database compares (runs whose outcome depends on
+    /// where each inflater stops on corrupted data); only the exit codes and
+    /// the archive requests must agree.
+    fn no_output_compare(mut self) -> Self {
+        self.compare_stdout = false;
+        self.compare_data = false;
         self
     }
 
@@ -444,18 +455,27 @@ impl Side {
             .collect()
     }
 
-    /// The files of `jsons/` (name → content).
-    fn jsons(&self) -> BTreeMap<String, String> {
+    /// The files of `jsons/` (name → raw content; broken chunks may hold
+    /// invalid UTF-8).
+    fn jsons_raw(&self) -> BTreeMap<String, Vec<u8>> {
         let mut res = BTreeMap::new();
         let dir = self.dir.path().join("jsons");
         if let Ok(rd) = fs::read_dir(&dir) {
             for e in rd {
                 let e = e.unwrap();
                 let name = e.file_name().to_string_lossy().to_string();
-                res.insert(name, fs::read_to_string(e.path()).unwrap());
+                res.insert(name, fs::read(e.path()).unwrap());
             }
         }
         res
+    }
+
+    /// The files of `jsons/` (name → content as lossy text).
+    fn jsons(&self) -> BTreeMap<String, String> {
+        self.jsons_raw()
+            .into_iter()
+            .map(|(k, v)| (k, String::from_utf8_lossy(&v).into_owned()))
+            .collect()
     }
 }
 
@@ -566,7 +586,8 @@ fn check(case: Case) -> Option<(Side, Side)> {
                 )
                 .collect()
         };
-        if case.ordered {
+        if !case.compare_stdout {
+        } else if case.ordered {
             assert_eq!(
                 loosen(go.lines(i)),
                 loosen(rs.lines(i)),
@@ -606,8 +627,8 @@ fn check(case: Case) -> Option<(Side, Side)> {
     );
     if case.compare_jsons {
         assert_eq!(
-            go.jsons(),
-            rs.jsons(),
+            go.jsons_raw(),
+            rs.jsons_raw(),
             "jsons/ files differ (case {})",
             case.name
         );
@@ -1579,12 +1600,12 @@ fn old_format_collision() {
 #[test]
 fn new_format_on_old_json() {
     // Decoding old-format JSONs as new-format ones fails (`actor` is a
-    // string); with `GHA2DB_ALLOW_BROKEN_JSON` every JSON is dumped to
-    // `jsons/error_*.json` and skipped.
+    // string); every JSON is skipped and, with `GHA2DB_JSON`, dumped to
+    // `jsons/error_*.json`.
     let s = check(
         Case::new("newonold")
             .fixture(H2014)
-            .env("GHA2DB_ALLOW_BROKEN_JSON", "1")
+            .env("GHA2DB_JSON", "1")
             .loose("Error(2014-12-31-23): ")
             .compare_jsons()
             .args(&["2014-12-31", "23", "2014-12-31", "23"]),
@@ -1608,43 +1629,30 @@ fn new_format_on_old_json() {
 // Broken JSONs, empty and missing hours, transport errors
 // ---------------------------------------------------------------------------
 
-#[test]
-fn broken_json_fatal() {
-    let s = check(
-        Case::new("brokenfatal")
-            .fixture(H_BROKEN)
-            .loose("Error(2012-03-11-12): ")
-            .loose("Error: '")
-            .args(&["2012-03-11", "12", "2012-03-11", "12"]),
-    );
-    both(&s, |s| {
-        assert_eq!(s.code(0), Some(2));
-        s.expect_line(
-            0,
-            "2012-03-11 12:00:00 +0000 UTC: JSON Unmarshal failed for:",
-        );
-        assert_eq!(s.errors(0).len(), 1);
-        // The pretty-printed JSON is echoed before failing.
-        assert!(s.outs[0]
-            .stdout_str()
-            .contains("\n  \"created_at\": \"2012/03/11 12:00:00 -0700\","));
-        assert!(s.outs[0]
-            .stdout_str()
-            .contains("\n  \"actor\": \"izzm\",\n"));
-        assert_eq!(
-            s.jsons().keys().collect::<Vec<_>>(),
-            vec!["error_2012-03-11-12-1-4.json"]
-        );
-        assert_eq!(s.count("select count(*) from gha_parsed"), 0);
-    });
+/// The 2015 fixture as raw bytes after `edit` reshaped its lines (NUL
+/// bytes, glued events, invalid UTF-8 — things `Archive::lines` cannot carry).
+fn damaged_2015(edit: impl FnOnce(&mut Vec<Vec<u8>>)) -> Archive {
+    let mut lines: Vec<Vec<u8>> = fixture_lines(H2015)
+        .into_iter()
+        .map(String::into_bytes)
+        .collect();
+    edit(&mut lines);
+    let mut body = Vec::new();
+    for l in &lines {
+        body.extend_from_slice(l);
+        body.push(b'\n');
+    }
+    Archive::gz(gzip(&body))
 }
 
 #[test]
-fn broken_json_allowed() {
+fn broken_json_skipped() {
+    // Every line is a well-formed JSON that does not decode as an event
+    // (`created_at` is not RFC3339): skipped and reported, never fatal;
+    // nothing is saved without `GHA2DB_JSON`.
     let s = check(
-        Case::new("brokenok")
+        Case::new("brokenskip")
             .fixture(H_BROKEN)
-            .env("GHA2DB_ALLOW_BROKEN_JSON", "1")
             .loose("Error(2012-03-11-12): ")
             .compare_jsons()
             .args(&["2012-03-11", "12", "2012-03-11", "12"]),
@@ -1656,16 +1664,346 @@ fn broken_json_allowed() {
             0,
             "Parsed: <archive>/2012-03-11-12.json.gz: 3 JSONs, found 0 matching, events 0",
         );
+        s.expect_line(
+            0,
+            "Recovered <archive>/2012-03-11-12.json.gz: 3 broken JSON chunk(s) skipped, 0 event(s) recovered",
+        );
         assert_eq!(s.count_prefix(0, "Error(2012-03-11-12): "), 3);
         assert_eq!(
-            s.jsons().keys().cloned().collect::<Vec<_>>(),
+            s.count_prefix(0, "2012-03-11 12:00:00 +0000 UTC: Cannot unmarshal:"),
+            3
+        );
+        assert_eq!(
+            s.count_prefix(0, "2012-03-11 12:00:00 +0000 UTC: JSON Unmarshal failed"),
+            0
+        );
+        assert!(s.errors(0).is_empty());
+        // The chunk is echoed as is before the decoder error.
+        assert!(s.outs[0]
+            .stdout_str()
+            .contains("\"created_at\":\"2012/03/11 12:00:00 -0700\""));
+        assert_eq!(
+            s.count_prefix(0, "2012-03-11-12: cannot save broken JSON: "),
+            0
+        );
+        assert!(s.jsons().is_empty());
+        assert_eq!(s.count("select count(*) from gha_events"), 0);
+        assert_eq!(s.count("select count(*) from gha_parsed"), 1);
+    });
+}
+
+#[test]
+fn broken_json_saved() {
+    // With `GHA2DB_JSON` every skipped chunk is saved as is to
+    // `jsons/error_<hour>-<line>-<lines>.json`.
+    let s = check(
+        Case::new("brokensaved")
+            .fixture(H_BROKEN)
+            .env("GHA2DB_JSON", "1")
+            .loose("Error(2012-03-11-12): ")
+            .compare_jsons()
+            .args(&["2012-03-11", "12", "2012-03-11", "12"]),
+    );
+    both(&s, |s| {
+        assert_eq!(s.code(0), Some(0));
+        s.expect_line(0, "Split <archive>/2012-03-11-12.json.gz, 4 JSONs");
+        s.expect_line(
+            0,
+            "Parsed: <archive>/2012-03-11-12.json.gz: 3 JSONs, found 0 matching, events 0",
+        );
+        s.expect_line(
+            0,
+            "Recovered <archive>/2012-03-11-12.json.gz: 3 broken JSON chunk(s) skipped, 0 event(s) recovered",
+        );
+        assert_eq!(s.count_prefix(0, "Error(2012-03-11-12): "), 3);
+        assert_eq!(
+            s.count_prefix(0, "2012-03-11-12: cannot save broken JSON: "),
+            0
+        );
+        assert!(s.errors(0).is_empty());
+        let files = s.jsons();
+        assert_eq!(
+            files.keys().cloned().collect::<Vec<_>>(),
             vec![
                 "error_2012-03-11-12-1-4.json".to_string(),
                 "error_2012-03-11-12-2-4.json".to_string(),
                 "error_2012-03-11-12-3-4.json".to_string()
             ]
         );
+        assert!(files["error_2012-03-11-12-1-4.json"].contains("\"actor\":\"izzm\""));
+        assert_eq!(s.count("select count(*) from gha_events"), 0);
         assert_eq!(s.count("select count(*) from gha_parsed"), 1);
+    });
+}
+
+#[test]
+fn broken_json_unwritable() {
+    // `GHA2DB_JSON` without a `jsons/` directory: saving a skipped chunk is
+    // best effort — reported on stdout, never fatal (an event file would be).
+    let s = check(
+        Case::new("brokenunwritable")
+            .fixture(H_BROKEN)
+            .env("GHA2DB_JSON", "1")
+            .no_jsons_dir()
+            .loose("Error(2012-03-11-12): ")
+            .args(&["2012-03-11", "12", "2012-03-11", "12"]),
+    );
+    both(&s, |s| {
+        assert_eq!(s.code(0), Some(0));
+        s.expect_line(
+            0,
+            "Parsed: <archive>/2012-03-11-12.json.gz: 3 JSONs, found 0 matching, events 0",
+        );
+        s.expect_line(
+            0,
+            "Recovered <archive>/2012-03-11-12.json.gz: 3 broken JSON chunk(s) skipped, 0 event(s) recovered",
+        );
+        assert_eq!(s.count_prefix(0, "Error(2012-03-11-12): "), 3);
+        for n in 1..=3 {
+            s.expect_line(
+                0,
+                &format!(
+                    "2012-03-11-12: cannot save broken JSON: open jsons/error_2012-03-11-12-{n}-4.json: no such file or directory"
+                ),
+            );
+        }
+        assert!(s.errors(0).is_empty());
+        assert!(!s.dir.path().join("jsons").exists());
+        assert_eq!(s.count("select count(*) from gha_events"), 0);
+        assert_eq!(s.count("select count(*) from gha_parsed"), 1);
+    });
+}
+
+#[test]
+fn nul_glued_events_2015() {
+    // The 2023-05-14 19:00 damage: an event, 1409 NUL bytes and a second
+    // event glued on the same line; another event padded with NULs. All of
+    // them are recovered, nothing is skipped.
+    let s = check(
+        Case::new("nulglued")
+            .hour(
+                H2015,
+                vec![damaged_2015(|ls| {
+                    let glued = ls.remove(50);
+                    ls[48].extend(std::iter::repeat_n(0u8, 1409));
+                    ls[48].extend_from_slice(&glued);
+                    ls[51].extend_from_slice(&[0, 0, 0]);
+                })],
+            )
+            .compare_jsons()
+            .args(&["2015-01-01", "15", "2015-01-01", "15", "rust-lang"]),
+    );
+    both(&s, |s| {
+        assert_eq!(s.code(0), Some(0));
+        s.expect_line(0, "Split <archive>/2015-01-01-15.json.gz, 145 JSONs");
+        s.expect_line(
+            0,
+            "Parsed: <archive>/2015-01-01-15.json.gz: 144 JSONs, found 18 matching, events 18",
+        );
+        s.expect_line(
+            0,
+            "Recovered <archive>/2015-01-01-15.json.gz: 0 broken JSON chunk(s) skipped, 3 event(s) recovered",
+        );
+        assert_eq!(s.count_prefix(0, "Error("), 0);
+        assert_eq!(s.count_prefix(0, "Gave up"), 0);
+        assert!(s.errors(0).is_empty());
+        assert!(s.jsons().is_empty());
+        assert_eq!(s.count("select count(*) from gha_events"), 18);
+        assert_eq!(
+            s.count(
+                "select count(*) from gha_events where id in (2489654310, 2489654986, 2489655645)"
+            ),
+            3
+        );
+        assert_eq!(s.count("select count(*) from gha_parsed"), 1);
+    });
+}
+
+#[test]
+fn nul_cut_event_2015() {
+    // Pieces separated by NUL runs: two whole events around an event cut in
+    // half (inside its `created_at` key) — the halves are skipped and (with
+    // `GHA2DB_JSON`) saved as `-49-144.json` / `-49-144-2.json` next to the
+    // event files, the events are recovered.
+    let lines: Vec<Vec<u8>> = fixture_lines(H2015)
+        .into_iter()
+        .map(String::into_bytes)
+        .collect();
+    let cut = lines[50]
+        .windows(12)
+        .position(|w| w == b"\"created_at\"")
+        .unwrap()
+        + 5;
+    let (half1, half2) = lines[50].split_at(cut);
+    let trim = |b: &[u8]| {
+        String::from_utf8_lossy(b)
+            .trim_matches([' ', '\t', '\r', '\n'])
+            .to_string()
+    };
+    let (half1_s, half2_s) = (trim(half1), trim(half2));
+    let s = check(
+        Case::new("nulcut")
+            .hour(
+                H2015,
+                vec![damaged_2015(|ls| {
+                    let third = ls.remove(52);
+                    let second = ls.remove(50);
+                    let (a, b) = second.split_at(cut);
+                    ls[48].push(0);
+                    ls[48].extend_from_slice(a);
+                    ls[48].extend_from_slice(&[0, 0]);
+                    ls[48].extend_from_slice(b);
+                    ls[48].push(0);
+                    ls[48].extend_from_slice(&third);
+                })],
+            )
+            .env("GHA2DB_JSON", "1")
+            .loose("Error(2015-01-01-15): ")
+            .compare_jsons()
+            .args(&["2015-01-01", "15", "2015-01-01", "15", "rust-lang"]),
+    );
+    both(&s, |s| {
+        assert_eq!(s.code(0), Some(0));
+        s.expect_line(0, "Split <archive>/2015-01-01-15.json.gz, 144 JSONs");
+        s.expect_line(
+            0,
+            "Parsed: <archive>/2015-01-01-15.json.gz: 143 JSONs, found 17 matching, events 17",
+        );
+        s.expect_line(
+            0,
+            "Recovered <archive>/2015-01-01-15.json.gz: 2 broken JSON chunk(s) skipped, 2 event(s) recovered",
+        );
+        assert_eq!(s.count_prefix(0, "Error(2015-01-01-15): "), 2);
+        assert_eq!(
+            s.count_prefix(0, "2015-01-01 15:00:00 +0000 UTC: Cannot unmarshal:"),
+            2
+        );
+        assert!(s.errors(0).is_empty());
+        let files = s.jsons();
+        assert_eq!(files.len(), 19);
+        assert_eq!(files.keys().filter(|k| k.starts_with("error_")).count(), 2);
+        assert!(files.contains_key("1420124400_2489654310.json"));
+        assert_eq!(files["error_2015-01-01-15-49-144.json"], half1_s);
+        assert_eq!(files["error_2015-01-01-15-49-144-2.json"], half2_s);
+        assert_eq!(s.count("select count(*) from gha_events"), 17);
+        assert_eq!(
+            s.count("select count(*) from gha_events where id in (2489654310, 2489655645)"),
+            2
+        );
+        assert_eq!(
+            s.count("select count(*) from gha_events where id = 2489654986"),
+            0
+        );
+        assert_eq!(s.count("select count(*) from gha_parsed"), 1);
+    });
+}
+
+#[test]
+fn garbage_lines_2015() {
+    // Other damage on one hour: an event followed by garbage, two events
+    // glued without any separator, a line that is not JSON at all, an event
+    // holding invalid UTF-8 (skipped whole: it could not be stored anyway)
+    // and a line of NULs only (nothing to recover, nothing to report).
+    let s = check(
+        Case::new("garbage")
+            .hour(
+                H2015,
+                vec![damaged_2015(|ls| {
+                    let pos = ls[55]
+                        .windows(15)
+                        .position(|w| w == b"rust-lang/regex")
+                        .unwrap();
+                    ls[55].insert(pos + 13, 0xff);
+                    let glued = ls.remove(52);
+                    ls[50].extend_from_slice(&glued);
+                    ls[48].extend_from_slice(b" garbage");
+                    ls.insert(0, b"not json at all".to_vec());
+                    ls.insert(0, vec![0, 0, 0, 0]);
+                })],
+            )
+            .env("GHA2DB_JSON", "1")
+            .loose("Error(2015-01-01-15): ")
+            .compare_jsons()
+            .args(&["2015-01-01", "15", "2015-01-01", "15", "rust-lang"]),
+    );
+    both(&s, |s| {
+        assert_eq!(s.code(0), Some(0));
+        s.expect_line(0, "Split <archive>/2015-01-01-15.json.gz, 147 JSONs");
+        s.expect_line(
+            0,
+            "Parsed: <archive>/2015-01-01-15.json.gz: 146 JSONs, found 17 matching, events 17",
+        );
+        s.expect_line(
+            0,
+            "Recovered <archive>/2015-01-01-15.json.gz: 3 broken JSON chunk(s) skipped, 3 event(s) recovered",
+        );
+        assert_eq!(s.count_prefix(0, "Error(2015-01-01-15): "), 3);
+        assert!(s.errors(0).is_empty());
+        let files = s.jsons_raw();
+        assert_eq!(files.len(), 20);
+        assert_eq!(
+            files
+                .keys()
+                .filter(|k| k.starts_with("error_"))
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![
+                "error_2015-01-01-15-2-147.json".to_string(),
+                "error_2015-01-01-15-51-147.json".to_string(),
+                "error_2015-01-01-15-57-147.json".to_string()
+            ]
+        );
+        assert_eq!(files["error_2015-01-01-15-2-147.json"], b"not json at all");
+        assert_eq!(files["error_2015-01-01-15-51-147.json"], b"garbage");
+        let bad = &files["error_2015-01-01-15-57-147.json"];
+        assert!(bad.starts_with(b"{\"id\":\"2489656950\"") && bad.contains(&0xff));
+        // The invalid byte is dropped from the echoed chunk.
+        assert!(s.outs[0].stdout_str().contains("rust-lang/regex\""));
+        assert_eq!(s.count("select count(*) from gha_events"), 17);
+        assert_eq!(
+            s.count("select count(*) from gha_events where id = 2489656950"),
+            0
+        );
+        assert_eq!(
+            s.count(
+                "select count(*) from gha_events where id in (2489654310, 2489654986, 2489655645)"
+            ),
+            3
+        );
+        assert_eq!(s.count("select count(*) from gha_parsed"), 1);
+    });
+}
+
+#[test]
+fn nul_glued_old_format_2013() {
+    let lines = fixture_lines(H2013);
+    let mut glued = lines[0].clone();
+    glued.push_str(&"\0".repeat(1409));
+    glued.push_str(&lines[1]);
+    let mut damaged = vec![glued];
+    damaged.extend(lines[2..].iter().cloned());
+    let s = check(
+        Case::new("nulold")
+            .hour(H2013, vec![Archive::lines(&damaged)])
+            .env("GHA2DB_OLDFMT", "1")
+            .args(&["2013-06-01", "10", "2013-06-01", "10"]),
+    );
+    both(&s, |s| {
+        assert_eq!(s.code(0), Some(0));
+        s.expect_prefix(
+            0,
+            "Parsed: <archive>/2013-06-01-10.json.gz: 170 JSONs, found ",
+        );
+        s.expect_line(
+            0,
+            "Recovered <archive>/2013-06-01-10.json.gz: 0 broken JSON chunk(s) skipped, 2 event(s) recovered",
+        );
+        assert_eq!(s.count_prefix(0, "Error("), 0);
+        assert_eq!(s.count("select count(*) from gha_events"), 156);
+        assert_eq!(
+            s.count("select count(*) from gha_events where dup_actor_login = 'Ang3lus' and type in ('IssuesEvent', 'IssueCommentEvent')"),
+            2
+        );
     });
 }
 
@@ -1749,11 +2087,16 @@ fn hour_empty_body() {
 
 #[test]
 fn hour_truncated() {
+    // The archive keeps serving a cut .gz: after the last retry the hour is
+    // parsed from the bytes that did inflate (the cut last line is skipped
+    // by the broken-JSON recovery) and marked as parsed.
     let lines = fixture_lines(H2015);
     let s = check(
         Case::new("truncated")
             .hour("2015-01-01-15", vec![Archive::truncated(&lines, 20000)])
-            .args(&["2015-01-01", "15", "2015-01-01", "15", "rust-lang"]),
+            .loose("Error(2015-01-01-15): ")
+            .compare_jsons()
+            .args(&["2015-01-01", "15", "2015-01-01", "15"]),
     );
     both(&s, |s| {
         assert_eq!(s.code(0), Some(0));
@@ -1763,23 +2106,40 @@ fn hour_truncated() {
             "2015-01-01 15:00:00 +0000 UTC: Error (no data yet, ioutil readall):",
         );
         s.expect_line(0, "unexpected EOF");
-        s.expect_line(0, "Gave up on 2015-01-01 15:00:00 +0000 UTC");
-        assert_eq!(s.count_prefix(0, "Decompressed"), 0);
-        assert!(s.data()[0].is_empty());
+        s.expect_prefix(0, "2015-01-01 15:00:00 +0000 UTC: Recovered ");
+        assert_eq!(
+            s.count_prefix(0, "2015-01-01 15:00:00 +0000 UTC: Recovered "),
+            1
+        );
+        assert!(s.lines(0).iter().any(|l| l
+            .starts_with("2015-01-01 15:00:00 +0000 UTC: Recovered ")
+            && l.ends_with(" bytes from broken archive after 1 attempt(s), continuing")));
+        s.expect_line(0, "Decompressed <archive>/2015-01-01-15.json.gz");
+        s.expect_prefix(0, "Split <archive>/2015-01-01-15.json.gz, ");
+        s.expect_prefix(0, "Parsed: <archive>/2015-01-01-15.json.gz: ");
+        s.expect_line(
+            0,
+            "Recovered <archive>/2015-01-01-15.json.gz: 1 broken JSON chunk(s) skipped, 0 event(s) recovered",
+        );
+        assert_eq!(s.count_prefix(0, "Gave up"), 0);
+        assert!(s.errors(0).is_empty());
+        assert!(s.jsons().is_empty());
+        let n = s.count("select count(*) from gha_events");
+        assert!(n > 0 && n < 145, "{n} events");
+        assert_eq!(s.count("select count(*) from gha_parsed"), 1);
     });
 }
 
 #[test]
-fn hour_corrupted() {
+fn hour_bad_checksum() {
+    // A .gz with a wrong CRC-32 trailer inflates completely: everything is
+    // used after the last retry.
     let mut body = fs::read(fixture(&format!("gha2db/{H2015}.json.gz"))).unwrap();
-    // Flip bits in the middle of the deflate stream.
-    for b in body.iter_mut().skip(5000).take(64) {
-        *b ^= 0x55;
-    }
+    let n = body.len();
+    body[n - 6] ^= 0xff;
     let s = check(
-        Case::new("corrupted")
+        Case::new("badcrc")
             .hour("2015-01-01-15", vec![Archive::gz(body)])
-            .loose("flate: ")
             .args(&["2015-01-01", "15", "2015-01-01", "15", "rust-lang"]),
     );
     both(&s, |s| {
@@ -1788,8 +2148,44 @@ fn hour_corrupted() {
             0,
             "2015-01-01 15:00:00 +0000 UTC: Error (no data yet, ioutil readall):",
         );
-        s.expect_line(0, "Gave up on 2015-01-01 15:00:00 +0000 UTC");
-        assert!(s.data()[0].is_empty());
+        s.expect_line(0, "gzip: invalid checksum");
+        s.expect_prefix(0, "2015-01-01 15:00:00 +0000 UTC: Recovered ");
+        s.expect_line(
+            0,
+            "Parsed: <archive>/2015-01-01-15.json.gz: 145 JSONs, found 18 matching, events 18",
+        );
+        assert_eq!(s.count_prefix(0, "Recovered <archive>"), 0);
+        assert_eq!(s.count_prefix(0, "Gave up"), 0);
+        assert_eq!(s.count("select count(*) from gha_events"), 18);
+        assert_eq!(s.count("select count(*) from gha_parsed"), 1);
+    });
+}
+
+#[test]
+fn hour_corrupted() {
+    let mut body = fs::read(fixture(&format!("gha2db/{H2015}.json.gz"))).unwrap();
+    // Flip bits in the middle of the deflate stream: each inflater stops
+    // (or notices) at its own point, so only the behaviour is compared.
+    for b in body.iter_mut().skip(5000).take(64) {
+        *b ^= 0x55;
+    }
+    let s = check(
+        Case::new("corrupted")
+            .hour("2015-01-01-15", vec![Archive::gz(body)])
+            .no_output_compare()
+            .args(&["2015-01-01", "15", "2015-01-01", "15", "rust-lang"]),
+    );
+    both(&s, |s| {
+        assert_eq!(s.code(0), Some(0));
+        s.expect_line(
+            0,
+            "2015-01-01 15:00:00 +0000 UTC: Error (no data yet, ioutil readall):",
+        );
+        s.expect_prefix(0, "2015-01-01 15:00:00 +0000 UTC: Recovered ");
+        s.expect_line(0, "Decompressed <archive>/2015-01-01-15.json.gz");
+        assert_eq!(s.count_prefix(0, "Gave up"), 0);
+        assert!(s.errors(0).is_empty());
+        assert_eq!(s.count("select count(*) from gha_parsed"), 1);
     });
 }
 
@@ -1831,10 +2227,11 @@ fn retry_recovers() {
 }
 
 #[test]
-fn retry_gives_up() {
+fn retry_partial_hour() {
+    // Missing, then cut twice: the third (last) attempt parses the partial hour.
     let lines = fixture_lines(H2015);
     let s = check(
-        Case::new("retryfail")
+        Case::new("retrypartial")
             .hour(
                 H2015,
                 vec![
@@ -1844,7 +2241,9 @@ fn retry_gives_up() {
                 ],
             )
             .env("GHA2DB_HTTP_RETRY", "3")
-            .args(&["2015-01-01", "15", "2015-01-01", "15", "rust-lang"]),
+            .loose("Error(2015-01-01-15): ")
+            .compare_jsons()
+            .args(&["2015-01-01", "15", "2015-01-01", "15"]),
     );
     both(&s, |s| {
         assert_eq!(s.code(0), Some(0));
@@ -1864,9 +2263,18 @@ fn retry_gives_up() {
             ),
             2
         );
-        s.expect_line(0, "Gave up on 2015-01-01 15:00:00 +0000 UTC");
+        assert!(s.lines(0).iter().any(|l| l
+            .starts_with("2015-01-01 15:00:00 +0000 UTC: Recovered ")
+            && l.ends_with(" bytes from broken archive after 3 attempt(s), continuing")));
+        s.expect_line(
+            0,
+            "Recovered(3) & decompressed <archive>/2015-01-01-15.json.gz",
+        );
+        assert_eq!(s.count_prefix(0, "Gave up"), 0);
         assert_eq!(s.requests().len(), 3);
-        assert!(s.data()[0].is_empty());
+        let n = s.count("select count(*) from gha_events");
+        assert!(n > 0 && n < 145, "{n} events");
+        assert_eq!(s.count("select count(*) from gha_parsed"), 1);
     });
 }
 

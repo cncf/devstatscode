@@ -13,6 +13,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, TimeZone, Timelike, Utc};
+use devstatscode::broken_json::{is_plain_line, recover_json_chunks, JsonChunk};
 use devstatscode::consts::{GHARCHIVE_URL, HIDE_CFG_FILE, NOW, TODAY};
 use devstatscode::context::GoRegex;
 use devstatscode::error::{defer, exit_on_panic, fatal_on_error};
@@ -20,11 +21,11 @@ use devstatscode::gha::{
     actor_hit, make_old_repo_name, parse_go_rfc3339, repo_hit, Event, EventOld, SkipDatesList,
 };
 use devstatscode::hash::hash_strings;
-use devstatscode::json::{pretty_print_json, write_file_0644};
+use devstatscode::json::{pretty_print_json, try_write_file_0644, write_file_0644};
 use devstatscode::map::{strings_map_to_set, strings_set_keys};
 use devstatscode::pg::api::{exec_sql_with_err, insert_ignore, n_value};
 use devstatscode::pg::{pg_conn, PgConn, SqlArg};
-use devstatscode::string::{get_hidden, maybe_hide_func};
+use devstatscode::string::{get_hidden, maybe_hide_func, safe_utf8_bytes};
 use devstatscode::threads::get_threads_num;
 use devstatscode::time::{
     day_start, format_go_duration, to_gha_date, to_ymdh_date, to_ymdhms_date, wall_as_utc,
@@ -139,8 +140,36 @@ struct Filters<'a> {
     skip_dates: &'a BTreeSet<String>,
 }
 
-/// Go `parseJSON`: decode one GH Archive line and, when its repository and
-/// actor pass the filters, write it out (`(found, events written)`).
+/// Counters of one GH Archive line: events found/written and, for damaged
+/// lines, broken chunks skipped and events recovered from the pieces.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct LineStats {
+    found: i64,
+    events: i64,
+    broken: i64,
+    recovered: i64,
+}
+
+/// One decoded event in either GH Archive format.
+enum Decoded {
+    New(Box<Event>),
+    Old(Box<EventOld>),
+}
+
+/// Strict decode of one JSON value in the run's format (`GHA2DB_OLDFMT`).
+fn decode_event(ctx: &Ctx, json: &[u8]) -> Result<Decoded, serde_json::Error> {
+    if ctx.old_format {
+        serde_json::from_slice::<EventOld>(json).map(|e| Decoded::Old(Box::new(e)))
+    } else {
+        serde_json::from_slice::<Event>(json).map(|e| Decoded::New(Box::new(e)))
+    }
+}
+
+/// Go `parseJSON`: process one GH Archive line. A line that is a single
+/// well-formed event is decoded directly; anything else (NUL padding, glued
+/// events, garbage) is split by `recover_json_chunks` and every piece that
+/// still decodes is processed while the broken ones are logged and skipped —
+/// a damaged line never stops the run.
 fn parse_json(
     con: &PgConn,
     ctx: &Ctx,
@@ -149,38 +178,83 @@ fn parse_json(
     json: &[u8],
     dt: &HourDt,
     flt: &Filters<'_>,
-) -> (i64, i64) {
-    let mut h: Option<Event> = None;
-    let mut h_old: Option<EventOld> = None;
-    let res: Result<(), serde_json::Error> = if ctx.old_format {
-        serde_json::from_slice::<EventOld>(json).map(|v| h_old = Some(v))
-    } else {
-        serde_json::from_slice::<Event>(json).map(|v| h = Some(v))
-    };
-    if let Err(err) = res {
-        let json_str = String::from_utf8_lossy(json);
-        printf!("Error({}): {}\n", to_gha_date(dt.dt), err);
-        let ofn = format!(
-            "jsons/error_{}-{}-{}.json",
-            to_gha_date(dt.dt),
-            idx + 1,
-            njsons
-        );
-        write_file_0644(&ofn, json);
-        printf!("{}: Cannot unmarshal:\n{}\n{}\n", dt, json_str, err);
-        eprint!("{}: Cannot unmarshal:\n{}\n{}\n", dt, json_str, err);
-        if ctx.allow_broken_json {
-            return (0, 0);
+) -> LineStats {
+    let mut st = LineStats::default();
+    if is_plain_line(json) {
+        if let Ok(ev) = decode_event(ctx, json) {
+            let (f, e) = process_event(con, ctx, json, &ev, dt, flt);
+            st.found += f;
+            st.events += e;
+            return st;
         }
-        let pretty = String::from_utf8_lossy(&pretty_print_json(json)).into_owned();
-        printf!("{}: JSON Unmarshal failed for:\n'{}'\n", dt, pretty);
-        eprint!("{}: JSON Unmarshal failed for:\n'{}'\n", dt, pretty);
-        fatal_on_error(err);
     }
-    let (full_name, actor_name) = match (&h, &h_old) {
-        (_, Some(o)) => (make_old_repo_name(&o.repository), o.actor.clone()),
-        (Some(n), None) => (n.repo.name.clone(), n.actor.login.clone()),
-        (None, None) => unreachable!("one of the event formats was decoded"),
+    for chunk in recover_json_chunks(json) {
+        let raw = chunk.bytes();
+        // A broken chunk is never an event, even when the decoder takes it
+        // (Go's jsoniter accepts invalid UTF-8 that Postgres rejects).
+        match decode_event(ctx, raw) {
+            Ok(ev) if matches!(chunk, JsonChunk::Json(_)) => {
+                st.recovered += 1;
+                let (f, e) = process_event(con, ctx, raw, &ev, dt, flt);
+                st.found += f;
+                st.events += e;
+            }
+            Ok(_) => {
+                st.broken += 1;
+                log_broken_json(ctx, idx, njsons, raw, dt, "broken JSON chunk", st.broken);
+            }
+            Err(err) => {
+                st.broken += 1;
+                log_broken_json(ctx, idx, njsons, raw, dt, &err.to_string(), st.broken);
+            }
+        }
+    }
+    st
+}
+
+/// Logs one undecodable chunk the way Go does: an `Error(<hour>)` line, the
+/// chunk saved (best effort, only with `GHA2DB_JSON`) as
+/// `jsons/error_<hour>-<line>-<lines>[-<n>].json` (`n` > 1 for further
+/// chunks of the same line) and the `Cannot unmarshal` report on stdout and
+/// stderr.
+fn log_broken_json(
+    ctx: &Ctx,
+    idx: usize,
+    njsons: usize,
+    raw: &[u8],
+    dt: &HourDt,
+    err: &str,
+    nth: i64,
+) {
+    let json_str = safe_utf8_bytes(raw);
+    printf!("Error({}): {}\n", to_gha_date(dt.dt), err);
+    if ctx.json_out {
+        let mut ofn = format!("jsons/error_{}-{}-{}", to_gha_date(dt.dt), idx + 1, njsons);
+        if nth > 1 {
+            ofn = format!("{}-{}", ofn, nth);
+        }
+        ofn.push_str(".json");
+        if let Err(e) = try_write_file_0644(&ofn, raw) {
+            printf!("{}: cannot save broken JSON: {}\n", to_gha_date(dt.dt), e);
+        }
+    }
+    printf!("{}: Cannot unmarshal:\n{}\n{}\n", dt, json_str, err);
+    eprint!("{}: Cannot unmarshal:\n{}\n{}\n", dt, json_str, err);
+}
+
+/// The filtering/writing half of Go `parseJSON` for one decoded event:
+/// `(found, events written)`.
+fn process_event(
+    con: &PgConn,
+    ctx: &Ctx,
+    json: &[u8],
+    ev: &Decoded,
+    dt: &HourDt,
+    flt: &Filters<'_>,
+) -> (i64, i64) {
+    let (full_name, actor_name) = match ev {
+        Decoded::Old(o) => (make_old_repo_name(&o.repository), o.actor.clone()),
+        Decoded::New(n) => (n.repo.name.clone(), n.actor.login.clone()),
     };
     let mut f = 0;
     let mut e = 0;
@@ -193,16 +267,15 @@ fn parse_json(
         flt.repo_re,
     ) && actor_hit(ctx, &actor_name)
     {
-        let eid = match (&h, &h_old) {
-            (_, Some(o)) => hash_strings(&[
+        let eid = match ev {
+            Decoded::Old(o) => hash_strings(&[
                 &o.type_,
                 &o.actor,
                 &o.repository.name,
                 &to_ymdhms_date(*o.created_at),
             ])
             .to_string(),
-            (Some(n), None) => n.id.clone(),
-            (None, None) => unreachable!(),
+            Decoded::New(n) => n.id.clone(),
         };
         if ctx.json_out {
             // We want to Unmarshal/Marshall ALL JSON data, regardless of what is defined in lib.Event
@@ -211,10 +284,9 @@ fn parse_json(
             write_file_0644(&ofn, &pretty);
         }
         if ctx.db_out {
-            e = match (&h, &h_old) {
-                (_, Some(o)) => write_to_db_old_fmt(con, ctx, &eid, o, flt.maybe_hide),
-                (Some(n), None) => write_to_db(con, ctx, n, flt.maybe_hide),
-                (None, None) => unreachable!(),
+            e = match ev {
+                Decoded::Old(o) => write_to_db_old_fmt(con, ctx, &eid, o, flt.maybe_hide),
+                Decoded::New(n) => write_to_db(con, ctx, n, flt.maybe_hide),
             };
         }
         if ctx.debug >= 1 {
@@ -304,16 +376,27 @@ fn get_gha_json(ctx: &Ctx, dt: HourDt, flt: &Filters<'_>) {
 
         match gz::read_all(&body) {
             Ok(b) => jsons_bytes = b,
-            Err(err) => {
+            Err((partial, err)) => {
                 printf!("{}: Error (no data yet, ioutil readall):\n{}\n", dt, err);
                 if trials < ctx.http_retry {
                     std::thread::sleep(Duration::from_secs((1 + rng::intn(20)) * trials as u64));
                     continue;
                 }
                 eprint!("{}: Error (no data yet, ioutil readall):\n{}\n", dt, err);
-                printf!("Gave up on {}\n", dt);
-                con.close();
-                return;
+                if partial.is_empty() {
+                    printf!("Gave up on {}\n", dt);
+                    con.close();
+                    return;
+                }
+                // The archive keeps serving a truncated/corrupted hour: use
+                // whatever decompressed instead of losing the whole hour.
+                printf!(
+                    "{}: Recovered {} bytes from broken archive after {} attempt(s), continuing\n",
+                    dt,
+                    partial.len(),
+                    trials
+                );
+                jsons_bytes = partial;
             }
         }
         if trials > 1 {
@@ -330,15 +413,18 @@ fn get_gha_json(ctx: &Ctx, dt: HourDt, flt: &Filters<'_>) {
 
     // Process JSONs one by one
     let (mut n, mut f, mut e) = (0i64, 0i64, 0i64);
+    let (mut broken, mut recovered) = (0i64, 0i64);
     let njsons = jsons_array.len();
     for (i, json) in jsons_array.iter().enumerate() {
         if json.is_empty() {
             continue;
         }
-        let (fi, ei) = parse_json(&con, ctx, i, njsons, json, &dt, flt);
+        let st = parse_json(&con, ctx, i, njsons, json, &dt, flt);
         n += 1;
-        f += fi;
-        e += ei;
+        f += st.found;
+        e += st.events;
+        broken += st.broken;
+        recovered += st.recovered;
     }
     printf!(
         "Parsed: {}: {} JSONs, found {} matching, events {}\n",
@@ -347,6 +433,14 @@ fn get_gha_json(ctx: &Ctx, dt: HourDt, flt: &Filters<'_>) {
         f,
         e
     );
+    if broken > 0 || recovered > 0 {
+        printf!(
+            "Recovered {}: {} broken JSON chunk(s) skipped, {} event(s) recovered\n",
+            fname,
+            broken,
+            recovered
+        );
+    }
     // Mark date as computed, to skip fetching this JSON again when it contains no events for a current project
     mark_as_processed(&con, ctx, &dt);
     con.close();
@@ -598,5 +692,45 @@ mod tests {
         let h = HourDt::today(now, 3);
         assert_eq!(h.go_string(), "2024-05-06 03:00:00 +0000 UTC");
         assert_eq!(h.dt.year(), 2024);
+    }
+
+    #[test]
+    fn log_broken_json_saves_only_with_json_out_best_effort() {
+        // Relative `jsons/` paths: run in a scratch working directory
+        // (nothing else in this binary depends on the cwd).
+        std::env::set_var("GHA2DB_SKIPLOG", "1");
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let dt = HourDt::parse("2015-01-01", 15).unwrap();
+        let chunk: &[u8] = b"{\"id\":\"1\",\"repo\":{\"name\":\"a/b\xff\"}}";
+        let mut ctx = Ctx::default();
+
+        // Without GHA2DB_JSON nothing is saved (no jsons/ directory is needed).
+        log_broken_json(&ctx, 48, 144, chunk, &dt, "broken JSON chunk", 1);
+        assert!(!dir.path().join("jsons").exists());
+
+        // With GHA2DB_JSON the chunk is saved as is, further chunks of the
+        // same line get a -n suffix.
+        ctx.json_out = true;
+        std::fs::create_dir(dir.path().join("jsons")).unwrap();
+        log_broken_json(&ctx, 48, 144, chunk, &dt, "broken JSON chunk", 1);
+        log_broken_json(&ctx, 48, 144, b"garbage", &dt, "broken JSON chunk", 2);
+        assert_eq!(
+            std::fs::read(dir.path().join("jsons/error_2015-01-01-15-49-144.json")).unwrap(),
+            chunk
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("jsons/error_2015-01-01-15-49-144-2.json")).unwrap(),
+            b"garbage"
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("jsons")).unwrap().count(),
+            2
+        );
+
+        // Saving is best effort: a missing jsons/ directory never panics or exits.
+        std::fs::remove_dir_all(dir.path().join("jsons")).unwrap();
+        log_broken_json(&ctx, 0, 4, b"x", &dt, "broken JSON chunk", 1);
+        assert!(!dir.path().join("jsons").exists());
     }
 }

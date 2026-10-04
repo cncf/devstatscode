@@ -61,6 +61,7 @@ rsa = "0.9"
 base64 = "0.23"
 rusqlite = { version = "0.40", features = ["bundled"] }
 flate2 = "1"
+crc32fast = "1"
 
 # Release binaries: small, stripped, single codegen unit — mirrors the Go
 # Makefile's `-ldflags "-s -w"` intent.

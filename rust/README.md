@@ -1542,7 +1542,7 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `today`/`now`, `regexp:` filters, comma lists with spaces), same knobs
     (`GHA2DB_ST`/`GHA2DB_NCPUS`, `GHA2DB_OLDFMT`, `GHA2DB_EXACT`,
     `GHA2DB_EXCLUDE_REPOS`, `GHA2DB_ACTORS_FILTER`/`ALLOW`/`FORBID`,
-    `GHA2DB_JSON`, `GHA2DB_NODB`, `GHA2DB_ALLOW_BROKEN_JSON`,
+    `GHA2DB_JSON`, `GHA2DB_NODB`,
     `GHA2DB_HTTP_RETRY`, `GHA2DB_HTTP_TIMEOUT`, `GHA2DB_SKIP_DATES_YAML`,
     `GHA2DB_REFRESH_COMMIT_ROLES`, `GHA2DB_AFFILIATIONS_DB`, `GHA2DB_LOCAL`,
     `GHA2DB_DATADIR`, `GHA2DB_DEBUG`, `hide/hide.csv`), same stdout lines
@@ -1587,8 +1587,13 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     debug output; `GHA2DB_JSON` (with and without `jsons/`), `GHA2DB_NODB`;
     reruns and id collisions (new and old format); old-format hours and their
     `-07:00`/`-08:00` wall clocks; old-format JSON decoded as new format;
-    broken JSON fatal and `GHA2DB_ALLOW_BROKEN_JSON`; empty hour, 404, empty /
-    3-byte / truncated / corrupted bodies, retries that recover and give up,
+    broken JSON recovery (`devstatscode::broken_json`: lines with NUL padding,
+    events glued together, cut events, garbage, invalid UTF-8 — the 2023-05-14
+    19:00 damage — in both formats; undecodable chunks logged and skipped,
+    saved as `jsons/error_*.json` only with `GHA2DB_JSON` and best effort,
+    never fatal); empty hour, 404, empty / 3-byte bodies;
+    truncated / bad-checksum / corrupted .gz parsed from the bytes that did
+    inflate after the last retry; retries that recover,
     dead archive and hang-ups; single- and multi-threaded ranges, `runGC`
     heartbeat every 24 hours, `today`/`now`, `TZ=Europe/Warsaw`; commit roles
     refresh / update with hidden actors and an empty table; the shared

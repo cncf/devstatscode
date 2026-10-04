@@ -205,7 +205,6 @@ func TestInit(t *testing.T) {
 		GHAPIAllRepos:            true,
 		AutoFetchCommits:         true,
 		GHAPIErrorIsFatal:        false,
-		AllowBrokenJSON:          false,
 		AllowMetricFail:          false,
 		WebsiteData:              false,
 		SkipUpdateEvents:         false,
@@ -778,19 +777,6 @@ func TestInit(t *testing.T) {
 				defaultContext.CopyContext(),
 				map[string]interface{}{
 					"RunColumns": true,
-				},
-			),
-		},
-		{
-			"Allow broken JSON",
-			map[string]string{
-				"GHA2DB_ALLOW_BROKEN_JSON": "1",
-			},
-			dynamicSetFields(
-				t,
-				defaultContext.CopyContext(),
-				map[string]interface{}{
-					"AllowBrokenJSON": true,
 				},
 			),
 		},

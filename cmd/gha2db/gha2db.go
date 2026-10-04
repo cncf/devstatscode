@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -29,36 +30,89 @@ var (
 	gGitAllowedTrailers = lib.GitAllowedTrailers
 )
 
-// parseJSON - parse signle GHA JSON event
-func parseJSON(con *sql.DB, ctx *lib.Ctx, idx, njsons int, jsonStr []byte, dt time.Time, forg, frepo map[string]struct{}, orgRE, repoRE *regexp.Regexp, shas map[string]string) (f int, e int) {
+// lineStats - counters of one GH Archive line: events found/written and, for
+// damaged lines, broken chunks skipped and events recovered from the pieces
+type lineStats struct {
+	found     int
+	events    int
+	broken    int
+	recovered int
+}
+
+// decodeEvent - strict decode of one JSON value in the run's format (GHA2DB_OLDFMT)
+func decodeEvent(ctx *lib.Ctx, jsonStr []byte, h *lib.Event, hOld *lib.EventOld) error {
+	if ctx.OldFormat {
+		return jsoniter.Unmarshal(jsonStr, hOld)
+	}
+	return jsoniter.Unmarshal(jsonStr, h)
+}
+
+// parseJSON - process one GH Archive line. A line that is a single well-formed
+// event is decoded directly; anything else (NUL padding, glued events, garbage)
+// is split by lib.RecoverJSONChunks and every piece that still decodes is
+// processed while the broken ones are logged and skipped - a damaged line never
+// stops the run
+var errBrokenChunk = errors.New("broken JSON chunk")
+
+func parseJSON(con *sql.DB, ctx *lib.Ctx, idx, njsons int, jsonStr []byte, dt time.Time, forg, frepo map[string]struct{}, orgRE, repoRE *regexp.Regexp, shas map[string]string) (st lineStats) {
 	var (
-		h         lib.Event
-		hOld      lib.EventOld
-		err       error
+		h    lib.Event
+		hOld lib.EventOld
+	)
+	if lib.IsPlainLine(jsonStr) && decodeEvent(ctx, jsonStr, &h, &hOld) == nil {
+		st.found, st.events = processEvent(con, ctx, jsonStr, &h, &hOld, dt, forg, frepo, orgRE, repoRE, shas)
+		return
+	}
+	for _, chunk := range lib.RecoverJSONChunks(jsonStr) {
+		h = lib.Event{}
+		hOld = lib.EventOld{}
+		err := decodeEvent(ctx, chunk.Bytes, &h, &hOld)
+		// A broken chunk is never an event, even when the lenient decoder
+		// takes it (jsoniter accepts invalid UTF-8 that Postgres rejects).
+		if err == nil && chunk.Broken {
+			err = errBrokenChunk
+		}
+		if err != nil {
+			st.broken++
+			logBrokenJSON(ctx, idx, njsons, chunk.Bytes, dt, err, st.broken)
+			continue
+		}
+		st.recovered++
+		f, e := processEvent(con, ctx, chunk.Bytes, &h, &hOld, dt, forg, frepo, orgRE, repoRE, shas)
+		st.found += f
+		st.events += e
+	}
+	return
+}
+
+// logBrokenJSON - log one undecodable chunk: an `Error(<hour>)` line, the chunk
+// saved (best effort, only with GHA2DB_JSON) as
+// jsons/error_<hour>-<line>-<lines>[-<n>].json (n > 1 for further chunks of
+// the same line) and the `Cannot unmarshal` report on stdout and stderr
+func logBrokenJSON(ctx *lib.Ctx, idx, njsons int, jsonStr []byte, dt time.Time, err error, nth int) {
+	safeStr := lib.SafeUTF8String(string(jsonStr))
+	lib.Printf("Error(%v): %v\n", lib.ToGHADate(dt), err)
+	if ctx.JSONOut {
+		ofn := fmt.Sprintf("jsons/error_%v-%d-%d", lib.ToGHADate(dt), idx+1, njsons)
+		if nth > 1 {
+			ofn = fmt.Sprintf("%s-%d", ofn, nth)
+		}
+		ofn += ".json"
+		if werr := ioutil.WriteFile(ofn, jsonStr, 0644); werr != nil {
+			lib.Printf("%v: cannot save broken JSON: %v\n", lib.ToGHADate(dt), werr)
+		}
+	}
+	lib.Printf("%v: Cannot unmarshal:\n%s\n%v\n", dt, safeStr, err)
+	fmt.Fprintf(os.Stderr, "%v: Cannot unmarshal:\n%s\n%v\n", dt, safeStr, err)
+}
+
+// processEvent - the filtering/writing half of parseJSON for one decoded event: (found, events written)
+func processEvent(con *sql.DB, ctx *lib.Ctx, jsonStr []byte, h *lib.Event, hOld *lib.EventOld, dt time.Time, forg, frepo map[string]struct{}, orgRE, repoRE *regexp.Regexp, shas map[string]string) (f int, e int) {
+	var (
 		fullName  string
 		eid       string
 		actorName string
 	)
-	if ctx.OldFormat {
-		err = jsoniter.Unmarshal(jsonStr, &hOld)
-	} else {
-		err = jsoniter.Unmarshal(jsonStr, &h)
-	}
-	// jsonStr = bytes.Replace(jsonStr, []byte("\x00"), []byte(""), -1)
-	if err != nil {
-		lib.Printf("Error(%v): %v\n", lib.ToGHADate(dt), err)
-		ofn := fmt.Sprintf("jsons/error_%v-%d-%d.json", lib.ToGHADate(dt), idx+1, njsons)
-		lib.FatalOnError(ioutil.WriteFile(ofn, jsonStr, 0644))
-		lib.Printf("%v: Cannot unmarshal:\n%s\n%v\n", dt, string(jsonStr), err)
-		fmt.Fprintf(os.Stderr, "%v: Cannot unmarshal:\n%s\n%v\n", dt, string(jsonStr), err)
-		if ctx.AllowBrokenJSON {
-			return
-		}
-		pretty := lib.PrettyPrintJSON(jsonStr)
-		lib.Printf("%v: JSON Unmarshal failed for:\n'%v'\n", dt, string(pretty))
-		fmt.Fprintf(os.Stderr, "%v: JSON Unmarshal failed for:\n'%v'\n", dt, string(pretty))
-	}
-	lib.FatalOnError(err)
 	if ctx.OldFormat {
 		fullName = lib.MakeOldRepoName(&hOld.Repository)
 		actorName = hOld.Actor
@@ -80,9 +134,9 @@ func parseJSON(con *sql.DB, ctx *lib.Ctx, idx, njsons int, jsonStr []byte, dt ti
 		}
 		if ctx.DBOut {
 			if ctx.OldFormat {
-				e = lib.WriteToDBOldFmt(con, ctx, eid, &hOld, shas)
+				e = lib.WriteToDBOldFmt(con, ctx, eid, hOld, shas)
 			} else {
-				e = lib.WriteToDB(con, ctx, &h, shas)
+				e = lib.WriteToDB(con, ctx, h, shas)
 			}
 		}
 		if ctx.Debug >= 1 {
@@ -533,11 +587,16 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg, frepo map[s
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "%v: Error (no data yet, ioutil readall):\n%v\n", dt, err)
-			if ch != nil {
-				ch <- dt
+			if len(jsonsBytes) == 0 {
+				if ch != nil {
+					ch <- dt
+				}
+				lib.Printf("Gave up on %+v\n", dt)
+				return
 			}
-			lib.Printf("Gave up on %+v\n", dt)
-			return
+			// The archive keeps serving a truncated/corrupted hour: use
+			// whatever decompressed instead of losing the whole hour.
+			lib.Printf("%v: Recovered %d bytes from broken archive after %d attempt(s), continuing\n", dt, len(jsonsBytes), trials)
 		}
 		if trials > 1 {
 			lib.Printf("Recovered(%d) & decompressed %s\n", trials, fn)
@@ -553,20 +612,29 @@ func getGHAJSON(ch chan time.Time, ctx *lib.Ctx, dt time.Time, forg, frepo map[s
 
 	// Process JSONs one by one
 	n, f, e := 0, 0, 0
+	broken, recovered := 0, 0
 	njsons := len(jsonsArray)
 	for i, json := range jsonsArray {
 		if len(json) < 1 {
 			continue
 		}
-		fi, ei := parseJSON(con, ctx, i, njsons, json, dt, forg, frepo, orgRE, repoRE, shas)
+		st := parseJSON(con, ctx, i, njsons, json, dt, forg, frepo, orgRE, repoRE, shas)
 		n++
-		f += fi
-		e += ei
+		f += st.found
+		e += st.events
+		broken += st.broken
+		recovered += st.recovered
 	}
 	lib.Printf(
 		"Parsed: %s: %d JSONs, found %d matching, events %d\n",
 		fn, n, f, e,
 	)
+	if broken > 0 || recovered > 0 {
+		lib.Printf(
+			"Recovered %s: %d broken JSON chunk(s) skipped, %d event(s) recovered\n",
+			fn, broken, recovered,
+		)
+	}
 	// Mark date as computed, to skip fetching this JSON again when it contains no events for a current project
 	markAsProcessed(con, ctx, dt)
 	if ch != nil {

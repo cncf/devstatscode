@@ -135,7 +135,6 @@ type Ctx struct {
 	ActorsForbid             *regexp.Regexp               // From GHA2DB_ACTORS_FORBID, gha2db tool, process JSON if actor doesn't match this regexp, default "" which means skip this check
 	SkipMetrics              map[string]bool              // From GHA2DB_SKIP_METRICS, gha2db_sync tool, default "" - comma separated list of metrics to skip, as given by "sql: name" in the "metrics.yaml" file. Those metrics will be skipped.
 	OnlyMetrics              map[string]bool              // From GHA2DB_ONLY_METRICS, gha2db_sync tool, default "" - comma separated list of metrics to process, as given by "sql: name" in the "metrics.yaml" file. Only those metrics will be calculated.
-	AllowBrokenJSON          bool                         // From GHA2DB_ALLOW_BROKEN_JSON, gha2db tool, default false. If set then gha2db skips broken jsons and saves them as jsons/error_YYYY-MM-DD-h-n-m.json (n is the JSON number (1-m) of m JSONS array)
 	JSONsDir                 string                       // From GHA2DB_JSONS_DIR, website_data tool, default "./jsons/"
 	WebsiteData              bool                         // From GHA2DB_WEBSITEDATA, devstats tool, run website_data just after sync is complete, default false.
 	SkipUpdateEvents         bool                         // From GHA2DB_SKIP_UPDATE_EVENTS, ghapi2db tool, drop and recreate artificial events if their state differs, default false
@@ -425,9 +424,6 @@ func (ctx *Ctx) Init() {
 	ctx.SkipTSDB = os.Getenv("GHA2DB_SKIPTSDB") != ""
 	ctx.ResetTSDB = os.Getenv("GHA2DB_RESETTSDB") != ""
 	ctx.ResetRanges = os.Getenv("GHA2DB_RESETRANGES") != ""
-
-	// Allow broken JSON
-	ctx.AllowBrokenJSON = os.Getenv("GHA2DB_ALLOW_BROKEN_JSON") != ""
 
 	// Allow metric fail
 	ctx.AllowMetricFail = os.Getenv("GHA2DB_ALLOW_METRIC_FAIL") != ""
@@ -1030,7 +1026,6 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		GHAPIAllRepos:            ctx.GHAPIAllRepos,
 		AutoFetchCommits:         ctx.AutoFetchCommits,
 		GHAPIErrorIsFatal:        ctx.GHAPIErrorIsFatal,
-		AllowBrokenJSON:          ctx.AllowBrokenJSON,
 		AllowMetricFail:          ctx.AllowMetricFail,
 		WebsiteData:              ctx.WebsiteData,
 		SkipUpdateEvents:         ctx.SkipUpdateEvents,

@@ -424,8 +424,6 @@ pub struct Ctx {
     pub skip_metrics: BTreeMap<String, bool>,
     /// From GHA2DB_ONLY_METRICS, gha2db_sync tool, default "" - comma separated list of metrics to process, as given by "sql: name" in the "metrics.yaml" file. Only those metrics will be calculated.
     pub only_metrics: BTreeMap<String, bool>,
-    /// From GHA2DB_ALLOW_BROKEN_JSON, gha2db tool, default false. If set then gha2db skips broken jsons and saves them as jsons/error_YYYY-MM-DD-h-n-m.json (n is the JSON number (1-m) of m JSONS array)
-    pub allow_broken_json: bool,
     /// From GHA2DB_JSONS_DIR, website_data tool, default "./jsons/"
     pub jsons_dir: String,
     /// From GHA2DB_WEBSITEDATA, devstats tool, run website_data just after sync is complete, default false.
@@ -706,9 +704,6 @@ impl Ctx {
         self.skip_tsdb = env_set("GHA2DB_SKIPTSDB");
         self.reset_tsdb = env_set("GHA2DB_RESETTSDB");
         self.reset_ranges = env_set("GHA2DB_RESETRANGES");
-
-        // Allow broken JSON
-        self.allow_broken_json = env_set("GHA2DB_ALLOW_BROKEN_JSON");
 
         // Allow metric fail
         self.allow_metric_fail = env_set("GHA2DB_ALLOW_METRIC_FAIL");
@@ -1223,7 +1218,6 @@ impl Ctx {
             ),
             ("SkipMetrics", gofmt::map(&self.skip_metrics)),
             ("OnlyMetrics", gofmt::map(&self.only_metrics)),
-            ("AllowBrokenJSON", self.allow_broken_json.to_string()),
             ("JSONsDir", self.jsons_dir.clone()),
             ("WebsiteData", self.website_data.to_string()),
             ("SkipUpdateEvents", self.skip_update_events.to_string()),
@@ -1787,13 +1781,6 @@ mod tests {
             env: &[("GHA2DB_RUN_COLUMNS", "1")],
             set: |c| {
                 c.run_columns = true;
-            },
-        },
-        Case {
-            name: "Allow broken JSON",
-            env: &[("GHA2DB_ALLOW_BROKEN_JSON", "1")],
-            set: |c| {
-                c.allow_broken_json = true;
             },
         },
         Case {
@@ -2435,7 +2422,7 @@ mod tests {
             },
         },
         ];
-        assert_eq!(cases.len(), 123);
+        assert_eq!(cases.len(), 122);
         let default = default_context();
         for (index, case) in cases.iter().enumerate() {
             let mut expected = default.copy_context();

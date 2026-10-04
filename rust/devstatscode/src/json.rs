@@ -286,8 +286,16 @@ pub fn object_to_json<T: Serialize>(obj: &T, path: &str) {
 
 /// `ioutil.WriteFile(fn, data, 0644)` with Go-style fatal error text.
 pub fn write_file_0644(path: &str, data: &[u8]) {
+    if let Err(e) = try_write_file_0644(path, data) {
+        fatal_on_error(e);
+    }
+}
+
+/// `ioutil.WriteFile(fn, data, 0644)` returning Go's error text
+/// (`open <path>: <errno text>`) instead of exiting.
+pub fn try_write_file_0644(path: &str, data: &[u8]) -> Result<(), String> {
     if let Err(e) = std::fs::write(path, data) {
-        fatal_on_error(format!("open {}: {}", path, go_io_error_string(&e)));
+        return Err(format!("open {}: {}", path, go_io_error_string(&e)));
     }
     #[cfg(unix)]
     {
@@ -300,6 +308,7 @@ pub fn write_file_0644(path: &str, data: &[u8]) {
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -403,5 +412,29 @@ mod tests {
                 0o644
             );
         }
+    }
+
+    #[test]
+    fn try_write_file_0644_reports_go_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("raw.json");
+        let p = path.to_str().unwrap();
+        assert_eq!(try_write_file_0644(p, b"{\"a\":\xff}"), Ok(()));
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"a\":\xff}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o644
+            );
+        }
+        let missing = dir.path().join("no-such-dir").join("x.json");
+        let m = missing.to_str().unwrap();
+        assert_eq!(
+            try_write_file_0644(m, b"x"),
+            Err(format!("open {}: no such file or directory", m))
+        );
+        assert!(!missing.exists());
     }
 }
