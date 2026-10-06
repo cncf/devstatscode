@@ -12,7 +12,7 @@
 #   --musl     static Linux binaries (--target x86_64-unknown-linux-musl): what the docker images ship and
 #              what the grafana pods (ubuntu:22.04, old glibc) can run -> target/<os>/x86_64-unknown-linux-musl/release/
 #              needs `rustup target add x86_64-unknown-linux-musl` and a musl C compiler for the bundled
-#              SQLite and ring (Ubuntu: `apt-get install musl-tools`)
+#              SQLite, ring and mimalloc (Ubuntu: `apt-get install musl-tools`)
 #   --target T any other cargo --target triple (-> target/<os>/T/release/)
 #   -p NAME    build only the cmd/NAME crate (repeat for several); default: every binary
 # Env:

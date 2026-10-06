@@ -56,6 +56,7 @@ postgres-protocol = "0.6"
 bytes = "1"
 fallible-iterator = "0.2"
 libc = "0.2"
+mimalloc = "0.1"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 rsa = "0.9"
 base64 = "0.23"

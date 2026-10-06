@@ -22,7 +22,13 @@ postgres-protocol = { workspace = true }
 bytes = { workspace = true }
 fallible-iterator = { workspace = true }
 libc = { workspace = true }
+mimalloc = { workspace = true, optional = true }
 ureq = { workspace = true }
+
+[features]
+# Every binary linking this library allocates through mimalloc (see `lib.rs`);
+# `--no-default-features` falls back to the libc allocator.
+default = ["mimalloc"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

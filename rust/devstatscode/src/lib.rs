@@ -95,3 +95,56 @@ pub use chrono;
 pub use context::Ctx;
 pub use error::{fatal_no_log, fatal_on_err, fatal_on_error, fatalf};
 pub use log::{is_log_initialized, printf, printf_bytes};
+
+/// Process-wide allocator of every DevStats binary (all of them link this
+/// library): mimalloc instead of the libc one.
+///
+/// The shipped executables are static musl builds and musl's malloc takes one
+/// global lock, so allocation-heavy parallel work — gha2db decoding ~250k
+/// JSON events per hour on `GHA2DB_NCPUS` workers — got *slower* with more
+/// threads (k2s provisioning, 2026-10-06: going 6 -> 12 workers raised the
+/// per-hour parse time from 45 s to 166 s, with ~40% of samples in `futex`
+/// waits).  Go's runtime allocator scales per thread; mimalloc restores that
+/// for the Rust port while keeping the single static binary.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(all(test, feature = "mimalloc"))]
+mod global_allocator_tests {
+    use std::alloc::{GlobalAlloc, Layout};
+
+    #[test]
+    fn global_allocator_is_mimalloc() {
+        assert!(std::any::type_name_of_val(&super::GLOBAL_ALLOCATOR).ends_with("MiMalloc"));
+    }
+
+    #[test]
+    fn global_allocator_serves_concurrent_allocations() {
+        // Many short-lived allocations from several threads (the gha2db
+        // pattern), plus one direct call through the GlobalAlloc trait.
+        let handles: Vec<_> = (0..8)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    let mut total = 0usize;
+                    for i in 0..20_000usize {
+                        let v: Vec<u8> = vec![(i % 251) as u8; 16 + (i * 7 + t) % 2048];
+                        total += v.len();
+                    }
+                    total
+                })
+            })
+            .collect();
+        for h in handles {
+            assert!(h.join().expect("allocation worker panicked") > 0);
+        }
+        let layout = Layout::from_size_align(4096, 64).unwrap();
+        // SAFETY: valid non-zero layout; the pointer is checked and freed with the same layout.
+        unsafe {
+            let p = super::GLOBAL_ALLOCATOR.alloc(layout);
+            assert!(!p.is_null());
+            assert_eq!(p as usize % 64, 0);
+            super::GLOBAL_ALLOCATOR.dealloc(p, layout);
+        }
+    }
+}
