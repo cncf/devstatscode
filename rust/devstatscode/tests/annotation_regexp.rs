@@ -534,11 +534,22 @@ const TEST_CASES: &[(&str, &str, bool)] = &[
         "interTwin-eu/vk-test-set",
         true,
     ),
+    (r"^v\d+\.(0|\d*00)\.0$", "v4.0.0", true),
+    (r"^v\d+\.(0|\d*00)\.0$", "v5.0.0", true),
+    (r"^v\d+\.(0|\d*00)\.0$", "v5.100.0", true),
+    (r"^v\d+\.(0|\d*00)\.0$", "v5.200.0", true),
+    (r"^v\d+\.(0|\d*00)\.0$", "v10.0.0", true),
+    (r"^v\d+\.(0|\d*00)\.0$", "v5.10.0", false),
+    (r"^v\d+\.(0|\d*00)\.0$", "v5.50.0", false),
+    (r"^v\d+\.(0|\d*00)\.0$", "v5.136.0", false),
+    (r"^v\d+\.(0|\d*00)\.0$", "v5.100.1", false),
+    (r"^v\d+\.(0|\d*00)\.0$", "v5.00.0", true),
+    (r"^v\d+\.(0|\d*00)\.0$", "5.0.0", false),
 ];
 
 #[test]
 fn annotation_regexp() {
-    assert_eq!(TEST_CASES.len(), 264);
+    assert_eq!(TEST_CASES.len(), 275);
     for (index, (re, s, expected)) in TEST_CASES.iter().enumerate() {
         let re = goregex::compile(re).unwrap_or_else(|e| {
             panic!(

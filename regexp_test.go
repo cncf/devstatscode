@@ -276,6 +276,17 @@ func TestAnnotationRegexp(t *testing.T) {
 		{re: `(?i)^interTwin-eu\/(.*interlink.*|vk-test-set)$`, str: "intertwin-eu/interlink", match: true},
 		{re: `(?i)^intertwin-eu\/(.*interlink.*|vk-test-set)$`, str: "interTwin-eu/interLink", match: true},
 		{re: `(?i)^interTwin-eu\/(.*interlink.*|vk-test-set)$`, str: "interTwin-eu/vk-test-set", match: true},
+		{re: `^v\d+\.(0|\d*00)\.0$`, str: "v4.0.0", match: true},
+		{re: `^v\d+\.(0|\d*00)\.0$`, str: "v5.0.0", match: true},
+		{re: `^v\d+\.(0|\d*00)\.0$`, str: "v5.100.0", match: true},
+		{re: `^v\d+\.(0|\d*00)\.0$`, str: "v5.200.0", match: true},
+		{re: `^v\d+\.(0|\d*00)\.0$`, str: "v10.0.0", match: true},
+		{re: `^v\d+\.(0|\d*00)\.0$`, str: "v5.10.0", match: false},
+		{re: `^v\d+\.(0|\d*00)\.0$`, str: "v5.50.0", match: false},
+		{re: `^v\d+\.(0|\d*00)\.0$`, str: "v5.136.0", match: false},
+		{re: `^v\d+\.(0|\d*00)\.0$`, str: "v5.100.1", match: false},
+		{re: `^v\d+\.(0|\d*00)\.0$`, str: "v5.00.0", match: true},
+		{re: `^v\d+\.(0|\d*00)\.0$`, str: "5.0.0", match: false},
 	}
 	// Execute test cases
 	for index, test := range testCases {
