@@ -1,8 +1,12 @@
 package devstatscode
 
 import (
+	"os"
 	"regexp"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v2"
 )
 
 func TestAnnotationRegexp(t *testing.T) {
@@ -299,5 +303,63 @@ func TestAnnotationRegexp(t *testing.T) {
 				index+1, expected, test.str, re, got,
 			)
 		}
+	}
+}
+
+func TestCozystackProjectRegexp(t *testing.T) {
+	data, err := os.ReadFile("projects.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Projects map[string]struct {
+			CommandLine []string `yaml:"command_line"`
+		} `yaml:"projects"`
+	}
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	command := config.Projects["cozystack"].CommandLine
+	if len(command) != 1 || !strings.HasPrefix(command[0], "regexp:") {
+		t.Fatalf("expected one Cozystack regexp selector, got %v", command)
+	}
+	re, err := regexp.Compile(strings.TrimPrefix(command[0], "regexp:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		repo  string
+		match bool
+	}{
+		{"blockstor/blockstor", true},
+		{"blockstor/other-repo", true},
+		{"BlockStor/BlockStor", true},
+		{"cozystack/blockstor", true},
+		{"cozystack/cozystack", true},
+		{"cozystack/other-repo", true},
+		{"CozyStack/CozyStack", true},
+		{"aenix-io/cozystack", true},
+		{"aenix-io/foo-cozy-bar", true},
+		{"aenix-io/etcd-operator", true},
+		{"aenix-io/talm", true},
+		{"aenix-io/talos-bootstrap", true},
+		{"aenix-io/kubernetes-in-kubernetes", true},
+		{"aenix-io/kubefarm", true},
+		{"Aenix-IO/ETCD-Operator", true},
+		{"blockstor", false},
+		{"notblockstor/blockstor", false},
+		{"blockstor-other/blockstor", false},
+		{"other/blockstor", false},
+		{"other/cozystack", false},
+		{"aenix-io/other-repo", false},
+		{"aenix-io/blockstor", false},
+		{"aenix-io/talm-extra", false},
+		{"", false},
+	} {
+		t.Run(test.repo, func(t *testing.T) {
+			if got := re.MatchString(test.repo); got != test.match {
+				t.Errorf("regexp %q matched %q = %v, want %v", re, test.repo, got, test.match)
+			}
+		})
 	}
 }
