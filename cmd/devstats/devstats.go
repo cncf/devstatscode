@@ -13,8 +13,16 @@ import (
 	yaml "gopkg.in/yaml.v2"
 )
 
+type syncResult int
+
+const (
+	syncSkipped syncResult = iota
+	syncSucceeded
+	syncFailed
+)
+
 // Sync all projects from "projects.yaml", calling `gha2db_sync` for all of them
-func syncAllProjects() bool {
+func syncAllProjects() syncResult {
 	// Environment context parse
 	var ctx lib.Ctx
 	ctx.Init()
@@ -78,7 +86,7 @@ func syncAllProjects() bool {
 		}
 		if missing > 0 {
 			lib.Printf("Not all databases provisioned, pending: %d, exiting\n", missing)
-			return false
+			return syncSkipped
 		}
 	}
 
@@ -101,7 +109,7 @@ func syncAllProjects() bool {
 					if errName == lib.InvalidCatalogName {
 						lib.Printf("No '%s' database, cannot check running flag\n", db)
 						lib.FatalOnError(con.Close())
-						return false
+						return syncSkipped
 					}
 					lib.FatalOnError(err)
 				default:
@@ -122,7 +130,7 @@ func syncAllProjects() bool {
 				if age <= ctx.MaxRunningFlagAge {
 					lib.Printf("Running flag on '%s' set, exiting\n", db)
 					lib.FatalOnError(con.Close())
-					return false
+					return syncSkipped
 				}
 				lib.Printf("Running flag on '%s' expired, removing (this may be due to some error)\n", db)
 				lib.ExecSQLWithErr(con, &ctx, "delete from gha_computed where metric ="+lib.NValue(1), runningFlag)
@@ -201,7 +209,7 @@ func syncAllProjects() bool {
 		}()
 		if missing > 0 {
 			lib.Printf("Not all databases present, missing: %d, exiting\n", missing)
-			return false
+			return syncSkipped
 		}
 	}
 
@@ -216,7 +224,7 @@ func syncAllProjects() bool {
 		f, err := os.OpenFile(pidFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
 		if err != nil {
 			lib.Printf("Another `devstats` instance is running, PID file '%s' exists, exiting (not an error)\n", pidFile)
-			return false
+			return syncSkipped
 		}
 		fmt.Fprintf(f, "%d", pid)
 		lib.FatalOnError(f.Close())
@@ -252,7 +260,7 @@ func syncAllProjects() bool {
 		if res != nil {
 			lib.Printf("Error updating git repos (took %v): %+v\n", dtEnd.Sub(dtStart), res)
 			fmt.Fprintf(os.Stderr, "%v: Error updating git repos (took %v): %+v\n", dtEnd, dtEnd.Sub(dtStart), res)
-			return false
+			return syncFailed
 		}
 		lib.Printf("Updated git repos, took: %v\n", dtEnd.Sub(dtStart))
 	}
@@ -261,6 +269,7 @@ func syncAllProjects() bool {
 	lib.ClearOrphanedLocks()
 
 	// Sync all projects
+	result := syncSucceeded
 	for i, name := range names {
 		proj := projs[i]
 		if proj.SyncProbability != nil {
@@ -292,6 +301,7 @@ func syncAllProjects() bool {
 		if res != nil {
 			lib.Printf("Error result for %s (took %v): %+v\n", name, dtEnd.Sub(dtStart), res)
 			fmt.Fprintf(os.Stderr, "%v: Error result for %s (took %v): %+v\n", dtEnd, name, dtEnd.Sub(dtStart), res)
+			result = syncFailed
 			continue
 		}
 		lib.Printf("Synced %s, took: %v\n", name, dtEnd.Sub(dtStart))
@@ -310,20 +320,23 @@ func syncAllProjects() bool {
 		if res != nil {
 			lib.Printf("Error generating website data (took %v): %+v\n", dtEnd.Sub(dtStart), res)
 			fmt.Fprintf(os.Stderr, "%v: Error generating website (took %v): %+v\n", dtEnd, dtEnd.Sub(dtStart), res)
-			return false
+			return syncFailed
 		}
 		lib.Printf("Generated website data, took: %v\n", dtEnd.Sub(dtStart))
 	}
-	return true
+	return result
 }
 
 func main() {
 	dtStart := time.Now()
-	synced := syncAllProjects()
+	result := syncAllProjects()
 	dtEnd := time.Now()
-	if synced {
+	if result == syncSucceeded {
 		lib.Printf("Synced all projects in: %v\n", dtEnd.Sub(dtStart))
 	} else {
 		lib.Printf("There were sync errors, took: %v\n", dtEnd.Sub(dtStart))
+	}
+	if result == syncFailed {
+		os.Exit(1)
 	}
 }

@@ -29,6 +29,12 @@ use devstatscode::{
 const PROVISION_FLAG: &str = "provisioned";
 const RUNNING_FLAG: &str = "devstats_running";
 
+enum SyncResult {
+    Skipped,
+    Succeeded,
+    Failed,
+}
+
 /// Process start, for the `m=+…` monotonic reading Go appends to `%v` of a
 /// `time.Now()` value.
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
@@ -258,7 +264,7 @@ impl Flags<'_> {
 }
 
 /// The sync itself (after the flag checks): PID file, `get_repos`, orphaned
-/// locks, `gha2db_sync` per project, `website_data`. Returns Go's boolean
+/// locks, `gha2db_sync` per project, `website_data`. Returns the sync
 /// result, or the error of the deferred PID file removal (fatal in Go, after
 /// the other deferred calls ran).
 fn run_sync(
@@ -266,7 +272,7 @@ fn run_sync(
     cmd_prefix: &str,
     names: &[String],
     projs: &[projects::Project],
-) -> Result<bool, String> {
+) -> Result<SyncResult, String> {
     if ctx.skip_pid_file {
         return Ok(sync_projects(ctx, cmd_prefix, names, projs));
     }
@@ -284,7 +290,7 @@ fn run_sync(
                 "Another `devstats` instance is running, PID file '{}' exists, exiting (not an error)\n",
                 pid_file
             );
-            return Ok(false);
+            return Ok(SyncResult::Skipped);
         }
     };
     if let Err(e) = write!(file, "{}", std::process::id()) {
@@ -320,7 +326,7 @@ fn sync_projects(
     cmd_prefix: &str,
     names: &[String],
     projs: &[projects::Project],
-) -> bool {
+) -> SyncResult {
     // Only the clone/pull part runs here, the commit analysis is done by
     // `gha2db_sync` once the new commits are in the database.
     if !ctx.skip_get_repos {
@@ -349,7 +355,7 @@ fn sync_projects(
                 took,
                 res
             );
-            return false;
+            return SyncResult::Failed;
         }
         printf!("Updated git repos, took: {}\n", took);
     }
@@ -357,6 +363,7 @@ fn sync_projects(
     // Remove `affs_lock` / `giant_lock` mutexes older than their maximum age.
     pg::api::clear_orphaned_locks();
 
+    let mut result = SyncResult::Succeeded;
     for (name, proj) in names.iter().zip(projs) {
         if let Some(probability) = proj.sync_probability {
             if rng::float64() >= probability {
@@ -384,6 +391,7 @@ fn sync_projects(
                 took,
                 res
             );
+            result = SyncResult::Failed;
             continue;
         }
         printf!("Synced {}, took: {}\n", name, took);
@@ -406,16 +414,16 @@ fn sync_projects(
                 took,
                 res
             );
-            return false;
+            return SyncResult::Failed;
         }
         printf!("Generated website data, took: {}\n", took);
     }
-    true
+    result
 }
 
-/// Go `syncAllProjects`: `Ok(true)` when everything was synced, `Ok(false)`
-/// on a (non fatal) problem, `Err` when the deferred PID file removal failed.
-fn sync_all_projects() -> Result<bool, String> {
+/// Go `syncAllProjects`: distinguish command failures from benign guard skips.
+/// `Err` means the deferred PID file removal failed.
+fn sync_all_projects() -> Result<SyncResult, String> {
     let mut ctx = Ctx::default();
     ctx.init();
     signal::setup_timeout_signal(&ctx);
@@ -450,7 +458,7 @@ fn sync_all_projects() -> Result<bool, String> {
                 "Not all databases provisioned, pending: {}, exiting\n",
                 missing
             );
-            return Ok(false);
+            return Ok(SyncResult::Skipped);
         }
     }
 
@@ -460,7 +468,7 @@ fn sync_all_projects() -> Result<bool, String> {
             projs: &projs,
         };
         if !flags.check_running() {
-            return Ok(false);
+            return Ok(SyncResult::Skipped);
         }
     }
 
@@ -475,7 +483,7 @@ fn sync_all_projects() -> Result<bool, String> {
         if missing > 0 {
             printf!("Not all databases present, missing: {}, exiting\n", missing);
             flags.clear_running(&set);
-            return Ok(false);
+            return Ok(SyncResult::Skipped);
         }
         flag_dbs = Some(set);
     }
@@ -503,8 +511,15 @@ fn main() {
     let took = gotime::format_go_duration(dt_start.elapsed());
     match synced {
         Err(err) => fatal_on_error(err),
-        Ok(true) => printf!("Synced all projects in: {}\n", took),
-        Ok(false) => printf!("There were sync errors, took: {}\n", took),
+        Ok(SyncResult::Succeeded) => {
+            printf!("Synced all projects in: {}\n", took);
+        }
+        Ok(result) => {
+            printf!("There were sync errors, took: {}\n", took);
+            if matches!(result, SyncResult::Failed) {
+                std::process::exit(1);
+            }
+        }
     };
 }
 

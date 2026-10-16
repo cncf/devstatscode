@@ -944,3 +944,189 @@ fn unreachable_server_is_fatal() {
     assert!(errs[0].contains("connection refused"), "{errs:?}");
     assert!(!r.db.exists());
 }
+
+#[test]
+fn postprocess_texts_preserves_identity_window_and_artificial_events() {
+    let Some(db) = TestDb::fresh("structure_text_semantics") else {
+        return;
+    };
+    db.exec(&fs::read_to_string(fixture("structure/full_structure.sql")).unwrap());
+    db.exec(
+        r#"
+        insert into gha_texts values
+          (9000, 'watermark', '2026-10-13', 7, 'actor', 42, 'fixture/repo', 'Fixture'),
+          (1, 'already', '2010-01-01', 99, 'old actor', 99, 'old/repo', 'Old'),
+          (3, null, '2012-01-01', 7, 'actor', 42, 'fixture/repo', 'Fixture'),
+          (null, 'null id', '2026-10-13', 7, 'actor', 42, 'fixture/repo', 'Fixture');
+        insert into gha_comments
+          (id, event_id, body, created_at, updated_at, user_id, dup_actor_id,
+           dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at, dup_user_login)
+        select row_number() over (), event_id, body, created_at, created_at, 7, 7,
+               'actor', 42, 'fixture/repo', 'Fixture', event_at, 'actor'
+        from (values
+          (1::bigint, 'already', '2010-01-01'::timestamp, '2026-10-13'::timestamp),
+          (1, 'missing', '2010-01-01', '2026-10-13'),
+          (2, 'same', '2011-01-01', '2026-10-13'),
+          (-7, 'reset', '2026-10-13', '2026-10-13'),
+          (77, 'outside window', '2010-01-01', '2026-09-12 23:59:59'),
+          (78, 'boundary', '2010-01-01', '2026-09-13'),
+          (329900000000000, 'static', '2010-01-01', '2010-01-01'),
+          (329900000000001, 'overlap', '2026-10-13', '2026-10-13'),
+          (329899999999999, 'below static', '2010-01-01', '2010-01-01'),
+          (10, '', '2026-10-13', '2026-10-13')
+        ) v(event_id, body, created_at, event_at);
+        insert into gha_issues
+          (id, event_id, body, comments, created_at, locked, number, state, title,
+           updated_at, user_id, is_pull_request, dup_actor_id, dup_actor_login,
+           dup_repo_id, dup_repo_name, dup_type, dup_created_at, dup_user_login)
+        select event_id, event_id, body, 0, created_at, false, 1, 'open', title,
+               created_at, 7, false, 7, 'actor', 42, 'fixture/repo', 'Fixture',
+               '2026-10-13', 'actor'
+        from (values
+          (2, 'same', 'same', '2011-01-01'::timestamp),
+          (3, 'issue title', 'issue body', '2012-01-01'),
+          (4, 'null body', null, '2012-01-01'),
+          (5, '', '', '2012-01-01')
+        ) v(event_id, title, body, created_at);
+        insert into gha_pull_requests
+          (id, event_id, user_id, base_sha, head_sha, number, state, title, body,
+           created_at, updated_at, dup_actor_id, dup_actor_login, dup_repo_id,
+           dup_repo_name, dup_type, dup_created_at, dup_user_login)
+        values (6, 6, 7, 'base', 'head', 1, 'open', 'pr title', 'pr body',
+                '2013-01-01', '2026-10-13', 7, 'actor', 42, 'fixture/repo',
+                'Fixture', '2026-10-13', 'actor');
+        insert into gha_reviews
+          (id, user_id, commit_id, submitted_at, author_association, state, body,
+           event_id, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name,
+           dup_type, dup_created_at, dup_user_login)
+        select event_id, 7, 'commit', '2014-01-01', 'NONE', 'COMMENTED', body,
+               event_id, 7, 'actor', 42, 'fixture/repo', 'Fixture', '2026-10-13', 'actor'
+        from (values (7, 'review'), (8, null)) v(event_id, body);
+        insert into gha_commits
+          (sha, event_id, author_name, message, is_distinct, dup_actor_id,
+           dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at)
+        select sha, 9, 'actor', body, true, 7, 'actor', repo_id,
+               'fixture/repo', 'Fixture', '2026-10-13'
+        from (values ('a', 'first', 42), ('b', 'second', 42),
+                     ('c', 'second', 42), ('d', 'second', 43)) v(sha, body, repo_id);
+        create table expected (like gha_texts);
+        insert into expected select * from gha_texts;
+        insert into expected
+        select event_id, body, created_at, 7, 'actor', 42, 'fixture/repo', 'Fixture'
+        from (values
+          (1::bigint, 'missing', '2010-01-01'::timestamp),
+          (2, 'same', '2011-01-01'),
+          (-7, 'reset', '2026-10-13'),
+          (78, 'boundary', '2010-01-01'),
+          (329900000000000, 'static', '2010-01-01'),
+          (329900000000001, 'overlap', '2026-10-13'),
+          (3, 'issue title', '2012-01-01'), (3, 'issue body', '2012-01-01'),
+          (4, 'null body', '2012-01-01'),
+          (6, 'pr title', '2013-01-01'), (6, 'pr body', '2013-01-01'),
+          (7, 'review', '2014-01-01'),
+          (9, 'first', '2026-10-13'), (9, 'second', '2026-10-13')
+        ) v(event_id, body, created_at);
+        insert into expected values
+          (9, 'second', '2026-10-13', 7, 'actor', 43, 'fixture/repo', 'Fixture');
+        "#,
+    );
+    let sql = fs::read_to_string(scripts_dir().join("util_sql/postprocess_texts.sql")).unwrap();
+    let con = db.conn();
+    for _ in 0..2 {
+        db.exec(&sql);
+        assert_eq!(
+            cpg::table_data(&con, "gha_texts"),
+            cpg::table_data(&con, "expected")
+        );
+    }
+    db.exec(
+        r#"
+        truncate gha_texts;
+        delete from expected where event_id = 9000 or event_id is null or body is null;
+        update expected set actor_id = 7, actor_login = 'actor', repo_id = 42,
+          repo_name = 'fixture/repo', type = 'Fixture' where body = 'already';
+        insert into expected values
+          (77, 'outside window', '2010-01-01', 7, 'actor', 42, 'fixture/repo', 'Fixture'),
+          (329899999999999, 'below static', '2010-01-01', 7, 'actor', 42, 'fixture/repo', 'Fixture');
+        "#,
+    );
+    for _ in 0..2 {
+        db.exec(&sql);
+        assert_eq!(
+            cpg::table_data(&con, "gha_texts"),
+            cpg::table_data(&con, "expected")
+        );
+    }
+    con.close();
+}
+
+#[test]
+fn postprocess_texts_large_push_does_not_probe_texts_per_commit() {
+    let Some(db) = TestDb::fresh("structure_text_fanout") else {
+        return;
+    };
+    db.exec(&fs::read_to_string(fixture("structure/full_structure.sql")).unwrap());
+    db.exec(
+        r#"
+        create index texts_event_id_idx on gha_texts(event_id);
+        create index texts_created_at_idx on gha_texts(created_at);
+        create index commits_created_at_idx on gha_commits(dup_created_at);
+        create index commits_event_id_idx on gha_commits(event_id);
+        insert into gha_texts
+        select i, repeat(md5(i::text),8), '2025-01-01', 7, 'actor', 1, 'fixture/cold', 'PushEvent'
+        from generate_series(1,90000) i;
+        insert into gha_commits
+          (sha, event_id, author_name, message, is_distinct, dup_actor_id,
+           dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at)
+        select lpad(i::text,40,'0'), 2023864395865, 'actor', repeat(md5(i::text),8),
+               true, 7, 'actor', 2, 'fixture/hot', 'PushEvent', '2026-10-13 10:45:01'
+        from generate_series(1,10000) i;
+        insert into gha_texts
+        select event_id, message, dup_created_at, dup_actor_id, dup_actor_login,
+               dup_repo_id, dup_repo_name, dup_type from gha_commits;
+        analyze gha_texts;
+        analyze gha_commits;
+        analyze gha_comments;
+        analyze gha_issues;
+        analyze gha_pull_requests;
+        analyze gha_reviews;
+        "#,
+    );
+    let con = db.conn();
+    con.exec(
+        "set random_page_cost = 1.1; set work_mem = '32MB'; set statement_timeout = '30s'",
+        &[],
+    )
+    .unwrap();
+    let sql = fs::read_to_string(scripts_dir().join("util_sql/postprocess_texts.sql")).unwrap();
+    for statement in sql.split("\n;\n").filter(|s| !s.trim().is_empty()) {
+        let plan = cpg::snapshot(
+            &con,
+            &format!("explain (analyze, buffers) {statement}"),
+            &[],
+        )
+        .column(0)
+        .join("\n");
+        // Count work, not elapsed time: the old hot-key anti-join touches >2M buffers.
+        let buffers: u64 = plan
+            .lines()
+            .find_map(|line| line.strip_prefix("  Buffers: shared "))
+            .expect("root plan buffer counts")
+            .split_whitespace()
+            .filter_map(|part| {
+                part.strip_prefix("hit=")
+                    .or_else(|| part.strip_prefix("read="))
+            })
+            .map(|n| n.parse::<u64>().unwrap())
+            .sum();
+        assert!(
+            buffers < 100_000,
+            "replayed one push using {buffers} buffers:\n{plan}"
+        );
+    }
+    assert_eq!(
+        cpg::snapshot(&con, "select count(*) from gha_texts", &[]).column(0),
+        vec!["100000"]
+    );
+    con.close();
+}

@@ -25,3 +25,6 @@ See `cncf/devstats`:`ADDING_NEW_PROJECT.md` for informations about how to add mo
 
 API documentation is available [here](https://github.com/cncf/devstatscode/blob/master/API.md).
 
+# Sync exit status
+
+The Go and Rust `devstats` commands exit 1 if `get_repos`, a project sync, or website generation fails. A failed project does not prevent later projects or website generation; running flags and PID files are cleaned up before exit. Benign skips (already running, not provisioned, or probability selection) still exit 0.

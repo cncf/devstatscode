@@ -661,13 +661,14 @@ fn get_repos_failure_aborts_the_sync() {
     let side = both(
         &Case::new("getrepos_fail")
             .no_env("GHA2DB_GETREPOSSKIP")
+            .env("GHA2DB_SET_RUNNING_FLAG", "1")
             .scripts(Scripts {
                 get_repos: "echo 'repos stdout'; echo 'repos stderr' >&2; exit 7",
                 ..Scripts::default()
             }),
     )
     .unwrap();
-    assert_eq!(side.out.code(), 0);
+    assert_eq!(side.out.code(), 1);
     let out = normalize_stdout(&side);
     assert!(out.contains(&"repos stdout".to_string()), "{out:?}");
     assert!(out.contains(&"STDERR:".to_string()), "{out:?}");
@@ -685,6 +686,8 @@ fn get_repos_failure_aborts_the_sync() {
         ["<now>: Error updating git repos (took <duration>): exit status 7"]
     );
     assert_eq!(calls(&side).len(), 1, "no project synced");
+    assert!(!side.pid_left);
+    assert!(side.flags().values().all(Vec::is_empty));
 }
 
 #[test]
@@ -694,7 +697,7 @@ fn a_failing_project_sync_does_not_stop_the_others() {
         ..Scripts::default()
     }))
     .unwrap();
-    assert_eq!(side.out.code(), 0);
+    assert_eq!(side.out.code(), 1);
     let out = normalize_stdout(&side);
     assert_eq!(
         out,
@@ -717,8 +720,7 @@ fn a_failing_project_sync_does_not_stop_the_others() {
             "Error result for p2 (took <duration>): exit status 3",
             "Syncing #4 p4",
             "Synced p4, took: <duration>",
-            // per-project failures are not "sync errors"
-            "Synced all projects in: <duration>",
+            "There were sync errors, took: <duration>",
         ]
     );
     assert_eq!(
@@ -726,6 +728,29 @@ fn a_failing_project_sync_does_not_stop_the_others() {
         ["<now>: Error result for p2 (took <duration>): exit status 3"]
     );
     assert_eq!(calls(&side).len(), 3);
+    assert!(!side.pid_left);
+}
+
+#[test]
+fn project_failure_preserves_website_generation_and_flag_cleanup() {
+    let side = both(
+        &Case::new("sync_fail_cleanup")
+            .env("GHA2DB_WEBSITEDATA", "1")
+            .env("GHA2DB_SET_RUNNING_FLAG", "1")
+            .scripts(Scripts {
+                gha2db_sync: r#"if [ "$GHA2DB_PROJECT" = "p2" ]; then exit 102; fi"#,
+                ..Scripts::default()
+            }),
+    )
+    .unwrap();
+    assert_eq!(side.out.code(), 1);
+    let commands = calls(&side);
+    assert_eq!(commands.len(), 4);
+    assert_eq!(commands[3].cmd, "website_data");
+    assert!(!side.pid_left);
+    assert!(side.flags().values().all(Vec::is_empty));
+    assert!(side.stdout().contains("There were sync errors"));
+    assert!(!side.stdout().contains("Synced all projects"));
 }
 
 #[test]
@@ -749,13 +774,14 @@ fn website_data_failure_is_a_sync_error() {
     let side = both(
         &Case::new("website_fail")
             .env("GHA2DB_WEBSITEDATA", "1")
+            .env("GHA2DB_SET_RUNNING_FLAG", "1")
             .scripts(Scripts {
                 website_data: "exit 1",
                 ..Scripts::default()
             }),
     )
     .unwrap();
-    assert_eq!(side.out.code(), 0);
+    assert_eq!(side.out.code(), 1);
     let out = normalize_stdout(&side);
     assert!(
         out.contains(&"Error generating website data (took <duration>): exit status 1".to_string()),
@@ -770,6 +796,8 @@ fn website_data_failure_is_a_sync_error() {
         normalize_stderr(&side, true),
         ["<now>: Error generating website (took <duration>): exit status 1"]
     );
+    assert!(!side.pid_left);
+    assert!(side.flags().values().all(Vec::is_empty));
 }
 
 #[test]
