@@ -1200,6 +1200,21 @@ const EVENT_TYPES: &[&str] = &[
     "removed_from_project_v2",
     "sub_issue_added",
     "sub_issue_removed",
+    "added_to_stack",
+    "archived",
+    "blocked_by_added",
+    "blocked_by_removed",
+    "blocking_added",
+    "blocking_removed",
+    "issue_comment_pinned",
+    "issue_comment_unpinned",
+    "issue_field_added",
+    "issue_field_changed",
+    "issue_field_removed",
+    "issue_type_removed",
+    "relates_to_added",
+    "relates_to_removed",
+    "removed_from_stack",
 ];
 
 /// The single-milestone / single-issue debugging modes of `syncEvents`.

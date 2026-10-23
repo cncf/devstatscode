@@ -875,6 +875,21 @@ func syncEvents(ctx *lib.Ctx) {
 	eventTypes["removed_from_project_v2"] = struct{}{}
 	eventTypes["sub_issue_added"] = struct{}{}
 	eventTypes["sub_issue_removed"] = struct{}{}
+	eventTypes["added_to_stack"] = struct{}{}
+	eventTypes["archived"] = struct{}{}
+	eventTypes["blocked_by_added"] = struct{}{}
+	eventTypes["blocked_by_removed"] = struct{}{}
+	eventTypes["blocking_added"] = struct{}{}
+	eventTypes["blocking_removed"] = struct{}{}
+	eventTypes["issue_comment_pinned"] = struct{}{}
+	eventTypes["issue_comment_unpinned"] = struct{}{}
+	eventTypes["issue_field_added"] = struct{}{}
+	eventTypes["issue_field_changed"] = struct{}{}
+	eventTypes["issue_field_removed"] = struct{}{}
+	eventTypes["issue_type_removed"] = struct{}{}
+	eventTypes["relates_to_added"] = struct{}{}
+	eventTypes["relates_to_removed"] = struct{}{}
+	eventTypes["removed_from_stack"] = struct{}{}
 	// eventTypes[""] = struct{}{}
 
 	// Get number of CPUs available

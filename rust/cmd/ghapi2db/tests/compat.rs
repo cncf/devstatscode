@@ -1884,6 +1884,89 @@ fn langs_multi_threaded() {
 const EVENTS_PART: &str = "ghapi2db.go: Processing 1 repos - GHAPI Events part";
 
 #[test]
+fn events_new_timeline_types_are_stored_for_issues_and_prs() {
+    let types = [
+        "added_to_stack",
+        "archived",
+        "blocked_by_added",
+        "blocked_by_removed",
+        "blocking_added",
+        "blocking_removed",
+        "issue_comment_pinned",
+        "issue_comment_unpinned",
+        "issue_field_added",
+        "issue_field_changed",
+        "issue_field_removed",
+        "issue_type_removed",
+        "relates_to_added",
+        "relates_to_removed",
+        "removed_from_stack",
+    ];
+    let mut events = Vec::new();
+    let mut prs = Vec::new();
+    let mut expected = Vec::new();
+    for (i, event_type) in types.iter().enumerate() {
+        for is_pr in [false, true] {
+            let number = (2 * i + usize::from(is_pr) + 1) as i64;
+            let event_id = 5000 + number;
+            let mut issue = IssueSpec::new(7000 + number, number);
+            if is_pr {
+                issue = issue.pr();
+                prs.push(issue.clone());
+            }
+            events.push(issue_event(
+                event_id,
+                Some(event_type),
+                (11, "alice"),
+                "2020-05-01T10:00:00Z",
+                Some(&issue),
+            ));
+            expected.push(vec![
+                (281474976710656i64 + event_id).to_string(),
+                event_type.to_string(),
+                event_type.to_string(),
+                number.to_string(),
+                is_pr.to_string(),
+            ]);
+        }
+    }
+    let sides = check(
+        Case::new("ev_new_types", Pass::Events)
+            .unordered()
+            .runs(2)
+            .setup(move |gh| {
+                gh.get_ok(&events_path(REPO), &json!(events));
+                for pr in &prs {
+                    gh.get_ok(&pr_path(REPO, pr.number), &pr_json(pr));
+                }
+            }),
+    );
+    both(&sides, |s| {
+        for run in 0..2 {
+            assert_eq!(s.code(run), Some(0));
+            assert!(
+                !s.outs[run]
+                    .stdout_str()
+                    .contains("Warning: skipping event type"),
+                "{}",
+                s.outs[run].stdout_str()
+            );
+        }
+        assert_eq!(
+            s.query(
+                "select e.id, e.type, p.action, i.number, i.is_pull_request \
+                 from gha_events e join gha_payloads p on p.event_id = e.id \
+                 join gha_issues i on i.event_id = e.id \
+                 where e.id > 281474976710656 order by e.id"
+            ),
+            expected
+        );
+        assert_eq!(s.count("select count(*) from gha_payloads"), 30);
+        assert_eq!(s.count("select count(*) from gha_pull_requests"), 15);
+    });
+}
+
+#[test]
 fn events_new_issue_and_pr_are_added() {
     let issue = IssueSpec::new(7001, 1)
         .labels(vec![(31, "bug"), (30, "area/api")])
