@@ -63,6 +63,12 @@ const TEST_CASES: &[(&str, &str, bool)] = &[
         "release-201-05-15",
         false,
     ),
+    (r"^release-\d{8}\.0$", "release-20261031.0", true),
+    (r"^release-\d{8}\.0$", "release-20261031.1", false),
+    (r"^release-\d{8}\.0$", "release-2026103.0", false),
+    (r"^release-\d{8}\.0$", "release-2026-10-31.0", false),
+    (r"^release-\d{8}\.0$", "Release-20261031.0", false),
+    (r"^release-\d{8}\.0$", "release20261031.0", false),
     (r"^v((0\.\d+)|(\d+\.\d+\.0))$", "v0.0", true),
     (r"^v((0\.\d+)|(\d+\.\d+\.0))$", "v1.0", false),
     (r"^v((0\.\d+)|(\d+\.\d+\.0))$", "0.0", false),
@@ -549,7 +555,7 @@ const TEST_CASES: &[(&str, &str, bool)] = &[
 
 #[test]
 fn annotation_regexp() {
-    assert_eq!(TEST_CASES.len(), 275);
+    assert_eq!(TEST_CASES.len(), 281);
     for (index, (re, s, expected)) in TEST_CASES.iter().enumerate() {
         let re = goregex::compile(re).unwrap_or_else(|e| {
             panic!(

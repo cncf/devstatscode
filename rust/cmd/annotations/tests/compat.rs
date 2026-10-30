@@ -1040,6 +1040,41 @@ fn no_regexp_takes_all_tags() {
 }
 
 #[test]
+fn gvisor_release_tag_regexp() {
+    let Some(rs) = both(
+        &Case::new(
+            "gvisor_release",
+            proj(&[MAIN_REPO, r"annotation_regexp: '^release-\d{8}\.0$'", START]),
+        )
+        .no_repo()
+        .script(Script::Fake(
+            r#"cat <<'TAGS'
+release-20261031.0♂♀1577836800♂♀valid release
+release-20261031.1♂♀1577923200♂♀invalid patch
+release-2026103.0♂♀1578009600♂♀short date
+release-2026-10-31.0♂♀1578096000♂♀dashed date
+Release-20261031.0♂♀1578182400♂♀wrong case
+release20261031.0♂♀1578268800♂♀missing hyphen
+TAGS"#,
+        )),
+    ) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    assert_eq!(
+        rs.annotations(),
+        s3(&[
+            (
+                "2015-06-01 00:00:00",
+                "Project start date",
+                "2015-06-01 - project starts"
+            ),
+            ("2020-01-01 00:00:00", "release-20261031.0", "valid release"),
+        ])
+    );
+}
+
+#[test]
 fn regexp_matching_nothing_leaves_only_milestones() {
     let Some(rs) = both(&Case::new(
         "regexp_nothing",
