@@ -736,6 +736,7 @@ fn backfill_repo(
     let mut tx = con.begin().map_err(|e| (0, 0, e.to_string()))?;
 
     let ins_commit_sql = "
+with inserted as (
 insert into gha_commits(
   sha, event_id, author_name, message,
   is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at,
@@ -749,6 +750,10 @@ select
   $11,$12,$13,$14,
   $15,$16,$17,1
 on conflict do nothing
+returning sha
+)
+delete from gha_skip_commits s using inserted i
+where s.sha = i.sha and s.reason in (1,2)
 ";
     // Only fill missing payload size (NULL) with the computed count.
     let upd_payload_sql = "update gha_payloads set size = $2 where event_id = $1 and (size is null or size <= 1) and (size is null or size <> $2)";
@@ -1692,7 +1697,7 @@ fn parse_trailers(ctx: &Ctx, msg: &str) -> Vec<trailers::Trailer> {
 }
 
 /// Go `restoreOrphanCommits`: restore commits present in git but with no
-/// `gha_commits` or `gha_skip_commits` row. DBs are processed sequentially;
+/// `gha_commits` row. DBs are processed sequentially;
 /// repos inside a DB in parallel up to NCPUs.
 pub fn restore_orphan_commits(
     ctx: &mut Ctx,
@@ -1766,14 +1771,6 @@ pub fn restore_orphan_commits(
             "Restoring orphan commits: DB '{db}': orphan commits since {dt_from} until {dt_to}\n"
         );
 
-        let skip_set = match select_skip_commits(&con) {
-            Ok(s) => s,
-            Err(err) => {
-                printf!("selectSkipCommits(DB={db}) error: {err}\n");
-                con.close();
-                continue;
-            }
-        };
         let aliases = match select_repo_aliases(&con) {
             Ok(a) => a,
             Err(err) => {
@@ -1841,7 +1838,6 @@ pub fn restore_orphan_commits(
                 dt_to,
                 &maybe_hide,
                 &acache,
-                &skip_set,
                 &claimed_shas,
                 &no_identity,
             ) {
@@ -2017,7 +2013,6 @@ fn restore_orphan_repo(
     dt_to: GoTime,
     maybe_hide: &MaybeHide,
     acache: &ActorCache,
-    skip_set: &HashSet<String>,
     claimed_shas: &Mutex<HashSet<String>>,
     no_identity: &AtomicUsize,
 ) -> RestoreResult {
@@ -2145,11 +2140,7 @@ fn restore_orphan_repo(
     }
     let n_shas = shas.len() as i64;
 
-    let candidates: Vec<String> = shas
-        .iter()
-        .filter(|sha| !skip_set.contains(*sha))
-        .cloned()
-        .collect();
+    let candidates = shas;
 
     // Existence check is DB-wide (not per dup_repo_name): renamed repos are cloned under
     // every historical name and per-name checks restored the same commits once per alias.
@@ -2306,6 +2297,7 @@ values($1,$2,$3,$4,$5,'restored_orphan_commit',$6,$7,$8,$9,$10)
 on conflict do nothing
 ";
     let ins_commit_sql = "
+with inserted as (
 insert into gha_commits(
   sha, event_id, author_name, message,
   is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at,
@@ -2314,6 +2306,10 @@ insert into gha_commits(
 )
 values($1,$2,$3,$4,true,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,2)
 on conflict do nothing
+returning sha
+)
+delete from gha_skip_commits s using inserted i
+where s.sha = i.sha and s.reason in (1,2)
 ";
 
     let mut n_restored = 0i64;
@@ -2622,20 +2618,6 @@ on conflict do nothing
     }
 
     Ok((1, n_shas, n_restored, eids))
-}
-
-/// Go `selectSkipCommits`: all `gha_skip_commits.sha` (normalized).
-fn select_skip_commits(con: &PgConn) -> Result<HashSet<String>, PgError> {
-    let mut out: HashSet<String> = HashSet::new();
-    let mut rows = con.query("select sha from gha_skip_commits", &[])?;
-    while rows.next() {
-        let mut sha = String::new();
-        rows.scan(&mut [&mut sha])?;
-        out.insert(normalize_sha(&sha));
-    }
-    rows.err()?;
-    let _ = rows.close();
-    Ok(out)
 }
 
 /// Go `selectRepoAliases`: historical repo name -> current name for

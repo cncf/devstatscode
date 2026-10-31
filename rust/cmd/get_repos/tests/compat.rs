@@ -712,7 +712,7 @@ impl Side {
     }
     /// `(sha, reason)` of `gha_skip_commits`.
     fn skipped(&self) -> Vec<(String, String)> {
-        self.query("select sha, reason::text from gha_skip_commits order by sha")
+        self.query("select sha, reason::text from gha_skip_commits order by sha, reason")
             .into_iter()
             .map(|r| (r[0].clone(), r[1].clone()))
             .collect()
@@ -3703,25 +3703,278 @@ fn orphan_default_ref_fallback() {
 }
 
 #[test]
-fn orphan_skip_commits() {
-    // Commit 1 is in gha_skip_commits: not restored.
-    let case = Case::new("orphan_skip_commits")
+fn orphan_stats_cache() {
+    let case = Case::new("orphan_stats_cache")
         .debug()
         .orphan(WIDE_RANGE)
-        .also("insert into gha_skip_commits(sha, dt, reason) values ('{sha0}', '2021-01-01', 1);");
+        .also(
+            "insert into gha_skip_commits(sha, dt, reason) values
+ ('{sha0}', '2021-01-01', 1), ('{sha1}', '2021-01-01', 2),
+ ('{sha2}', '2021-01-01', 1), ('{sha2}', '2021-01-01', 2),
+ ('{sha1}', '2021-01-01', 3),
+ ('{sha4}', '2021-01-01', 2);",
+        )
+        .steps(vec![
+            Step::Run(Vec::new()),
+            Step::Sql(
+                "insert into gha_skip_commits(sha, dt, reason) values ('{sha0}', '2021-01-01', 2);",
+            ),
+            Step::Run(Vec::new()),
+        ]);
     let Some(rs) = both(&case) else {
         return;
     };
     assert_eq!(rs.code(0), Some(0));
     rs.expect_line(0, "<db>/org/repo: found 4 commits since <ts>");
-    rs.expect_line(0, "<db>/org/repo: need to restore 3 orphan commits");
+    rs.expect_line(0, "<db>/org/repo: need to restore 4 orphan commits");
     rs.expect_line(
         0,
-        "Finished DB '<db>': processed 1 repos, checked 4 commits, restored 3",
+        "Finished DB '<db>': processed 1 repos, checked 4 commits, restored 4",
     );
-    let mut expected = vec![rs.shas[1].clone(), rs.shas[2].clone(), rs.shas[3].clone()];
+    let mut expected = rs.shas[..4].to_vec();
     expected.sort();
     assert_eq!(rs.commit_shas(), expected);
+    assert_eq!(rs.code(1), Some(0));
+    rs.expect_line(1, "<db>/org/repo: no orphan commits to restore");
+    let mut skipped = vec![
+        (rs.shas[0].clone(), "2".to_string()),
+        (rs.shas[1].clone(), "3".to_string()),
+        (rs.shas[4].clone(), "2".to_string()),
+    ];
+    skipped.sort();
+    assert_eq!(rs.skipped(), skipped);
+}
+
+#[test]
+fn backfill_stats_cache_insert_conflict() {
+    let case = Case::new("backfill_stats_cache_insert_conflict")
+        .debug()
+        .mode("2")
+        .repo(Repo::Cloned(3))
+        .steps(vec![
+            Step::Run(Vec::new()),
+            Step::Sql(
+                "update gha_commits set message = 'preserved', loc_added = 7, loc_removed = 2, files_changed = 1 where sha = '{sha1}';
+insert into gha_skip_commits(sha, dt, reason) values ('{sha1}', '2021-01-01', 1), ('{sha1}', '2021-01-01', 2);",
+            ),
+            Step::Run(Vec::new()),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    assert_eq!(rs.code(1), Some(0));
+    rs.expect_contains(1, "PushEvent 1001: inserting 1 commits");
+    assert_eq!(rs.commit_shas().len(), 3);
+    assert_eq!(
+        rs.query(&format!(
+            "select message, loc_added::text, loc_removed::text, files_changed::text from gha_commits where sha = '{}'",
+            rs.shas[1]
+        )),
+        vec![strs(&["preserved", "7", "2", "1"])]
+    );
+    assert_eq!(
+        rs.query("select reason::text, dt::text from gha_skip_commits order by reason"),
+        vec![
+            strs(&["1", "2021-01-01 00:00:00"]),
+            strs(&["2", "2021-01-01 00:00:00"])
+        ]
+    );
+}
+
+#[test]
+fn orphan_stats_cache_insert_conflict() {
+    let case = Case::new("orphan_stats_cache_insert_conflict")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .also(
+            "insert into gha_skip_commits(sha, dt, reason) values ('{sha1}', '2021-01-01', 1), ('{sha1}', '2021-01-01', 2);
+create function insert_competing_commit() returns trigger language plpgsql as $$
+begin
+  if new.head = '{sha1}' and new.event_id < 0 then
+    insert into gha_commits(
+      sha, event_id, author_name, message, is_distinct, dup_actor_id, dup_actor_login,
+      dup_repo_id, dup_repo_name, dup_type, dup_created_at, author_id, committer_id,
+      dup_author_login, dup_committer_login, author_email, committer_name, committer_email, origin
+    ) select new.head, new.event_id, 'preserved', 'existing row', true, actor_id, dup_actor_login,
+      repo_id, dup_repo_name, type, created_at, 0, 0, '', '', '', '', '', 2
+      from gha_events where id = new.event_id;
+  end if;
+  return new;
+end $$;
+create trigger insert_competing_commit after insert on gha_payloads
+  for each row execute function insert_competing_commit();",
+        );
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    assert_eq!(rs.commit_shas().len(), 4);
+    assert_eq!(
+        rs.query(&format!(
+            "select author_name, message from gha_commits where sha = '{}'",
+            rs.shas[1]
+        )),
+        vec![strs(&["preserved", "existing row"])]
+    );
+    assert_eq!(
+        rs.query("select reason::text, dt::text from gha_skip_commits order by reason"),
+        vec![
+            strs(&["1", "2021-01-01 00:00:00"]),
+            strs(&["2", "2021-01-01 00:00:00"])
+        ]
+    );
+}
+
+#[test]
+fn stats_cache_transaction_rollback() {
+    for (name, orphan) in [
+        ("stats_cache_native_rollback", false),
+        ("stats_cache_orphan_rollback", true),
+    ] {
+        let case = Case::new(name)
+            .debug()
+            .repo(Repo::Cloned(3))
+            .also(
+                "insert into gha_skip_commits(sha, dt, reason) values
+ ('{sha1}', '2021-01-01', 1), ('{sha1}', '2021-01-01', 2), ('{sha4}', '2021-01-01', 2);
+create function reject_cached_commit() returns trigger language plpgsql as $$
+begin
+  if new.sha = '{sha1}' then
+    if exists(select 1 from gha_skip_commits where sha = new.sha and reason in (1,2)) then
+      raise exception 'statistics cache was not invalidated';
+    end if;
+    raise exception 'forced failure after statistics cache invalidation';
+  end if;
+  return new;
+end $$;
+create constraint trigger reject_cached_commit after insert on gha_commits
+  deferrable initially deferred for each row execute function reject_cached_commit();",
+            )
+            .steps(vec![
+                Step::Run(Vec::new()),
+                Step::Sql(
+                    "do $$ begin
+  if exists(select 1 from gha_commits)
+    or exists(select 1 from gha_commits_roles)
+    or exists(select 1 from gha_events where id < 0)
+    or exists(select 1 from gha_payloads where event_id < 0)
+    or (select count(*) from gha_skip_commits where dt = '2021-01-01') <> 3 then
+    raise exception 'transactional commit/cache preservation failed';
+  end if;
+end $$;
+drop trigger reject_cached_commit on gha_commits;
+drop function reject_cached_commit();",
+                ),
+                Step::Run(Vec::new()),
+            ]);
+        let case = if orphan {
+            case.orphan(WIDE_RANGE)
+        } else {
+            case.mode("2")
+        };
+        let Some(rs) = both(&case) else {
+            return;
+        };
+        assert_eq!(rs.code(0), Some(0));
+        assert_eq!(rs.code(1), Some(0));
+        rs.expect_contains(0, "forced failure after statistics cache invalidation");
+        assert_eq!(rs.commit_shas().len(), if orphan { 4 } else { 3 });
+        assert_eq!(rs.skipped(), vec![(rs.shas[4].clone(), "2".to_string())]);
+    }
+}
+
+#[test]
+fn commits_stats_cache_before_orphan_restore() {
+    let case = Case::new("commits_stats_cache_before_orphan_restore")
+        .debug()
+        .process_commits()
+        .orphan(WIDE_RANGE)
+        .steps(vec![
+            Step::Run(vec![("GHA2DB_RESTORE_ORPHAN_COMMITS", "")]),
+            Step::Run(Vec::new()),
+            Step::Run(Vec::new()),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    for step in 0..3 {
+        assert_eq!(rs.code(step), Some(0));
+    }
+    rs.expect_line(0, &format!("No rows updated for SHA {}", rs.shas[1]));
+    rs.expect_line(1, "<db>/org/repo: successfully restored 4 orphan commits");
+    let mut expected = rs.shas[..4].to_vec();
+    expected.sort();
+    assert_eq!(rs.commit_shas(), expected);
+    assert_eq!(
+        rs.count("select count(*) from gha_commits where loc_added is null or loc_removed is null or files_changed is null"),
+        0
+    );
+    assert_eq!(rs.skipped(), vec![(rs.shas[0].clone(), "1".to_string())]);
+    rs.expect_line(2, "Database '<db>' processed took <dur>, new commits: 0");
+    rs.expect_line(
+        2,
+        "BOC stats database '<db>' processed took <dur>, new commits: 0",
+    );
+}
+
+#[test]
+fn commits_stats_cache_before_backfill() {
+    let case = Case::new("commits_stats_cache_before_backfill")
+        .debug()
+        .process_commits()
+        .mode("2")
+        .repo(Repo::Cloned(3))
+        .also(
+            "insert into gha_skip_commits(sha, dt, reason) values
+ ('{sha1}', '2021-01-01', 1), ('{sha4}', '2021-01-01', 1), ('{sha4}', '2021-01-01', 2);",
+        )
+        .steps(vec![
+            Step::Run(vec![("GHA2DB_FETCH_COMMITS_MODE", "0")]),
+            Step::Run(Vec::new()),
+            Step::Run(Vec::new()),
+        ]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    for step in 0..3 {
+        assert_eq!(rs.code(step), Some(0));
+    }
+    rs.expect_line(0, &format!("No rows updated for SHA {}", rs.shas[1]));
+    let mut expected = rs.shas[1..4].to_vec();
+    expected.sort();
+    assert_eq!(rs.commit_shas(), expected);
+    assert_eq!(
+        rs.count("select count(*) from gha_commits where loc_added is null or loc_removed is null or files_changed is null"),
+        0
+    );
+    assert_eq!(
+        rs.query(&format!(
+            "select loc_added::text, loc_removed::text, files_changed::text from gha_commits where sha='{}'",
+            rs.shas[1]
+        )),
+        vec![strs(&["3", "0", "2"])]
+    );
+    assert_eq!(
+        rs.count(&format!(
+            "select count(*) from gha_commits_files where sha='{}' and path='src/main.go'",
+            rs.shas[1]
+        )),
+        1
+    );
+    let mut skipped = vec![
+        (rs.shas[0].clone(), "1".to_string()),
+        (rs.shas[0].clone(), "2".to_string()),
+        (rs.shas[4].clone(), "1".to_string()),
+        (rs.shas[4].clone(), "2".to_string()),
+    ];
+    skipped.sort();
+    assert_eq!(rs.skipped(), skipped);
+    rs.expect_line(2, "Database '<db>' processed took <dur>, new commits: 0");
+    rs.expect_line(
+        2,
+        "BOC stats database '<db>' processed took <dur>, new commits: 0",
+    );
 }
 
 #[test]

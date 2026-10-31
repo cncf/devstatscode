@@ -566,6 +566,7 @@ func backfillRepo(ctx *lib.Ctx, con *sql.DB, db, repo string, maybeHide func(str
 	// on conflict do nothing
 	// `
 	insCommitSQL := `
+with inserted as (
 insert into gha_commits(
   sha, event_id, author_name, message,
   is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at,
@@ -579,6 +580,10 @@ select
   $11,$12,$13,$14,
   $15,$16,$17,1
 on conflict do nothing
+returning sha
+)
+delete from gha_skip_commits s using inserted i
+where s.sha = i.sha and s.reason in (1,2)
 `
 	// Only fill missing payload size (NULL) with the computed count.
 	updPayloadSQL := `update gha_payloads set size = $2 where event_id = $1 and (size is null or size <= 1) and (size is null or size <> $2)`
@@ -1350,7 +1355,7 @@ func parseTrailers(ctx *lib.Ctx, msg string) []trailer {
 	return out
 }
 
-// restoreOrphanCommits restores commits present in git but with no gha_commits or gha_skip_commits row.
+// restoreOrphanCommits restores commits present in git but with no gha_commits row.
 // dbs are processed sequentially; repos inside a DB are processed in parallel up to NCPUs.
 func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[string]map[string]struct{}) {
 	if !ctx.RestoreOrphanCommits {
@@ -1420,12 +1425,6 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		}
 		lib.Printf("Restoring orphan commits: DB '%s': orphan commits since %s until %s\n", db, dtFrom, dtTo)
 
-		skipSet, err := selectSkipCommits(ctx, con)
-		if err != nil {
-			lib.Printf("selectSkipCommits(DB=%s) error: %v\n", db, err)
-			lib.FatalOnError(con.Close())
-			continue
-		}
 		aliases, err := selectRepoAliases(con)
 		if err != nil {
 			lib.Printf("selectRepoAliases(DB=%s) error: %v\n", db, err)
@@ -1489,7 +1488,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 			w := w
 			go func() {
 				// completion is signalled only on the normal path (see backfillPushEventCommits)
-				rp, cc, cr, reids, err := restoreOrphanRepo(ctx, con, db, w.repo, w.name, dtFrom, dtTo, maybeHide, acache, skipSet, &claimedShas, &nNoIdentity)
+				rp, cc, cr, reids, err := restoreOrphanRepo(ctx, con, db, w.repo, w.name, dtFrom, dtTo, maybeHide, acache, &claimedShas, &nNoIdentity)
 				if err != nil {
 					if errors.Is(err, errEmptyClone) {
 						// a clone of an empty GitHub repository: nothing to restore, counted below
@@ -1533,7 +1532,6 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		allReposProcessed += nReposProcessed
 		allCommitsChecked += nCommitsChecked
 		allCommitsRestored += nCommitsRestored
-		skipSet = nil
 		repos = nil
 		acache = nil
 		debug.FreeOSMemory()
@@ -1618,7 +1616,7 @@ const orphanHorizonSQL = `select least(
   date_trunc('hour', now() at time zone 'UTC') at time zone 'UTC'
 )`
 
-func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo, name string, dtFrom, dtTo time.Time, maybeHide func(string) string, acache *actorCache, skipSet map[string]struct{}, claimedShas *sync.Map, noIdentity *int64) (int, int, int, []int64, error) {
+func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo, name string, dtFrom, dtTo time.Time, maybeHide func(string) string, acache *actorCache, claimedShas *sync.Map, noIdentity *int64) (int, int, int, []int64, error) {
 	var eids []int64
 	repoPath := ctx.ReposDir + repo
 	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
@@ -1710,12 +1708,7 @@ func restoreOrphanRepo(ctx *lib.Ctx, con *sql.DB, db, repo, name string, dtFrom,
 		lib.Printf("%s/%s: found %d commits since %s until %s\n", db, repo, len(shas), dtFrom, dtTo)
 	}
 
-	candidates := make([]string, 0)
-	for _, sha := range shas {
-		if _, inSkip := skipSet[sha]; !inSkip {
-			candidates = append(candidates, sha)
-		}
-	}
+	candidates := shas
 
 	// Existence check is DB-wide (not per dup_repo_name): renamed repos are cloned under
 	// every historical name and per-name checks restored the same commits once per alias.
@@ -1861,6 +1854,7 @@ on conflict do nothing
 `
 
 	insCommitSQL := `
+with inserted as (
 insert into gha_commits(
   sha, event_id, author_name, message,
   is_distinct, dup_actor_id, dup_actor_login, dup_repo_id, dup_repo_name, dup_type, dup_created_at,
@@ -1869,6 +1863,10 @@ insert into gha_commits(
 )
 values($1,$2,$3,$4,true,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,2)
 on conflict do nothing
+returning sha
+)
+delete from gha_skip_commits s using inserted i
+where s.sha = i.sha and s.reason in (1,2)
 `
 
 	insEventStmt, err := tx.Prepare(insEventSQL)
@@ -2064,24 +2062,6 @@ on conflict do nothing
 	}
 
 	return 1, len(shas), nRestored, eids, nil
-}
-
-func selectSkipCommits(ctx *lib.Ctx, con *sql.DB) (map[string]struct{}, error) {
-	out := make(map[string]struct{})
-	rows, err := con.Query(`select sha from gha_skip_commits`)
-	if err != nil {
-		return out, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		var sha string
-		if err := rows.Scan(&sha); err != nil {
-			return out, err
-		}
-		out[normalizeSHA(sha)] = struct{}{}
-	}
-	return out, rows.Err()
 }
 
 // selectRepoAliases - historical repo name -> current name for repositories that were renamed.
