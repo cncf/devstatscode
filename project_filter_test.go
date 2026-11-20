@@ -233,6 +233,85 @@ func TestProjectFilter(t *testing.T) {
 	}
 }
 
+func TestProjectExcludeRepos(t *testing.T) {
+	preserveEnv(t, "ENV_SET", "GHA2DB_EXCLUDE_REPOS")
+	// The list of the environment, the way Ctx.Init() parses it
+	_ = os.Setenv("GHA2DB_EXCLUDE_REPOS", "env/repo")
+	var ctx lib.Ctx
+	ctx.ExcludeRepos = map[string]bool{"env/repo": true}
+	set := func(names ...string) map[string]bool {
+		m := make(map[string]bool)
+		for _, name := range names {
+			m[name] = true
+		}
+		return m
+	}
+	var testCases = []struct {
+		name     string
+		env      map[string]string
+		envSet   bool
+		expected map[string]bool
+	}{
+		{
+			name:     "the project's list",
+			env:      map[string]string{"GHA2DB_EXCLUDE_REPOS": "kubernetes/api,kubernetes/apimachinery"},
+			expected: set("kubernetes/api", "kubernetes/apimachinery"),
+		},
+		{
+			name:     "one name",
+			env:      map[string]string{"GHA2DB_EXCLUDE_REPOS": "tektoncd/pipeline", "GHA2DB_EXACT": "1"},
+			expected: set("tektoncd/pipeline"),
+		},
+		{
+			name:     "empty items are dropped, names are not trimmed (like Ctx.Init)",
+			env:      map[string]string{"GHA2DB_EXCLUDE_REPOS": "a/b,,c/d, e/f,"},
+			expected: set("a/b", "c/d", " e/f"),
+		},
+		{
+			name:     "an empty project list wins over the environment",
+			env:      map[string]string{"GHA2DB_EXCLUDE_REPOS": ""},
+			expected: set(),
+		},
+		{
+			name:     "no project env: the environment",
+			expected: set("env/repo"),
+		},
+		{
+			name:     "project env without the list: the environment",
+			env:      map[string]string{"GHA2DB_EXACT": "1"},
+			expected: set("env/repo"),
+		},
+		{
+			name:     "ENV_SET: the environment already is the project's",
+			env:      map[string]string{"GHA2DB_EXCLUDE_REPOS": "kubernetes/api"},
+			envSet:   true,
+			expected: set("env/repo"),
+		},
+	}
+	for _, test := range testCases {
+		if test.envSet {
+			_ = os.Setenv("ENV_SET", "1")
+		} else {
+			_ = os.Unsetenv("ENV_SET")
+		}
+		project := lib.Project{PDB: "db", Env: test.env}
+		got := lib.ProjectExcludeRepos(&ctx, &project)
+		if got == nil || !reflect.DeepEqual(got, test.expected) {
+			t.Errorf("%s: expected %+v, got %+v", test.name, test.expected, got)
+		}
+	}
+	_ = os.Unsetenv("ENV_SET")
+	// Neither the environment nor the context is changed (get_repos asks for many projects in one run)
+	if os.Getenv("GHA2DB_EXCLUDE_REPOS") != "env/repo" || !reflect.DeepEqual(ctx.ExcludeRepos, set("env/repo")) {
+		t.Errorf("environment or context changed: '%s', %+v", os.Getenv("GHA2DB_EXCLUDE_REPOS"), ctx.ExcludeRepos)
+	}
+	// No list anywhere: nothing is excluded
+	var empty lib.Ctx
+	if got := lib.ProjectExcludeRepos(&empty, &lib.Project{}); len(got) != 0 {
+		t.Errorf("no list: expected nothing, got %+v", got)
+	}
+}
+
 func TestProjectFilterHist(t *testing.T) {
 	preserveEnv(t, "ENV_SET", "GHA2DB_EXCLUDE_REPOS", "GHA2DB_EXACT")
 	var ctx lib.Ctx

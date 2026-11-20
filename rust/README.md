@@ -33,7 +33,7 @@ the difference.
 | `import_affs` | `cmd/import_affs` | `cmd/import_affs` | 6 / 47 (PostgreSQL)   |
 | `calc_metric` | `cmd/calc_metric` | `cmd/calc_metric` | 6 / 98 (PostgreSQL)   |
 | `annotations` | `cmd/annotations` | `cmd/annotations` | 5 / 73 (PostgreSQL + git) |
-| `get_repos`  | `cmd/get_repos`   | `cmd/get_repos`   | 3 / 117 (PostgreSQL + git) |
+| `get_repos`  | `cmd/get_repos`   | `cmd/get_repos`   | 4 / 155 (PostgreSQL + git) |
 | `sync_issues` | `cmd/sync_issues` | `cmd/sync_issues` | 10 / 53 (PostgreSQL + fake GitHub API) |
 | `ghapi2db`   | `cmd/ghapi2db`    | `cmd/ghapi2db`    | 132 (PostgreSQL + fake GitHub REST/GraphQL API) |
 | `gha2db`     | `cmd/gha2db`      | `cmd/gha2db`      | 5 (+9 lib) / 60 (PostgreSQL + fake GH Archive) |
@@ -1150,7 +1150,30 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     / `GHA2DB_SKIP_COMMITS_LOC`, `Got N (P%) new commit's files/BOC stats, …`
     summaries). `GHA2DB_ST`/`GHA2DB_NCPUS` select the thread count for every
     phase, `GHA2DB_DEBUG` 1/2 the verbosity.
-  * Go⇄Rust tests: `cmd/get_repos/tests/compat.rs` — 129 scenarios, each on
+  * Excluded repositories (2026-11-20, Go and Rust alike): `get_repos`
+    honours the project's `GHA2DB_EXCLUDE_REPOS` like `gha2db` and `ghapi2db`
+    do. A repository named in the list is on none of the project's lists: no
+    clone/pull, no PushEvent commit backfill, no orphan commit restore
+    (`<db>: skipped N excluded repo(s) (GHA2DB_EXCLUDE_REPOS)` per database,
+    in debug mode also `<db>: <repo> is excluded (GHA2DB_EXCLUDE_REPOS),
+    skipping` per repository). The orphan restore also skips a historical
+    clone whose current name is excluded, because its commits would be
+    attributed to the excluded name (`Restoring orphan commits: DB '<db>':
+    skipped N historical alias clone(s) of excluded repo(s)
+    (GHA2DB_EXCLUDE_REPOS)`). The list is resolved per project
+    (`ProjectExcludeRepos` / `project_exclude_repos`) the way the project's own
+    gha2db_sync does it: the `env` of the project in `projects.yaml` when it
+    defines the variable (unless `ENV_SET`), else the environment. So it also
+    works in the runs that carry no project environment (the fetch-only step
+    of `devstats`, `repos.sh`, runs for many projects), and a repository that
+    one project excludes is still processed for another project that tracks
+    it. Stored data is not touched: events, commits and clones of an excluded
+    repository stay as they are. Before, Knative kept getting about 11
+    artificial `PushEvent`s a day for `tektoncd/pipeline`, which left the
+    project in 2019. Tests: Go `TestProjectExcludeRepos`, Rust
+    `project_exclude_repos_cases`, 11 `exclude_repos_*` compat cases (3 of
+    them controls without a list).
+  * Go⇄Rust tests: `cmd/get_repos/tests/compat.rs` — 155 scenarios, each on
     scratch databases (`full_structure.sql`, seeded `gha_repos`, actors with
     emails/names and two PushEvents with payloads) and a scratch directory
     with `projects.yaml`, the real `git/*.sh` + `util_sql/*.sql` fixtures

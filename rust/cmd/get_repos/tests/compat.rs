@@ -5838,3 +5838,379 @@ insert into gha_payloads(event_id, push_id, size, ref, head, befor, dup_actor_lo
     assert_eq!(rs.count("select count(*) from gha_commits"), 3);
     assert_eq!(rs.query2("select sha from gha_commits").len(), 4);
 }
+
+// ------------------------------------------ exclude list (GHA2DB_EXCLUDE_REPOS)
+
+/// One project excluding `org/zeta` and `acme/alpha` through its `env`.
+const EXCLUDE_YAML: &str = "projects:\n  proj:\n    name: Proj\n    command_line: [ \"x\" ]\n    psql_db: {db}\n    order: 1\n    files_skip_pattern: '\\.md$'\n    env:\n      GHA2DB_EXCLUDE_REPOS: org/zeta,acme/alpha\n";
+/// Two projects on two databases, only the first one excludes `org/zeta`.
+const EXCLUDE_TWO_YAML: &str = "projects:\n  proj:\n    name: Proj\n    command_line: [ \"x\" ]\n    psql_db: {db}\n    order: 1\n    files_skip_pattern: '\\.md$'\n    env:\n      GHA2DB_EXCLUDE_REPOS: org/zeta\n  proj2:\n    name: Proj2\n    command_line: [ \"y\" ]\n    psql_db: {db2}\n    order: 2\n";
+/// One project excluding `org/renamed`.
+const EXCLUDE_RENAMED_YAML: &str = "projects:\n  proj:\n    name: Proj\n    command_line: [ \"x\" ]\n    psql_db: {db}\n    order: 1\n    files_skip_pattern: '\\.md$'\n    env:\n      GHA2DB_EXCLUDE_REPOS: org/renamed\n";
+const SEED_MORE_REPOS: &str = "insert into gha_repos(id, name, org_id, org_login) values (101, 'org/zeta', 10, 'org'), (102, 'acme/alpha', 20, 'acme'), (103, 'acme/beta', 20, 'acme');";
+/// `org/zeta` with a PushEvent (so the backfill has a reason to look at it).
+const SEED_ZETA: &str = "insert into gha_repos(id, name, org_id, org_login) values (101, 'org/zeta', 10, 'org');
+insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values (2001, 'PushEvent', 2, 101, '2020-01-04 01:00:00', 10, 'bob', 'org/zeta');";
+
+/// A repository in the project's exclude list (`GHA2DB_EXCLUDE_REPOS` in the
+/// project's `env`) is on none of the project's lists: it is not pulled and
+/// not part of the cncf/gitdm output. The project's list wins over the one of
+/// the environment (`acme/beta`), like in the project's own gha2db_sync.
+#[test]
+fn exclude_repos_project_list() {
+    let case = Case::new("exclude_repos_project_list")
+        .yaml(EXCLUDE_YAML)
+        .process_repos()
+        .debug()
+        .unordered()
+        .env("GHA2DB_EXTERNAL_INFO", "1")
+        .env("GHA2DB_EXCLUDE_REPOS", "acme/beta")
+        .extra(&["org/zeta", "acme/alpha", "acme/beta"])
+        .also(SEED_MORE_REPOS);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(0, "repos: map[acme:map[acme/beta:{}] org:map[org/repo:{}]]");
+    rs.expect_line(0, "repoDBs: map[<db>:map[acme/beta:{} org/repo:{}]]");
+    for r in ["org/zeta", "acme/alpha"] {
+        rs.expect_line(
+            0,
+            &format!("<db>: {r} is excluded (GHA2DB_EXCLUDE_REPOS), skipping"),
+        );
+        rs.expect_no_prefix(0, &format!("Pulling {r}"));
+        rs.expect_no_line(0, &format!("  '{r}',"));
+    }
+    rs.expect_line(0, "<db>: skipped 2 excluded repo(s) (GHA2DB_EXCLUDE_REPOS)");
+    for r in ["org/repo", "acme/beta"] {
+        rs.expect_line(0, &format!("Pulled {r}: took <dur>"));
+        rs.expect_line(0, &format!("  '{r}',"));
+    }
+    rs.expect_line(0, "Successfully processed 2/2 repos");
+}
+
+/// A project without a list of its own uses the one of the environment
+/// (empty items and unknown names are harmless). Without debug only the
+/// per-database summary line is printed.
+#[test]
+fn exclude_repos_environment() {
+    let case = Case::new("exclude_repos_environment")
+        .process_repos()
+        .unordered()
+        .env("GHA2DB_EXCLUDE_REPOS", "org/zeta,,other/unknown")
+        .extra(&["org/zeta"])
+        .also("insert into gha_repos(id, name, org_id, org_login) values (101, 'org/zeta', 10, 'org');");
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(0, "<db>: skipped 1 excluded repo(s) (GHA2DB_EXCLUDE_REPOS)");
+    rs.expect_no_prefix(0, "<db>: org/zeta is excluded");
+    rs.expect_line(0, "Successfully processed 1/1 repos");
+}
+
+/// `ENV_SET`: the caller (devstats) already prepared the project's
+/// environment, so the list of the environment is the project's and the one
+/// in projects.yaml is not consulted.
+#[test]
+fn exclude_repos_env_set() {
+    let case = Case::new("exclude_repos_env_set")
+        .yaml(EXCLUDE_YAML)
+        .process_repos()
+        .debug()
+        .unordered()
+        .env("ENV_SET", "1")
+        .env("GHA2DB_EXCLUDE_REPOS", "acme/beta")
+        .extra(&["org/zeta", "acme/alpha", "acme/beta"])
+        .also(SEED_MORE_REPOS);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(
+        0,
+        "repos: map[acme:map[acme/alpha:{}] org:map[org/repo:{} org/zeta:{}]]",
+    );
+    rs.expect_line(
+        0,
+        "<db>: acme/beta is excluded (GHA2DB_EXCLUDE_REPOS), skipping",
+    );
+    rs.expect_line(0, "<db>: skipped 1 excluded repo(s) (GHA2DB_EXCLUDE_REPOS)");
+    rs.expect_no_prefix(0, "Pulling acme/beta");
+    rs.expect_line(0, "Successfully processed 3/3 repos");
+}
+
+/// No list at all, or one naming only repositories the database does not
+/// know: nothing is skipped and nothing about excludes is printed.
+#[test]
+fn exclude_repos_nothing_to_skip() {
+    let case = Case::new("exclude_repos_nothing_to_skip")
+        .process_repos()
+        .debug()
+        .unordered()
+        .env("GHA2DB_EXCLUDE_REPOS", "other/unknown,org/repository")
+        .extra(&["org/zeta"])
+        .also("insert into gha_repos(id, name, org_id, org_login) values (101, 'org/zeta', 10, 'org');");
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(0, "repos: map[org:map[org/repo:{} org/zeta:{}]]");
+    rs.expect_no_prefix(0, "<db>: skipped ");
+    rs.expect_no_prefix(0, "<db>: org/");
+    rs.expect_line(0, "Successfully processed 2/2 repos");
+}
+
+/// An excluded repository gets no commits either: the PushEvent commit
+/// backfill, the orphan commit restore and the commit files/LOC steps never
+/// see it, while the project's other repository is processed as usual
+/// (commits 2-4 backfilled, commit 1 restored).
+#[test]
+fn exclude_repos_no_commits() {
+    let case = Case::new("exclude_repos_no_commits")
+        .yaml(EXCLUDE_YAML)
+        .debug()
+        .mode("1")
+        .orphan(WIDE_RANGE)
+        .process_commits()
+        .extra(&["org/zeta"])
+        .also(SEED_ZETA);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(
+        0,
+        "<db>: org/zeta is excluded (GHA2DB_EXCLUDE_REPOS), skipping",
+    );
+    rs.expect_line(
+        0,
+        "FetchCommitsMode=1: processing DB '<db>' (1 repos, threads 1, batch 1000)",
+    );
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: processing DB '<db>' (1 repos, threads 1)",
+    );
+    rs.expect_no_prefix(0, "<db>/org/zeta");
+    rs.expect_line(0, "<db>/org/repo: successfully restored 1 orphan commits");
+    assert_eq!(rs.commit_shas().len(), 4);
+    assert_eq!(
+        rs.query("select distinct dup_repo_name from gha_commits union select distinct dup_repo_name from gha_events where id < 0 union select distinct dup_repo_name from gha_commits_roles"),
+        vec![strs(&["org/repo"])]
+    );
+    // the stored event of the excluded repository is left alone (no back-fix)
+    assert_eq!(
+        rs.column("select id::text from gha_events where dup_repo_name = 'org/zeta'"),
+        strs(&["2001"])
+    );
+}
+
+/// The same data without the exclude list: `org/zeta` is processed (what the
+/// case above would do if the list were ignored).
+#[test]
+fn exclude_repos_no_commits_control() {
+    let case = Case::new("exclude_repos_no_commits_control")
+        .debug()
+        .unordered()
+        .mode("1")
+        .orphan(WIDE_RANGE)
+        .process_commits()
+        .extra(&["org/zeta"])
+        .also(SEED_ZETA);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_no_prefix(0, "<db>: skipped ");
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: processing DB '<db>' (2 repos, threads 1)",
+    );
+    rs.expect_line(0, "<db>/org/zeta: successfully restored 4 orphan commits");
+    assert_eq!(
+        rs.count("select count(*) from gha_commits where dup_repo_name = 'org/zeta'"),
+        4
+    );
+}
+
+/// The lists are per project: `org/zeta` is excluded by the first project
+/// only, so it is still pulled (once) and gets its commits in the second
+/// project's database - but nothing in the first one. (The restore needs an
+/// event of the repository in the database, hence the second seed.)
+#[test]
+fn exclude_repos_two_projects() {
+    let case = Case::new("exclude_repos_two_projects")
+        .yaml(EXCLUDE_TWO_YAML)
+        .also("insert into gha_repos(id, name, org_id, org_login) values (101, 'org/zeta', 10, 'org');")
+        .db2(vec![SEED_REPO, SEED_ACTORS, SEED_ZETA, "insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values (2002, 'PushEvent', 1, 100, '2020-01-04 01:00:00', 10, 'alice', 'org/repo');"])
+        .process_repos()
+        .debug()
+        .unordered()
+        .orphan(WIDE_RANGE)
+        .extra(&["org/zeta"]);
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(0, "repos: map[org:map[org/repo:{} org/zeta:{}]]");
+    rs.expect_line(
+        0,
+        "repoDBs: map[<db2>:map[org/repo:{} org/zeta:{}] <db>:map[org/repo:{}]]",
+    );
+    rs.expect_line(
+        0,
+        "<db>: org/zeta is excluded (GHA2DB_EXCLUDE_REPOS), skipping",
+    );
+    rs.expect_line(0, "<db>: skipped 1 excluded repo(s) (GHA2DB_EXCLUDE_REPOS)");
+    rs.expect_no_prefix(0, "<db2>: ");
+    assert_eq!(rs.count_prefix(0, "Pulled org/zeta"), 1);
+    rs.expect_line(0, "Successfully processed 2/2 repos");
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: processing DB '<db>' (1 repos, threads 1)",
+    );
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: processing DB '<db2>' (2 repos, threads 1)",
+    );
+    rs.expect_no_prefix(0, "<db>/org/zeta");
+    rs.expect_line(0, "<db2>/org/zeta: successfully restored 4 orphan commits");
+    assert_eq!(
+        rs.column("select distinct dup_repo_name from gha_commits order by 1"),
+        strs(&["org/repo"])
+    );
+    assert_eq!(
+        rs.query2("select dup_repo_name, count(*)::text from gha_commits group by 1 order by 1"),
+        vec![strs(&["org/repo", "4"]), strs(&["org/zeta", "4"])]
+    );
+}
+
+/// The Knative shape: `org/repo` is a historical name of a repository whose
+/// current name (the one with the newest native event) is `org/renamed`, and
+/// the project excludes `org/renamed`. The commits of the historical clone
+/// would be attributed to the excluded name, so the clone is skipped -
+/// whether a clone of the current name is absent (run 0) or still there from
+/// the time before the exclusion (run 1).
+#[test]
+fn exclude_repos_orphan_alias() {
+    let case = Case::new("exclude_repos_orphan_alias")
+        .yaml(EXCLUDE_RENAMED_YAML)
+        .debug()
+        .orphan(WIDE_RANGE)
+        .steps(vec![
+            Step::Run(Vec::new()),
+            Step::Shell("git clone -q {dir}/orig/org_repo {dir}/repos/org/renamed"),
+            Step::Run(Vec::new()),
+        ])
+        .also("insert into gha_repos(id, name, org_id, org_login) values (100, 'org/renamed', 10, 'org');
+insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values (3001, 'PushEvent', 1, 100, '2020-01-06 01:00:00', 10, 'alice', 'org/renamed');");
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    for run in 0..2 {
+        assert_eq!(rs.code(run), Some(0));
+        rs.expect_line(
+            run,
+            "<db>: org/renamed is excluded (GHA2DB_EXCLUDE_REPOS), skipping",
+        );
+        rs.expect_line(
+            run,
+            "Restoring orphan commits: processing DB '<db>' (1 repos, threads 1)",
+        );
+        rs.expect_line(
+            run,
+            "<db>/org/repo: historical alias of org/renamed which is excluded (GHA2DB_EXCLUDE_REPOS), skipping",
+        );
+        rs.expect_line(
+            run,
+            "Restoring orphan commits: DB '<db>': skipped 1 historical alias clone(s) of excluded repo(s) (GHA2DB_EXCLUDE_REPOS)",
+        );
+        rs.expect_no_line(
+            run,
+            "Restoring orphan commits: DB '<db>': skipped 1 historical alias clone(s)",
+        );
+        rs.expect_no_prefix(run, "<db>/org/repo: attributing restored commits");
+        rs.expect_no_prefix(run, "<db>/org/repo: found ");
+        rs.expect_line(
+            run,
+            "Finished DB '<db>': processed 0 repos, checked 0 commits, restored 0",
+        );
+    }
+    assert_eq!(rs.count("select count(*) from gha_commits"), 0);
+    assert_eq!(rs.count("select count(*) from gha_events where id < 0"), 0);
+}
+
+/// The same data without the exclude list (see `orphan_alias_newest_name_wins`):
+/// the historical clone's commits go to the current name.
+#[test]
+fn exclude_repos_orphan_alias_control() {
+    let case = Case::new("exclude_repos_orphan_alias_control")
+        .debug()
+        .orphan(WIDE_RANGE)
+        .also("insert into gha_repos(id, name, org_id, org_login) values (100, 'org/renamed', 10, 'org');
+insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values (3001, 'PushEvent', 1, 100, '2020-01-06 01:00:00', 10, 'alice', 'org/renamed');");
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_no_prefix(0, "<db>: skipped ");
+    rs.expect_line(
+        0,
+        "<db>/org/repo: attributing restored commits to org/renamed (current name)",
+    );
+    assert_eq!(
+        rs.column("select distinct dup_repo_name from gha_commits"),
+        strs(&["org/renamed"])
+    );
+}
+
+/// The exclusion of a historical name does not touch the current one: the
+/// project excludes `org/renamed`, here a historical name (the newest native
+/// event names `org/repo`), so `org/repo` is restored under its own name.
+#[test]
+fn exclude_repos_historical_name() {
+    let case = Case::new("exclude_repos_historical_name")
+        .yaml(EXCLUDE_RENAMED_YAML)
+        .debug()
+        .orphan(WIDE_RANGE)
+        .steps(vec![
+            Step::Shell("git clone -q {dir}/orig/org_repo {dir}/repos/org/renamed"),
+            Step::Run(Vec::new()),
+        ])
+        .also("insert into gha_repos(id, name, org_id, org_login) values (100, 'org/renamed', 10, 'org');
+insert into gha_events(id, type, actor_id, repo_id, created_at, org_id, dup_actor_login, dup_repo_name) values (3001, 'PushEvent', 1, 100, '2020-01-02 01:00:00', 10, 'alice', 'org/renamed');");
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    rs.expect_line(
+        0,
+        "<db>: org/renamed is excluded (GHA2DB_EXCLUDE_REPOS), skipping",
+    );
+    rs.expect_line(
+        0,
+        "Restoring orphan commits: processing DB '<db>' (1 repos, threads 1)",
+    );
+    rs.expect_no_prefix(0, "Restoring orphan commits: DB '<db>': skipped ");
+    rs.expect_no_prefix(0, "<db>/org/renamed");
+    rs.expect_line(0, "<db>/org/repo: successfully restored 4 orphan commits");
+    assert_eq!(
+        rs.column("select distinct dup_repo_name from gha_commits"),
+        strs(&["org/repo"])
+    );
+}
+
+/// Every repository of the only database is excluded: nothing to do, the same
+/// fatal error as with an empty `gha_repos`.
+#[test]
+fn exclude_repos_all_excluded() {
+    let case = Case::new("exclude_repos_all_excluded")
+        .process_repos()
+        .env("GHA2DB_EXCLUDE_REPOS", "org/repo");
+    let Some(rs) = both(&case) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(2));
+    assert_eq!(rs.error(0).as_deref(), Some("No repos to process"));
+    rs.expect_line(0, "<db>: skipped 1 excluded repo(s) (GHA2DB_EXCLUDE_REPOS)");
+}

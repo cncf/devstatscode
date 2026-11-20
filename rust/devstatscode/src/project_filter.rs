@@ -3,7 +3,7 @@
 //! project's org/repo/actor rules (reconcile_dbs, the ghapi2db repository
 //! events feed pass).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::context::GoRegex;
 use crate::error::{fatal_on_err, fatal_on_error};
@@ -256,6 +256,26 @@ pub fn new_project_filter(
     (filter.forg, filter.org_re) = parse_filter_arg(org_arg);
     (filter.frepo, filter.repo_re) = parse_filter_arg(repo_arg);
     filter
+}
+
+/// Go `ProjectExcludeRepos`: the repositories a project explicitly excludes
+/// (`GHA2DB_EXCLUDE_REPOS`), resolved the way the project's own gha2db_sync
+/// does: the value of the project's `env` when it defines one (unless
+/// `ENV_SET`: the environment is already the project's), else the one from
+/// the environment (`ctx.exclude_repos`). The environment is not changed, so
+/// a tool working on many projects in one run (get_repos) can ask for each
+/// of them.
+pub fn project_exclude_repos(ctx: &Ctx, project: &Project) -> BTreeMap<String, bool> {
+    if std::env::var("ENV_SET").unwrap_or_default().is_empty() {
+        if let Some(excludes) = project.env.get("GHA2DB_EXCLUDE_REPOS") {
+            return excludes
+                .split(',')
+                .filter(|exclude| !exclude.is_empty())
+                .map(|exclude| (exclude.to_string(), true))
+                .collect();
+        }
+    }
+    ctx.exclude_repos.clone()
 }
 
 /// Go `os.Setenv` failure conditions (`setenv: invalid argument`).
@@ -553,6 +573,93 @@ projects:
             f.info(),
             "project 'all': 3 org(s), any repo, 0 excluded repo(s), exact false, actors filter true"
         );
+    }
+
+    /// Go `TestProjectExcludeRepos`.
+    #[test]
+    fn project_exclude_repos_cases() {
+        let _guard = EnvGuard::new();
+        let set = |names: &[&str]| -> BTreeMap<String, bool> {
+            names.iter().map(|n| (n.to_string(), true)).collect()
+        };
+        // The list of the environment, the way Ctx::init() parses it
+        crate::env::set_var("GHA2DB_EXCLUDE_REPOS", "env/repo");
+        let ctx = Ctx {
+            exclude_repos: set(&["env/repo"]),
+            ..Ctx::default()
+        };
+        // (case, the project's env, ENV_SET, expected)
+        let cases: Vec<(&str, Vec<(&str, &str)>, bool, BTreeMap<String, bool>)> = vec![
+            (
+                "the project's list",
+                vec![(
+                    "GHA2DB_EXCLUDE_REPOS",
+                    "kubernetes/api,kubernetes/apimachinery",
+                )],
+                false,
+                set(&["kubernetes/api", "kubernetes/apimachinery"]),
+            ),
+            (
+                "one name",
+                vec![
+                    ("GHA2DB_EXCLUDE_REPOS", "tektoncd/pipeline"),
+                    ("GHA2DB_EXACT", "1"),
+                ],
+                false,
+                set(&["tektoncd/pipeline"]),
+            ),
+            (
+                "empty items are dropped, names are not trimmed (like Ctx::init)",
+                vec![("GHA2DB_EXCLUDE_REPOS", "a/b,,c/d, e/f,")],
+                false,
+                set(&["a/b", "c/d", " e/f"]),
+            ),
+            (
+                "an empty project list wins over the environment",
+                vec![("GHA2DB_EXCLUDE_REPOS", "")],
+                false,
+                set(&[]),
+            ),
+            (
+                "no project env: the environment",
+                vec![],
+                false,
+                set(&["env/repo"]),
+            ),
+            (
+                "project env without the list: the environment",
+                vec![("GHA2DB_EXACT", "1")],
+                false,
+                set(&["env/repo"]),
+            ),
+            (
+                "ENV_SET: the environment already is the project's",
+                vec![("GHA2DB_EXCLUDE_REPOS", "kubernetes/api")],
+                true,
+                set(&["env/repo"]),
+            ),
+        ];
+        for (name, env, env_set, expected) in cases {
+            set_or_unset("ENV_SET", env_set.then_some("1"));
+            let project = Project {
+                pdb: "db".to_string(),
+                env: env
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                ..Project::default()
+            };
+            assert_eq!(project_exclude_repos(&ctx, &project), expected, "{name}");
+        }
+        crate::env::remove_var("ENV_SET");
+        // Neither the environment nor the context is changed (get_repos asks for many projects in one run)
+        assert_eq!(
+            std::env::var("GHA2DB_EXCLUDE_REPOS").unwrap_or_default(),
+            "env/repo"
+        );
+        assert_eq!(ctx.exclude_repos, set(&["env/repo"]));
+        // No list anywhere: nothing is excluded
+        assert!(project_exclude_repos(&Ctx::default(), &Project::default()).is_empty());
     }
 
     #[test]

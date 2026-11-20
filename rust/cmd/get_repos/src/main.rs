@@ -21,6 +21,7 @@ use devstatscode::consts::LOCAL_GIT_SCRIPTS;
 use devstatscode::error::{self, go_io_error_string};
 use devstatscode::pg::api::{exec_sql_tx_with_err, exec_sql_with_err, insert_ignore, n_values};
 use devstatscode::pg::{pg_conn_db_shared, PgConn, SqlArg};
+use devstatscode::project_filter::project_exclude_repos;
 use devstatscode::projects::{is_project_disabled, AllProjects};
 use devstatscode::time::{format_go_duration, progress_info};
 use devstatscode::yamlv2::de as yde;
@@ -75,7 +76,10 @@ fn mkdir(path: &str) -> Result<(), String> {
 
 /// Go `getRepos`: returns `PDB -> files skip pattern` for all enabled (and,
 /// when `GHA2DB_PROJECTS_COMMITS` is set, selected) projects, `org -> set of
-/// org/repo` for all of them and `PDB -> set of org/repo`.
+/// org/repo` for all of them and `PDB -> set of org/repo`. Repositories that
+/// a project explicitly excludes (`GHA2DB_EXCLUDE_REPOS`) are not on its
+/// lists: they are neither cloned/pulled for it nor scanned for commits. The
+/// exclude lists are returned too (`PDB -> excluded org/repo`).
 #[allow(clippy::type_complexity)]
 fn get_repos(
     ctx: &mut Ctx,
@@ -83,6 +87,7 @@ fn get_repos(
     BTreeMap<String, String>,
     BTreeMap<String, BTreeSet<String>>,
     BTreeMap<String, BTreeSet<String>>,
+    BTreeMap<String, BTreeMap<String, bool>>,
 ) {
     // Process all projects, or restrict from environment variable?
     let mut only_projects: BTreeSet<String> = BTreeSet::new();
@@ -111,6 +116,7 @@ fn get_repos(
         Err(e) => fatal_on_error(e),
     };
     let mut dbs: BTreeMap<String, String> = BTreeMap::new();
+    let mut excludes: BTreeMap<String, BTreeMap<String, bool>> = BTreeMap::new();
     for (name, proj) in &projects.projects {
         if is_project_disabled(ctx, name, proj.disabled)
             || (selected_projects && !only_projects.contains(name))
@@ -118,6 +124,7 @@ fn get_repos(
             continue;
         }
         dbs.insert(proj.pdb.clone(), proj.files_skip_pattern.clone());
+        excludes.insert(proj.pdb.clone(), project_exclude_repos(ctx, proj));
     }
 
     let mut all_repos: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -142,21 +149,32 @@ fn get_repos(
         fatal_on_err(rows.close());
 
         // Create map of distinct "org" --> list of repos
+        let mut n_excluded = 0usize;
         for repo in repos {
             let ary: Vec<&str> = repo.split('/').collect();
             if ary.len() != 2 {
                 printf!("{db}: invalid repo name: {repo}");
                 continue;
             }
+            if excludes.get(db).is_some_and(|e| e.contains_key(&repo)) {
+                n_excluded += 1;
+                if ctx.debug > 0 {
+                    printf!("{db}: {repo} is excluded (GHA2DB_EXCLUDE_REPOS), skipping\n");
+                }
+                continue;
+            }
             let org = ary[0].to_string();
             all_repos.entry(org).or_default().insert(repo.clone());
             db_repos.entry(db.clone()).or_default().insert(repo);
+        }
+        if n_excluded > 0 {
+            printf!("{db}: skipped {n_excluded} excluded repo(s) (GHA2DB_EXCLUDE_REPOS)\n");
         }
         con.close();
     }
 
     // return final map
-    (dbs, all_repos, db_repos)
+    (dbs, all_repos, db_repos, excludes)
 }
 
 /// Go `processRepo`: clone (when the working directory is missing) or
@@ -962,7 +980,7 @@ fn main() {
     ctx.init();
     signal::setup_timeout_signal(&ctx);
     if !ctx.skip_get_repos {
-        let (dbs, repos, repo_dbs) = get_repos(&mut ctx);
+        let (dbs, repos, repo_dbs, excludes) = get_repos(&mut ctx);
         if ctx.debug > 0 {
             printf!("dbs: {}\n", gofmt::map(&dbs));
             printf!("repos: {}\n", nested_set_map_string(&repos));
@@ -981,7 +999,7 @@ fn main() {
             fetch_commits::backfill_push_event_commits(&mut ctx, &dbs, &repo_dbs);
         }
         if ctx.restore_orphan_commits {
-            fetch_commits::restore_orphan_commits(&mut ctx, &dbs, &repo_dbs);
+            fetch_commits::restore_orphan_commits(&mut ctx, &dbs, &repo_dbs, &excludes);
         }
         if ctx.process_commits {
             process_commits(&mut ctx, &dbs);

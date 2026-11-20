@@ -41,7 +41,9 @@ func dirExists(path string) (bool, error) {
 }
 
 // getRepos returns map { 'org' --> list of repos } for all devstats projects
-func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}, map[string]map[string]struct{}) {
+// Repositories that a project explicitly excludes (GHA2DB_EXCLUDE_REPOS) are not on its lists: they are neither
+// cloned/pulled for it nor scanned for commits. The exclude lists are returned too (database --> excluded repos).
+func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}, map[string]map[string]struct{}, map[string]map[string]bool) {
 
 	// Process all projects, or restrict from environment variable?
 	onlyProjects := make(map[string]bool)
@@ -67,11 +69,14 @@ func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}, 
 	var projects lib.AllProjects
 	lib.FatalOnError(yaml.Unmarshal(data, &projects))
 	dbs := make(map[string]string)
+	excludes := make(map[string]map[string]bool)
 	for name, proj := range projects.Projects {
 		if lib.IsProjectDisabled(ctx, name, proj.Disabled) || (selectedProjects && !onlyProjects[name]) {
 			continue
 		}
 		dbs[proj.PDB] = proj.FilesSkipPattern
+		project := proj
+		excludes[proj.PDB] = lib.ProjectExcludeRepos(ctx, &project)
 	}
 
 	allRepos := make(map[string]map[string]struct{})
@@ -96,10 +101,18 @@ func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}, 
 		lib.FatalOnError(rows.Err())
 
 		// Create map of distinct "org" --> list of repos
+		nExcluded := 0
 		for _, repo := range repos {
 			ary := strings.Split(repo, "/")
 			if len(ary) != 2 {
 				lib.Printf("%s: invalid repo name: %s", db, repo)
+				continue
+			}
+			if _, excluded := excludes[db][repo]; excluded {
+				nExcluded++
+				if ctx.Debug > 0 {
+					lib.Printf("%s: %s is excluded (GHA2DB_EXCLUDE_REPOS), skipping\n", db, repo)
+				}
 				continue
 			}
 			org := ary[0]
@@ -115,10 +128,13 @@ func getRepos(ctx *lib.Ctx) (map[string]string, map[string]map[string]struct{}, 
 			}
 			dbRepos[db][repo] = struct{}{}
 		}
+		if nExcluded > 0 {
+			lib.Printf("%s: skipped %d excluded repo(s) (GHA2DB_EXCLUDE_REPOS)\n", db, nExcluded)
+		}
 	}
 
 	// return final map
-	return dbs, allRepos, dbRepos
+	return dbs, allRepos, dbRepos, excludes
 }
 
 // processRepo - processes single repo (clone or reset+pull) in a separate thread/goroutine
@@ -870,7 +886,7 @@ func main() {
 		}
 	}()
 	if !ctx.SkipGetRepos {
-		dbs, repos, repoDBs := getRepos(&ctx)
+		dbs, repos, repoDBs, excludes := getRepos(&ctx)
 		if ctx.Debug > 0 {
 			lib.Printf("dbs: %+v\n", dbs)
 			lib.Printf("repos: %+v\n", repos)
@@ -889,7 +905,7 @@ func main() {
 			backfillPushEventCommits(&ctx, dbs, repoDBs)
 		}
 		if ctx.RestoreOrphanCommits {
-			restoreOrphanCommits(&ctx, dbs, repoDBs)
+			restoreOrphanCommits(&ctx, dbs, repoDBs, excludes)
 		}
 		if ctx.ProcessCommits {
 			processCommits(&ctx, dbs)

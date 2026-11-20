@@ -340,7 +340,7 @@ pub struct Ctx {
     pub projects_override: BTreeMap<String, bool>,
     /// From GHA2DB_AFFILIATIONS_JSON, import_affs tool - set main affiliations file, default "github_users.json"
     pub affiliations_json: String,
-    /// From GHA2DB_EXCLUDE_REPOS, gha2db tool, default "" - comma separated list of repos to exclude, example: "theupdateframework/notary,theupdateframework/other"
+    /// From GHA2DB_EXCLUDE_REPOS, gha2db, ghapi2db, get_repos, reconcile_dbs tools, default "" - comma separated list of repos to exclude, example: "theupdateframework/notary,theupdateframework/other"
     pub exclude_repos: BTreeMap<String, bool>,
     /// From GHA2DB_INPUT_DBS, merge_dbs tool - list of input databases to merge, order matters - first one will insert on a clean DB, next will do insert ignore (to avoid constraints failure due to common data)
     pub input_dbs: Vec<String>,

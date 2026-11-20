@@ -132,6 +132,25 @@ func NewProjectFilter(ctx *Ctx, projects *AllProjects, target, path string, hist
 	return filter
 }
 
+// ProjectExcludeRepos - the repositories a project explicitly excludes (GHA2DB_EXCLUDE_REPOS), resolved the way
+// the project's own gha2db_sync does: the value of the project's `env` when it defines one (unless ENV_SET: the
+// environment is already the project's), else the one from the environment (ctx.ExcludeRepos). The environment
+// is not changed, so a tool working on many projects in one run (get_repos) can ask for each of them.
+func ProjectExcludeRepos(ctx *Ctx, project *Project) map[string]bool {
+	if os.Getenv("ENV_SET") == "" {
+		if excludes, ok := project.Env["GHA2DB_EXCLUDE_REPOS"]; ok {
+			excludeRepos := make(map[string]bool)
+			for _, exclude := range strings.Split(excludes, ",") {
+				if exclude != "" {
+					excludeRepos[exclude] = true
+				}
+			}
+			return excludeRepos
+		}
+	}
+	return ctx.ExcludeRepos
+}
+
 // Active - is there a project whose rules are applied?
 func (f *ProjectFilter) Active() bool {
 	return f.Name != ""

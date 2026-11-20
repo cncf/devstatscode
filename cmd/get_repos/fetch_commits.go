@@ -1357,7 +1357,8 @@ func parseTrailers(ctx *lib.Ctx, msg string) []trailer {
 
 // restoreOrphanCommits restores commits present in git but with no gha_commits row.
 // dbs are processed sequentially; repos inside a DB are processed in parallel up to NCPUs.
-func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[string]map[string]struct{}) {
+// excludes: database --> the repositories its project excludes (GHA2DB_EXCLUDE_REPOS, see getRepos).
+func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[string]map[string]struct{}, excludes map[string]map[string]bool) {
 	if !ctx.RestoreOrphanCommits {
 		return
 	}
@@ -1439,6 +1440,7 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		// current name - never to the alias (bug 61).
 		work := make([]orphanRepoWork, 0, len(repos))
 		nAliasesSkipped := 0
+		nAliasesExcluded := 0
 		nNotCloned := 0
 		for _, repo := range repos {
 			name := repo
@@ -1446,6 +1448,15 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 				name = alias
 			}
 			if name != repo {
+				// the commits of a historical clone go to the current name: nothing to restore when the
+				// project excludes that one (the excluded name itself is not on the list at all)
+				if _, excluded := excludes[db][name]; excluded {
+					nAliasesExcluded++
+					if ctx.Debug > 0 {
+						lib.Printf("%s/%s: historical alias of %s which is excluded (GHA2DB_EXCLUDE_REPOS), skipping\n", db, repo, name)
+					}
+					continue
+				}
 				if _, serr := os.Stat(ctx.ReposDir + name); serr == nil {
 					nAliasesSkipped++
 					if ctx.Debug > 0 {
@@ -1468,6 +1479,9 @@ func restoreOrphanCommits(ctx *lib.Ctx, dbs map[string]string, repoDBs map[strin
 		}
 		if nAliasesSkipped > 0 {
 			lib.Printf("Restoring orphan commits: DB '%s': skipped %d historical alias clone(s)\n", db, nAliasesSkipped)
+		}
+		if nAliasesExcluded > 0 {
+			lib.Printf("Restoring orphan commits: DB '%s': skipped %d historical alias clone(s) of excluded repo(s) (GHA2DB_EXCLUDE_REPOS)\n", db, nAliasesExcluded)
 		}
 		if nNotCloned > 0 {
 			lib.Printf("Restoring orphan commits: DB '%s': skipped %d repo(s) without a clone\n", db, nNotCloned)

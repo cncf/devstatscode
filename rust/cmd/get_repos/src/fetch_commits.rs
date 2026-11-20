@@ -1698,11 +1698,13 @@ fn parse_trailers(ctx: &Ctx, msg: &str) -> Vec<trailers::Trailer> {
 
 /// Go `restoreOrphanCommits`: restore commits present in git but with no
 /// `gha_commits` row. DBs are processed sequentially;
-/// repos inside a DB in parallel up to NCPUs.
+/// repos inside a DB in parallel up to NCPUs. `excludes`: database -> the
+/// repositories its project excludes (`GHA2DB_EXCLUDE_REPOS`, see `get_repos`).
 pub fn restore_orphan_commits(
     ctx: &mut Ctx,
     dbs: &BTreeMap<String, String>,
     repo_dbs: &BTreeMap<String, BTreeSet<String>>,
+    excludes: &BTreeMap<String, BTreeMap<String, bool>>,
 ) {
     if !ctx.restore_orphan_commits {
         return;
@@ -1787,9 +1789,19 @@ pub fn restore_orphan_commits(
         // current name - never to the alias (bug 61).
         let mut work: Vec<(String, String)> = Vec::with_capacity(repos.len());
         let mut n_aliases_skipped = 0usize;
+        let mut n_aliases_excluded = 0usize;
         let mut n_not_cloned = 0usize;
         for repo in &repos {
             let name = aliases.get(repo).cloned().unwrap_or_else(|| repo.clone());
+            // the commits of a historical clone go to the current name: nothing to restore when the
+            // project excludes that one (the excluded name itself is not on the list at all)
+            if name != *repo && excludes.get(db).is_some_and(|e| e.contains_key(&name)) {
+                n_aliases_excluded += 1;
+                if ctx_ro.debug > 0 {
+                    printf!("{db}/{repo}: historical alias of {name} which is excluded (GHA2DB_EXCLUDE_REPOS), skipping\n");
+                }
+                continue;
+            }
             if name != *repo && Path::new(&format!("{}{name}", ctx_ro.repos_dir)).exists() {
                 n_aliases_skipped += 1;
                 if ctx_ro.debug > 0 {
@@ -1814,6 +1826,11 @@ pub fn restore_orphan_commits(
         if n_aliases_skipped > 0 {
             printf!(
                 "Restoring orphan commits: DB '{db}': skipped {n_aliases_skipped} historical alias clone(s)\n"
+            );
+        }
+        if n_aliases_excluded > 0 {
+            printf!(
+                "Restoring orphan commits: DB '{db}': skipped {n_aliases_excluded} historical alias clone(s) of excluded repo(s) (GHA2DB_EXCLUDE_REPOS)\n"
             );
         }
         if n_not_cloned > 0 {
