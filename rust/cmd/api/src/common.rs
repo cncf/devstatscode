@@ -3,7 +3,8 @@
 //! texts, the tag/period/metric lookups and `ensureManualData`.
 
 use std::collections::{BTreeMap, HashSet};
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock};
 use std::thread;
 
 use devstatscode::chrono::{DateTime, Datelike, FixedOffset, Local, TimeZone, Timelike, Utc};
@@ -20,12 +21,12 @@ use serde_json::Value;
 // Constants (api.go)
 // ---------------------------------------------------------------------------
 
-/// GithubIDContributionsCacheTTL - Github login contributions cache expiration 24 hours
-pub const GITHUB_ID_CONTRIBUTIONS_CACHE_TTL: i64 = 86400;
-/// CumulativeCountsCacheTTL - Cumulative counts cache expiration 12 hours
-pub const CUMULATIVE_COUNTS_CACHE_TTL: i64 = 43200;
-/// SiteStatsCacheTTL - Site stats cache expiration 12 hours
-pub const SITE_STATS_CACHE_TTL: i64 = 43200;
+/// GithubIDContributionsCacheTTL - Github login contributions cache expiration 36 hours
+pub const GITHUB_ID_CONTRIBUTIONS_CACHE_TTL: i64 = 129600;
+/// CumulativeCountsCacheTTL - Cumulative counts cache expiration 36 hours
+pub const CUMULATIVE_COUNTS_CACHE_TTL: i64 = 129600;
+/// SiteStatsCacheTTL - Site stats cache expiration 36 hours
+pub const SITE_STATS_CACHE_TTL: i64 = 129600;
 
 /// Maximum number of background `calc_metric` runs (Go `gMaxBg`).
 pub const MAX_BG: usize = 3;
@@ -49,11 +50,35 @@ pub struct CumulativeCountsCacheEntry {
 }
 
 /// Cached `SiteStats` response (Go `siteStatsCacheEntry`).
+#[derive(Clone)]
 pub struct SiteStatsCacheEntry {
     pub dt: DateTime<Local>,
     /// Go `%v` of `dt` (a `time.Now()` value with its monotonic reading).
     pub dt_str: String,
     pub site_stats: SiteStatsPayload,
+}
+
+/// A running `SiteStats` calculation, shared by all requests for the same
+/// database (Go `siteStatsCall`).
+#[derive(Default)]
+pub struct SiteStatsCall {
+    /// `None` while the calculation runs (Go: `done` not closed yet).
+    pub result: Mutex<Option<Result<SiteStatsPayload, String>>>,
+    pub done: Condvar,
+}
+
+/// Go `siteStatsCache` and `siteStatsCalls` (guarded by `siteStatsCacheMtx`):
+/// the cache and the running calculations are per database (all names of a
+/// project share them).
+#[derive(Default)]
+pub struct SiteStatsState {
+    pub cache: BTreeMap<String, SiteStatsCacheEntry>,
+    pub calls: BTreeMap<String, Arc<SiteStatsCall>>,
+}
+
+/// Lock that survives a panic of another holder (the data stays usable).
+pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Cached `GithubIDContributions` counts (Go `githubIDContributionsCacheEntry`).
@@ -69,7 +94,9 @@ pub struct State {
     /// Go `gProjects`: full names of the enabled projects.
     pub projects: RwLock<Vec<String>>,
     pub bg: RwLock<BgState>,
-    pub site_stats_cache: Mutex<BTreeMap<[String; 2], SiteStatsCacheEntry>>,
+    pub site_stats: Arc<Mutex<SiteStatsState>>,
+    /// Go `siteStatsCacheTTL` (seconds).
+    pub site_stats_cache_ttl: AtomicI64,
     pub cumulative_counts_cache: Mutex<BTreeMap<[String; 3], CumulativeCountsCacheEntry>>,
     pub github_id_contributions_cache: Mutex<BTreeMap<String, GithubIDContributionsCacheEntry>>,
 }
@@ -82,10 +109,36 @@ pub fn state() -> &'static State {
         name_to_db: RwLock::new(BTreeMap::new()),
         projects: RwLock::new(Vec::new()),
         bg: RwLock::new(BgState::default()),
-        site_stats_cache: Mutex::new(BTreeMap::new()),
+        site_stats: Arc::new(Mutex::new(SiteStatsState::default())),
+        site_stats_cache_ttl: AtomicI64::new(SITE_STATS_CACHE_TTL),
         cumulative_counts_cache: Mutex::new(BTreeMap::new()),
         github_id_contributions_cache: Mutex::new(BTreeMap::new()),
     })
+}
+
+/// Go `siteStatsCacheTTL`.
+pub fn site_stats_cache_ttl() -> i64 {
+    state().site_stats_cache_ttl.load(Ordering::Relaxed)
+}
+
+/// Go `setSiteStatsCacheTTL`: the site stats cache expiration (in seconds)
+/// can be set via `GHA2DB_SITE_STATS_CACHE_TTL`.
+pub fn set_site_stats_cache_ttl() {
+    if let Some(ttl) = parse_site_stats_cache_ttl(
+        &std::env::var("GHA2DB_SITE_STATS_CACHE_TTL").unwrap_or_default(),
+    ) {
+        state().site_stats_cache_ttl.store(ttl, Ordering::Relaxed);
+    }
+}
+
+/// `strconv.ParseInt(s, 10, 64)` accepted only when positive.
+pub fn parse_site_stats_cache_ttl(s: &str) -> Option<i64> {
+    // Go accepts an optional sign and decimal digits only
+    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse::<i64>().ok().filter(|ttl| *ttl > 0)
 }
 
 /// Go `gNumBg` (number of `calc_metric` runs in the background).
@@ -1385,6 +1438,29 @@ mod tests {
             period_name_to_value_map("db", "DevActCnt").unwrap_err().msg,
             "periodNameToValueMap: unknown db/api pair: 'db'/'DevActCnt'"
         );
+    }
+
+    #[test]
+    fn site_stats_cache_ttl_values() {
+        // Go `TestSetSiteStatsCacheTTL`: `None` keeps the current TTL
+        let cases: [(&str, Option<i64>); 13] = [
+            ("", None),
+            ("1", Some(1)),
+            ("+5", Some(5)),
+            ("172800", Some(172800)),
+            ("0", None),
+            ("-3", None),
+            ("abc", None),
+            ("1.5", None),
+            (" 7", None),
+            ("7 ", None),
+            ("1_000", None),
+            ("0x10", None),
+            ("9223372036854775808", None),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(parse_site_stats_cache_ttl(value), expected, "{value:?}");
+        }
     }
 
     #[test]

@@ -108,6 +108,7 @@ List of APIs:
   }
   ```
   - Result contains mounthly metrics cumulative counts.
+  - Values are cached for 36 hours.
   - Example API call: `./devel/api_cumulative_counts.sh all contributors`.
 
 - `Repos`: `{"api": "Repos", "payload": {"project": "projectName", "repository_group": ["Other", "Not specified", "SIG Apps"]}}`.
@@ -396,6 +397,9 @@ List of APIs:
     "companies": 11308
   }
   ```
+  - Values are cached per project database for 36 hours (`GHA2DB_SITE_STATS_CACHE_TTL` sets another number of seconds).
+  - After that the cached values are still returned at once, while a single background calculation replaces them.
+  - Without cached values (after the API server start) requests wait for that single calculation; a client that gives up and retries does not start another one.
   - Example API call: `./devel/api_site_stats.sh all`.
 
 
@@ -408,6 +412,7 @@ List of APIs:
     "contributions": 16558
   }
   ```
+  - Values are cached for 36 hours.
   - Example API call with arbitrary date range: `[BG=1] ./devel/api_github_id_contributions.sh lukaszgryglicki`.
 
 

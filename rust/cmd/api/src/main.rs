@@ -298,6 +298,7 @@ fn serve_api() {
     signal::setup_timeout_signal(&ctx);
     printf!("Starting API server\n");
     check_env();
+    set_site_stats_cache_ttl();
     read_projects(&ctx);
     let mut signals = match signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGINT,

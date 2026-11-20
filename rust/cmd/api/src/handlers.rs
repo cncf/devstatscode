@@ -1,6 +1,7 @@
 //! The 17 API endpoints (Go `api<Name>` functions of api.go).
 
 use std::collections::BTreeMap;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
@@ -1356,7 +1357,7 @@ pub fn api_github_id_contributions(w: &mut Response, payload: &Payload) {
 }
 
 // ---------------------------------------------------------------------------
-// SiteStats (cached, 4 parallel queries)
+// SiteStats (cached per database, one calculation at a time, 4 parallel queries)
 // ---------------------------------------------------------------------------
 
 const SITE_STATS_PSTAT_QUERY: &str = r#"
@@ -1371,7 +1372,7 @@ const SITE_STATS_PSTAT_QUERY: &str = r#"
     and name in (
       'Contributors', 'Contributions', 'Code committers',
       'Commits', 'Events', 'Forkers',
-      'Repositories', 'Stargazers'
+      'Repositories', 'Stargazers/Watchers'
     )
   "#;
 
@@ -1398,83 +1399,126 @@ const SITE_STATS_BOC_QUERY: &str = r#"
 
 const SITE_STATS_COUNTRIES_QUERY: &str = r#"
   select
-    count(distinct sub.country_id) as num_countries
-  from (
-    select
-      a.country_id
-    from
-      gha_events e,
-      gha_actors a
-    where
-      e.actor_id = a.id
-      and e.type in (
-        'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
-        'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+    count(distinct a.country_id) as num_countries
+  from
+    gha_actors a
+  where
+    a.country_id is not null
+    and (
+      exists (
+        select 1
+        from
+          gha_events e
+        where
+          e.actor_id = a.id
+          and e.type in (
+            'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
+            'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+          )
+        offset 0
       )
-    union select
-      a.country_id
-    from
-      gha_actors a,
-      gha_commits c
-    where
-      (
-        c.author_id = a.id
-        or c.committer_id = a.id
+      or exists (
+        select 1
+        from
+          gha_commits c
+        where
+          c.author_id = a.id
+        offset 0
       )
-    union select
-      a.country_id
-    from
-      gha_actors a,
-      gha_commits_roles cr
-    where
-      cr.actor_id = a.id
-      and cr.role = 'Co-authored-by'
-  ) sub
+      or exists (
+        select 1
+        from
+          gha_commits c
+        where
+          c.committer_id = a.id
+        offset 0
+      )
+      or exists (
+        select 1
+        from
+          gha_commits_roles cr
+        where
+          cr.actor_id = a.id
+          and cr.role = 'Co-authored-by'
+        offset 0
+      )
+    )
   "#;
 
 const SITE_STATS_COMPANIES_QUERY: &str = r#"
   select
-    count(distinct sub.company_name) as num_companis
-  from (
-    select
-      af.company_name
-    from
-      gha_events e,
-      gha_actors_affiliations af
-    where
-      e.actor_id = af.actor_id
-      and af.dt_from <= e.created_at
-      and af.dt_to > e.created_at
-      and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
-      and e.type in (
-        'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
-        'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+    count(distinct af.company_name) as num_companis
+  from
+    gha_actors_affiliations af
+  where
+    af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
+    and (
+      exists (
+        select 1
+        from (
+          select
+            e.created_at
+          from
+            gha_events e
+          where
+            e.actor_id = af.actor_id
+            and e.type in (
+              'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
+              'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+            )
+          offset 0
+        ) ev
+        where
+          ev.created_at >= af.dt_from
+          and ev.created_at < af.dt_to
       )
-    union select
-      af.company_name
-    from
-      gha_actors_affiliations af,
-      gha_commits c
-    where
-      (
-        c.author_id = af.actor_id
-        or c.committer_id = af.actor_id
+      or exists (
+        select 1
+        from (
+          select
+            c.dup_created_at
+          from
+            gha_commits c
+          where
+            c.author_id = af.actor_id
+          offset 0
+        ) ca
+        where
+          ca.dup_created_at >= af.dt_from
+          and ca.dup_created_at < af.dt_to
       )
-      and af.dt_from <= c.dup_created_at
-      and af.dt_to > c.dup_created_at
-      and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
-    union select
-      af.company_name
-    from
-      gha_actors_affiliations af,
-      gha_commits_roles cr
-    where
-      cr.actor_id = af.actor_id
-      and cr.role = 'Co-authored-by'
-      and af.dt_from <= cr.dup_created_at
-      and af.dt_to > cr.dup_created_at
-      and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
-  ) sub
+      or exists (
+        select 1
+        from (
+          select
+            c.dup_created_at
+          from
+            gha_commits c
+          where
+            c.committer_id = af.actor_id
+          offset 0
+        ) cc
+        where
+          cc.dup_created_at >= af.dt_from
+          and cc.dup_created_at < af.dt_to
+      )
+      or exists (
+        select 1
+        from (
+          select
+            cr.dup_created_at
+          from
+            gha_commits_roles cr
+          where
+            cr.actor_id = af.actor_id
+            and cr.role = 'Co-authored-by'
+          offset 0
+        ) co
+        where
+          co.dup_created_at >= af.dt_from
+          and co.dup_created_at < af.dt_to
+      )
+    )
   "#;
 
 /// One `float64` aggregate scanned into an `int64` field of the payload.
@@ -1513,7 +1557,7 @@ fn site_stats_pstat(c: &PgConn, ctx: &Ctx, sspl: &Mutex<SiteStatsPayload>) -> Re
                 "Events" => s.events = v,
                 "Forkers" => s.forkers = v,
                 "Repositories" => s.repositories = v,
-                "Stargazers" => s.stargazers = v,
+                "Stargazers/Watchers" => s.stargazers = v,
                 _ => {}
             }
         }
@@ -1521,99 +1565,588 @@ fn site_stats_pstat(c: &PgConn, ctx: &Ctx, sspl: &Mutex<SiteStatsPayload>) -> Re
     rows.err().map_err(|e| e.to_string())
 }
 
+/// Go `calcSiteStats`: runs all site stats queries for a given database (in
+/// parallel), returns the first error (if any) when all of them finish.
+fn calc_site_stats(project: &str, db: &str) -> Result<SiteStatsPayload, String> {
+    let (ctx, c) = get_context_and_db(db).map_err(|e| e.msg)?;
+    let ctx = Arc::new(ctx);
+    let c = Arc::new(c);
+    let sspl = Arc::new(Mutex::new(SiteStatsPayload {
+        project: project.to_string(),
+        db_name: db.to_string(),
+        ..Default::default()
+    }));
+    let (tx, rx) = mpsc::channel::<Result<(), String>>();
+    type Job = fn(&PgConn, &Ctx, &Mutex<SiteStatsPayload>) -> Result<(), String>;
+    let jobs: [Job; 4] = [
+        site_stats_pstat,
+        |c, ctx, s| site_stats_single(c, ctx, SITE_STATS_BOC_QUERY, s, |p, v| p.boc = v),
+        |c, ctx, s| {
+            site_stats_single(c, ctx, SITE_STATS_COUNTRIES_QUERY, s, |p, v| {
+                p.countries = v
+            })
+        },
+        |c, ctx, s| {
+            site_stats_single(c, ctx, SITE_STATS_COMPANIES_QUERY, s, |p, v| {
+                p.companies = v
+            })
+        },
+    ];
+    let n_jobs = jobs.len();
+    for job in jobs {
+        let (tx, ctx, c, sspl) = (
+            tx.clone(),
+            Arc::clone(&ctx),
+            Arc::clone(&c),
+            Arc::clone(&sspl),
+        );
+        thread::spawn(move || {
+            let _ = tx.send(job(&c, &ctx, &sspl));
+        });
+    }
+    drop(tx);
+    let (mut n_done, mut err) = (0, None);
+    for r in rx {
+        n_done += 1;
+        if let Err(e) = r {
+            err.get_or_insert(e);
+        }
+    }
+    if let Some(e) = err {
+        return Err(e);
+    }
+    if n_done < n_jobs {
+        // a query thread died without an answer: never cache partial data
+        return Err("site stats query panicked".to_string());
+    }
+    let ss = lock(&sspl).clone();
+    Ok(ss)
+}
+
+/// Go `siteStatsCalc`: what calculates the site stats of `(project, db)`.
+pub type SiteStatsCalc = Arc<dyn Fn(&str, &str) -> Result<SiteStatsPayload, String> + Send + Sync>;
+
+/// What the cache says about a database (decided under the cache lock).
+enum SiteStatsLookup {
+    /// A value younger than the TTL (with its age in seconds).
+    Fresh(SiteStatsCacheEntry, f64),
+    /// No value or an expired one (`stale`): `call` is the only calculation
+    /// of that database, `running` when another request already started it.
+    Refresh {
+        stale: Option<(SiteStatsCacheEntry, f64)>,
+        call: Arc<SiteStatsCall>,
+        running: bool,
+    },
+}
+
+/// Go `refreshSiteStats`: calculates site stats for the database of the
+/// request that started it and caches them. Runs in its own thread, not tied
+/// to that request: a client that gives up and retries will not start
+/// another one.
+fn refresh_site_stats(
+    api_name: &'static str,
+    key: [String; 2],
+    st: Arc<Mutex<SiteStatsState>>,
+    calc: SiteStatsCalc,
+    call: Arc<SiteStatsCall>,
+) {
+    thread::spawn(move || {
+        let [project, db] = key;
+        let key_str = format!("[{} {}]", project, db);
+        // The waiting requests must always get an answer and the next request must be able to start a new calculation
+        let res =
+            panic::catch_unwind(AssertUnwindSafe(|| calc(&project, &db))).unwrap_or_else(|p| {
+                let msg = p
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| p.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                Err(format!("site stats calculation panicked: {msg}"))
+            });
+        {
+            let mut s = lock(&st);
+            if let Ok(ss) = &res {
+                s.cache.insert(
+                    db.clone(),
+                    SiteStatsCacheEntry {
+                        dt: Local::now(),
+                        dt_str: gofmt::time_now(),
+                        site_stats: ss.clone(),
+                    },
+                );
+            }
+            s.calls.remove(&db);
+        }
+        match &res {
+            Ok(_) => {
+                printf!("{}: written value to cache for {}\n", api_name, key_str);
+            }
+            Err(e) => {
+                printf!("{}: calculation failed for {}: {}\n", api_name, key_str, e);
+            }
+        }
+        *lock(&call.result) = Some(res);
+        call.done.notify_all();
+    });
+}
+
+/// The cache part of Go `apiSiteStats`: a value younger than `ttl` seconds
+/// is returned as is; an expired one is returned too, while one calculation
+/// per database replaces it; without any value the request waits for that
+/// calculation (started by it or by an earlier request).
+fn site_stats_cached(
+    api_name: &'static str,
+    project: &str,
+    db: &str,
+    ttl: i64,
+    st: &Arc<Mutex<SiteStatsState>>,
+    calc: &SiteStatsCalc,
+) -> Result<SiteStatsPayload, String> {
+    let key_str = format!("[{} {}]", project, db);
+    let lookup = {
+        let mut s = lock(st);
+        let entry = s.cache.get(db).cloned().map(|mut e| {
+            e.site_stats.project = project.to_string();
+            let age = age_seconds(e.dt);
+            (e, age)
+        });
+        match entry {
+            Some((e, age)) if age < ttl as f64 => SiteStatsLookup::Fresh(e, age),
+            stale => {
+                // No value or an expired one: at most one calculation per database runs at a time
+                let running = s.calls.get(db).cloned();
+                let call = running.clone().unwrap_or_else(|| {
+                    let call = Arc::new(SiteStatsCall::default());
+                    s.calls.insert(db.to_string(), Arc::clone(&call));
+                    call
+                });
+                SiteStatsLookup::Refresh {
+                    stale,
+                    call,
+                    running: running.is_some(),
+                }
+            }
+        }
+    };
+    let (stale, call, running) = match lookup {
+        SiteStatsLookup::Fresh(e, age) => {
+            printf!(
+                "{}: using cached value for {}: {{dt:{} siteStats:{}}} (age is {:.0} < {})\n",
+                api_name,
+                key_str,
+                e.dt_str,
+                e.site_stats.go_string(),
+                age,
+                ttl
+            );
+            return Ok(e.site_stats);
+        }
+        SiteStatsLookup::Refresh {
+            stale,
+            call,
+            running,
+        } => (stale, call, running),
+    };
+    if let Some((e, age)) = &stale {
+        printf!(
+            "{}: using stale cached value for {}: {{dt:{} siteStats:{}}} (age is {:.0} >= {})\n",
+            api_name,
+            key_str,
+            e.dt_str,
+            e.site_stats.go_string(),
+            age,
+            ttl
+        );
+    } else if running {
+        printf!(
+            "{}: waiting for running calculation for {}\n",
+            api_name,
+            key_str
+        );
+    }
+    if !running {
+        refresh_site_stats(
+            api_name,
+            [project.to_string(), db.to_string()],
+            Arc::clone(st),
+            Arc::clone(calc),
+            Arc::clone(&call),
+        );
+    }
+    if let Some((e, _)) = stale {
+        // Expired value is returned immediately, the running calculation will replace it
+        return Ok(e.site_stats);
+    }
+    let mut res = lock(&call.result);
+    loop {
+        match res.as_ref() {
+            Some(Ok(ss)) => {
+                let mut ss = ss.clone();
+                ss.project = project.to_string();
+                return Ok(ss);
+            }
+            Some(Err(e)) => return Err(e.clone()),
+            None => res = call.done.wait(res).unwrap_or_else(|e| e.into_inner()),
+        }
+    }
+}
+
 pub fn api_site_stats(w: &mut Response, payload: &Payload) {
     let api_name = SITE_STATS;
     let (mut project, mut db) = (String::new(), String::new());
     let res = (|| -> ApiResult<Vec<u8>> {
         db = handle_shared_payload(payload, &mut project)?;
-        let key = [project.clone(), db.clone()];
-        let key_str = format!("[{} {}]", key[0], key[1]);
-        let cached = state().site_stats_cache.lock().ok().and_then(|c| {
-            c.get(&key)
-                .map(|e| (e.dt, e.dt_str.clone(), e.site_stats.clone()))
-        });
-        if let Some((dt, dt_str, ss)) = cached {
-            let age = age_seconds(dt);
-            if age < SITE_STATS_CACHE_TTL as f64 {
-                printf!(
-                    "{}: using cached value for {}: {{dt:{} siteStats:{}}} (age is {:.0} < {})\n",
-                    api_name,
-                    key_str,
-                    dt_str,
-                    ss.go_string(),
-                    age,
-                    SITE_STATS_CACHE_TTL
-                );
-                return Ok(encode(&ss));
-            }
-            printf!(
-                "{}: deleting cached values for {} (age is {:.0} >= {})\n",
-                api_name,
-                key_str,
-                age,
-                SITE_STATS_CACHE_TTL
-            );
-            if let Ok(mut c) = state().site_stats_cache.lock() {
-                c.remove(&key);
-            }
-        }
-        let (ctx, c) = get_context_and_db(&db)?;
-        let ctx = Arc::new(ctx);
-        let c = Arc::new(c);
-        let sspl = Arc::new(Mutex::new(SiteStatsPayload {
-            project: project.clone(),
-            db_name: db.clone(),
-            ..Default::default()
-        }));
-        let (tx, rx) = mpsc::channel::<Result<(), String>>();
-        type Job = fn(&PgConn, &Ctx, &Mutex<SiteStatsPayload>) -> Result<(), String>;
-        let jobs: [Job; 4] = [
-            site_stats_pstat,
-            |c, ctx, s| site_stats_single(c, ctx, SITE_STATS_BOC_QUERY, s, |p, v| p.boc = v),
-            |c, ctx, s| {
-                site_stats_single(c, ctx, SITE_STATS_COUNTRIES_QUERY, s, |p, v| {
-                    p.countries = v
-                })
-            },
-            |c, ctx, s| {
-                site_stats_single(c, ctx, SITE_STATS_COMPANIES_QUERY, s, |p, v| {
-                    p.companies = v
-                })
-            },
-        ];
-        for job in jobs {
-            let (tx, ctx, c, sspl) = (
-                tx.clone(),
-                Arc::clone(&ctx),
-                Arc::clone(&c),
-                Arc::clone(&sspl),
-            );
-            thread::spawn(move || {
-                let _ = tx.send(job(&c, &ctx, &sspl));
-            });
-        }
-        drop(tx);
-        for r in rx {
-            // Go: the first error received answers the request (the shadowed
-            // `err` keeps the exit log at `<nil>`).
-            if let Err(e) = r {
-                return Err(ApiError::quiet(e));
-            }
-        }
-        let ss = sspl.lock().map(|s| s.clone()).unwrap_or_default();
-        let body = encode(&ss);
-        if let Ok(mut cache) = state().site_stats_cache.lock() {
-            cache.insert(
-                key,
-                SiteStatsCacheEntry {
-                    dt: Local::now(),
-                    dt_str: gofmt::time_now(),
-                    site_stats: ss,
-                },
-            );
-        }
-        printf!("{}: written value to cache for {}\n", api_name, key_str);
-        Ok(body)
+        let calc: SiteStatsCalc = Arc::new(calc_site_stats);
+        // Go: a calculation error is not the handler's `err` (the exit log keeps `<nil>`)
+        let ss = site_stats_cached(
+            api_name,
+            &project,
+            &db,
+            site_stats_cache_ttl(),
+            &state().site_stats,
+            &calc,
+        )
+        .map_err(ApiError::quiet)?;
+        Ok(encode(&ss))
     })();
     finish(w, api_name, &project, &db, payload, res);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::time::{Duration, Instant};
+
+    use devstatscode::chrono::Duration as ChronoDuration;
+
+    const API: &str = "SiteStats";
+
+    type Cache = Arc<Mutex<SiteStatsState>>;
+
+    fn new_cache() -> Cache {
+        Arc::new(Mutex::new(SiteStatsState::default()))
+    }
+
+    fn stats(project: &str, db: &str, contributors: i64) -> SiteStatsPayload {
+        SiteStatsPayload {
+            project: project.to_string(),
+            db_name: db.to_string(),
+            contributors,
+            ..Default::default()
+        }
+    }
+
+    /// Projects test/Test Project/testdb -> testdb and other -> otherdb.
+    fn request(
+        st: &Cache,
+        calc: &SiteStatsCalc,
+        ttl: i64,
+        project: &str,
+    ) -> Result<SiteStatsPayload, String> {
+        let db = if project == "other" {
+            "otherdb"
+        } else {
+            "testdb"
+        };
+        site_stats_cached(API, project, db, ttl, st, calc)
+    }
+
+    fn body(r: &Result<SiteStatsPayload, String>) -> String {
+        match r {
+            Ok(ss) => String::from_utf8(encode(ss)).unwrap(),
+            Err(e) => format!("error: {e}"),
+        }
+    }
+
+    fn expected(project: &str, db: &str, contributors: i64) -> String {
+        body(&Ok(stats(project, db, contributors)))
+    }
+
+    /// Wait until no calculation is running.
+    fn wait_no_calls(st: &Cache) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let n = lock(st).calls.len();
+            if n == 0 {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{n} site stats calculation(s) still running"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn set_entry(st: &Cache, db: &str, age_seconds: i64, contributors: i64) {
+        lock(st).cache.insert(
+            db.to_string(),
+            SiteStatsCacheEntry {
+                dt: Local::now() - ChronoDuration::seconds(age_seconds),
+                dt_str: "dt".to_string(),
+                site_stats: stats("first", db, contributors),
+            },
+        );
+    }
+
+    /// A calculation that reports its start and waits to be released.
+    fn blocking_calc(
+        calls: &Arc<AtomicI64>,
+        contributors: i64,
+    ) -> (SiteStatsCalc, Receiver<()>, Sender<()>) {
+        let (started_tx, started_rx) = channel::<()>();
+        let (release_tx, release_rx) = channel::<()>();
+        let (calls, started_tx, release_rx) = (
+            Arc::clone(calls),
+            Mutex::new(started_tx),
+            Mutex::new(release_rx),
+        );
+        let calc: SiteStatsCalc = Arc::new(move |project, db| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let _ = lock(&started_tx).send(());
+            // released when the sender is dropped
+            let _ = lock(&release_rx).recv();
+            Ok(stats(project, db, contributors))
+        });
+        (calc, started_rx, release_tx)
+    }
+
+    #[test]
+    fn site_stats_cached_per_database() {
+        let st = new_cache();
+        let calls = Arc::new(AtomicI64::new(0));
+        let c = Arc::clone(&calls);
+        let calc: SiteStatsCalc = Arc::new(move |project, db| {
+            let n = c.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(stats(project, db, 100 * n))
+        });
+        // The first request calculates, the next ones (any name of the same project) use its value
+        for (i, project) in ["test", "test", "Test Project", "testdb"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(
+                body(&request(&st, &calc, 3600, project)),
+                expected(project, "testdb", 100),
+                "request {} ({project})",
+                i + 1
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "4 requests");
+        // Another database is calculated separately
+        assert_eq!(
+            body(&request(&st, &calc, 3600, "other")),
+            expected("other", "otherdb", 200)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn site_stats_fresh_until_ttl() {
+        let st = new_cache();
+        let calls = Arc::new(AtomicI64::new(0));
+        let c = Arc::clone(&calls);
+        let calc: SiteStatsCalc = Arc::new(move |project, db| {
+            c.fetch_add(1, Ordering::SeqCst);
+            Ok(stats(project, db, 2))
+        });
+        // Younger than TTL: cached value, no calculation
+        set_entry(&st, "testdb", 3590, 1);
+        assert_eq!(
+            body(&request(&st, &calc, 3600, "test")),
+            expected("test", "testdb", 1),
+            "fresh"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "fresh value must not be recalculated"
+        );
+        // TTL reached: the expired value is still returned, one calculation replaces it
+        set_entry(&st, "testdb", 3600, 1);
+        assert_eq!(
+            body(&request(&st, &calc, 3600, "test")),
+            expected("test", "testdb", 1),
+            "expired"
+        );
+        wait_no_calls(&st);
+        assert_eq!(
+            body(&request(&st, &calc, 3600, "test")),
+            expected("test", "testdb", 2),
+            "recalculated"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn site_stats_single_calculation_for_concurrent_requests() {
+        let st = new_cache();
+        let calls = Arc::new(AtomicI64::new(0));
+        let (calc, started, release) = blocking_calc(&calls, 7);
+        // No value yet: all requests wait for the same calculation
+        let projects = ["test", "Test Project", "testdb"];
+        const N: usize = 30;
+        let handles: Vec<_> = (0..N)
+            .map(|i| {
+                let (st, calc) = (Arc::clone(&st), Arc::clone(&calc));
+                thread::spawn(move || body(&request(&st, &calc, 3600, projects[i % 3])))
+            })
+            .collect();
+        started.recv().unwrap();
+        // Requests arriving while it runs do not start another one
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "running calculations");
+        drop(release);
+        for (i, h) in handles.into_iter().enumerate() {
+            assert_eq!(
+                h.join().unwrap(),
+                expected(projects[i % 3], "testdb", 7),
+                "request {}",
+                i + 1
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "{N} concurrent requests");
+    }
+
+    #[test]
+    fn site_stats_stale_value_while_recalculating() {
+        let st = new_cache();
+        let calls = Arc::new(AtomicI64::new(0));
+        let (calc, started, release) = blocking_calc(&calls, 2);
+        set_entry(&st, "testdb", 7200, 1);
+        // Expired value: returned at once (the calculation is still blocked), also to the requests that follow
+        for (i, project) in ["test", "Test Project", "test"].iter().enumerate() {
+            assert_eq!(
+                body(&request(&st, &calc, 3600, project)),
+                expected(project, "testdb", 1),
+                "request {} ({project})",
+                i + 1
+            );
+        }
+        started.recv().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "running calculations");
+        drop(release);
+        wait_no_calls(&st);
+        // New value replaces the expired one
+        assert_eq!(
+            body(&request(&st, &calc, 3600, "testdb")),
+            expected("testdb", "testdb", 2),
+            "after recalculation"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn site_stats_calculation_error() {
+        let st = new_cache();
+        let calls = Arc::new(AtomicI64::new(0));
+        let fail = Arc::new(AtomicI64::new(1));
+        let (started_tx, started) = channel::<()>();
+        let (release, release_rx) = channel::<()>();
+        let (c, f, started_tx, release_rx) = (
+            Arc::clone(&calls),
+            Arc::clone(&fail),
+            Mutex::new(started_tx),
+            Mutex::new(release_rx),
+        );
+        let calc: SiteStatsCalc = Arc::new(move |project, db| {
+            if c.fetch_add(1, Ordering::SeqCst) == 0 {
+                let _ = lock(&started_tx).send(());
+                let _ = lock(&release_rx).recv();
+            }
+            if f.load(Ordering::SeqCst) == 1 {
+                return Err("boom".to_string());
+            }
+            Ok(stats(project, db, 3))
+        });
+        // No value and the calculation fails: all waiting requests get the error
+        const N: usize = 5;
+        let handles: Vec<_> = (0..N)
+            .map(|_| {
+                let (st, calc) = (Arc::clone(&st), Arc::clone(&calc));
+                thread::spawn(move || body(&request(&st, &calc, 3600, "test")))
+            })
+            .collect();
+        started.recv().unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(release);
+        // Requests that came after the failure start (and wait for) their own calculation, which fails too
+        for (i, h) in handles.into_iter().enumerate() {
+            assert_eq!(h.join().unwrap(), "error: boom", "request {}", i + 1);
+        }
+        wait_no_calls(&st);
+        assert_eq!(
+            lock(&st).cache.len(),
+            0,
+            "failed calculation must not be cached"
+        );
+        // The next request calculates again
+        let before = calls.load(Ordering::SeqCst);
+        fail.store(0, Ordering::SeqCst);
+        assert_eq!(
+            body(&request(&st, &calc, 3600, "test")),
+            expected("test", "testdb", 3),
+            "after failure"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
+    fn site_stats_stale_value_kept_when_calculation_fails() {
+        let st = new_cache();
+        let calls = Arc::new(AtomicI64::new(0));
+        let c = Arc::clone(&calls);
+        let calc: SiteStatsCalc = Arc::new(move |project, db| {
+            if c.fetch_add(1, Ordering::SeqCst) + 1 < 3 {
+                return Err("boom".to_string());
+            }
+            Ok(stats(project, db, 2))
+        });
+        set_entry(&st, "testdb", 7200, 1);
+        // Failing calculations: the expired value stays, every request tries (one at a time) to replace it
+        for i in 0..3 {
+            assert_eq!(
+                body(&request(&st, &calc, 3600, "test")),
+                expected("test", "testdb", 1),
+                "request {}",
+                i + 1
+            );
+            wait_no_calls(&st);
+            assert_eq!(calls.load(Ordering::SeqCst), i + 1, "request {}", i + 1);
+        }
+        // The third one succeeded
+        assert_eq!(
+            body(&request(&st, &calc, 3600, "test")),
+            expected("test", "testdb", 2),
+            "after successful calculation"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn site_stats_calculation_panic() {
+        let st = new_cache();
+        let calls = Arc::new(AtomicI64::new(0));
+        let c = Arc::clone(&calls);
+        let calc: SiteStatsCalc = Arc::new(move |project, db| {
+            if c.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("oops");
+            }
+            Ok(stats(project, db, 4))
+        });
+        // The waiting request gets an error, the calculation is not left as running
+        assert_eq!(
+            body(&request(&st, &calc, 3600, "test")),
+            "error: site stats calculation panicked: oops",
+            "panic"
+        );
+        wait_no_calls(&st);
+        assert_eq!(
+            body(&request(&st, &calc, 3600, "test")),
+            expected("test", "testdb", 4),
+            "after panic"
+        );
+    }
 }

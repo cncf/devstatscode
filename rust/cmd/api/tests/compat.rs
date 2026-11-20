@@ -99,7 +99,7 @@ insert into snum_stats values ('2020-01-01','nstatsallcomps','d7',5),('2020-01-0
 insert into scompany_activity values ('2020-01-01','companyallcommits','d',10,5,15),('2020-01-02','companyallcommits','d',11,6,17),('2020-01-01','companyallcommits','w',70,35,105),('2020-01-01','companykubernetescommits','d',1,2,3),('2019-12-31','companyallcommits','d',9,4,13);
 insert into scntrs_and_orgs values ('2020-01-01','contributors','',100),('2020-02-01','contributors','',150),('2020-01-01','organizations','',10),('2020-02-01','organizations','',12),('2020-03-01','fractional','',1.5);
 insert into sevents_h values ('2020-01-01 00:00:00','events_h','',10),('2020-01-01 01:00:00','events_h','',20),('2020-01-02 00:00:00','events_h','',30),('2019-12-31 23:00:00','events_h','',5);
-insert into spstat(series, period, name, value) values ('pstatall','y100','Contributors',1000),('pstatall','y100','Contributions',2000),('pstatall','y100','Code committers',300),('pstatall','y100','Commits',4000),('pstatall','y100','Events',50000),('pstatall','y100','Forkers',600),('pstatall','y100','Repositories',70),('pstatall','y100','Stargazers',8000),('pstatall','y100','Other',1),('pstatall','y10','Commits',1);
+insert into spstat(series, period, name, value) values ('pstatall','y100','Contributors',1000),('pstatall','y100','Contributions',2000),('pstatall','y100','Code committers',300),('pstatall','y100','Commits',4000),('pstatall','y100','Events',50000),('pstatall','y100','Forkers',600),('pstatall','y100','Repositories',70),('pstatall','y100','Stargazers/Watchers',8000),('pstatall','y100','Stargazers',7),('pstatall','y100','Other',1),('pstatall','y10','Commits',1);
 insert into gha_repos values (1,'org/repo1','org/repo1','Kubernetes'),(2,'org/repo2','org/repo2',''),(3,'org/repo3','org/repo3',null),(4,'org/repo1','org/repo1','Kubernetes'),(5,'solo','solo','Other Group'),(6,'a/b/c','a/b/c','Other Group'),(7,'org/repo4','org/repo4','Other Group');
 insert into gha_repos_langs values ('org/repo1',1000),('org/repo1',500),('org/repo2',200),('solo',999),('org/repo4',1);
 insert into gha_events values (1,'PushEvent',1,'2020-01-01','Alice'),(2,'IssuesEvent',2,'2020-01-02','bob'),(3,'WatchEvent',3,'2020-01-03','carol'),(4,'PullRequestEvent',1,'2020-01-04','alice'),(5,'IssueCommentEvent',4,'2020-01-05','dave');
@@ -554,6 +554,11 @@ enum Step {
     ReqCanon(Vec<u8>),
     /// Wait (background calculations).
     Sleep(Duration),
+    /// Run SQL on the `dbtest_api` fixture database.
+    Sql(String),
+    /// Send the requests in parallel, each after its delay (responses are
+    /// kept in the listed order, compared byte for byte).
+    Par(Vec<(Duration, Vec<u8>)>),
 }
 
 fn req(api: &str, payload: &str) -> Step {
@@ -594,6 +599,15 @@ fn canonical_body(resp: &str) -> String {
     }
 }
 
+/// Run SQL on the `dbtest_api` fixture database.
+fn exec_main_db(sql: &str) {
+    let mut ctx = test_ctx();
+    ctx.pg_db = "dbtest_api".to_string();
+    let con = devstatscode::pg::pg_conn(&ctx);
+    devstatscode::pg::api::exec_sql_with_err(&con, &ctx, sql, &[]);
+    con.close();
+}
+
 fn drive(srv: Server, steps: &[Step]) -> Captured {
     let mut responses = Vec::new();
     for step in steps {
@@ -601,6 +615,23 @@ fn drive(srv: Server, steps: &[Step]) -> Captured {
             Step::Req(raw) => responses.push(srv.request(raw)),
             Step::ReqCanon(raw) => responses.push(canonical_body(&srv.request(raw))),
             Step::Sleep(d) => thread::sleep(*d),
+            Step::Sql(sql) => exec_main_db(sql),
+            Step::Par(reqs) => {
+                let srv = &srv;
+                let answers: Vec<String> = thread::scope(|scope| {
+                    let handles: Vec<_> = reqs
+                        .iter()
+                        .map(|(delay, raw)| {
+                            scope.spawn(move || {
+                                thread::sleep(*delay);
+                                srv.request(raw)
+                            })
+                        })
+                        .collect();
+                    handles.into_iter().map(|h| h.join().unwrap()).collect()
+                });
+                responses.extend(answers);
+            }
         }
     }
     // let late background goroutines finish their logging
@@ -1474,7 +1505,7 @@ fn cumulative_counts_and_site_stats() {
     );
     assert_eq!(body(&c.responses[0]), body(&c.responses[1]));
     assert!(
-        c.stdout.contains("CumulativeCounts: using cached values for [test dbtest_api contributors] (age is <age> < 43200)\n"),
+        c.stdout.contains("CumulativeCounts: using cached values for [test dbtest_api contributors] (age is <age> < 129600)\n"),
         "{}",
         c.stdout
     );
@@ -1485,7 +1516,32 @@ fn cumulative_counts_and_site_stats() {
     );
     assert_eq!(body(&c.responses[12]), body(&c.responses[13]));
     assert!(
-        c.stdout.contains("SiteStats: using cached value for [test dbtest_api]: {dt:<dt> siteStats:{Project:test DB:dbtest_api Contributors:1000 Contributions:2000 BOC:1701 Committers:300 Commits:4000 Events:50000 Forkers:600 Repositories:70 Stargazers:8000 Countries:3 Companies:2}} (age is <age> < 43200)\n"),
+        c.stdout.contains("SiteStats: using cached value for [test dbtest_api]: {dt:<dt> siteStats:{Project:test DB:dbtest_api Contributors:1000 Contributions:2000 BOC:1701 Committers:300 Commits:4000 Events:50000 Forkers:600 Repositories:70 Stargazers:8000 Countries:3 Companies:2}} (age is <age> < 129600)\n"),
+        "{}",
+        c.stdout
+    );
+    // another name of the same project: the value cached for its database, no second calculation
+    assert_eq!(
+        body(&c.responses[14]),
+        body(&c.responses[12]).replace("\"project\":\"test\"", "\"project\":\"dbtest_api\"")
+    );
+    assert!(
+        c.stdout.contains("SiteStats: using cached value for [dbtest_api dbtest_api]: {dt:<dt> siteStats:{Project:dbtest_api DB:dbtest_api Contributors:1000 "),
+        "{}",
+        c.stdout
+    );
+    assert_eq!(
+        c.stdout
+            .matches("SiteStats: written value to cache for ")
+            .count(),
+        1,
+        "one calculation for the 3 requests: {}",
+        c.stdout
+    );
+    // the empty database has no lines of code to sum: an error, as before
+    assert!(
+        c.stdout
+            .contains("SiteStats: calculation failed for [empty dbtest_api_empty]: sql: Scan error on column index 0, name \"sum\": converting NULL to float64 is unsupported\n"),
         "{}",
         c.stdout
     );
@@ -1507,6 +1563,305 @@ fn cumulative_counts_and_site_stats() {
         body(&c.responses[0]),
         "{\"error\":\"API 'SiteStats': pq: database \\\"dbtest_api_missing\\\" does not exist\"}\n"
     );
+    // a failed calculation is not cached: the second request calculates (and fails) again
+    assert_eq!(body(&c.responses[0]), body(&c.responses[1]));
+    assert_eq!(
+        c.stdout.matches("SiteStats: calculation failed for [missing dbtest_api_missing]: pq: database \"dbtest_api_missing\" does not exist\n").count(),
+        2,
+        "{}",
+        c.stdout
+    );
+}
+
+/// The original `SiteStats` countries query (3 joins + `union`): the reference
+/// for the lighter query the servers run now.
+const ORIGINAL_COUNTRIES_QUERY: &str = r#"
+  select
+    count(distinct sub.country_id) as num_countries
+  from (
+    select
+      a.country_id
+    from
+      gha_events e,
+      gha_actors a
+    where
+      e.actor_id = a.id
+      and e.type in (
+        'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
+        'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+      )
+    union select
+      a.country_id
+    from
+      gha_actors a,
+      gha_commits c
+    where
+      (
+        c.author_id = a.id
+        or c.committer_id = a.id
+      )
+    union select
+      a.country_id
+    from
+      gha_actors a,
+      gha_commits_roles cr
+    where
+      cr.actor_id = a.id
+      and cr.role = 'Co-authored-by'
+  ) sub
+  "#;
+
+/// The original `SiteStats` companies query.
+const ORIGINAL_COMPANIES_QUERY: &str = r#"
+  select
+    count(distinct sub.company_name) as num_companis
+  from (
+    select
+      af.company_name
+    from
+      gha_events e,
+      gha_actors_affiliations af
+    where
+      e.actor_id = af.actor_id
+      and af.dt_from <= e.created_at
+      and af.dt_to > e.created_at
+      and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
+      and e.type in (
+        'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
+        'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+      )
+    union select
+      af.company_name
+    from
+      gha_actors_affiliations af,
+      gha_commits c
+    where
+      (
+        c.author_id = af.actor_id
+        or c.committer_id = af.actor_id
+      )
+      and af.dt_from <= c.dup_created_at
+      and af.dt_to > c.dup_created_at
+      and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
+    union select
+      af.company_name
+    from
+      gha_actors_affiliations af,
+      gha_commits_roles cr
+    where
+      cr.actor_id = af.actor_id
+      and cr.role = 'Co-authored-by'
+      and af.dt_from <= cr.dup_created_at
+      and af.dt_to > cr.dup_created_at
+      and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
+  ) sub
+  "#;
+
+/// Rows for every way an actor does (not) count in the `SiteStats` countries
+/// and companies numbers (added on top of [`DATA`] by the tests that need them).
+const SITE_STATS_EDGE_DATA: &str = r#"
+insert into gha_actors values
+ (5,'fr'),   -- only WatchEvent/ForkEvent: not counted
+ (6,'jp'),   -- only a commit committer: counted
+ (7,'br'),   -- only a Co-authored-by role: counted
+ (8,'in'),   -- only a Signed-off-by role: not counted
+ (9,'ca'),   -- only a PullRequestReviewEvent: counted
+ (10,'pl'),  -- a country that is already counted
+ (11,'se'),(11,'no'), -- two rows of one actor: both countries counted
+ (12,''),    -- empty (not null) country: counted
+ (13,'xx'),  -- no activity at all: not counted
+ (14,'it');  -- only a commit author: counted
+insert into gha_events values
+ (100,'WatchEvent',5,'2021-01-01','eve'),(101,'ForkEvent',5,'2021-01-02','eve'),
+ (105,'PullRequestReviewEvent',9,'2021-01-03','ivy'),(106,'IssueCommentEvent',10,'2021-01-04','jan'),
+ (107,'CommitCommentEvent',11,'2021-01-05','kim'),(108,'PullRequestReviewCommentEvent',12,'2021-01-06','lee'),
+ (120,'PushEvent',20,'2021-03-01 00:00:00','u20'),(121,'PushEvent',21,'2021-04-01 00:00:00','u21'),
+ (125,'WatchEvent',25,'2021-06-01','u25'),(126,'IssuesEvent',26,'2021-05-05','u26'),
+ (127,'PushEvent',27,'2021-05-05','u27'),(130,'PushEvent',30,'2021-01-10','u30');
+insert into gha_commits values
+ (102,null,6,'fay','','fay','2021-01-07'),(109,14,null,'ned','ned','','2021-01-08'),
+ (122,null,22,'u22','','u22','2021-05-01'),
+ (128,28,null,'u28','u28','','2021-02-01 00:00:00'),(129,null,28,'u28','','u28','2021-01-15');
+insert into gha_commits_roles values
+ (103,7,'gus','Co-authored-by','2021-01-09'),(104,8,'hal','Signed-off-by','2021-01-10'),
+ (123,23,'u23','Co-authored-by','2021-06-01'),(124,24,'u24','Signed-off-by','2021-06-01'),
+ (131,29,'u29','Co-authored-by','2021-02-01 00:00:00');
+insert into gha_actors_affiliations values
+ (20,'Boundary From','2021-03-01','2021-04-01'), -- event exactly at dt_from: counted
+ (21,'Boundary To','2021-03-01','2021-04-01'),   -- event exactly at dt_to: not counted
+ (22,'Committer Co','1900-01-01','2100-01-01'),  -- only a commit committer: counted
+ (23,'Coauthor Co','2021-01-01','2022-01-01'),   -- only a Co-authored-by role: counted
+ (24,'Signoff Co','1900-01-01','2100-01-01'),    -- only a Signed-off-by role: not counted
+ (25,'Watch Co','1900-01-01','2100-01-01'),      -- only a WatchEvent: not counted
+ (26,'Early Co','1900-01-01','2021-01-01'),      -- activity only in the next period: not counted
+ (26,'Late Co','2021-01-01','2100-01-01'),       -- counted
+ (27,'NotFound','1900-01-01','2100-01-01'),(27,'','1900-01-01','2100-01-01'), -- excluded names
+ (28,'Author Range','2021-01-01','2021-02-01'),  -- author commit at dt_to (no), committer commit inside: counted
+ (29,'Coauthor Late','2021-01-01','2021-02-01'), -- Co-authored-by role exactly at dt_to: not counted
+ (30,'Google','2021-01-01','2021-02-01');        -- a company that is already counted
+"#;
+
+#[test]
+fn site_stats_countries_and_companies_edge_cases() {
+    let Some((_g, fx)) = setup(Needs::default()) else {
+        return;
+    };
+    fx._main.exec(SITE_STATS_EDGE_DATA);
+    let c = run_case(
+        "site_stats_edge_cases",
+        &Config::default(),
+        &[req("SiteStats", r#"{"project":"test"}"#)],
+        false,
+    );
+    // countries: pl, us, de + jp, br, ca, se, no, '', it; companies: Google, Acme + Boundary From,
+    // Committer Co, Coauthor Co, Late Co, Author Range
+    assert_eq!(
+        body(&c.responses[0]),
+        "{\"project\":\"test\",\"db_name\":\"dbtest_api\",\"contributors\":1000,\"contributions\":2000,\"boc\":1701,\"committers\":300,\"commits\":4000,\"events\":50000,\"forkers\":600,\"repositories\":70,\"stargazers\":8000,\"countries\":10,\"companies\":7}\n"
+    );
+    // the same numbers as the original queries give
+    let con = fx._main.conn();
+    for (query, expected) in [
+        (ORIGINAL_COUNTRIES_QUERY, "10"),
+        (ORIGINAL_COMPANIES_QUERY, "7"),
+    ] {
+        let rows = devstats_compat::pg::snapshot(&con, query, &[]);
+        assert_eq!(rows.column(0), vec![expected.to_string()], "{query}");
+    }
+    con.close();
+}
+
+#[test]
+fn site_stats_stale_value_is_served_while_recalculated() {
+    let Some((_g, _fx)) = setup(Needs::default()) else {
+        return;
+    };
+    let contributors = |n: i64| {
+        Step::Sql(format!(
+            "update spstat set value = {n} where series = 'pstatall' and period = 'y100' and name = 'Contributors'"
+        ))
+    };
+    // stdout is compared sorted: the background calculation logs next to the request that started it
+    let c = run_case(
+        "site_stats_stale",
+        &Config::default().env("GHA2DB_SITE_STATS_CACHE_TTL", "2"),
+        &[
+            contributors(1000),
+            req("SiteStats", r#"{"project":"test"}"#),
+            req("SiteStats", r#"{"project":"test"}"#),
+            contributors(1001),
+            Step::Sleep(Duration::from_millis(2300)),
+            // expired: still answered at once with the old value, recalculated in the background
+            req("SiteStats", r#"{"project":"Test Project"}"#),
+            Step::Sleep(Duration::from_millis(900)),
+            req("SiteStats", r#"{"project":"test"}"#),
+        ],
+        true,
+    );
+    let stats = |project: &str, contributors: i64| {
+        format!("{{\"project\":\"{project}\",\"db_name\":\"dbtest_api\",\"contributors\":{contributors},\"contributions\":2000,\"boc\":1701,\"committers\":300,\"commits\":4000,\"events\":50000,\"forkers\":600,\"repositories\":70,\"stargazers\":8000,\"countries\":3,\"companies\":2}}\n")
+    };
+    assert_eq!(body(&c.responses[0]), stats("test", 1000));
+    assert_eq!(body(&c.responses[1]), stats("test", 1000));
+    assert_eq!(body(&c.responses[2]), stats("Test Project", 1000));
+    assert_eq!(body(&c.responses[3]), stats("test", 1001));
+    for line in [
+        "SiteStats: using cached value for [test dbtest_api]: {dt:<dt> siteStats:{Project:test DB:dbtest_api Contributors:1000 Contributions:2000 BOC:1701 Committers:300 Commits:4000 Events:50000 Forkers:600 Repositories:70 Stargazers:8000 Countries:3 Companies:2}} (age is <age> < 2)",
+        "SiteStats: using stale cached value for [Test Project dbtest_api]: {dt:<dt> siteStats:{Project:Test Project DB:dbtest_api Contributors:1000 Contributions:2000 BOC:1701 Committers:300 Commits:4000 Events:50000 Forkers:600 Repositories:70 Stargazers:8000 Countries:3 Companies:2}} (age is <age> >= 2)",
+        "SiteStats: written value to cache for [test dbtest_api]",
+        "SiteStats: written value to cache for [Test Project dbtest_api]",
+        "SiteStats: using cached value for [test dbtest_api]: {dt:<dt> siteStats:{Project:test DB:dbtest_api Contributors:1001 Contributions:2000 BOC:1701 Committers:300 Commits:4000 Events:50000 Forkers:600 Repositories:70 Stargazers:8000 Countries:3 Companies:2}} (age is <age> < 2)",
+    ] {
+        assert_eq!(
+            c.stdout.split('\n').filter(|l| *l == line).count(),
+            1,
+            "{line}: {}",
+            c.stdout
+        );
+    }
+    assert_eq!(c.stderr, "");
+}
+
+#[test]
+fn site_stats_single_calculation_for_concurrent_requests() {
+    let Some((_g, fx)) = setup(Needs::default()) else {
+        return;
+    };
+    // every calculation takes 1.5 s (one of its 4 queries sleeps once)
+    fx._main.exec(
+        "alter table spstat rename to spstat_data; \
+         create view spstat as select d.* from spstat_data d where (select true from pg_sleep(1.5))",
+    );
+    let at = |ms: u64, project: &str| {
+        (
+            Duration::from_millis(ms),
+            call("SiteStats", &format!(r#"{{"project":"{project}"}}"#)),
+        )
+    };
+    // the first request starts the calculation, the 3 that arrive while it runs wait for it
+    let c = run_case(
+        "site_stats_single_calculation",
+        &Config::default(),
+        &[
+            Step::Par(vec![
+                at(0, "test"),
+                at(400, "test"),
+                at(400, "Test Project"),
+                at(400, "dbtest_api"),
+            ]),
+            req("SiteStats", r#"{"project":"test"}"#),
+        ],
+        true,
+    );
+    let stats = |project: &str| {
+        format!("{{\"project\":\"{project}\",\"db_name\":\"dbtest_api\",\"contributors\":1000,\"contributions\":2000,\"boc\":1701,\"committers\":300,\"commits\":4000,\"events\":50000,\"forkers\":600,\"repositories\":70,\"stargazers\":8000,\"countries\":3,\"companies\":2}}\n")
+    };
+    for (i, project) in ["test", "test", "Test Project", "dbtest_api", "test"]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(status_line(&c.responses[i]), "HTTP/1.1 200 OK", "#{i}");
+        assert_eq!(body(&c.responses[i]), stats(project), "#{i}");
+    }
+    for (line, n) in [
+        ("SiteStats: written value to cache for [test dbtest_api]", 1),
+        (
+            "SiteStats: waiting for running calculation for [test dbtest_api]",
+            1,
+        ),
+        (
+            "SiteStats: waiting for running calculation for [Test Project dbtest_api]",
+            1,
+        ),
+        (
+            "SiteStats: waiting for running calculation for [dbtest_api dbtest_api]",
+            1,
+        ),
+    ] {
+        assert_eq!(
+            c.stdout.split('\n').filter(|l| *l == line).count(),
+            n,
+            "{line}: {}",
+            c.stdout
+        );
+    }
+    assert_eq!(
+        c.stdout
+            .matches("SiteStats: written value to cache for ")
+            .count(),
+        1,
+        "{}",
+        c.stdout
+    );
+    assert_eq!(
+        c.stdout
+            .matches("SiteStats: using cached value for [test dbtest_api]: ")
+            .count(),
+        1,
+        "{}",
+        c.stdout
+    );
+    assert_eq!(c.stderr, "");
 }
 
 #[test]
@@ -1563,7 +1918,7 @@ fn github_id_contributions() {
         "{\"contributions\":6,\"issues\":1,\"prs\":2}\n"
     );
     assert!(
-        c.stdout.contains("GithubIDContributions: using cached value for alice: {dt:<dt> stats:[6 1 2]} (age is <age> < 86400)\n"),
+        c.stdout.contains("GithubIDContributions: using cached value for alice: {dt:<dt> stats:[6 1 2]} (age is <age> < 129600)\n"),
         "{}",
         c.stdout
     );

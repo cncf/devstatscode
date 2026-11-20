@@ -1632,7 +1632,8 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `ListProjects`, `RepoGroups`, `Ranges`, `Countries`, `Companies`,
     `Events`, `Repos`, `CumulativeCounts`, `CompaniesTable`,
     `ComContribRepoGrp`, `ComStatsRepoGrp`, `DevActCnt` (+ repository mode on
-    the `gha` database), `DevActCntComp`, `SiteStats` (4 parallel queries),
+    the `gha` database), `DevActCntComp`, `SiteStats` (4 parallel queries,
+    cached per database for 36 h, one calculation at a time),
     `GithubIDContributions` (3 parallel queries on `allprj`)). Same `POST
     /api/v1` protocol, same JSON bodies (jsoniter-compact: `<>&` escaped,
     nil slices → `null`, Go field order), same `{"error":"API '<name>': …"}`
@@ -1664,7 +1665,10 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `<`, 404s, CORS preflight variants, multiple / empty / unicode
     `User-Agent`) and 25 malformed bodies, tag lists, `Repos` / `Events` with
     every parameter error, `CumulativeCounts` / `SiteStats` (+ cache hits and
-    a missing database), `GithubIDContributions` with and without `allprj`,
+    a missing database; an expired `SiteStats` value served while it is
+    recalculated, one calculation for concurrent requests, the countries /
+    companies edge cases checked against the original queries),
+    `GithubIDContributions` with and without `allprj`,
     the three company APIs, `DevActCnt` (51 cases: quick ranges, github_id
     filter, countries, repo groups, metrics, manual ranges with every error),
     `DevActCnt` on `kubernetes` incl. repository mode and `Approves` /
@@ -1887,6 +1891,25 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
   channel and the receiver returned on the first error, leaking the remaining
   goroutines and their connections on every failed request (buffered channel
   now; Rust uses an mpsc channel).
+* `api` `SiteStats` request stampede (both sides, found 2026-11-20: cncf.io
+  retried a `SiteStats(all)` request about every 2 s while the 12 h cache was
+  expired, every retry started the 4 queries again and the PostgreSQL
+  replicas ran out of memory): the cache and the calculation are per database
+  now (all names of a project share them), at most one calculation per
+  database runs (not tied to the request that started it), an expired value
+  is returned at once while it is recalculated, requests without any value
+  wait for the running calculation; the calculation waits for all 4 queries
+  before it reports the first error. The cache lives 36 h
+  (`GHA2DB_SITE_STATS_CACHE_TTL` sets another number of seconds).
+* `api` cache expirations: `SiteStats` (was 12 h), `CumulativeCounts` (12 h)
+  and `GithubIDContributions` (24 h) all keep their values for 36 h now
+  (three separate constants).
+* `api` `SiteStats` always returned `stargazers: 0`: it read the `Stargazers`
+  name, the project stats metric writes `Stargazers/Watchers`.
+* `api` `SiteStats` countries / companies queries: one scan of the actors /
+  affiliations with index probes (`exists`) instead of 3 joins + `union`
+  sorted for `count(distinct)` (All CNCF: countries 167 s -> 3 s, companies
+  114 s -> 56 s on a warm cache, no sort memory); the same numbers.
 * `GetRateLimits` (bug 54, both sides, found 2026-09-12 while explaining the
   multi-hour `kubeflow` syncs): the rate limits of **all** configured tokens
   were polled sequentially (one HTTPS `/rate_limit` round trip each) before

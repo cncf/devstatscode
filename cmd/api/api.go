@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,12 +21,12 @@ import (
 )
 
 const (
-	// GithubIDContributionsCacheTTL - Github login contributions cache expiration 24 hours
-	GithubIDContributionsCacheTTL = 86400
-	// CumulativeCountsCacheTTL - Cumulative counts cache expiration 12 hours
-	CumulativeCountsCacheTTL = 43200
-	// SiteStatsCacheTTL - Site stats cache expiration 12 hours
-	SiteStatsCacheTTL = 43200
+	// GithubIDContributionsCacheTTL - Github login contributions cache expiration 36 hours
+	GithubIDContributionsCacheTTL = 129600
+	// CumulativeCountsCacheTTL - Cumulative counts cache expiration 36 hours
+	CumulativeCountsCacheTTL = 129600
+	// SiteStatsCacheTTL - Site stats cache expiration 36 hours
+	SiteStatsCacheTTL = 129600
 )
 
 // allAPIs - List all currently defined APIs
@@ -125,14 +126,25 @@ type siteStatsCacheEntry struct {
 	siteStats siteStatsPayload
 }
 
+// siteStatsCall - a running site stats calculation, shared by all requests for the same database
+type siteStatsCall struct {
+	done      chan struct{}
+	siteStats siteStatsPayload
+	err       error
+}
+
 type githubIDContributionsCacheEntry struct {
 	dt    time.Time
 	stats [3]int
 }
 
 var (
-	siteStatsCache                = map[[2]string]siteStatsCacheEntry{}
+	// site stats cache and running calculations are per database (all names of a project share them)
+	siteStatsCache                = map[string]siteStatsCacheEntry{}
+	siteStatsCalls                = map[string]*siteStatsCall{}
 	siteStatsCacheMtx             = &sync.Mutex{}
+	siteStatsCacheTTL             = int64(SiteStatsCacheTTL)
+	siteStatsCalc                 = calcSiteStats
 	cumulativeCountsCache         = map[[3]string]cumulativeCountsCacheEntry{}
 	cumulativeCountsCacheMtx      = &sync.Mutex{}
 	githubIDContributionsCache    = map[string]githubIDContributionsCacheEntry{}
@@ -2448,31 +2460,97 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		return
 	}
 	key := [2]string{project, db}
+	age := 0.0
 	siteStatsCacheMtx.Lock()
-	data, ok := siteStatsCache[key]
-	siteStatsCacheMtx.Unlock()
+	data, ok := siteStatsCache[db]
 	if ok {
-		age := time.Now().Sub(data.dt).Seconds()
-		if age < SiteStatsCacheTTL {
-			lib.Printf("%s: using cached value for %+v: %+v (age is %.0f < %d)\n", apiName, key, data, age, SiteStatsCacheTTL)
+		data.siteStats.Project = project
+		age = time.Now().Sub(data.dt).Seconds()
+		if age < float64(siteStatsCacheTTL) {
+			siteStatsCacheMtx.Unlock()
+			lib.Printf("%s: using cached value for %+v: %+v (age is %.0f < %d)\n", apiName, key, data, age, siteStatsCacheTTL)
 			w.WriteHeader(http.StatusOK)
 			jsoniter.NewEncoder(w).Encode(data.siteStats)
 			return
 		}
-		lib.Printf("%s: deleting cached values for %+v (age is %.0f >= %d)\n", apiName, key, age, SiteStatsCacheTTL)
-		siteStatsCacheMtx.Lock()
-		delete(siteStatsCache, key)
-		siteStatsCacheMtx.Unlock()
 	}
-	ctx, c, err := getContextAndDB(w, db)
+	// No value or an expired one: at most one calculation per database runs at a time
+	call, running := siteStatsCalls[db]
+	if !running {
+		call = &siteStatsCall{done: make(chan struct{})}
+		siteStatsCalls[db] = call
+	}
+	siteStatsCacheMtx.Unlock()
+	if ok {
+		lib.Printf("%s: using stale cached value for %+v: %+v (age is %.0f >= %d)\n", apiName, key, data, age, siteStatsCacheTTL)
+	} else if running {
+		lib.Printf("%s: waiting for running calculation for %+v\n", apiName, key)
+	}
+	if !running {
+		// Not tied to this request: a client that gives up and retries will not start another one
+		go refreshSiteStats(apiName, key, call)
+	}
+	if ok {
+		// Expired value is returned immediately, the running calculation will replace it
+		w.WriteHeader(http.StatusOK)
+		jsoniter.NewEncoder(w).Encode(data.siteStats)
+		return
+	}
+	<-call.done
+	if call.err != nil {
+		returnError(apiName, w, call.err)
+		return
+	}
+	sspl := call.siteStats
+	sspl.Project = project
+	w.WriteHeader(http.StatusOK)
+	jsoniter.NewEncoder(w).Encode(sspl)
+}
+
+// refreshSiteStats - calculates site stats for the database of the request that started it and caches them
+func refreshSiteStats(apiName string, key [2]string, call *siteStatsCall) {
+	var (
+		sspl siteStatsPayload
+		err  error
+	)
+	func() {
+		// The waiting requests must always get an answer and the next request must be able to start a new calculation
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("site stats calculation panicked: %v", r)
+			}
+		}()
+		sspl, err = siteStatsCalc(key[0], key[1])
+	}()
+	siteStatsCacheMtx.Lock()
+	if err == nil {
+		siteStatsCache[key[1]] = siteStatsCacheEntry{dt: time.Now(), siteStats: sspl}
+	}
+	delete(siteStatsCalls, key[1])
+	siteStatsCacheMtx.Unlock()
+	if err == nil {
+		lib.Printf("%s: written value to cache for %+v\n", apiName, key)
+	} else {
+		lib.Printf("%s: calculation failed for %+v: %v\n", apiName, key, err)
+	}
+	call.siteStats, call.err = sspl, err
+	close(call.done)
+}
+
+// calcSiteStats - runs all site stats queries for a given database, returns the first error (if any) when all of them finish
+func calcSiteStats(project, db string) (sspl siteStatsPayload, err error) {
+	var (
+		ctx *lib.Ctx
+		c   *sql.DB
+	)
+	ctx, c, err = getContextAndDB(nil, db)
 	if err != nil {
-		returnError(apiName, w, err)
 		return
 	}
 	defer func() { _ = c.Close() }()
 	ch := make(chan error, 4)
 	mtx := &sync.Mutex{}
-	sspl := siteStatsPayload{Project: project, DB: db}
+	sspl = siteStatsPayload{Project: project, DB: db}
 	go func(ch chan error) {
 		var err error
 		//lib.Printf("pstatall start\n")
@@ -2492,7 +2570,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
     and name in (
       'Contributors', 'Contributions', 'Code committers',
       'Commits', 'Events', 'Forkers',
-      'Repositories', 'Stargazers'
+      'Repositories', 'Stargazers/Watchers'
     )
   `
 		var rows *sql.Rows
@@ -2527,7 +2605,7 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 				sspl.Forkers = int64(value)
 			case "Repositories":
 				sspl.Repositories = int64(value)
-			case "Stargazers":
+			case "Stargazers/Watchers":
 				sspl.Stargazers = int64(value)
 			default:
 				//lib.Printf("site stats: unknown metric: '%s'\n", name)
@@ -2593,38 +2671,50 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		}()
 		query := `
   select
-    count(distinct sub.country_id) as num_countries
-  from (
-    select
-      a.country_id
-    from
-      gha_events e,
-      gha_actors a
-    where
-      e.actor_id = a.id
-      and e.type in (
-        'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
-        'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+    count(distinct a.country_id) as num_countries
+  from
+    gha_actors a
+  where
+    a.country_id is not null
+    and (
+      exists (
+        select 1
+        from
+          gha_events e
+        where
+          e.actor_id = a.id
+          and e.type in (
+            'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
+            'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+          )
+        offset 0
       )
-    union select
-      a.country_id
-    from
-      gha_actors a,
-      gha_commits c
-    where
-      (
-        c.author_id = a.id
-        or c.committer_id = a.id
+      or exists (
+        select 1
+        from
+          gha_commits c
+        where
+          c.author_id = a.id
+        offset 0
       )
-    union select
-      a.country_id
-    from
-      gha_actors a,
-      gha_commits_roles cr
-    where
-      cr.actor_id = a.id
-      and cr.role = 'Co-authored-by'
-  ) sub
+      or exists (
+        select 1
+        from
+          gha_commits c
+        where
+          c.committer_id = a.id
+        offset 0
+      )
+      or exists (
+        select 1
+        from
+          gha_commits_roles cr
+        where
+          cr.actor_id = a.id
+          and cr.role = 'Co-authored-by'
+        offset 0
+      )
+    )
   `
 		var rows *sql.Rows
 		rows, err = lib.QuerySQLLogErr(c, ctx, query)
@@ -2655,47 +2745,78 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 		}()
 		query := `
   select
-    count(distinct sub.company_name) as num_companis
-  from (
-    select
-      af.company_name
-    from
-      gha_events e,
-      gha_actors_affiliations af
-    where
-      e.actor_id = af.actor_id
-      and af.dt_from <= e.created_at
-      and af.dt_to > e.created_at
-      and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
-      and e.type in (
-        'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
-        'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+    count(distinct af.company_name) as num_companis
+  from
+    gha_actors_affiliations af
+  where
+    af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
+    and (
+      exists (
+        select 1
+        from (
+          select
+            e.created_at
+          from
+            gha_events e
+          where
+            e.actor_id = af.actor_id
+            and e.type in (
+              'PushEvent', 'PullRequestEvent', 'IssuesEvent', 'PullRequestReviewEvent',
+              'CommitCommentEvent', 'IssueCommentEvent', 'PullRequestReviewCommentEvent'
+            )
+          offset 0
+        ) ev
+        where
+          ev.created_at >= af.dt_from
+          and ev.created_at < af.dt_to
       )
-    union select
-      af.company_name
-    from
-      gha_actors_affiliations af,
-      gha_commits c
-    where
-      (
-        c.author_id = af.actor_id
-        or c.committer_id = af.actor_id
+      or exists (
+        select 1
+        from (
+          select
+            c.dup_created_at
+          from
+            gha_commits c
+          where
+            c.author_id = af.actor_id
+          offset 0
+        ) ca
+        where
+          ca.dup_created_at >= af.dt_from
+          and ca.dup_created_at < af.dt_to
       )
-      and af.dt_from <= c.dup_created_at
-      and af.dt_to > c.dup_created_at
-      and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
-    union select
-      af.company_name
-    from
-      gha_actors_affiliations af,
-      gha_commits_roles cr
-    where
-      cr.actor_id = af.actor_id
-      and cr.role = 'Co-authored-by'
-      and af.dt_from <= cr.dup_created_at
-      and af.dt_to > cr.dup_created_at
-      and af.company_name not in ('Independent', 'Unknown', 'NotFound', '')
-  ) sub
+      or exists (
+        select 1
+        from (
+          select
+            c.dup_created_at
+          from
+            gha_commits c
+          where
+            c.committer_id = af.actor_id
+          offset 0
+        ) cc
+        where
+          cc.dup_created_at >= af.dt_from
+          and cc.dup_created_at < af.dt_to
+      )
+      or exists (
+        select 1
+        from (
+          select
+            cr.dup_created_at
+          from
+            gha_commits_roles cr
+          where
+            cr.actor_id = af.actor_id
+            and cr.role = 'Co-authored-by'
+          offset 0
+        ) co
+        where
+          co.dup_created_at >= af.dt_from
+          and co.dup_created_at < af.dt_to
+      )
+    )
   `
 		var rows *sql.Rows
 		rows, err = lib.QuerySQLLogErr(c, ctx, query)
@@ -2719,20 +2840,14 @@ func apiSiteStats(info string, w http.ResponseWriter, payload map[string]interfa
 	}(ch)
 	for i := 0; i < 4; i++ {
 		//lib.Printf("before %d\n", i)
-		err := <-ch
+		qerr := <-ch
 		//lib.Printf("after %d\n", i)
-		if err != nil {
-			returnError(apiName, w, err)
-			return
+		if qerr != nil && err == nil {
+			err = qerr
 		}
 	}
 	//lib.Printf("out\n")
-	w.WriteHeader(http.StatusOK)
-	jsoniter.NewEncoder(w).Encode(sspl)
-	siteStatsCacheMtx.Lock()
-	siteStatsCache[key] = siteStatsCacheEntry{dt: time.Now(), siteStats: sspl}
-	siteStatsCacheMtx.Unlock()
-	lib.Printf("%s: written value to cache for %+v\n", apiName, key)
+	return
 }
 
 func requestInfo(r *http.Request) string {
@@ -2833,6 +2948,14 @@ func checkEnv() {
 	}
 }
 
+// setSiteStatsCacheTTL - site stats cache expiration (in seconds) can be set via GHA2DB_SITE_STATS_CACHE_TTL
+func setSiteStatsCacheTTL() {
+	ttl, err := strconv.ParseInt(os.Getenv("GHA2DB_SITE_STATS_CACHE_TTL"), 10, 64)
+	if err == nil && ttl > 0 {
+		siteStatsCacheTTL = ttl
+	}
+}
+
 func readProjects(ctx *lib.Ctx) {
 	dataPrefix := ctx.DataDir
 	if ctx.Local {
@@ -2862,6 +2985,7 @@ func serveAPI() {
 	lib.SetupTimeoutSignal(&ctx)
 	lib.Printf("Starting API server\n")
 	checkEnv()
+	setSiteStatsCacheTTL()
 	readProjects(&ctx)
 	gBgMtx = &sync.RWMutex{}
 	sigs := make(chan os.Signal, 1)
