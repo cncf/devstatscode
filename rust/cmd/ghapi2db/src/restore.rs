@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use devstatscode::consts::HIDE_CFG_FILE;
-use devstatscode::ghapi::{current_repo_id, fmt_slice, get_rate_limits, GoDuration};
+use devstatscode::ghapi::{current_repo_id, fmt_slice, get_rate_limits, repo_name_at, GoDuration};
 use devstatscode::github::{
     self, Client, Error, GoTime, IssueListCommentsOptions, ListOptions,
     PullRequestListCommentsOptions, PullRequestListOptions, RepositoryListForksOptions, Response,
@@ -349,19 +349,32 @@ fn fork_present(c: &PgConn, ctx: &Ctx, forkee_id: i64) -> bool {
     )
 }
 
-fn star_present(c: &PgConn, ctx: &Ctx, actor_id: i64, org_repo: &str, starred_at: GoTime) -> bool {
+/// Go `starPresent`: is the star stored: under the repository's name or, for
+/// a renamed repository, under any of its names (the repository id) - stars
+/// are the only restored objects without an id of their own, so the name must
+/// not decide whether one is restored again.
+fn star_present(
+    c: &PgConn,
+    ctx: &Ctx,
+    actor_id: i64,
+    org_repo: &str,
+    repo_id: i64,
+    starred_at: GoTime,
+) -> bool {
     one_row_present(
         c,
         ctx,
         &format!(
-            "select 1 from gha_events where type = 'WatchEvent' and actor_id = {} and dup_repo_name = {} and created_at = {} limit 1",
+            "select 1 from gha_events where type = 'WatchEvent' and actor_id = {} and (dup_repo_name = {} or repo_id = {}) and created_at = {} limit 1",
             n_value(1),
             n_value(2),
-            n_value(3)
+            n_value(3),
+            n_value(4)
         ),
         &[
             SqlArg::Int(actor_id),
             SqlArg::from(org_repo),
+            SqlArg::Int(repo_id),
             SqlArg::Time(starred_at.0),
         ],
     )
@@ -641,6 +654,16 @@ pub fn restore_pass(ctx: &mut Ctx, pass: ApiPass, process: RestoreRepoFunc<'_>) 
     total
 }
 
+/// Go `nameAt`: the repository name and organization id an object of the
+/// given time is stored under: GitHub's API answers under the repository's
+/// current name whatever the object's age, the name it had then is used
+/// (`repo_name_at`: best effort, the pass's name when nothing else is known).
+fn name_at(job: &RepoJob<'_>, dt: DateTime<Utc>) -> (String, SqlArg) {
+    let (name, org_id, _) =
+        repo_name_at(job.c, job.ctx, job.repo_id, job.org_repo, &job.org_id, dt);
+    (name, org_id)
+}
+
 /// Go's `if err != nil || resp == nil || resp.StatusCode >= 400 { return resp, false, err }`.
 pub fn page_failed<T>(r: &github::ApiResult<T>) -> bool {
     r.error.is_some() || r.response.is_none() || r.status() >= 400
@@ -677,12 +700,16 @@ fn restore_comments_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
                     if id_present(c, ctx, "gha_comments", "IssueCommentEvent", cid) {
                         continue;
                     }
+                    let (name, oid) = match cmt.created_at {
+                        Some(t) => name_at(job, t.utc()),
+                        None => (job.org_repo.to_string(), job.org_id.clone()),
+                    };
                     let (eid, ok) = restore_issue_comment(
                         c,
                         ctx,
-                        job.org_repo,
+                        &name,
                         job.repo_id,
-                        &job.org_id,
+                        &oid,
                         number_from_url(cmt.issue_url.as_deref()),
                         Some(&cmt),
                         job.maybe_hide,
@@ -731,12 +758,16 @@ fn restore_comments_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
                     if id_present(c, ctx, "gha_comments", "PullRequestReviewCommentEvent", cid) {
                         continue;
                     }
+                    let (name, oid) = match cmt.created_at {
+                        Some(t) => name_at(job, t.utc()),
+                        None => (job.org_repo.to_string(), job.org_id.clone()),
+                    };
                     let (eid, ok) = restore_review_comment(
                         c,
                         ctx,
-                        job.org_repo,
+                        &name,
                         job.repo_id,
-                        &job.org_id,
+                        &oid,
                         number_from_url(cmt.pull_request_url.as_deref()),
                         Some(&cmt),
                         job.maybe_hide,
@@ -799,12 +830,13 @@ fn restore_comments_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
                     if id_present(c, ctx, "gha_comments", "CommitCommentEvent", cid) {
                         continue;
                     }
+                    let (name, oid) = name_at(job, created_at.utc());
                     let (eid, ok) = restore_commit_comment(
                         c,
                         ctx,
-                        job.org_repo,
+                        &name,
                         job.repo_id,
-                        &job.org_id,
+                        &oid,
                         Some(&cmt),
                         job.maybe_hide,
                     );
@@ -1192,19 +1224,20 @@ fn restore_stars_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
             }
             any_recent = true;
             stats.checked += 1;
-            if star_present(c, ctx, g.id, job.org_repo, g.starred_at) {
+            if star_present(c, ctx, g.id, job.org_repo, job.repo_id, g.starred_at) {
                 continue;
             }
             let star = Stargazer {
                 starred_at: Some(Timestamp(g.starred_at.utc())),
                 user: Some(User::id_login(g.id, &g.login)),
             };
+            let (name, oid) = name_at(job, g.starred_at.utc());
             let (_, ok) = restore_star(
                 c,
                 ctx,
-                job.org_repo,
+                &name,
                 job.repo_id,
-                &job.org_id,
+                &oid,
                 Some(&star),
                 job.maybe_hide,
             );
@@ -1291,12 +1324,13 @@ fn restore_reviews_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
                         if id_present(c, ctx, "gha_reviews", "PullRequestReviewEvent", rid) {
                             continue;
                         }
+                        let (name, oid) = name_at(job, submitted_at.utc());
                         let (eid, ok) = restore_review(
                             c,
                             ctx,
-                            job.org_repo,
+                            &name,
                             job.repo_id,
-                            &job.org_id,
+                            &oid,
                             number,
                             Some(&rev),
                             job.maybe_hide,
@@ -1354,12 +1388,16 @@ fn restore_forks_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
                 if fork_present(c, ctx, fid) {
                     continue;
                 }
+                let (name, oid) = match fork.created_at {
+                    Some(t) => name_at(job, t.0),
+                    None => (job.org_repo.to_string(), job.org_id.clone()),
+                };
                 let (_, ok) = restore_fork(
                     c,
                     ctx,
-                    job.org_repo,
+                    &name,
                     job.repo_id,
-                    &job.org_id,
+                    &oid,
                     Some(&fork),
                     job.maybe_hide,
                 );
@@ -1407,15 +1445,9 @@ fn restore_releases_repo(job: &RepoJob<'_>, stats: &mut RestoreStats) {
                 if id_present(c, ctx, "gha_releases", "ReleaseEvent", rid) {
                     continue;
                 }
-                let (_, ok) = restore_release(
-                    c,
-                    ctx,
-                    job.org_repo,
-                    job.repo_id,
-                    &job.org_id,
-                    Some(&rel),
-                    job.maybe_hide,
-                );
+                let (name, oid) = name_at(job, rel_dt);
+                let (_, ok) =
+                    restore_release(c, ctx, &name, job.repo_id, &oid, Some(&rel), job.maybe_hide);
                 if ok {
                     stats.restored += 1;
                     stats.mark(rel_dt);

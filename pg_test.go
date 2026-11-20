@@ -671,3 +671,175 @@ func TestCompactTable(t *testing.T) {
 	rebuilt("out of attribute slots", "sfull", before, lib.CompactTable(c, &ctx, "sfull"))
 	exec("alter table \"sfull\" add column \"Envoy\" double precision not null default 0.0")
 }
+
+// TestRepoNameAt - the name a repository had at a given time comes from the native GH Archive events:
+// the name of the first native event of the repository id at or after that time, else the current name
+func TestRepoNameAt(t *testing.T) {
+	var ctx lib.Ctx
+	ctx.Init()
+	ctx.TestMode = true
+
+	// Do not allow to run tests in "gha" database
+	if ctx.PgDB != "dbtest" {
+		t.Errorf("tests can only be run on \"dbtest\" database")
+		return
+	}
+	lib.DropDatabaseIfExists(&ctx)
+	if !lib.CreateDatabaseIfNeeded(&ctx) {
+		t.Errorf("failed to create database \"%s\"", ctx.PgDB)
+	}
+	defer func() {
+		lib.DropDatabaseIfExists(&ctx)
+	}()
+	c := lib.PgConn(&ctx)
+	defer func() { lib.FatalOnError(c.Close()) }()
+	at := func(s string) time.Time {
+		dt, err := time.Parse("2006-01-02 15:04:05", s)
+		lib.FatalOnError(err)
+		return dt
+	}
+	check := func(what string, repoID int64, current string, orgID interface{}, dt, expName string, expOrgID interface{}, expChanged bool) {
+		t.Helper()
+		name, nameOrgID, changed := lib.RepoNameAt(c, &ctx, repoID, current, orgID, at(dt))
+		if name != expName || nameOrgID != expOrgID || changed != expChanged {
+			t.Errorf(
+				"%s: RepoNameAt(%d, %s, %v, %s) = (%s, %v, %v), expected (%s, %v, %v)",
+				what, repoID, current, orgID, dt, name, nameOrgID, changed, expName, expOrgID, expChanged,
+			)
+		}
+	}
+
+	// Lookup failure (no tables yet): the current name, remembered for that repository id
+	check("no tables", 99, "org/failed", int64(7), "2020-05-01 00:00:00", "org/failed", int64(7), false)
+	check("no tables, again", 99, "org/failed", nil, "2020-05-01 00:00:00", "org/failed", nil, false)
+
+	lib.ExecSQLWithErr(c, &ctx, "create table gha_repos(id bigint not null, name varchar(160) not null, org_id bigint, org_login varchar(100), primary key(id, name))")
+	lib.ExecSQLWithErr(
+		c, &ctx,
+		"create table gha_events(id bigint not null primary key, type varchar(40) not null, actor_id bigint not null, repo_id bigint not null, "+
+			"created_at timestamp not null, dup_actor_login varchar(120) not null, dup_repo_name varchar(160) not null, org_id bigint)",
+	)
+	lib.ExecSQLWithErr(c, &ctx, "create index events_repo_name_created_at_idx on gha_events(repo_id, dup_repo_name, created_at)")
+	repo := func(id int64, name string, orgID interface{}) {
+		lib.ExecSQLWithErr(c, &ctx, "insert into gha_repos(id, name, org_id) values($1, $2, $3)", id, name, orgID)
+	}
+	nextID := int64(1000)
+	event := func(id, repoID int64, name string, orgID interface{}, dt string) {
+		if id == 0 {
+			nextID++
+			id = nextID
+		}
+		lib.ExecSQLWithErr(
+			c, &ctx,
+			"insert into gha_events(id, type, actor_id, repo_id, created_at, dup_actor_login, dup_repo_name, org_id) values($1, 'PushEvent', 1, $2, $3, 'a', $4, $5)",
+			id, repoID, at(dt), name, orgID,
+		)
+	}
+	artificial := lib.ArtificialIDBase
+
+	// 1: one name, native events: no lookup of the events at all
+	repo(1, "org/one", int64(10))
+	event(0, 1, "org/one", int64(10), "2020-01-01 00:00:00")
+	event(0, 1, "org/one", int64(10), "2020-06-01 00:00:00")
+	check("one name, before", 1, "org/one", int64(10), "2019-01-01 00:00:00", "org/one", int64(10), false)
+	check("one name, inside", 1, "org/one", int64(10), "2020-03-01 00:00:00", "org/one", int64(10), false)
+	check("one name, after", 1, "org/one", nil, "2021-01-01 00:00:00", "org/one", nil, false)
+	// invalid input: the given name
+	check("zero time", 1, "x/y", int64(3), "0001-01-01 00:00:00", "x/y", int64(3), false)
+	check("no repository id", 0, "x/y", int64(3), "2020-03-01 00:00:00", "x/y", int64(3), false)
+	check("negative repository id", -1, "x/y", nil, "2020-03-01 00:00:00", "x/y", nil, false)
+
+	// 2: the database knows one name, GitHub answers with another one (not in gha_repos yet)
+	repo(2, "old/two", int64(20))
+	event(0, 2, "old/two", int64(20), "2020-01-01 00:00:00")
+	event(0, 2, "old/two", int64(20), "2020-06-01 10:00:00")
+	check("unknown current name, before the last event", 2, "new/two", int64(21), "2020-03-01 00:00:00", "old/two", int64(20), true)
+	check("unknown current name, at the last event", 2, "new/two", int64(21), "2020-06-01 10:00:00", "old/two", int64(20), true)
+	check("unknown current name, after the last event", 2, "new/two", int64(21), "2020-06-01 10:00:01", "new/two", int64(21), false)
+
+	// 3: renamed once (transfer to another organization); artificial events never decide.
+	// The organization id of a name is the one of its newest native event, else the gha_repos one
+	repo(3, "old/three", int64(31))
+	repo(3, "new/three", nil)
+	event(0, 3, "old/three", nil, "2020-01-01 00:00:00")
+	event(0, 3, "old/three", int64(30), "2020-06-01 10:00:00")
+	event(0, 3, "new/three", int64(32), "2020-06-01 12:00:00")
+	event(0, 3, "new/three", int64(32), "2020-12-01 00:00:00")
+	event(artificial+1, 3, "old/three", int64(30), "2020-08-01 00:00:00")
+	event(artificial+2, 3, "old/three", int64(30), "2021-06-01 00:00:00")
+	event(-5, 3, "old/three", int64(30), "2020-09-01 00:00:00")
+	event(artificial+3, 3, "new/three", int64(32), "2019-06-01 00:00:00")
+	check("renamed, older than everything", 3, "new/three", int64(32), "2019-01-01 00:00:00", "old/three", int64(30), true)
+	check("renamed, before", 3, "new/three", int64(32), "2020-03-01 00:00:00", "old/three", int64(30), true)
+	check("renamed, the last event under the old name", 3, "new/three", int64(32), "2020-06-01 10:00:00", "old/three", int64(30), true)
+	check("renamed, between", 3, "new/three", int64(32), "2020-06-01 11:00:00", "new/three", int64(32), false)
+	check("renamed, the first event under the new name", 3, "new/three", int64(32), "2020-06-01 12:00:00", "new/three", int64(32), false)
+	check("renamed, after, old artificial events around", 3, "new/three", int64(32), "2020-08-15 00:00:00", "new/three", int64(32), false)
+	check("renamed, newer than everything", 3, "new/three", int64(32), "2021-01-01 00:00:00", "new/three", int64(32), false)
+	// the caller's name is the old one (no heartbeat): the new name's time gets the new name and its organization
+	check("renamed, caller has the old name, before", 3, "old/three", int64(30), "2020-03-01 00:00:00", "old/three", int64(30), false)
+	check("renamed, caller has the old name, after", 3, "old/three", int64(30), "2020-07-01 00:00:00", "new/three", int64(32), true)
+	check("renamed, caller has the old name, newer than everything", 3, "old/three", int64(30), "2021-01-01 00:00:00", "old/three", int64(30), false)
+
+	// 4: renamed and renamed back; a user-owned name has no organization
+	repo(4, "org/four", int64(40))
+	repo(4, "user/four", nil)
+	event(0, 4, "org/four", int64(40), "2020-01-01 00:00:00")
+	event(0, 4, "org/four", int64(40), "2020-03-01 00:00:00")
+	event(0, 4, "user/four", nil, "2020-04-01 00:00:00")
+	event(0, 4, "user/four", nil, "2020-06-01 00:00:00")
+	event(0, 4, "org/four", int64(40), "2020-07-01 00:00:00")
+	event(0, 4, "org/four", int64(40), "2020-09-01 00:00:00")
+	check("renamed back, first period", 4, "org/four", int64(40), "2020-02-01 00:00:00", "org/four", int64(40), false)
+	check("renamed back, gap before the other name", 4, "org/four", int64(40), "2020-03-15 00:00:00", "user/four", nil, true)
+	check("renamed back, other name", 4, "org/four", int64(40), "2020-05-01 00:00:00", "user/four", nil, true)
+	check("renamed back, gap before the current name", 4, "org/four", int64(40), "2020-06-15 00:00:00", "org/four", int64(40), false)
+	check("renamed back, last period", 4, "org/four", int64(40), "2020-08-01 00:00:00", "org/four", int64(40), false)
+	check("renamed back, newer than everything", 4, "org/four", int64(40), "2020-10-01 00:00:00", "org/four", int64(40), false)
+
+	// 5: two names, no native events at all
+	repo(5, "a/five", int64(50))
+	repo(5, "b/five", int64(51))
+	event(artificial+10, 5, "a/five", int64(50), "2020-01-01 00:00:00")
+	event(artificial+11, 5, "b/five", int64(51), "2020-06-01 00:00:00")
+	check("no native events", 5, "b/five", int64(51), "2020-03-01 00:00:00", "b/five", int64(51), false)
+	check("no native events, other name", 5, "c/five", nil, "2019-01-01 00:00:00", "c/five", nil, false)
+
+	// 6: not in gha_repos at all
+	check("unknown repository", 6, "any/six", int64(60), "2020-03-01 00:00:00", "any/six", int64(60), false)
+
+	// 7: two names with a native event in the same second: the alphabetically first name
+	repo(7, "tie/b", int64(70))
+	repo(7, "tie/a", int64(71))
+	event(0, 7, "tie/b", int64(70), "2020-01-01 00:00:00")
+	event(0, 7, "tie/b", int64(70), "2020-03-01 00:00:00")
+	event(0, 7, "tie/b", int64(70), "2020-06-01 00:00:00")
+	event(0, 7, "tie/a", int64(71), "2020-06-01 00:00:00")
+	event(0, 7, "tie/a", int64(71), "2020-09-01 00:00:00")
+	check("tie", 7, "tie/b", int64(70), "2020-06-01 00:00:00", "tie/a", int64(71), true)
+	check("tie, a second earlier", 7, "tie/b", int64(70), "2020-05-31 23:59:59", "tie/a", int64(71), true)
+	check("tie, long before", 7, "tie/b", int64(70), "2020-02-01 00:00:00", "tie/b", int64(70), false)
+	check("tie, after the last earlier event", 7, "tie/b", int64(70), "2020-03-01 00:00:01", "tie/a", int64(71), true)
+	check("tie, after", 7, "tie/b", int64(70), "2020-06-01 00:00:01", "tie/a", int64(71), true)
+
+	// 8: three names, the answer moves through all of them
+	repo(8, "n1/eight", int64(81))
+	repo(8, "n2/eight", int64(82))
+	repo(8, "n3/eight", int64(83))
+	event(0, 8, "n1/eight", int64(81), "2020-01-01 00:00:00")
+	event(0, 8, "n1/eight", int64(81), "2020-02-01 00:00:00")
+	event(0, 8, "n2/eight", int64(82), "2020-03-01 00:00:00")
+	event(0, 8, "n2/eight", int64(82), "2020-04-01 00:00:00")
+	event(0, 8, "n3/eight", int64(83), "2020-05-01 00:00:00")
+	check("three names, first", 8, "n3/eight", int64(83), "2020-01-15 00:00:00", "n1/eight", int64(81), true)
+	check("three names, second", 8, "n3/eight", int64(83), "2020-02-15 00:00:00", "n2/eight", int64(82), true)
+	check("three names, second again", 8, "n3/eight", int64(83), "2020-03-15 00:00:00", "n2/eight", int64(82), true)
+	check("three names, third", 8, "n3/eight", int64(83), "2020-04-15 00:00:00", "n3/eight", int64(83), false)
+	check("three names, after", 8, "n3/eight", int64(83), "2020-06-01 00:00:00", "n3/eight", int64(83), false)
+
+	// The answers are cached per repository id for the process: events written later at the newest end
+	// (what the events feed does) do not change them
+	event(0, 2, "new/two", int64(21), "2020-07-01 00:00:00")
+	check("cached, after the last old event", 2, "new/two", int64(21), "2020-06-15 00:00:00", "new/two", int64(21), false)
+	check("cached, before", 2, "new/two", int64(21), "2020-03-01 00:00:00", "old/two", int64(20), true)
+}

@@ -282,7 +282,8 @@ pushedAt stargazerCount forkCount watchers openIssues openPRs` plus the newest i
 `gh_graphql_post` transport (also used by the stars restore now); `RESOURCE_LIMITS_EXCEEDED` → batch split in
 halves; a batch failing on every token → its repos are **unknown = processed by every pass** (fail open,
 `WARNING: ghapi2db heartbeat: N repos unknown (...)`), no token → every repo processed. Classification: found
-(archived counted, `nameWithOwner` differs with the same id → rename, processed under our name), not found
+(archived counted, `nameWithOwner` differs with the same id → rename: processed under GitHub's current name
+since 2026-11-20, each stored event under the name of its time, see "Renamed repositories" in `rust/README.md`), not found
 (alias `null`; malformed names such as prod's `kubernetes/` are not even queried), **moved** (`databaseId` not
 among the tracked ids → `WARNING: %s: resolves to %s (id %d) but is tracked as id %d, skipping`). Gates per
 pass (`since recentDt`): events `issueAt||prAt`, commits `pushedAt`, comments `issueAt||prAt||pushedAt`,

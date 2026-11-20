@@ -263,7 +263,8 @@ func RestoreIssueComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID i
 		eid = raw.(int64)
 	}
 	ghActor(tc, ctx, cmt.User, maybeHide)
-	issueID := lookupID(tc, ctx, "select max(id) from gha_issues where number = "+NValue(1)+" and dup_repo_name = "+NValue(2), issueNumber, repo)
+	// under any name of the repository: the event carries the name of its time, the issue's rows the names of theirs
+	issueID := lookupID(tc, ctx, "select max(id) from gha_issues where number = "+NValue(1)+" and (dup_repo_name = "+NValue(2)+" or dup_repo_id = "+NValue(3)+")", issueNumber, repo, repoID)
 	restoreEventPayload(tc, ctx, eid, eType, cmt.User, repo, repoID, orgID, createdAt, "created", issueNumber, issueID, nil, cid, nil, nil, nil, maybeHide)
 	res := ExecSQLTxWithErr(
 		tc,
@@ -320,7 +321,7 @@ func RestoreReviewComment(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID 
 		eid = raw.(int64)
 	}
 	ghActor(tc, ctx, cmt.User, maybeHide)
-	prID := lookupID(tc, ctx, "select max(id) from gha_pull_requests where number = "+NValue(1)+" and dup_repo_name = "+NValue(2), prNumber, repo)
+	prID := lookupID(tc, ctx, "select max(id) from gha_pull_requests where number = "+NValue(1)+" and (dup_repo_name = "+NValue(2)+" or dup_repo_id = "+NValue(3)+")", prNumber, repo, repoID)
 	restoreEventPayload(tc, ctx, eid, eType, cmt.User, repo, repoID, orgID, createdAt, "created", prNumber, nil, prID, cid, nil, nil, nil, maybeHide)
 	res := ExecSQLTxWithErr(
 		tc,
@@ -387,7 +388,7 @@ func RestoreReview(c *sql.DB, ctx *Ctx, repo string, repoID int64, orgID interfa
 		eid = raw.(int64)
 	}
 	ghActor(tc, ctx, rev.User, maybeHide)
-	prID := lookupID(tc, ctx, "select max(id) from gha_pull_requests where number = "+NValue(1)+" and dup_repo_name = "+NValue(2), prNumber, repo)
+	prID := lookupID(tc, ctx, "select max(id) from gha_pull_requests where number = "+NValue(1)+" and (dup_repo_name = "+NValue(2)+" or dup_repo_id = "+NValue(3)+")", prNumber, repo, repoID)
 	restoreEventPayload(tc, ctx, eid, eType, rev.User, repo, repoID, orgID, createdAt, "created", prNumber, nil, prID, nil, nil, nil, nil, maybeHide)
 	res := ExecSQLTxWithErr(
 		tc,

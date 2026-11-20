@@ -91,7 +91,7 @@ func (p apiPass) gate() string {
 const heartbeatBatch = 50
 
 const heartbeatFragment = "fragment F on Repository { databaseId nameWithOwner isArchived pushedAt stargazerCount forkCount watchers { totalCount } " +
-	"owner { login ... on User { databaseId } ... on Organization { databaseId } } " +
+	"owner { __typename login ... on User { databaseId } ... on Organization { databaseId } } " +
 	"openIssues: issues(states: OPEN) { totalCount } openPRs: pullRequests(states: OPEN) { totalCount } " +
 	"issues(last: 1, orderBy: {field: UPDATED_AT, direction: ASC}) { nodes { updatedAt } } " +
 	"pullRequests(last: 1, orderBy: {field: UPDATED_AT, direction: ASC}) { nodes { updatedAt } } " +
@@ -108,10 +108,13 @@ type repoHeartbeat struct {
 	moved          bool // resolves to a different repository id than the tracked one
 	unknown        bool // heartbeat failed: treated as active in every pass
 	archived       bool
+	excluded       bool   // GitHub's current name is in the project's GHA2DB_EXCLUDE_REPOS: no pass processes it
 	reason         string // not found: the GraphQL error type (NOT_FOUND, FORBIDDEN, ...)
 	databaseID     int64
 	nameWithOwner  string
 	ownerID        int64
+	ownerLogin     string
+	ownerIsOrg     bool
 	pushedAt       *time.Time
 	issueAt        *time.Time
 	prAt           *time.Time
@@ -134,7 +137,7 @@ func (h *repoHeartbeat) active(pass apiPass, recentDt time.Time) bool {
 	if h == nil || h.unknown {
 		return true
 	}
-	if h.notFound || h.moved {
+	if h.notFound || h.moved || h.excluded {
 		return false
 	}
 	switch pass {
@@ -174,6 +177,8 @@ type repoScope struct {
 	nIDs       int
 	heartbeat  map[string]*repoHeartbeat // nil until the first gated pass
 	recentDt   time.Time                 // recent date the heartbeat was evaluated against
+	dbNames    map[string]string         // renamed repositories: GitHub's current name -> the database name it replaced
+	untracked  map[string]struct{}       // repositories renamed out of the project's rules (warned about once per run)
 }
 
 var (
@@ -264,6 +269,7 @@ type heartbeatNode struct {
 		TotalCount int64 `json:"totalCount"`
 	} `json:"watchers"`
 	Owner struct {
+		TypeName   string `json:"__typename"`
 		Login      string `json:"login"`
 		DatabaseID int64  `json:"databaseId"`
 	} `json:"owner"`
@@ -352,6 +358,8 @@ func decodeHeartbeat(body []byte, batch []string, tokenIdx, nTokens int) (hbs []
 		hb.databaseID = node.DatabaseID
 		hb.nameWithOwner = node.NameWithOwner
 		hb.ownerID = node.Owner.DatabaseID
+		hb.ownerLogin = node.Owner.Login
+		hb.ownerIsOrg = node.Owner.TypeName == "Organization"
 		hb.archived = node.IsArchived
 		hb.pushedAt = node.PushedAt
 		hb.stargazerCount = node.StargazerCount
@@ -575,6 +583,7 @@ func (s *repoScope) runHeartbeat(gctx context.Context, ctx *lib.Ctx, c *sql.DB, 
 			}
 		}
 	}
+	lines = append(lines, s.followRenames(ctx, c)...)
 	sort.Strings(lines)
 	for _, line := range lines {
 		lib.Printf("%s", line)
@@ -583,6 +592,203 @@ func (s *repoScope) runHeartbeat(gctx context.Context, ctx *lib.Ctx, c *sql.DB, 
 		"ghapi2db heartbeat: %d repos in %d GraphQL queries: %d found, %d not found, %d moved, %d unknown, %d archived; active since %v: pushes %d, issues %d, PRs %d, forks %d, releases %d, stars %d\n",
 		len(s.repos), nQueries, found, notFound, moved, unknown, archived, recentDt, pushes, issues, prs, forks, releases, stars,
 	)
+}
+
+// projectRules - the ingestion rules of the database's project, read once per process: the repository events
+// feed and the heartbeat's rename handling apply the same rules
+type projectRules struct {
+	filter lib.ProjectFilter // `command_line`: what the project's gha2db ingests today
+	hist   lib.ProjectFilter // `hist_command_line`: the biggest scope the project ever had
+}
+
+var (
+	gRules    *projectRules
+	gRulesMtx sync.Mutex
+)
+
+// getProjectRules - the project's rules (none when there is no projects.yaml or no enabled project uses the database)
+func getProjectRules(ctx *lib.Ctx) *projectRules {
+	gRulesMtx.Lock()
+	defer gRulesMtx.Unlock()
+	if gRules == nil {
+		projects, path := lib.ReadProjectsIfPresent(ctx)
+		gRules = &projectRules{
+			filter: lib.NewProjectFilter(ctx, projects, ctx.PgDB, path, false),
+			hist:   lib.NewProjectFilter(ctx, projects, ctx.PgDB, path, true),
+		}
+	}
+	return gRules
+}
+
+// covers - does the project track the name: today or in its historical scope
+func (r *projectRules) covers(name string) bool {
+	return r.filter.RepoHit(name) || r.hist.RepoHit(name)
+}
+
+// followRenames - GitHub's API answers always carry the current name of a repository, so the repositories GitHub
+// reports under another name than the database (same repository id) are processed under their current names by
+// every pass: the gha_repos (and gha_orgs) rows of the current name are added the way the event writer adds them
+// and the name replaces the database one in the scope (each stored event then gets the name of its time, see
+// lib.RepoNameAt). A repository whose current name is in the project's GHA2DB_EXCLUDE_REPOS is skipped by every
+// pass. A current name outside the project's rules while a former name of the repository is inside gets the
+// warning: once per run, because the heartbeat is evaluated once per process. Returns the log lines.
+func (s *repoScope) followRenames(ctx *lib.Ctx, c *sql.DB) (lines []string) {
+	rules := getProjectRules(ctx)
+	s.dbNames = make(map[string]string)
+	s.untracked = make(map[string]struct{})
+	for _, orgRepo := range append([]string{}, s.repos...) {
+		hb := s.heartbeat[orgRepo]
+		if hb == nil || !hb.found || hb.moved {
+			continue
+		}
+		current := hb.nameWithOwner
+		if rules.filter.RepoExcluded(current) {
+			hb.excluded = true
+			if ctx.Debug > 0 {
+				lines = append(lines, fmt.Sprintf("%s: %s is excluded by project '%s' (GHA2DB_EXCLUDE_REPOS), skipping\n", orgRepo, current, rules.filter.Name))
+			}
+			continue
+		}
+		name := orgRepo
+		if current != orgRepo {
+			if reason := s.followRename(ctx, c, orgRepo, hb); reason == "" {
+				name = current
+			} else if ctx.Debug > 0 {
+				lines = append(lines, fmt.Sprintf("%s: %s, still processed as %s\n", current, reason, orgRepo))
+			}
+		}
+		if !rules.filter.Active() || rules.filter.RepoHit(current) {
+			continue
+		}
+		former := trackedFormerName(ctx, c, rules, orgRepo, hb)
+		if former == "" {
+			continue
+		}
+		lines = append(
+			lines,
+			fmt.Sprintf(
+				"WARNING: repo %s was renamed to %s (id %d) which is not tracked by project '%s': data is stored under the new name, update the project configuration\n",
+				former, current, hb.databaseID, rules.filter.Name,
+			),
+		)
+		s.untracked[name] = struct{}{}
+	}
+	return
+}
+
+// followRename - put the repository into the scope under GitHub's current name, "" when done, else why not
+func (s *repoScope) followRename(ctx *lib.Ctx, c *sql.DB, orgRepo string, hb *repoHeartbeat) string {
+	current := hb.nameWithOwner
+	if _, _, ok := wellFormed(current); !ok {
+		return "malformed name"
+	}
+	rows := lib.QuerySQLWithErr(c, ctx, "select id from gha_repos where name = "+lib.NValue(1), current)
+	known, taken := false, false
+	for rows.Next() {
+		var id int64
+		lib.FatalOnError(rows.Scan(&id))
+		if id == hb.databaseID {
+			known = true
+		} else {
+			taken = true
+		}
+	}
+	lib.FatalOnError(rows.Err())
+	lib.FatalOnError(rows.Close())
+	if taken {
+		// the passes resolve the repository id from the name: it would be ambiguous
+		return "known under another repository id"
+	}
+	if !known {
+		if ctx.SkipPDB {
+			return "not in gha_repos (no database writes)"
+		}
+		var orgID, orgLogin interface{}
+		if hb.ownerIsOrg && hb.ownerID > 0 && hb.ownerLogin != "" {
+			lib.ExecSQLWithErr(c, ctx, lib.InsertIgnore("into gha_orgs(id, login) "+lib.NValues(2)), lib.AnyArray{hb.ownerID, hb.ownerLogin}...)
+			orgID, orgLogin = hb.ownerID, hb.ownerLogin
+		}
+		lib.ExecSQLWithErr(c, ctx, lib.InsertIgnore("into gha_repos(id, name, org_id, org_login) "+lib.NValues(4)), lib.AnyArray{hb.databaseID, current, orgID, orgLogin}...)
+	}
+	s.swapName(orgRepo, current)
+	return ""
+}
+
+// swapName - the scope entry of the database name becomes the entry of GitHub's current name (ids and heartbeat
+// move with it, the list stays sorted) and the database name is remembered
+func (s *repoScope) swapName(orgRepo, current string) {
+	for i, name := range s.repos {
+		if name == orgRepo {
+			s.repos[i] = current
+			break
+		}
+	}
+	sort.Strings(s.repos)
+	s.ids[current] = s.ids[orgRepo]
+	delete(s.ids, orgRepo)
+	s.heartbeat[current] = s.heartbeat[orgRepo]
+	delete(s.heartbeat, orgRepo)
+	if s.dbNames == nil {
+		s.dbNames = make(map[string]string)
+	}
+	s.dbNames[current] = orgRepo
+}
+
+// formerName - a former name of the repository that the project tracks ("" when none): the database name when
+// it is one, else the alphabetically first such name among the repository id's names
+func (r *projectRules) formerName(orgRepo, current string, names []string) string {
+	if orgRepo != current && r.covers(orgRepo) {
+		return orgRepo
+	}
+	former := ""
+	for _, name := range names {
+		if name != current && r.covers(name) && (former == "" || name < former) {
+			former = name
+		}
+	}
+	return former
+}
+
+// trackedFormerName - formerName over the names gha_repos has for the repository id
+func trackedFormerName(ctx *lib.Ctx, c *sql.DB, rules *projectRules, orgRepo string, hb *repoHeartbeat) string {
+	current := hb.nameWithOwner
+	if orgRepo != current && rules.covers(orgRepo) {
+		return orgRepo
+	}
+	rows := lib.QuerySQLWithErr(c, ctx, "select name from gha_repos where id = "+lib.NValue(1), hb.databaseID)
+	defer func() { lib.FatalOnError(rows.Close()) }()
+	names := []string{}
+	for rows.Next() {
+		name := ""
+		lib.FatalOnError(rows.Scan(&name))
+		names = append(names, name)
+	}
+	lib.FatalOnError(rows.Err())
+	return rules.formerName(orgRepo, current, names)
+}
+
+// scopeDBName - the name the database knows a repository by: differs from the scope's name for the repositories
+// the heartbeat found renamed on GitHub (their rows still carry the former name)
+func scopeDBName(orgRepo string) string {
+	gScopeMtx.Lock()
+	defer gScopeMtx.Unlock()
+	if gScope != nil {
+		if dbName, ok := gScope.dbNames[orgRepo]; ok {
+			return dbName
+		}
+	}
+	return orgRepo
+}
+
+// scopeUntracked - was the repository renamed out of the project's rules (the heartbeat warned about it)
+func scopeUntracked(orgRepo string) bool {
+	gScopeMtx.Lock()
+	defer gScopeMtx.Unlock()
+	if gScope == nil {
+		return false
+	}
+	_, ok := gScope.untracked[orgRepo]
+	return ok
 }
 
 // scopeRepos - the repositories a pass should process and how many the heartbeat skipped (-1: not gated)
@@ -594,7 +800,17 @@ func scopeRepos(gctx context.Context, ctx *lib.Ctx, c *sql.DB, pass apiPass, rec
 		gated = false
 	}
 	if !gated {
-		return s.repos, -1
+		if s.heartbeat == nil {
+			return s.repos, -1
+		}
+		// not gated, but the heartbeat of an earlier pass is known: the excluded repositories stay out
+		for _, orgRepo := range s.repos {
+			if hb := s.heartbeat[orgRepo]; hb != nil && hb.excluded {
+				continue
+			}
+			repos = append(repos, orgRepo)
+		}
+		return repos, -1
 	}
 	gScopeMtx.Lock()
 	s.runHeartbeat(gctx, ctx, c, recentDt)
@@ -663,6 +879,14 @@ func (h *repoHeartbeat) counters() *repoCounters {
 func shortRepoName(fullName string) string {
 	if i := strings.LastIndex(fullName, "/"); i >= 0 {
 		return fullName[i+1:]
+	}
+	return fullName
+}
+
+// repoOwner - the owner part of "owner/repo"
+func repoOwner(fullName string) string {
+	if i := strings.Index(fullName, "/"); i >= 0 {
+		return fullName[:i]
 	}
 	return fullName
 }

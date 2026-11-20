@@ -22,9 +22,9 @@ use crate::gofmt;
 use crate::log::printf;
 use crate::pg::api::{
     bool_or_nil, exec_sql_tx_with_err, insert_actor_tx, insert_ignore, int_or_nil, n_value,
-    n_values, query_sql_with_err, string_or_nil, trunc_string_or_nil,
+    n_values, query_sql, query_sql_with_err, string_or_nil, trunc_string_or_nil,
 };
-use crate::pg::{PgConn, PgTx, SqlArg};
+use crate::pg::{PgConn, PgError, PgTx, SqlArg};
 use crate::string::{get_hidden, maybe_hide_func};
 use crate::threads::get_threads_num;
 use crate::time::{period_parse, progress_info, to_ymdhms_date};
@@ -935,6 +935,252 @@ pub fn current_repo_id(con: &PgConn, ctx: &Ctx, name: &str) -> Option<RepoIDs> {
         .get_or_insert_with(HashMap::new)
         .insert(name.to_string(), found);
     found
+}
+
+/// Go `repoNameSpan`: a name of a repository id and the time span of its
+/// native GH Archive events (`0 < id < 2^48`).
+#[derive(Clone, Debug)]
+struct RepoNameSpan {
+    name: String,
+    /// Organization id of the name: the newest native event's, else the
+    /// `gha_repos` row's (`None`: none).
+    org_id: Option<i64>,
+    /// Oldest and newest native event under the name (`None`: the name has
+    /// no native events).
+    native: Option<(DateTime<Utc>, DateTime<Utc>)>,
+}
+
+/// Go `repoNamesEntry`: what [`repo_name_at`] knows about a repository id.
+#[derive(Clone, Debug, Default)]
+struct RepoNamesEntry {
+    /// The names of the id in `gha_repos`, sorted (`None`: the lookup failed).
+    names: Option<Vec<String>>,
+    /// The same names with their native spans, read only when the id has more
+    /// than its current name.
+    spans: Option<Vec<RepoNameSpan>>,
+}
+
+/// Go `repoNamesCache`: [`repo_name_at`] answers per process. The native
+/// spans only grow under a run and only at their newest end (the events feed
+/// writes each event under its `repo_name_at` name), which never changes an
+/// answer.
+static REPO_NAMES_CACHE: Mutex<Option<HashMap<i64, RepoNamesEntry>>> = Mutex::new(None);
+
+/// Go `repoNameSpans`: every `gha_repos` name of a repository id with its
+/// native span, sorted by name.
+fn repo_name_spans(con: &PgConn, ctx: &Ctx, repo_id: i64) -> Result<Vec<RepoNameSpan>, PgError> {
+    // both lateral subqueries walk events_repo_name_created_at_idx from one
+    // end to the first native event
+    let query = format!(
+        "select r.name, coalesce(l.org_id, r.org_id), f.created_at, l.created_at from gha_repos r \
+         left join lateral (select e.created_at from gha_events e where e.repo_id = r.id and e.dup_repo_name = r.name \
+         and e.id > 0 and e.id < 281474976710656 order by e.created_at limit 1) f on true \
+         left join lateral (select e.created_at, e.org_id from gha_events e where e.repo_id = r.id and e.dup_repo_name = r.name \
+         and e.id > 0 and e.id < 281474976710656 order by e.created_at desc limit 1) l on true \
+         where r.id = {}",
+        n_value(1)
+    );
+    let mut rows = query_sql(con, ctx, &query, &[SqlArg::Int(repo_id)])?;
+    let mut spans = Vec::new();
+    while rows.next() {
+        let mut name = String::new();
+        let mut org_id: Option<i64> = None;
+        let mut first: Option<DateTime<Utc>> = None;
+        let mut last: Option<DateTime<Utc>> = None;
+        rows.scan(&mut [&mut name, &mut org_id, &mut first, &mut last])?;
+        spans.push(RepoNameSpan {
+            name,
+            org_id,
+            native: first.zip(last),
+        });
+    }
+    rows.err()?;
+    rows.close()?;
+    spans.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(spans)
+}
+
+/// Go `repoNamesOf`: the cached names of a repository id, with their native
+/// spans when asked (`None`: the lookup failed).
+fn repo_names_of(
+    con: &PgConn,
+    ctx: &Ctx,
+    repo_id: i64,
+    with_spans: bool,
+) -> Option<RepoNamesEntry> {
+    let cached = REPO_NAMES_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .get(&repo_id)
+        .cloned();
+    let mut entry = RepoNamesEntry::default();
+    if let Some(hit) = cached {
+        hit.names.as_ref()?;
+        if hit.spans.is_some() || !with_spans {
+            return Some(hit);
+        }
+        entry = hit;
+    }
+    let store = |entry: RepoNamesEntry| {
+        REPO_NAMES_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_or_insert_with(HashMap::new)
+            .insert(repo_id, entry);
+    };
+    let fail = |err: PgError| -> Option<RepoNamesEntry> {
+        // one line per repository id: the failure is remembered, every later
+        // lookup answers "unknown"
+        printf(&format!(
+            "Warning: cannot read the names of repository id {repo_id}: {err}, using its current name\n"
+        ));
+        store(RepoNamesEntry::default());
+        None
+    };
+    if entry.names.is_none() {
+        let read = || -> Result<Vec<String>, PgError> {
+            let mut rows = query_sql(
+                con,
+                ctx,
+                &format!("select name from gha_repos where id = {}", n_value(1)),
+                &[SqlArg::Int(repo_id)],
+            )?;
+            let mut names = Vec::new();
+            while rows.next() {
+                let mut name = String::new();
+                rows.scan(&mut [&mut name])?;
+                names.push(name);
+            }
+            rows.err()?;
+            rows.close()?;
+            names.sort();
+            Ok(names)
+        };
+        match read() {
+            Ok(names) => entry.names = Some(names),
+            Err(err) => return fail(err),
+        }
+    }
+    if with_spans {
+        match repo_name_spans(con, ctx, repo_id) {
+            Ok(spans) => entry.spans = Some(spans),
+            Err(err) => return fail(err),
+        }
+    }
+    store(entry.clone());
+    Some(entry)
+}
+
+/// Go `RepoNameAt`: the name a repository (id) had at a given time and the
+/// organization id of that name, best effort. GitHub's API always answers
+/// with the current name of a repository, also for objects created before a
+/// rename or a transfer, while the GH Archive events gha2db stored carry the
+/// name of their time. The name at time `dt` is the name of the first native
+/// event (`0 < id < 2^48`) of the repository id at or after `dt`: when a
+/// repository gets a name the project does not track gha2db stops ingesting
+/// it, so the events under the former name end at the rename and everything
+/// later belongs to the new name. When there is no such event (`dt` is newer
+/// than everything archived, the id has no other name, no native events) or
+/// the lookup fails, the given current name and organization id are returned
+/// unchanged. The last value is `true` when another name than the current
+/// one was valid at `dt`.
+pub fn repo_name_at(
+    con: &PgConn,
+    ctx: &Ctx,
+    repo_id: i64,
+    current: &str,
+    org_id: &SqlArg,
+    dt: DateTime<Utc>,
+) -> (String, SqlArg, bool) {
+    let unchanged = || (current.to_string(), org_id.clone(), false);
+    if repo_id <= 0 || dt == go_zero_time().with_timezone(&Utc) {
+        return unchanged();
+    }
+    let Some(entry) = repo_names_of(con, ctx, repo_id, false) else {
+        return unchanged();
+    };
+    let names = entry.names.as_deref().unwrap_or_default();
+    if names.is_empty() || (names.len() == 1 && names[0] == current) {
+        return unchanged();
+    }
+    let Some(entry) = repo_names_of(con, ctx, repo_id, true) else {
+        return unchanged();
+    };
+    let spans = entry.spans.as_deref().unwrap_or_default();
+    // candidates: the names with a native event at or after dt
+    let n_candidates = spans
+        .iter()
+        .filter(|span| matches!(span.native, Some((_, last)) if last >= dt))
+        .count();
+    if n_candidates == 0 {
+        return unchanged();
+    }
+    let mut best: Option<(usize, DateTime<Utc>)> = None;
+    for (i, span) in spans.iter().enumerate() {
+        let Some((first, last)) = span.native else {
+            continue;
+        };
+        if last < dt {
+            continue;
+        }
+        // the first native event of the name at or after dt: its first one
+        // when that is not older than dt, else looked up (not needed for a
+        // single candidate)
+        let mut at = first;
+        if at < dt && n_candidates > 1 {
+            let probe = || -> Result<Option<DateTime<Utc>>, PgError> {
+                let mut rows = query_sql(
+                    con,
+                    ctx,
+                    &format!(
+                        "select created_at from gha_events where repo_id = {} and dup_repo_name = {} \
+                         and created_at >= {} and id > 0 and id < 281474976710656 order by created_at limit 1",
+                        n_value(1),
+                        n_value(2),
+                        n_value(3)
+                    ),
+                    &[
+                        SqlArg::Int(repo_id),
+                        SqlArg::from(span.name.as_str()),
+                        SqlArg::from(dt),
+                    ],
+                )?;
+                let mut next: Option<DateTime<Utc>> = None;
+                while rows.next() {
+                    rows.scan(&mut [&mut next])?;
+                }
+                rows.err()?;
+                rows.close()?;
+                Ok(next)
+            };
+            match probe() {
+                Err(err) => {
+                    printf(&format!(
+                        "Warning: cannot read the events of repository id {repo_id}: {err}, using its current name\n"
+                    ));
+                    return unchanged();
+                }
+                Ok(None) => continue,
+                Ok(Some(next)) => at = next,
+            }
+        }
+        // equal times: the alphabetically first name
+        if best.is_none_or(|(_, best_at)| at < best_at) {
+            best = Some((i, at));
+        }
+    }
+    let Some((best, _)) = best else {
+        return unchanged();
+    };
+    if spans[best].name == current {
+        return unchanged();
+    }
+    (
+        spans[best].name.clone(),
+        spans[best].org_id.map(SqlArg::Int).unwrap_or(SqlArg::Null),
+        true,
+    )
 }
 
 /// Go `artificialRepoIDs`: repo id (-1 when unknown, the legacy marker) and

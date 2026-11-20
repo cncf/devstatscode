@@ -23,6 +23,7 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use devstatscode::consts::{ARTIFICIAL_ISSUE_ID_BASE, ARTIFICIAL_PR_ID_BASE};
 use devstatscode::gha::{actor_hit, Actor, Event, GhaTime, Issue, Org, Payload, PullRequest, Repo};
+use devstatscode::ghapi::repo_name_at;
 use devstatscode::ghawriter::{upgrade_pull_request_stubs, write_to_db, STUB_CREATED_AT_CUT};
 use devstatscode::pg::api::{n_value, query_sql_with_err};
 use devstatscode::pg::{PgConn, SqlArg};
@@ -30,7 +31,7 @@ use devstatscode::{fatal_on_err, printf, Ctx};
 use serde::Deserialize;
 
 use crate::db_time;
-use crate::heartbeat::{heartbeat_of, ApiPass};
+use crate::heartbeat::{heartbeat_of, repo_owner, ApiPass};
 use crate::restore::{
     api_page, page_failed, restore_pass, GhClients, RepoJob, RestoreStats, RESTORE_PAGE_CAP,
 };
@@ -207,7 +208,8 @@ fn good_pull_request_row_present(c: &PgConn, ctx: &Ctx, repo_id: i64, number: i6
     )
 }
 
-/// Go `syntheticEvent`: a GHA-shaped IssuesEvent/PullRequestEvent for the object's lifecycle step.
+/// Go `syntheticEvent`: a GHA-shaped IssuesEvent/PullRequestEvent for the object's lifecycle step,
+/// under the name (and organization) the repository had at that time.
 #[allow(clippy::too_many_arguments)]
 fn synthetic_event(
     id: i64,
@@ -220,10 +222,28 @@ fn synthetic_event(
     issue: Option<&Issue>,
     pr: Option<&PullRequest>,
 ) -> Event {
-    let org = match job.org_id {
+    let (mut org_login, mut org_repo, mut org_id) = (
+        job.org.to_string(),
+        job.org_repo.to_string(),
+        job.org_id.clone(),
+    );
+    let (name, name_org_id, renamed) = repo_name_at(
+        job.c,
+        job.ctx,
+        job.repo_id,
+        job.org_repo,
+        &job.org_id,
+        created_at.with_timezone(&Utc),
+    );
+    if renamed {
+        org_login = repo_owner(&name).to_string();
+        org_repo = name;
+        org_id = name_org_id;
+    }
+    let org = match org_id {
         SqlArg::Int(oid) => Some(Org {
             id: oid,
-            login: job.org.to_string(),
+            login: org_login,
         }),
         _ => None,
     };
@@ -235,7 +255,7 @@ fn synthetic_event(
         actor,
         repo: Repo {
             id: job.repo_id,
-            name: job.org_repo.to_string(),
+            name: org_repo,
         },
         org,
         payload: Payload {

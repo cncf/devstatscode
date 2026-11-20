@@ -3,15 +3,18 @@
 //! and the GraphQL heartbeat that tells, per pass, which repositories had
 //! matching activity since the recent date.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Local, Timelike, Utc};
 use devstatscode::ghapi::{fmt_slice, get_rate_limits, get_tracked_repos};
 use devstatscode::github::{GoTime, Repository};
-use devstatscode::pg::api::{n_value, query_sql_with_err, trunc_to_bytes};
+use devstatscode::pg::api::{
+    exec_sql_with_err, insert_ignore, n_value, n_values, query_sql_with_err, trunc_to_bytes,
+};
 use devstatscode::pg::{PgConn, SqlArg};
+use devstatscode::project_filter::{new_project_filter, read_projects_if_present, ProjectFilter};
 use devstatscode::threads::get_threads_num;
 use devstatscode::time::{progress_info, wall_as_utc};
 use devstatscode::{fatal_on_err, fatalf, printf, Ctx};
@@ -78,7 +81,7 @@ impl ApiPass {
 const HEARTBEAT_BATCH: usize = 50;
 
 const HEARTBEAT_FRAGMENT: &str = "fragment F on Repository { databaseId nameWithOwner isArchived pushedAt stargazerCount forkCount watchers { totalCount } \
-owner { login ... on User { databaseId } ... on Organization { databaseId } } \
+owner { __typename login ... on User { databaseId } ... on Organization { databaseId } } \
 openIssues: issues(states: OPEN) { totalCount } openPRs: pullRequests(states: OPEN) { totalCount } \
 issues(last: 1, orderBy: {field: UPDATED_AT, direction: ASC}) { nodes { updatedAt } } \
 pullRequests(last: 1, orderBy: {field: UPDATED_AT, direction: ASC}) { nodes { updatedAt } } \
@@ -95,11 +98,15 @@ pub struct RepoHeartbeat {
     /// heartbeat failed: treated as active in every pass
     pub unknown: bool,
     pub archived: bool,
+    /// GitHub's current name is in the project's `GHA2DB_EXCLUDE_REPOS`: no pass processes it
+    pub excluded: bool,
     /// not found: the GraphQL error type (NOT_FOUND, FORBIDDEN, ...)
     pub reason: String,
     pub database_id: i64,
     pub name_with_owner: String,
     pub owner_id: i64,
+    pub owner_login: String,
+    pub owner_is_org: bool,
     pub pushed_at: Option<DateTime<Utc>>,
     pub issue_at: Option<DateTime<Utc>>,
     pub pr_at: Option<DateTime<Utc>>,
@@ -131,7 +138,7 @@ impl RepoHeartbeat {
         if self.unknown {
             return true;
         }
-        if self.not_found || self.moved {
+        if self.not_found || self.moved || self.excluded {
             return false;
         }
         match pass {
@@ -176,6 +183,10 @@ struct RepoScope {
     heartbeat: Option<BTreeMap<String, RepoHeartbeat>>,
     /// recent date the heartbeat was evaluated against
     recent_dt: DateTime<Utc>,
+    /// renamed repositories: GitHub's current name -> the database name it replaced
+    db_names: BTreeMap<String, String>,
+    /// repositories renamed out of the project's rules (warned about once per run)
+    untracked: BTreeSet<String>,
 }
 
 static SCOPE: OnceLock<Mutex<Option<RepoScope>>> = OnceLock::new();
@@ -223,6 +234,8 @@ impl RepoScope {
             ids,
             heartbeat: None,
             recent_dt: DateTime::<Utc>::default(),
+            db_names: BTreeMap::new(),
+            untracked: BTreeSet::new(),
         }
     }
 }
@@ -309,8 +322,9 @@ impl<T> Default for HbNodes<T> {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct HbOwner {
+    #[serde(rename = "__typename", deserialize_with = "nd")]
+    type_name: String,
     #[serde(deserialize_with = "nd")]
-    #[allow(dead_code)]
     login: String,
     #[serde(rename = "databaseId", deserialize_with = "nd")]
     database_id: i64,
@@ -436,6 +450,8 @@ fn decode_heartbeat(
         hb.database_id = node.database_id;
         hb.name_with_owner = node.name_with_owner;
         hb.owner_id = node.owner.database_id;
+        hb.owner_is_org = node.owner.type_name == "Organization";
+        hb.owner_login = node.owner.login;
         hb.archived = node.is_archived;
         hb.pushed_at = node.pushed_at.map(|t| t.utc());
         hb.stargazer_count = node.stargazer_count;
@@ -701,6 +717,8 @@ fn run_heartbeat(scope: &mut RepoScope, ctx: &mut Ctx, c: &PgConn, recent_dt: Da
             heartbeat.insert(org_repo.clone(), hb);
         }
     }
+    scope.heartbeat = Some(heartbeat);
+    lines.extend(follow_renames(scope, ctx, c));
     lines.sort();
     for line in &lines {
         printf!("{}", line);
@@ -722,7 +740,272 @@ fn run_heartbeat(scope: &mut RepoScope, ctx: &mut Ctx, c: &PgConn, recent_dt: Da
         releases,
         stars
     );
-    scope.heartbeat = Some(heartbeat);
+}
+
+/// Go `projectRules`: the ingestion rules of the database's project, read
+/// once per process: the repository events feed and the heartbeat's rename
+/// handling apply the same rules.
+pub struct ProjectRules {
+    /// `command_line`: what the project's gha2db ingests today
+    pub filter: ProjectFilter,
+    /// `hist_command_line`: the biggest scope the project ever had
+    pub hist: ProjectFilter,
+}
+
+static RULES: OnceLock<ProjectRules> = OnceLock::new();
+
+/// Go `getProjectRules`: the project's rules (none when there is no
+/// projects.yaml or no enabled project uses the database).
+pub fn get_project_rules(ctx: &Ctx) -> &'static ProjectRules {
+    RULES.get_or_init(|| {
+        let (projects, path) = read_projects_if_present(ctx);
+        ProjectRules {
+            filter: new_project_filter(ctx, projects.as_ref(), &ctx.pg_db, &path, false),
+            hist: new_project_filter(ctx, projects.as_ref(), &ctx.pg_db, &path, true),
+        }
+    })
+}
+
+impl ProjectRules {
+    /// Go `projectRules.covers`: does the project track the name: today or in
+    /// its historical scope.
+    fn covers(&self, name: &str) -> bool {
+        self.filter.repo_hit(name) || self.hist.repo_hit(name)
+    }
+
+    /// Go `projectRules.formerName`: a former name of the repository that the
+    /// project tracks ("" when none): the database name when it is one, else
+    /// the alphabetically first such name among the repository id's names.
+    fn former_name(&self, org_repo: &str, current: &str, names: &[String]) -> String {
+        if org_repo != current && self.covers(org_repo) {
+            return org_repo.to_string();
+        }
+        let mut former = "";
+        for name in names {
+            if name != current && self.covers(name) && (former.is_empty() || name.as_str() < former)
+            {
+                former = name;
+            }
+        }
+        former.to_string()
+    }
+}
+
+/// Go `repoScope.followRenames`: GitHub's API answers always carry the
+/// current name of a repository, so the repositories GitHub reports under
+/// another name than the database (same repository id) are processed under
+/// their current names by every pass: the `gha_repos` (and `gha_orgs`) rows
+/// of the current name are added the way the event writer adds them and the
+/// name replaces the database one in the scope (each stored event then gets
+/// the name of its time, see `repo_name_at`). A repository whose current name
+/// is in the project's `GHA2DB_EXCLUDE_REPOS` is skipped by every pass. A
+/// current name outside the project's rules while a former name of the
+/// repository is inside gets the warning: once per run, because the
+/// heartbeat is evaluated once per process. Returns the log lines.
+fn follow_renames(scope: &mut RepoScope, ctx: &Ctx, c: &PgConn) -> Vec<String> {
+    let rules = get_project_rules(ctx);
+    let mut lines = Vec::new();
+    scope.db_names = BTreeMap::new();
+    scope.untracked = BTreeSet::new();
+    for org_repo in scope.repos.clone() {
+        let Some(hb) = scope
+            .heartbeat
+            .as_ref()
+            .and_then(|heartbeat| heartbeat.get(&org_repo))
+            .cloned()
+        else {
+            continue;
+        };
+        if !hb.found || hb.moved {
+            continue;
+        }
+        let current = hb.name_with_owner.clone();
+        if rules.filter.repo_excluded(&current) {
+            if let Some(entry) = scope
+                .heartbeat
+                .as_mut()
+                .and_then(|heartbeat| heartbeat.get_mut(&org_repo))
+            {
+                entry.excluded = true;
+            }
+            if ctx.debug > 0 {
+                lines.push(format!(
+                    "{}: {} is excluded by project '{}' (GHA2DB_EXCLUDE_REPOS), skipping\n",
+                    org_repo, current, rules.filter.name
+                ));
+            }
+            continue;
+        }
+        let mut name = org_repo.clone();
+        if current != org_repo {
+            let reason = follow_rename(scope, ctx, c, &org_repo, &hb);
+            if reason.is_empty() {
+                name = current.clone();
+            } else if ctx.debug > 0 {
+                lines.push(format!(
+                    "{}: {}, still processed as {}\n",
+                    current, reason, org_repo
+                ));
+            }
+        }
+        if !rules.filter.active() || rules.filter.repo_hit(&current) {
+            continue;
+        }
+        let former = tracked_former_name(ctx, c, rules, &org_repo, &hb);
+        if former.is_empty() {
+            continue;
+        }
+        lines.push(format!(
+            "WARNING: repo {} was renamed to {} (id {}) which is not tracked by project '{}': data is stored under the new name, update the project configuration\n",
+            former, current, hb.database_id, rules.filter.name
+        ));
+        scope.untracked.insert(name);
+    }
+    lines
+}
+
+/// Go `repoScope.followRename`: put the repository into the scope under
+/// GitHub's current name, "" when done, else why not.
+fn follow_rename(
+    scope: &mut RepoScope,
+    ctx: &Ctx,
+    c: &PgConn,
+    org_repo: &str,
+    hb: &RepoHeartbeat,
+) -> &'static str {
+    let current = hb.name_with_owner.as_str();
+    if well_formed(current).is_none() {
+        return "malformed name";
+    }
+    let mut rows = query_sql_with_err(
+        c,
+        ctx,
+        &format!("select id from gha_repos where name = {}", n_value(1)),
+        &[SqlArg::from(current)],
+    );
+    let (mut known, mut taken) = (false, false);
+    while rows.next() {
+        let mut id: i64 = 0;
+        fatal_on_err(rows.scan(&mut [&mut id]));
+        if id == hb.database_id {
+            known = true;
+        } else {
+            taken = true;
+        }
+    }
+    fatal_on_err(rows.err());
+    fatal_on_err(rows.close());
+    if taken {
+        // the passes resolve the repository id from the name: it would be ambiguous
+        return "known under another repository id";
+    }
+    if !known {
+        if ctx.skip_pdb {
+            return "not in gha_repos (no database writes)";
+        }
+        let (mut org_id, mut org_login) = (SqlArg::Null, SqlArg::Null);
+        if hb.owner_is_org && hb.owner_id > 0 && !hb.owner_login.is_empty() {
+            exec_sql_with_err(
+                c,
+                ctx,
+                &insert_ignore(&format!("into gha_orgs(id, login) {}", n_values(2))),
+                &[
+                    SqlArg::Int(hb.owner_id),
+                    SqlArg::from(hb.owner_login.as_str()),
+                ],
+            );
+            org_id = SqlArg::Int(hb.owner_id);
+            org_login = SqlArg::from(hb.owner_login.as_str());
+        }
+        exec_sql_with_err(
+            c,
+            ctx,
+            &insert_ignore(&format!(
+                "into gha_repos(id, name, org_id, org_login) {}",
+                n_values(4)
+            )),
+            &[
+                SqlArg::Int(hb.database_id),
+                SqlArg::from(current),
+                org_id,
+                org_login,
+            ],
+        );
+    }
+    scope.swap_name(org_repo, current);
+    ""
+}
+
+impl RepoScope {
+    /// Go `repoScope.swapName`: the scope entry of the database name becomes
+    /// the entry of GitHub's current name (ids and heartbeat move with it,
+    /// the list stays sorted) and the database name is remembered.
+    fn swap_name(&mut self, org_repo: &str, current: &str) {
+        if let Some(name) = self.repos.iter_mut().find(|name| name.as_str() == org_repo) {
+            *name = current.to_string();
+        }
+        self.repos.sort();
+        let ids = self.ids.remove(org_repo).unwrap_or_default();
+        self.ids.insert(current.to_string(), ids);
+        if let Some(heartbeat) = self.heartbeat.as_mut() {
+            if let Some(hb) = heartbeat.remove(org_repo) {
+                heartbeat.insert(current.to_string(), hb);
+            }
+        }
+        self.db_names
+            .insert(current.to_string(), org_repo.to_string());
+    }
+}
+
+/// Go `trackedFormerName`: `former_name` over the names `gha_repos` has for
+/// the repository id.
+fn tracked_former_name(
+    ctx: &Ctx,
+    c: &PgConn,
+    rules: &ProjectRules,
+    org_repo: &str,
+    hb: &RepoHeartbeat,
+) -> String {
+    let current = hb.name_with_owner.as_str();
+    if org_repo != current && rules.covers(org_repo) {
+        return org_repo.to_string();
+    }
+    let mut rows = query_sql_with_err(
+        c,
+        ctx,
+        &format!("select name from gha_repos where id = {}", n_value(1)),
+        &[SqlArg::Int(hb.database_id)],
+    );
+    let mut names = Vec::new();
+    while rows.next() {
+        let mut name = String::new();
+        fatal_on_err(rows.scan(&mut [&mut name]));
+        names.push(name);
+    }
+    fatal_on_err(rows.err());
+    fatal_on_err(rows.close());
+    rules.former_name(org_repo, current, &names)
+}
+
+/// Go `scopeDBName`: the name the database knows a repository by: differs
+/// from the scope's name for the repositories the heartbeat found renamed on
+/// GitHub (their rows still carry the former name).
+pub fn scope_db_name(org_repo: &str) -> String {
+    let guard = scope_cell().lock().unwrap_or_else(|p| p.into_inner());
+    guard
+        .as_ref()
+        .and_then(|s| s.db_names.get(org_repo).cloned())
+        .unwrap_or_else(|| org_repo.to_string())
+}
+
+/// Go `scopeUntracked`: was the repository renamed out of the project's rules
+/// (the heartbeat warned about it).
+pub fn scope_untracked(org_repo: &str) -> bool {
+    let guard = scope_cell().lock().unwrap_or_else(|p| p.into_inner());
+    guard
+        .as_ref()
+        .map(|s| s.untracked.contains(org_repo))
+        .unwrap_or(false)
 }
 
 /// Go `scopeRepos`: the repositories a pass should process and how many the
@@ -749,7 +1032,17 @@ pub fn scope_repos(
         gated = false;
     }
     if !gated {
-        return (scope.repos.clone(), None);
+        let Some(heartbeat) = scope.heartbeat.as_ref() else {
+            return (scope.repos.clone(), None);
+        };
+        // not gated, but the heartbeat of an earlier pass is known: the excluded repositories stay out
+        let repos = scope
+            .repos
+            .iter()
+            .filter(|org_repo| !heartbeat.get(*org_repo).is_some_and(|hb| hb.excluded))
+            .cloned()
+            .collect();
+        return (repos, None);
     }
     run_heartbeat(scope, ctx, c, recent_dt);
     let heartbeat = scope.heartbeat.as_ref().expect("heartbeat evaluated");
@@ -837,6 +1130,14 @@ fn short_repo_name(full_name: &str) -> &str {
     full_name
         .rsplit_once('/')
         .map(|(_, n)| n)
+        .unwrap_or(full_name)
+}
+
+/// Go `repoOwner`: the owner part of `owner/repo`.
+pub fn repo_owner(full_name: &str) -> &str {
+    full_name
+        .split_once('/')
+        .map(|(owner, _)| owner)
         .unwrap_or(full_name)
 }
 
@@ -1162,4 +1463,359 @@ pub fn sync_repo_stats(ctx: &mut Ctx) {
         cn.api_calls
     );
     params.c.close();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use devstatscode::context::test_support::{env_lock, set_or_unset};
+    use devstatscode::projects::AllProjects;
+    use devstatscode::yamlv2::de as yde;
+
+    /// The project environment the rules read, restored when the test ends.
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn new() -> EnvGuard {
+            let lock = env_lock();
+            let names = [
+                "ENV_SET",
+                "GHA2DB_EXCLUDE_REPOS",
+                "GHA2DB_EXACT",
+                "GHA2DB_PROJECT",
+            ];
+            let saved = names
+                .iter()
+                .map(|n| (*n, std::env::var(n).ok()))
+                .collect::<Vec<_>>();
+            for n in names {
+                devstatscode::env::remove_var(n);
+            }
+            EnvGuard { saved, _lock: lock }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (n, v) in &self.saved {
+                set_or_unset(n, v.as_deref());
+            }
+        }
+    }
+
+    /// Go `testRules`: project rules like `get_project_rules` builds them
+    /// (`command_line` and `hist_command_line` filters of project `proj`).
+    fn test_rules(project_yaml: &str) -> ProjectRules {
+        let yaml = format!("projects:\n  proj:\n    psql_db: proj\n{project_yaml}");
+        let projects: AllProjects = yde::unmarshal(yaml.as_bytes()).expect("test projects.yaml");
+        let ctx = Ctx::default();
+        ProjectRules {
+            filter: new_project_filter(&ctx, Some(&projects), "proj", "p.yaml", false),
+            hist: new_project_filter(&ctx, Some(&projects), "proj", "p.yaml", true),
+        }
+    }
+
+    fn strings(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// Go `TestDecodeHeartbeatOwner`.
+    #[test]
+    fn decode_heartbeat_owner() {
+        let body = br#"{"data": {
+            "r0": {"databaseId": 1, "nameWithOwner": "neworg/repo", "owner": {"__typename": "Organization", "login": "neworg", "databaseId": 11}},
+            "r1": {"databaseId": 2, "nameWithOwner": "someone/repo", "owner": {"__typename": "User", "login": "someone", "databaseId": 12}},
+            "r2": {"databaseId": 3, "nameWithOwner": "plain/repo", "owner": {"login": "plain", "databaseId": 13}},
+            "r3": {"databaseId": 4, "nameWithOwner": "none/repo"},
+            "r4": null
+        }}"#;
+        let batch = strings(&["a/a", "b/b", "c/c", "d/d", "e/e"]);
+        let hbs = decode_heartbeat(body, &batch, 0, 1).expect("decoded");
+        assert_eq!(hbs.len(), 5);
+        let expected = [
+            (true, 11, "neworg", true),
+            (true, 12, "someone", false),
+            (true, 13, "plain", false),
+            (true, 0, "", false),
+            (false, 0, "", false),
+        ];
+        for (i, (found, id, login, is_org)) in expected.into_iter().enumerate() {
+            let hb = &hbs[i];
+            assert_eq!(
+                (
+                    hb.found,
+                    hb.owner_id,
+                    hb.owner_login.as_str(),
+                    hb.owner_is_org,
+                    hb.excluded
+                ),
+                (found, id, login, is_org, false),
+                "heartbeat {i}"
+            );
+        }
+    }
+
+    /// Go `TestHeartbeatQueryAsksTheOwnerType`.
+    #[test]
+    fn heartbeat_query_asks_the_owner_type() {
+        let query = String::from_utf8(heartbeat_query(&strings(&["org/repo"]))).unwrap();
+        // the owner type decides whether the gha_repos row of a renamed repository gets an organization
+        for part in [
+            "owner { __typename login ... on User { databaseId } ... on Organization { databaseId } }",
+            r#"r0: repository(owner: \"org\", name: \"repo\") { ...F }"#,
+        ] {
+            assert!(query.contains(part), "heartbeat query lacks {part:?}: {query}");
+        }
+    }
+
+    /// Go `TestExcludedHeartbeatIsNeverActive`.
+    #[test]
+    fn excluded_heartbeat_is_never_active() {
+        let now = Utc::now();
+        let recent = now - chrono::Duration::hours(1);
+        let mut hb = RepoHeartbeat {
+            found: true,
+            pushed_at: Some(now),
+            issue_at: Some(now),
+            pr_at: Some(now),
+            release_at: Some(now),
+            fork_at: Some(now),
+            stargazer_count: 5,
+            ..Default::default()
+        };
+        let passes = [
+            ApiPass::Events,
+            ApiPass::Commits,
+            ApiPass::Comments,
+            ApiPass::Reviews,
+            ApiPass::Forks,
+            ApiPass::Releases,
+            ApiPass::Stars,
+            ApiPass::RepoStats,
+            ApiPass::RepoEvents,
+            ApiPass::IssuesPrs,
+        ];
+        for pass in passes {
+            assert!(
+                hb.active(pass, recent),
+                "{}: an active repository must be processed",
+                pass.label()
+            );
+        }
+        hb.excluded = true;
+        for pass in passes {
+            assert!(
+                !hb.active(pass, recent),
+                "{}: an excluded repository must not be processed",
+                pass.label()
+            );
+        }
+        // an excluded repository still has counters (no pass asks for them)
+        assert!(hb.counters().is_some());
+    }
+
+    /// Go `TestSwapName`.
+    #[test]
+    fn swap_name() {
+        let hb = |id: i64| RepoHeartbeat {
+            database_id: id,
+            ..Default::default()
+        };
+        let mut s = RepoScope {
+            repos: strings(&["a/old", "c/keep", "z/old"]),
+            ids: BTreeMap::from([
+                ("a/old".to_string(), vec![1, 7]),
+                ("c/keep".to_string(), vec![3]),
+                ("z/old".to_string(), vec![26]),
+            ]),
+            heartbeat: Some(BTreeMap::from([
+                ("a/old".to_string(), hb(1)),
+                ("c/keep".to_string(), hb(3)),
+                ("z/old".to_string(), hb(26)),
+            ])),
+            ..Default::default()
+        };
+        let hb_id = |s: &RepoScope, name: &str| {
+            s.heartbeat
+                .as_ref()
+                .and_then(|h| h.get(name))
+                .map(|h| h.database_id)
+        };
+        // the new name sorts last
+        s.swap_name("a/old", "x/new");
+        assert_eq!(s.repos, strings(&["c/keep", "x/new", "z/old"]));
+        assert_eq!(
+            s.ids,
+            BTreeMap::from([
+                ("c/keep".to_string(), vec![3]),
+                ("x/new".to_string(), vec![1, 7]),
+                ("z/old".to_string(), vec![26]),
+            ])
+        );
+        assert_eq!(hb_id(&s, "x/new"), Some(1));
+        assert_eq!(hb_id(&s, "a/old"), None);
+        assert_eq!(s.heartbeat.as_ref().map(|h| h.len()), Some(3));
+        // the new name sorts first
+        s.swap_name("z/old", "b/new");
+        assert_eq!(s.repos, strings(&["b/new", "c/keep", "x/new"]));
+        assert_eq!(hb_id(&s, "b/new"), Some(26));
+        assert_eq!(hb_id(&s, "c/keep"), Some(3));
+        assert!(s.tracks("b/new", 26) && !s.tracks("z/old", 26));
+        assert_eq!(s.tracked_id("x/new"), 7);
+        assert_eq!(
+            s.db_names,
+            BTreeMap::from([
+                ("b/new".to_string(), "z/old".to_string()),
+                ("x/new".to_string(), "a/old".to_string()),
+            ])
+        );
+        // the accessors the passes use
+        s.untracked = BTreeSet::from(["b/new".to_string()]);
+        let saved = scope_cell()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .replace(s);
+        assert_eq!(scope_db_name("x/new"), "a/old");
+        assert_eq!(scope_db_name("b/new"), "z/old");
+        assert_eq!(scope_db_name("c/keep"), "c/keep");
+        assert_eq!(scope_db_name("not/there"), "not/there");
+        assert!(scope_untracked("b/new"));
+        assert!(
+            !scope_untracked("x/new") && !scope_untracked("c/keep") && !scope_untracked("z/old")
+        );
+        // no scope: the name itself, nothing untracked
+        *scope_cell().lock().unwrap_or_else(|p| p.into_inner()) = None;
+        assert_eq!(scope_db_name("x/new"), "x/new");
+        assert!(!scope_untracked("b/new"));
+        *scope_cell().lock().unwrap_or_else(|p| p.into_inner()) = saved;
+    }
+
+    /// Go `TestProjectRulesFormerName`.
+    #[test]
+    fn project_rules_former_name() {
+        let _guard = EnvGuard::new();
+        // today's rules: the new organization; historical rules: also the names the repositories had before
+        let rules = test_rules(
+            "    command_line: ['neworg']\n    hist_command_line: ['neworg,oldorg/repo,oldorg/other']\n    env: {GHA2DB_EXCLUDE_REPOS: 'neworg/excluded,oldorg/other'}\n",
+        );
+        assert!(rules.filter.active() && rules.hist.active() && rules.hist.hist_rules);
+        for (name, exp) in [
+            ("neworg/repo", true),     // today's rules
+            ("oldorg/repo", true),     // historical rules only
+            ("oldorg/unknown", false), // neither
+            ("elsewhere/repo", false),
+            ("neworg/excluded", false), // excluded names are never tracked
+            ("oldorg/other", false),
+            ("", false),
+        ] {
+            assert_eq!(rules.covers(name), exp, "covers({name:?})");
+        }
+        let cases: [(&str, &str, &str, &[&str], &str); 9] = [
+            (
+                "renamed now, the database name is tracked",
+                "oldorg/repo",
+                "elsewhere/repo",
+                &["oldorg/repo"],
+                "oldorg/repo",
+            ),
+            (
+                "renamed now, the database name is tracked (no gha_repos names needed)",
+                "neworg/repo",
+                "elsewhere/repo",
+                &[],
+                "neworg/repo",
+            ),
+            (
+                "renamed now, another former name is tracked",
+                "third/repo",
+                "elsewhere/repo",
+                &["third/repo", "oldorg/repo", "elsewhere/repo"],
+                "oldorg/repo",
+            ),
+            (
+                "renamed earlier (same name now), a former name is tracked",
+                "elsewhere/repo",
+                "elsewhere/repo",
+                &["elsewhere/repo", "oldorg/repo"],
+                "oldorg/repo",
+            ),
+            (
+                "several tracked former names: the alphabetically first",
+                "elsewhere/repo",
+                "elsewhere/repo",
+                &["oldorg/repo", "neworg/zzz", "neworg/aaa"],
+                "neworg/aaa",
+            ),
+            (
+                "no tracked name at all",
+                "third/repo",
+                "elsewhere/repo",
+                &["third/repo", "fourth/repo"],
+                "",
+            ),
+            (
+                "only an excluded former name",
+                "oldorg/other",
+                "elsewhere/repo",
+                &["oldorg/other", "neworg/excluded"],
+                "",
+            ),
+            (
+                "the current name does not count as a former name",
+                "neworg/repo",
+                "neworg/repo",
+                &["neworg/repo"],
+                "",
+            ),
+            ("no names", "elsewhere/repo", "elsewhere/repo", &[], ""),
+        ];
+        for (what, org_repo, current, names, expected) in cases {
+            assert_eq!(
+                rules.former_name(org_repo, current, &strings(names)),
+                expected,
+                "{what}"
+            );
+        }
+
+        // without `hist_command_line` the historical rules are today's rules
+        devstatscode::env::remove_var("GHA2DB_EXCLUDE_REPOS");
+        let rules = test_rules("    command_line: ['neworg']\n");
+        assert!(
+            !rules.hist.hist_rules && rules.covers("neworg/repo") && !rules.covers("oldorg/repo")
+        );
+        // a name outside the only rules is not tracked
+        assert_eq!(
+            rules.former_name("oldorg/repo", "elsewhere/repo", &strings(&["oldorg/repo"])),
+            ""
+        );
+
+        // no project: nothing is filtered, nothing is excluded (the warning is never evaluated then)
+        let ctx = Ctx::default();
+        let none = ProjectRules {
+            filter: new_project_filter(&ctx, None, "proj", "p.yaml", false),
+            hist: new_project_filter(&ctx, None, "proj", "p.yaml", true),
+        };
+        assert!(
+            !none.filter.active()
+                && !none.filter.repo_excluded("any/repo")
+                && none.filter.repo_hit("any/repo")
+        );
+    }
+
+    /// Go `TestRepoOwner`.
+    #[test]
+    fn repo_owner_cases() {
+        for (name, exp) in [
+            ("org/repo", "org"),
+            ("org/repo/more", "org"),
+            ("norepo", "norepo"),
+            ("", ""),
+            ("/repo", ""),
+        ] {
+            assert_eq!(repo_owner(name), exp, "repo_owner({name:?})");
+        }
+    }
 }

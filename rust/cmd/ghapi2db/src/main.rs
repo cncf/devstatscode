@@ -19,8 +19,9 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, FixedOffset, Local, Utc};
 use devstatscode::consts::{ABUSE, HIDE_CFG_FILE, ISSUE_IS_DELETED, NOT_FOUND, REPO_NAMES_QUERY};
 use devstatscode::ghapi::{
-    fmt_slice, get_rate_limits, get_recent_repos, gh_client, handle_possible_error,
-    sync_issues_state, GoDuration, IssueConfig, IssuesMap, PrsMap,
+    current_repo_id, fmt_slice, get_rate_limits, get_recent_repos, gh_client,
+    handle_possible_error, repo_name_at, sync_issues_state, GoDuration, IssueConfig, IssuesMap,
+    PrsMap,
 };
 use devstatscode::github::{
     ApiResult, Client, CommitsListOptions, License, ListOptions, PullRequest, RepositoryCommit,
@@ -43,7 +44,7 @@ use devstatscode::time::{
 };
 use devstatscode::{fatal_on_err, fatalf, printf, signal, Ctx};
 
-use heartbeat::{scope_repos, scope_suffix, sync_repo_stats, ApiPass};
+use heartbeat::{scope_db_name, scope_repos, scope_suffix, sync_repo_stats, ApiPass};
 use restore::{response_status, GhClients, RestoreStats};
 
 /// Go `func(string) string` hiding function shared between threads.
@@ -148,6 +149,28 @@ pub fn get_api_params(ctx: &mut Ctx, pass: ApiPass) -> ApiParams {
         gcs,
         c,
         recent_dt,
+    }
+}
+
+/// Go `issueEventRepo`: the repository name an issue event of the given time
+/// is stored under: the name the repository had then (`repo_name_at`), as
+/// long as that name still resolves to the same repository id - the
+/// artificial events take the repository id from the name.
+fn issue_event_repo(c: &PgConn, ctx: &Ctx, org_repo: &str, dt: DateTime<Utc>) -> String {
+    let Some(ids) = current_repo_id(c, ctx, org_repo) else {
+        return org_repo.to_string();
+    };
+    if ids.repo_id <= 0 {
+        return org_repo.to_string();
+    }
+    let oid = ids.org_id.map(SqlArg::Int).unwrap_or(SqlArg::Null);
+    let (name, _, renamed) = repo_name_at(c, ctx, ids.repo_id, org_repo, &oid, dt);
+    if !renamed {
+        return org_repo.to_string();
+    }
+    match current_repo_id(c, ctx, &name) {
+        Some(at) if at.repo_id == ids.repo_id => name,
+        _ => org_repo.to_string(),
     }
 }
 
@@ -888,8 +911,10 @@ fn fetch_commits(
     // Need deep copy - threads
     let mut copt = opt.clone();
     // No DTFROM/DTTO set and no GHA2DB_NO_AUTOFETCHCOMMITS
+    // the commits of a repository the heartbeat found renamed are still stored under its database name
+    let db_repo = scope_db_name(org_repo);
     if !sh.date_range.is_range && ctx.auto_fetch_commits {
-        let (dtf, dtt) = match get_enrich_commits_date_range(sh.c, ctx, org_repo) {
+        let (dtf, dtt) = match get_enrich_commits_date_range(sh.c, ctx, &db_repo) {
             Some(v) => v,
             None => return false,
         };
@@ -992,7 +1017,7 @@ fn fetch_commits(
     // The commits the listing did not cover (other branches, dates before the
     // autofetch window) are fetched by SHA (not in the DTFROM/DTTO debugging mode)
     if !sh.date_range.is_range {
-        let st = enrich_commits_by_sha(sh, org, repo, org_repo, &maybe_hide);
+        let st = enrich_commits_by_sha(sh, org, repo, &db_repo, &maybe_hide);
         cs.by_sha.lock().unwrap().merge(st);
     }
     true
@@ -1396,7 +1421,7 @@ fn fetch_events(sh: &Shared<'_>, es: &EventsShared, filter: &EventsFilter, org_r
                 continue;
             }
             let mut cfg = IssueConfig {
-                repo: org_repo.to_string(),
+                repo: issue_event_repo(sh.c, ctx, org_repo, created_at.with_timezone(&Utc)),
                 ..Default::default()
             };
             let eid = event.id.expect("event without id");

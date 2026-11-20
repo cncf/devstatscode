@@ -64,6 +64,15 @@ impl ProjectFilter {
         )
     }
 
+    /// Go `ProjectFilter.RepoExcluded`: is this repository (full name)
+    /// explicitly excluded by the project (`GHA2DB_EXCLUDE_REPOS`)?
+    pub fn repo_excluded(&self, repo_name: &str) -> bool {
+        let Some(ctx) = self.rules_ctx() else {
+            return false;
+        };
+        ctx.exclude_repos.contains_key(repo_name)
+    }
+
     /// Go `ProjectFilter.ActorHit`: does this actor pass the project's actor
     /// rules (`GHA2DB_ACTORS_FILTER/ALLOW/FORBID`)?
     pub fn actor_hit(&self, actor_login: &str) -> bool {
@@ -437,6 +446,8 @@ projects:
         assert!(!f.active() && f.name.is_empty() && f.hit("other/repo", "bot"));
         assert!(f.repo_hit("") && f.actor_hit(""));
         assert_eq!(f.info(), "none (no ./projects.yaml)");
+        // a filter without projects excludes nothing
+        assert!(!f.repo_excluded("other/repo") && !f.repo_excluded(""));
         let f = new_project_filter(&ctx, Some(&all), "off", "p.yaml", false);
         assert!(!f.active() && f.hit("x/y", "a"));
         assert_eq!(
@@ -490,12 +501,20 @@ projects:
             std::env::var("GHA2DB_EXCLUDE_REPOS").unwrap_or_default(),
             "kubernetes/api,kubernetes/apimachinery"
         );
+        // repo_excluded: only the names of the exclude list, a rejected or unknown name is not "excluded"
+        assert!(f.repo_excluded("kubernetes/api") && f.repo_excluded("kubernetes/apimachinery"));
+        assert!(
+            !f.repo_excluded("kubernetes/kubernetes")
+                && !f.repo_excluded("other/repo")
+                && !f.repo_excluded("")
+                && !f.repo_excluded("kubernetes/API")
+        );
         // ... unless ENV_SET says the environment is already prepared
         crate::env::remove_var("GHA2DB_EXCLUDE_REPOS");
         crate::env::set_var("ENV_SET", "1");
         let f = new_project_filter(&ctx, Some(&all), "gha", "p.yaml", false);
         assert!(f.ctx.as_ref().expect("ctx").exclude_repos.is_empty());
-        assert!(f.hit("kubernetes/api", "a"));
+        assert!(f.hit("kubernetes/api", "a") && !f.repo_excluded("kubernetes/api"));
         crate::env::remove_var("ENV_SET");
 
         // Exact mode (the project's env): full repository names, no org matching

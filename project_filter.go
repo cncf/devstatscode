@@ -150,6 +150,15 @@ func (f *ProjectFilter) RepoHit(repoName string) bool {
 	return RepoHit(f.Ctx, repoName, f.Forg, f.Frepo, f.OrgRE, f.RepoRE)
 }
 
+// RepoExcluded - is this repository (full name) explicitly excluded by the project (GHA2DB_EXCLUDE_REPOS)?
+func (f *ProjectFilter) RepoExcluded(repoName string) bool {
+	if f.Name == "" {
+		return false
+	}
+	_, excluded := f.Ctx.ExcludeRepos[repoName]
+	return excluded
+}
+
 // ActorHit - does this actor pass the project's actor rules (GHA2DB_ACTORS_FILTER/ALLOW/FORBID)?
 func (f *ProjectFilter) ActorHit(actorLogin string) bool {
 	if f.Name == "" {

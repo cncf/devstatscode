@@ -7,13 +7,15 @@
 
 use chrono::{DateTime, Utc};
 use devstatscode::eventid::native_event_id;
-use devstatscode::gha::{actor_hit, zero_time, Event};
+use devstatscode::gha::{actor_hit, zero_time, Event, Org};
+use devstatscode::ghapi::repo_name_at;
 use devstatscode::ghawriter::write_to_db;
 use devstatscode::gofmt;
-use devstatscode::project_filter::{new_project_filter, read_projects_if_present, ProjectFilter};
+use devstatscode::pg::SqlArg;
+use devstatscode::project_filter::ProjectFilter;
 use devstatscode::{printf, Ctx};
 
-use crate::heartbeat::{tracked_repo, ApiPass};
+use crate::heartbeat::{get_project_rules, repo_owner, scope_untracked, tracked_repo, ApiPass};
 use crate::restore::{api_page, page_failed, restore_pass, RepoJob, RestoreStats};
 
 /// Events per page; GitHub returns 422 for page 4.
@@ -33,8 +35,11 @@ fn restore_repo_events_repo(job: &RepoJob<'_>, filter: &ProjectFilter, stats: &m
     let (gc, c, ctx) = (job.gc, job.c, job.ctx);
     let name = ApiPass::RepoEvents.label();
     // bug 75: gha_repos also holds repositories the project's gha2db never ingests (renamed into another
-    // organization, historical scope, another project sharing the database) - their feeds are not written either
-    if !filter.repo_hit(job.org_repo) {
+    // organization, historical scope, another project sharing the database) - their feeds are not written either.
+    // A repository renamed out of the rules while a former name is inside (the heartbeat warned about it) is
+    // the project's: its feed is written until the configuration covers or excludes the new name
+    let untracked = scope_untracked(job.org_repo);
+    if !filter.repo_hit(job.org_repo) && !untracked {
         stats.filtered_repos += 1;
         if ctx.debug > 0 {
             printf!(
@@ -114,8 +119,32 @@ fn restore_repo_events_repo(job: &RepoJob<'_>, filter: &ProjectFilter, stats: &m
             if !actor_hit(ctx, &ev.actor.login) {
                 continue;
             }
-            // and the project's org/repo/actor rules (bug 75)
-            if !filter.hit(&ev.repo.name, &ev.actor.login) {
+            // the feed carries the repository's current name on every event, also on those older than a rename:
+            // the event gets the name (and organization) of its time, like its GH Archive copy has
+            let ev_org_id = match &ev.org {
+                Some(org) => SqlArg::Int(org.id),
+                None => SqlArg::Null,
+            };
+            let (at_name, at_org_id, renamed) =
+                repo_name_at(c, ctx, ev.repo.id, &ev.repo.name, &ev_org_id, created_at);
+            if renamed {
+                ev.org = match at_org_id {
+                    SqlArg::Int(id) => Some(Org {
+                        id,
+                        login: repo_owner(&at_name).to_string(),
+                    }),
+                    _ => None,
+                };
+                ev.repo.name = at_name;
+            }
+            // and the project's org/repo/actor rules (bug 75). An event of the feed's own repository also passes
+            // the org/repo rules under a name taken from the archived events (the project ingested that name then)
+            // and when the repository was renamed out of the rules - unless the name is explicitly excluded
+            let repo_hit = filter.repo_hit(&ev.repo.name)
+                || ((renamed || untracked)
+                    && ev.repo.id == job.repo_id
+                    && !filter.repo_excluded(&ev.repo.name));
+            if !repo_hit || !filter.actor_hit(&ev.actor.login) {
                 stats.filtered_events += 1;
                 if ctx.debug > 0 {
                     printf!(
@@ -179,13 +208,12 @@ pub fn sync_repo_events(ctx: &mut Ctx) -> RestoreStats {
     // the feed writes native events with the gha2db writer, so it accepts exactly what the project's own
     // gha2db accepts from the archives: its projects.yaml `command_line` org/repo rules and actor filters
     // (bug 75) - no rules when there is no projects.yaml or no enabled project uses this database
-    let (projects, path) = read_projects_if_present(ctx);
-    let filter = new_project_filter(ctx, projects.as_ref(), &ctx.pg_db, &path, false);
+    let filter = &get_project_rules(ctx).filter;
     if filter.active() || ctx.debug > 0 {
         printf!("{}: filter: {}\n", name, filter.info());
     }
     let stats = restore_pass(ctx, ApiPass::RepoEvents, &|job, stats| {
-        restore_repo_events_repo(job, &filter, stats)
+        restore_repo_events_repo(job, filter, stats)
     });
     if filter.active() {
         printf!(

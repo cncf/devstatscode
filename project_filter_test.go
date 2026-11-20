@@ -131,6 +131,9 @@ func TestProjectFilter(t *testing.T) {
 	if f.Active() || !f.Hit("other/repo", "bot") || !f.RepoHit("x") || !f.ActorHit("y") || f.Info() != "none (no ./projects.yaml)" {
 		t.Errorf("filter without projects: %+v, info %s", f, f.Info())
 	}
+	if f.RepoExcluded("other/repo") || f.RepoExcluded("") {
+		t.Errorf("filter without projects excludes nothing")
+	}
 	f = lib.NewProjectFilter(&ctx, projects, "off", "p.yaml", false)
 	if f.Active() || !f.Hit("x/y", "a") || f.Info() != "none (no enabled project uses this database in p.yaml)" {
 		t.Errorf("filter for a disabled project's database: %+v, info %s", f, f.Info())
@@ -177,11 +180,16 @@ func TestProjectFilter(t *testing.T) {
 	if os.Getenv("GHA2DB_EXCLUDE_REPOS") != "kubernetes/api,kubernetes/apimachinery" {
 		t.Errorf("project env not exported")
 	}
+	// RepoExcluded: only the names of the exclude list, a rejected or unknown name is not "excluded"
+	if !f.RepoExcluded("kubernetes/api") || !f.RepoExcluded("kubernetes/apimachinery") || f.RepoExcluded("kubernetes/kubernetes") ||
+		f.RepoExcluded("other/repo") || f.RepoExcluded("") || f.RepoExcluded("kubernetes/API") {
+		t.Errorf("kube RepoExcluded mismatch")
+	}
 	// ... unless ENV_SET says the environment is already prepared
 	_ = os.Unsetenv("GHA2DB_EXCLUDE_REPOS")
 	_ = os.Setenv("ENV_SET", "1")
 	f = lib.NewProjectFilter(&ctx, projects, "gha", "p.yaml", false)
-	if len(f.Ctx.ExcludeRepos) != 0 || !f.Hit("kubernetes/api", "a") {
+	if len(f.Ctx.ExcludeRepos) != 0 || !f.Hit("kubernetes/api", "a") || f.RepoExcluded("kubernetes/api") {
 		t.Errorf("project env applied despite ENV_SET")
 	}
 	_ = os.Unsetenv("ENV_SET")

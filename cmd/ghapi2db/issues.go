@@ -177,8 +177,12 @@ func goodPullRequestRowPresent(c *sql.DB, ctx *lib.Ctx, repoID int64, number int
 	return rowPresent(c, ctx, "select 1 from gha_pull_requests where dup_repo_id = "+lib.NValue(1)+" and number = "+lib.NValue(2)+" and created_at >= '"+lib.StubCreatedAtCut+"' limit 1", repoID, number)
 }
 
-// syntheticEvent - a GHA-shaped IssuesEvent/PullRequestEvent for the object's lifecycle step
-func syntheticEvent(id int64, eType, action string, createdAt time.Time, actor lib.Actor, org, orgRepo string, repoID int64, orgID interface{}, number int, issue *lib.Issue, pr *lib.PullRequest) lib.Event {
+// syntheticEvent - a GHA-shaped IssuesEvent/PullRequestEvent for the object's lifecycle step, under the name
+// (and organization) the repository had at that time
+func syntheticEvent(c *sql.DB, ctx *lib.Ctx, id int64, eType, action string, createdAt time.Time, actor lib.Actor, org, orgRepo string, repoID int64, orgID interface{}, number int, issue *lib.Issue, pr *lib.PullRequest) lib.Event {
+	if name, nameOrgID, renamed := lib.RepoNameAt(c, ctx, repoID, orgRepo, orgID, createdAt); renamed {
+		org, orgRepo, orgID = repoOwner(name), name, nameOrgID
+	}
 	ev := lib.Event{
 		ID:        strconv.FormatInt(id, 10),
 		Type:      eType,
@@ -218,14 +222,14 @@ func writeSynthetic(c *sql.DB, ctx *lib.Ctx, name, orgRepo string, ev *lib.Event
 // synthesizeIssue - opened (+ closed) IssuesEvents of an issue the database does not know
 func synthesizeIssue(c *sql.DB, ctx *lib.Ctx, name, org, orgRepo string, repoID int64, orgID interface{}, issue *apiIssue, shas map[string]string, stats *restoreStats) {
 	base := lib.ArtificialIssueIDBase + 2*int64(issue.ID)
-	ev := syntheticEvent(base, "IssuesEvent", "opened", issue.CreatedAt, issue.User, org, orgRepo, repoID, orgID, issue.Number, &issue.Issue, nil)
+	ev := syntheticEvent(c, ctx, base, "IssuesEvent", "opened", issue.CreatedAt, issue.User, org, orgRepo, repoID, orgID, issue.Number, &issue.Issue, nil)
 	writeSynthetic(c, ctx, name, orgRepo, &ev, shas, stats)
 	if issue.State == "closed" && issue.ClosedAt != nil {
 		actor := issue.User
 		if issue.ClosedBy != nil && issue.ClosedBy.ID != 0 {
 			actor = *issue.ClosedBy
 		}
-		ev = syntheticEvent(base+1, "IssuesEvent", "closed", *issue.ClosedAt, actor, org, orgRepo, repoID, orgID, issue.Number, &issue.Issue, nil)
+		ev = syntheticEvent(c, ctx, base+1, "IssuesEvent", "closed", *issue.ClosedAt, actor, org, orgRepo, repoID, orgID, issue.Number, &issue.Issue, nil)
 		writeSynthetic(c, ctx, name, orgRepo, &ev, shas, stats)
 	}
 }
@@ -234,7 +238,7 @@ func synthesizeIssue(c *sql.DB, ctx *lib.Ctx, name, org, orgRepo string, repoID 
 // the payload carries both the pull request and its issue object (gha_pull_requests and gha_issues rows)
 func synthesizePullRequest(c *sql.DB, ctx *lib.Ctx, name, org, orgRepo string, repoID int64, orgID interface{}, pr *lib.PullRequest, issue *apiIssue, shas map[string]string, stats *restoreStats) {
 	base := lib.ArtificialPRIDBase + 2*int64(pr.ID)
-	ev := syntheticEvent(base, "PullRequestEvent", "opened", pr.CreatedAt, pr.User, org, orgRepo, repoID, orgID, pr.Number, &issue.Issue, pr)
+	ev := syntheticEvent(c, ctx, base, "PullRequestEvent", "opened", pr.CreatedAt, pr.User, org, orgRepo, repoID, orgID, pr.Number, &issue.Issue, pr)
 	writeSynthetic(c, ctx, name, orgRepo, &ev, shas, stats)
 	if pr.State == "closed" && pr.ClosedAt != nil {
 		actor := pr.User
@@ -243,7 +247,7 @@ func synthesizePullRequest(c *sql.DB, ctx *lib.Ctx, name, org, orgRepo string, r
 		} else if issue.ClosedBy != nil && issue.ClosedBy.ID != 0 {
 			actor = *issue.ClosedBy
 		}
-		ev = syntheticEvent(base+1, "PullRequestEvent", "closed", *pr.ClosedAt, actor, org, orgRepo, repoID, orgID, pr.Number, &issue.Issue, pr)
+		ev = syntheticEvent(c, ctx, base+1, "PullRequestEvent", "closed", *pr.ClosedAt, actor, org, orgRepo, repoID, orgID, pr.Number, &issue.Issue, pr)
 		writeSynthetic(c, ctx, name, orgRepo, &ev, shas, stats)
 	}
 }

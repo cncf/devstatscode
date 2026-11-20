@@ -21,7 +21,7 @@ the difference.
 | `tags`       | `cmd/tags`        | `cmd/tags`        | 2 / 21 (PostgreSQL)    |
 | `runq`       | `cmd/runq`        | `cmd/runq`        | 3 / 49 (PostgreSQL)    |
 | `vars`       | `cmd/vars`        | `cmd/vars`        | 3 / 35 (PostgreSQL)    |
-| `columns`    | `cmd/columns`     | `cmd/columns`     | 2 / 28 (PostgreSQL)    |
+| `columns`    | `cmd/columns`     | `cmd/columns`     | 2 / 38 (PostgreSQL)    |
 | `devstats`   | `cmd/devstats`    | `cmd/devstats`    | 2 / 37 (PostgreSQL)    |
 | `hide_data`  | `cmd/hide_data`   | `cmd/hide_data`   | 2 / 36 (PostgreSQL)    |
 | `website_data` | `cmd/website_data` | `cmd/website_data` | 3 / 36 (PostgreSQL) |
@@ -407,7 +407,8 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     values for …` when empty), the matching tables via `pg_tables … ~ $1`
     (`Warning: '&{…}': no table hits`), the current columns, the stale ones
     (`Need to delete N columns: […]`, `Deleted column "…"`; `time`, `series`,
-    `period`, `all` and `none` are never deleted) and `alter table … add
+    `period`, `all` and `none` are never deleted), the compaction described
+    below and `alter table … add
     column if not exists "<value>" double precision|hll` (`Added column`) —
     failures go through `HandleRowIsTooBig` → `DropLeastUsedCol` (`Table 't'
     has N column(s)…`, `Two least used columns are: …`, `Dropped 'a' and 'b'…`;
@@ -421,6 +422,38 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     0.0|hll_empty(), …` (`Altered "t" defaults and restrictions, …`) with the
     same retry/give-up handling (`Error handle row is too big mass alter
     defaults: pq: column "…" contains null values`).
+  * Compaction (`lib.CompactTable` / `pg::compact_table`, called for every
+    table between the drops and the adds): PostgreSQL never reuses the
+    attribute slot of a dropped column and a table can use at most 1600
+    slots, so a series table whose tag values keep changing finally refuses
+    new columns (`tables can have at most 1600 columns`). A table that uses
+    at least `GHA2DB_COLUMNS_COMPACT_SLOTS` slots (default 1300, `0` switches
+    compaction off, a negative value keeps the default, not a number is
+    fatal) and has dropped columns is rebuilt with only its live columns:
+    one transaction, `lock table … in access exclusive mode` with a 15 s
+    `lock_timeout`, the slots counted again under the lock, `create table
+    "devstats_compact_<md5(table)>"."t" (like public."t" including all
+    excluding indexes)` (under its final name, so generated constraint names
+    stay the same), `insert … select *`, row count check, `drop table`,
+    `alter table … set schema public`, `drop schema`, then the primary
+    key/unique constraints, the other indexes and the privileges re-created
+    from the definitions read before, and the whole definition (columns,
+    constraints, indexes, owner, privileges, …) compared with the one
+    captured before; `analyze` after the commit. Output: `Compacting 't'
+    table: N attribute slots (D dropped, L live), threshold T` and
+    `Compacted 't' table: R rows, N -> L attribute slots`. Compaction never
+    fails the tool: a lock that is not granted in time, a table that is not
+    a plain series table (not owned by the connected role, partition or
+    inheritance, tablespace or storage options, triggers, rules, dependent
+    views, foreign keys, exclusion or not validated constraints, identity or
+    generated columns, sequences, extended statistics, column privileges,
+    privileges granted by another role, row security, replica identity,
+    publication, special indexes, comments, security labels, extension
+    member), a rebuilt table that would not match the original or any error
+    roll everything back and print one `Warning: cannot compact 't' table (N
+    attribute slots, D dropped): <reason>`; the table stays as it was and
+    the columns are added as before. One table is rebuilt at a time in a
+    process.
   * The Go⇄Rust tests (`compat/fixtures/columns`) run both binaries against a
     seeded database (tag tables with unicode, quotes, NULLs, a 104-value tag;
     series tables missing, having and having stale columns; three "row is too
@@ -430,11 +463,18 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `shared`, `all` and `kubernetes` yamls plus a test project covering every
     debug level, `GHA2DB_ST`/multithreaded runs, re-runs (idempotence),
     `GHA2DB_QOUT`, `GHA2DB_SKIPTSDB`, `hll` columns, the `/shared/` fallback,
-    `GHA2DB_DATADIR` and every fatal path (missing tag table/column, NULL tag
-    value, invalid regexp, missing/malformed yaml, unreachable server); they
-    compare exit code, stdout as a multiset of lines plus the exact order of
-    the single-threaded first phase, the `Error:` lines and the whole schema
-    and data of every table.
+    `GHA2DB_DATADIR`, the compaction (a table at and below the threshold,
+    `0`, a negative and a non-numeric setting, the default threshold with a
+    table at 1600 slots — which cannot get its columns without it —, several
+    tables single- and multithreaded, one table behind two configs, tables
+    that are refused, `hll` columns, the `GHA2DB_QOUT` echo of every
+    statement, a lock held by another session) and every fatal path (missing
+    tag table/column, NULL tag value, invalid regexp, missing/malformed yaml,
+    unreachable server); they compare exit code, stdout as a multiset of
+    lines plus the exact order of the single-threaded first phase, the
+    `Error:` lines, the whole schema and data of every table and the catalog
+    (attribute slots in use and dropped, constraints, indexes, owner and
+    privileges of every table, no scratch schema left).
   * Deviations: the second phase visits the tables, and lists the columns in
     its `update`/`alter table` statements, in sorted order (Go: map order) —
     visible only in the `GHA2DB_QOUT` echo and the line order. The
@@ -1275,6 +1315,46 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     heartbeat; `REPO=` and `DTFROM`/`DTTO` bypass the heartbeat. Restore passes
     resolve `repo_id`/`org_id` from `gha_repos` when a repository has no
     `gha_events` rows yet (bug 63).
+  * Renamed repositories (2026-11-20, Go and Rust alike): GitHub's API always
+    answers with the *current* name of a repository, also for objects older
+    than a rename or a transfer. The heartbeat sees a rename (same id, another
+    `nameWithOwner`; `followRenames` / `follow_renames`): the `gha_repos` row
+    of the current name (and the `gha_orgs` row when the owner is an
+    organization — the fragment asks `owner { __typename … }`) is added the
+    way the event writer adds it and the current name replaces the database
+    name in the scope, so every pass calls GitHub and stores under it. The
+    database name is kept only when the new name is known under another
+    repository id (the passes resolve the id from the name) or nothing may be
+    written (`GHA2DB_SKIPPDB`); the commits pass keeps reading the
+    `gha_commits` rows of the database name.
+    **Name by time** (lib `RepoNameAt` / `repo_name_at`, best effort): each
+    stored event gets the name the repository had at the event's time = the
+    name of the first *native* GH Archive event (`0 < id < 2^48`) of the
+    repository id at or after that time, with that name's organization id;
+    when there is none (newer than everything archived, a single name, no
+    native events) or the lookup fails: the name GitHub returned. Answers are
+    cached per repository id; a repository with one name costs one tiny query
+    per process. Applied to the feed events (also to the project-rules check:
+    an event of the feed's own repository passes under a name taken from the
+    archived events), the synthetic issue/PR events, the issue events
+    (`IssueConfig.Repo`, only while the old name still resolves to the same
+    id) and every restored comment, review, fork, release and star. Nothing
+    is restored twice because of a name: objects are found by their ids, the
+    stars check looks under the repository id as well, and the issue / PR id
+    lookups of restored comments and reviews accept any name of the
+    repository.
+    **Project rules**: a repository whose current name is in the project's
+    `GHA2DB_EXCLUDE_REPOS` is skipped by every heartbeat-gated pass (also in
+    date range mode). A current name outside the project's rules while a
+    former name of the same repository id is inside (`command_line` or
+    `hist_command_line`) prints, once per process = once per sync,
+    `WARNING: repo OLD was renamed to NEW (id N) which is not tracked by
+    project 'P': data is stored under the new name, update the project
+    configuration` — on every sync until the configuration covers or excludes
+    NEW — and its feed is still written. A repository without any tracked
+    name stays silent with its feed skipped (bug 75). Without a heartbeat
+    (`REPO=`, the legacy scope, no token, a failed heartbeat) renames are not
+    seen; the name by time still applies with the names the database knows.
   * Repository counters (2026-09-14, Go and Rust alike — gaps report P1-D): a
     last pass `ghapi2db repo stats` (`GHA2DB_GHAPISKIPREPOSTATS` disables it)
     writes one `gha_forkees` snapshot per tracked repository per run —
@@ -1437,7 +1517,7 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     `sync_issues` run with the cache disabled (so the asserted `/rate_limit`
     request counts stay deterministic) plus five `rate_limits_cache_*`
     scenarios with it enabled.
-  * Go⇄Rust tests: `cmd/ghapi2db/tests/compat.rs` — 132 scenarios, each side on
+  * Go⇄Rust tests: `cmd/ghapi2db/tests/compat.rs` — 148 scenarios, each side on
     a scratch database (`full_structure.sql` + seeded events/repos/actors)
     against its own scripted fake GitHub REST + GraphQL server: skip-all;
     licenses (found / not found / already set / force / debug `Stringify`
@@ -1506,7 +1586,20 @@ one collation-dependent case is ignored on non-glibc PostgreSQL servers.
     by repository id, the heartbeat gate skipping quiet listings while the
     stub sweep still runs, hidden actors and the actor filters, id mismatch /
     404 / id-less / unparsable objects, `Link: next` paging, and the targeted
-    postprocess). Compared: exit
+    postprocess); renamed repositories (14 `rename_*` scenarios: a tracked new
+    name followed silently with its `gha_repos`/`gha_orgs` rows, a user-owned
+    or id-less owner without an organization, a name outside the rules →
+    one warning and the feed still written, the warning repeated once per run
+    after the new name became the database name, one warning for all passes
+    of a process with every request under the new name, the exclude list
+    stopping every pass incl. the ungated date range mode, no tracked name at
+    all → silent and feed skipped, a new name known under another id → the
+    database name kept, no heartbeat → nothing followed, and the name by
+    time: feed events, restored comments / reviews / forks / releases with
+    their issue and PR ids, synthetic and timeline issue events on both sides
+    of the rename, a star stored under the old name not restored again over
+    two runs, and a repository without archived events → the current name).
+    Compared: exit
     code, stdout (durations, now-derived ids and timestamps, API URL and binary
     path masked; multiset for MT and where Go's map order shows), `Error:`
     stderr lines, the full database contents and the API request log (method,

@@ -88,6 +88,28 @@ func getAPIParams(ctx *lib.Ctx, pass apiPass) (repos []string, skipped int, isSi
 	return
 }
 
+// issueEventRepo - the repository name an issue event of the given time is stored under: the name the repository
+// had then (lib.RepoNameAt), as long as that name still resolves to the same repository id - the artificial
+// events take the repository id from the name
+func issueEventRepo(c *sql.DB, ctx *lib.Ctx, orgRepo string, dt time.Time) string {
+	repoID, orgID, _, ok := lib.CurrentRepoID(c, ctx, orgRepo)
+	if !ok || repoID <= 0 {
+		return orgRepo
+	}
+	var oid interface{}
+	if orgID != nil {
+		oid = *orgID
+	}
+	name, _, renamed := lib.RepoNameAt(c, ctx, repoID, orgRepo, oid, dt)
+	if !renamed {
+		return orgRepo
+	}
+	if rid, _, _, ok := lib.CurrentRepoID(c, ctx, name); !ok || rid != repoID {
+		return orgRepo
+	}
+	return name
+}
+
 // getEnrichCommitsDateRange return last enriched commits date
 func getEnrichCommitsDateRange(c *sql.DB, ctx *lib.Ctx, repo string) (dtf time.Time, dtt time.Time, ok bool) {
 	var pdt *time.Time
@@ -592,8 +614,10 @@ func syncCommits(ctx *lib.Ctx) {
 			coptCopy := *opt
 			copt := &coptCopy
 			// No DTFROM/DTTO set and no GHA2DB_NO_AUTOFETCHCOMMITS
+			// the commits of a repository the heartbeat found renamed are still stored under its database name
+			dbRepo := scopeDBName(orgRepo)
 			if !isDateRange && ctx.AutoFetchCommits {
-				dtf, dtt, ok := getEnrichCommitsDateRange(c, ctx, orgRepo)
+				dtf, dtt, ok := getEnrichCommitsDateRange(c, ctx, dbRepo)
 				if !ok {
 					ch <- false
 					return
@@ -720,7 +744,7 @@ func syncCommits(ctx *lib.Ctx) {
 			// The commits the listing did not cover (other branches, dates before the autofetch window)
 			// are fetched by SHA (not in the DTFROM/DTTO debugging mode)
 			if !isDateRange {
-				st := enrichCommitsBySHA(gcp, c, ctx, org, repo, orgRepo, recentDt, maybeHide)
+				st := enrichCommitsBySHA(gcp, c, ctx, org, repo, dbRepo, recentDt, maybeHide)
 				apiCallsMutex.Lock()
 				bySHA.merge(st)
 				apiCallsMutex.Unlock()
@@ -1088,7 +1112,7 @@ func syncEvents(ctx *lib.Ctx) {
 					if createdAt.Before(recentDt) {
 						continue
 					}
-					cfg := lib.IssueConfig{Repo: orgRepo}
+					cfg := lib.IssueConfig{Repo: issueEventRepo(c, ctx, orgRepo, createdAt)}
 					eid := *event.ID
 					iid := *issue.ID
 					// Check for duplicate events

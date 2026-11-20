@@ -713,6 +713,205 @@ func CurrentRepoID(c *sql.DB, ctx *Ctx, name string) (repoID int64, orgID *int64
 	return
 }
 
+// repoNameSpan - a name of a repository id and the time span of its native GH Archive events (0 < id < 2^48)
+type repoNameSpan struct {
+	name   string
+	orgID  *int64    // organization id of the name: the newest native event's, else the gha_repos row's (nil: none)
+	native bool      // the name has native events: first and last are set
+	first  time.Time // oldest native event under the name
+	last   time.Time // newest native event under the name
+}
+
+// repoNamesEntry - what RepoNameAt knows about a repository id
+type repoNamesEntry struct {
+	names  []string       // the names of the id in gha_repos, sorted
+	spans  []repoNameSpan // the same names with their native spans, read only when the id has more than its current name
+	loaded bool           // spans were read
+}
+
+// repoNamesCache - RepoNameAt answers per process: repository id -> repoNamesEntry. The native spans only grow
+// under a run and only at their newest end (the events feed writes each event under its RepoNameAt name), which
+// never changes an answer
+var repoNamesCache sync.Map
+
+// repoNameSpans - every gha_repos name of a repository id with its native span, sorted by name
+func repoNameSpans(c *sql.DB, ctx *Ctx, repoID int64) (spans []repoNameSpan, err error) {
+	// both lateral subqueries walk events_repo_name_created_at_idx from one end to the first native event
+	rows, err := QuerySQL(
+		c,
+		ctx,
+		"select r.name, coalesce(l.org_id, r.org_id), f.created_at, l.created_at from gha_repos r "+
+			"left join lateral (select e.created_at from gha_events e where e.repo_id = r.id and e.dup_repo_name = r.name "+
+			"and e.id > 0 and e.id < 281474976710656 order by e.created_at limit 1) f on true "+
+			"left join lateral (select e.created_at, e.org_id from gha_events e where e.repo_id = r.id and e.dup_repo_name = r.name "+
+			"and e.id > 0 and e.id < 281474976710656 order by e.created_at desc limit 1) l on true "+
+			"where r.id = "+NValue(1),
+		repoID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	spans = []repoNameSpan{}
+	for rows.Next() {
+		var (
+			name  string
+			orgID sql.NullInt64
+			first sql.NullTime
+			last  sql.NullTime
+		)
+		if err = rows.Scan(&name, &orgID, &first, &last); err != nil {
+			return nil, err
+		}
+		span := repoNameSpan{name: name, native: first.Valid && last.Valid, first: first.Time, last: last.Time}
+		if orgID.Valid {
+			o := orgID.Int64
+			span.orgID = &o
+		}
+		spans = append(spans, span)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].name < spans[j].name })
+	return spans, nil
+}
+
+// repoNamesOf - the cached names of a repository id, with their native spans when asked (ok=false: lookup failed)
+func repoNamesOf(c *sql.DB, ctx *Ctx, repoID int64, withSpans bool) (entry repoNamesEntry, ok bool) {
+	if v, hit := repoNamesCache.Load(repoID); hit {
+		entry = v.(repoNamesEntry)
+		if entry.names == nil {
+			return entry, false
+		}
+		if entry.loaded || !withSpans {
+			return entry, true
+		}
+	}
+	fail := func(err error) (repoNamesEntry, bool) {
+		// one line per repository id: the failure is remembered, every later lookup answers "unknown"
+		Printf("Warning: cannot read the names of repository id %d: %v, using its current name\n", repoID, err)
+		repoNamesCache.Store(repoID, repoNamesEntry{})
+		return repoNamesEntry{}, false
+	}
+	if entry.names == nil {
+		rows, err := QuerySQL(c, ctx, "select name from gha_repos where id = "+NValue(1), repoID)
+		if err != nil {
+			return fail(err)
+		}
+		names := []string{}
+		name := ""
+		for rows.Next() {
+			if err = rows.Scan(&name); err != nil {
+				_ = rows.Close()
+				return fail(err)
+			}
+			names = append(names, name)
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return fail(err)
+		}
+		sort.Strings(names)
+		entry = repoNamesEntry{names: names}
+	}
+	if withSpans {
+		spans, err := repoNameSpans(c, ctx, repoID)
+		if err != nil {
+			return fail(err)
+		}
+		entry.spans, entry.loaded = spans, true
+	}
+	repoNamesCache.Store(repoID, entry)
+	return entry, true
+}
+
+// RepoNameAt - the name a repository (id) had at a given time and the organization id of that name, best effort.
+// GitHub's API always answers with the current name of a repository, also for objects created before a rename or
+// a transfer, while the GH Archive events gha2db stored carry the name of their time. The name at time dt is the
+// name of the first native event (0 < id < 2^48) of the repository id at or after dt: when a repository gets a
+// name the project does not track gha2db stops ingesting it, so the events under the former name end at the rename
+// and everything later belongs to the new name. When there is no such event (dt is newer than everything archived,
+// the id has no other name, no native events) or the lookup fails, the given current name and organization id are
+// returned unchanged. changed=true: another name than the current one was valid at dt.
+func RepoNameAt(c *sql.DB, ctx *Ctx, repoID int64, current string, orgID interface{}, dt time.Time) (name string, nameOrgID interface{}, changed bool) {
+	name, nameOrgID = current, orgID
+	if repoID <= 0 || dt.IsZero() {
+		return
+	}
+	entry, ok := repoNamesOf(c, ctx, repoID, false)
+	if !ok || len(entry.names) == 0 || (len(entry.names) == 1 && entry.names[0] == current) {
+		return
+	}
+	if entry, ok = repoNamesOf(c, ctx, repoID, true); !ok {
+		return
+	}
+	// candidates: the names with a native event at or after dt
+	nCandidates := 0
+	for _, span := range entry.spans {
+		if span.native && !span.last.Before(dt) {
+			nCandidates++
+		}
+	}
+	if nCandidates == 0 {
+		return
+	}
+	best := -1
+	var bestAt time.Time
+	for i, span := range entry.spans {
+		if !span.native || span.last.Before(dt) {
+			continue
+		}
+		// the first native event of the name at or after dt: its first one when that is not older than dt,
+		// else looked up (not needed for a single candidate)
+		at := span.first
+		if at.Before(dt) && nCandidates > 1 {
+			rows, err := QuerySQL(
+				c,
+				ctx,
+				"select created_at from gha_events where repo_id = "+NValue(1)+" and dup_repo_name = "+NValue(2)+
+					" and created_at >= "+NValue(3)+" and id > 0 and id < 281474976710656 order by created_at limit 1",
+				repoID, span.name, dt,
+			)
+			if err != nil {
+				Printf("Warning: cannot read the events of repository id %d: %v, using its current name\n", repoID, err)
+				return
+			}
+			var next sql.NullTime
+			for rows.Next() {
+				if err = rows.Scan(&next); err != nil {
+					break
+				}
+			}
+			if err == nil {
+				err = rows.Err()
+			}
+			_ = rows.Close()
+			if err != nil {
+				Printf("Warning: cannot read the events of repository id %d: %v, using its current name\n", repoID, err)
+				return
+			}
+			if !next.Valid {
+				continue
+			}
+			at = next.Time
+		}
+		// equal times: the alphabetically first name
+		if best < 0 || at.Before(bestAt) {
+			best, bestAt = i, at
+		}
+	}
+	if best < 0 || entry.spans[best].name == current {
+		return
+	}
+	name, nameOrgID, changed = entry.spans[best].name, nil, true
+	if entry.spans[best].orgID != nil {
+		nameOrgID = *entry.spans[best].orgID
+	}
+	return
+}
+
 // artificialRepoIDs - repo id (-1 when unknown, the legacy marker) and org id (nil when none)
 // for the artificial events of a repository name
 func artificialRepoIDs(c *sql.DB, ctx *Ctx, name string) (int64, interface{}) {

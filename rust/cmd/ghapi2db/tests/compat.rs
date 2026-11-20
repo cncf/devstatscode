@@ -5751,7 +5751,7 @@ fn restore_unreachable_api() {
 /// A timestamp inside the (10 years) recent range.
 const RECENT_TS: &str = "2020-05-03T10:00:00Z";
 
-const HEARTBEAT_FRAGMENT: &str = "fragment F on Repository { databaseId nameWithOwner isArchived pushedAt stargazerCount forkCount watchers { totalCount } owner { login ... on User { databaseId } ... on Organization { databaseId } } openIssues: issues(states: OPEN) { totalCount } openPRs: pullRequests(states: OPEN) { totalCount } issues(last: 1, orderBy: {field: UPDATED_AT, direction: ASC}) { nodes { updatedAt } } pullRequests(last: 1, orderBy: {field: UPDATED_AT, direction: ASC}) { nodes { updatedAt } } releases(last: 1, orderBy: {field: CREATED_AT, direction: ASC}) { nodes { createdAt publishedAt } } forks(last: 1, orderBy: {field: CREATED_AT, direction: ASC}) { nodes { createdAt } } }";
+const HEARTBEAT_FRAGMENT: &str = "fragment F on Repository { databaseId nameWithOwner isArchived pushedAt stargazerCount forkCount watchers { totalCount } owner { __typename login ... on User { databaseId } ... on Organization { databaseId } } openIssues: issues(states: OPEN) { totalCount } openPRs: pullRequests(states: OPEN) { totalCount } issues(last: 1, orderBy: {field: UPDATED_AT, direction: ASC}) { nodes { updatedAt } } pullRequests(last: 1, orderBy: {field: UPDATED_AT, direction: ASC}) { nodes { updatedAt } } releases(last: 1, orderBy: {field: CREATED_AT, direction: ASC}) { nodes { createdAt publishedAt } } forks(last: 1, orderBy: {field: CREATED_AT, direction: ASC}) { nodes { createdAt } } }";
 
 /// The heartbeat request body for the given (sorted) repositories.
 fn hb_query(repos: &[&str]) -> String {
@@ -5781,6 +5781,8 @@ struct HbNode {
     release: Option<(&'static str, Option<&'static str>)>,
     stars: i64,
     owner_id: i64,
+    /// the owner is a user account (default: an organization)
+    user: bool,
 }
 
 impl HbNode {
@@ -5819,6 +5821,10 @@ impl HbNode {
         self.owner_id = id;
         self
     }
+    fn user_owned(mut self) -> Self {
+        self.user = true;
+        self
+    }
     fn archived(mut self) -> Self {
         self.archived = true;
         self
@@ -5835,7 +5841,11 @@ impl HbNode {
             "stargazerCount": self.stars,
             "forkCount": 2,
             "watchers": {"totalCount": 4},
-            "owner": {"login": self.name.split('/').next().unwrap_or(""), "databaseId": self.owner_id},
+            "owner": {
+                "__typename": if self.user { "User" } else { "Organization" },
+                "login": self.name.split('/').next().unwrap_or(""),
+                "databaseId": self.owner_id
+            },
             "openIssues": {"totalCount": 3},
             "openPRs": {"totalCount": 1},
             "issues": nodes(self.issue_at, "updatedAt"),
@@ -6355,13 +6365,14 @@ fn scope_not_found_moved_renamed_and_malformed_repos() {
                         Err("NOT_FOUND"),
                         Ok(HbNode::new(503, "neworg/renamed")
                             .fork(RECENT_TS)
+                            .owner(77)
                             .archived()),
                         Ok(HbNode::new(REPO_ID, REPO).fork(RECENT_TS)),
                         Ok(HbNode::new(999, "org/taken").fork(RECENT_TS)),
                     ]))],
                 );
                 gh.get_ok("/repos/org/repo/forks", &json!([]));
-                gh.get_ok("/repos/org/renamed/forks", &json!([]));
+                gh.get_ok("/repos/neworg/renamed/forks", &json!([]));
             }),
     );
     both(&sides, |s| {
@@ -6372,8 +6383,24 @@ fn scope_not_found_moved_renamed_and_malformed_repos() {
         s.expect_line(0, "noslash: not found on GitHub (malformed name), skipping");
         s.expect_line(0, "org/: not found on GitHub (malformed name), skipping");
         s.expect_line(0, "org/gone: not found on GitHub (NOT_FOUND), skipping");
+        // the renamed repository is processed under its current name: its gha_repos (and gha_orgs) rows
+        // are added the way the event writer adds them (no project here: nothing to warn about)
         s.expect_line(0, "org/renamed: renamed to neworg/renamed on GitHub");
-        s.expect_line(0, "org/renamed: no events, using gha_repos id 503");
+        s.expect_line(0, "neworg/renamed: no events, using gha_repos id 503");
+        s.expect_no_prefix(0, "WARNING: repo ");
+        assert_eq!(
+            s.query(
+                "select id, name, org_id, org_login from gha_repos where id = 503 order by name"
+            ),
+            vec![
+                vec!["503", "neworg/renamed", "77", "neworg"],
+                vec!["503", "org/renamed", "1", "org"]
+            ]
+        );
+        assert_eq!(
+            s.query("select id, login from gha_orgs order by id"),
+            vec![vec!["77", "neworg"]]
+        );
         s.expect_line(
             0,
             "WARNING: org/taken: resolves to org/taken (id 999) but is tracked as id 502, skipping",
@@ -6398,13 +6425,13 @@ fn scope_not_found_moved_renamed_and_malformed_repos() {
         let reqs = s.requests();
         assert!(
             reqs.iter()
-                .any(|r| r.starts_with("GET /repos/org/renamed/forks?")),
+                .any(|r| r.starts_with("GET /repos/neworg/renamed/forks?")),
             "{reqs:?}"
         );
         assert!(
-            !reqs
-                .iter()
-                .any(|r| r.contains("/repos/org/taken/") || r.contains("/repos/org/gone/")),
+            !reqs.iter().any(|r| r.contains("/repos/org/taken/")
+                || r.contains("/repos/org/gone/")
+                || r.contains("/repos/org/renamed/")),
             "{reqs:?}"
         );
         assert_eq!(
@@ -6917,15 +6944,18 @@ fn repo_stats_refreshes_the_same_anchor_and_follows_renames() {
             "ghapi2db repo stats: org/repo: 5 stars, 2 forks, 4 open issues from the heartbeat, snapshot inserted (event 1000)",
         );
         s.expect_line(1, "org/repo: renamed to neworg/repo on GitHub");
+        // the pass works under the current name; no event under it yet: the anchor is the newest event
+        // of the repository under any name
         s.expect_line(
             1,
-            "ghapi2db repo stats: org/repo: 6 stars, 2 forks, 4 open issues from the heartbeat, snapshot refreshed (event 1000)",
+            "ghapi2db repo stats: neworg/repo: 6 stars, 2 forks, 4 open issues from the heartbeat, snapshot refreshed (event 1000)",
         );
         s.expect_line(
             1,
             "ghapi2db repo stats: processed 1 repos, snapshots: 0 inserted, 1 refreshed; skipped: 0 without events, 0 unavailable; GH API calls: 0",
         );
-        // still one row: (id, event_id) is the key, name/full_name follow GitHub, dup_repo_name stays the tracked name
+        // still one row: (id, event_id) is the key, name/full_name follow GitHub, dup_repo_name stays the one the
+        // row was inserted with (the upsert refreshes the counters only)
         assert_eq!(
             s.query(REPO_STATS_COLS),
             vec![repo_stats_row(
@@ -10342,6 +10372,1227 @@ fn repo_ids_restore_uses_the_current_id() {
                 ("gha_issues_labels".to_string(), vec![]),
                 ("gha_forkees".to_string(), vec![id.clone()]),
             ]
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios: repositories renamed (or transferred) on GitHub
+// ---------------------------------------------------------------------------
+//
+// GitHub's API answers always carry the current name of a repository, also
+// for objects older than a rename. The heartbeat finds the renames (same id,
+// another name): every pass then works under the current name and each
+// stored event gets the name the repository had at the event's time (the
+// native GH Archive events of the database tell it), the current name when
+// nothing else is known.
+
+/// A name the project tracks next to `org`.
+const MOVED: &str = "neworg/repo";
+/// A name outside the project's rules.
+const AWAY: &str = "elsewhere/repo";
+const RENAME_WARNING: &str = "WARNING: repo org/repo was renamed to elsewhere/repo (id 500) which is not tracked by project 'test': data is stored under the new name, update the project configuration";
+/// The last native event stored under the old name: the rename happened after it.
+const LAST_OLD: &str = "2020-05-03T09:30:00Z";
+
+fn rows(v: &[&[&str]]) -> Vec<Vec<String>> {
+    v.iter()
+        .map(|r| r.iter().map(|c| c.to_string()).collect())
+        .collect()
+}
+
+fn repo_rows(s: &Side) -> Vec<Vec<String>> {
+    s.query("select id, name, coalesce(org_id::text, '-'), coalesce(org_login, '-') from gha_repos order by id, name")
+}
+
+fn org_rows(s: &Side) -> Vec<Vec<String>> {
+    s.query("select id, login from gha_orgs order by id")
+}
+
+/// Events written by the run (everything but the seeded 1000/1001): type,
+/// repository name, organization id and time.
+fn written_events(s: &Side) -> Vec<Vec<String>> {
+    s.query(
+        "select type, dup_repo_name, coalesce(org_id::text, '-'), repo_id, created_at from gha_events \
+         where id not in (1000, 1001) order by created_at, type",
+    )
+}
+
+/// The second native event of `org/repo` (the base seed has event 1000 from 2020-02-01).
+fn last_old_native() -> String {
+    seed_event(1001, "PushEvent", REPO, REPO_ID, (11, "alice"), LAST_OLD)
+}
+
+/// The feed events with the organization GitHub reports for the current name.
+fn in_org(mut events: Value, id: i64, login: &str) -> Value {
+    for ev in events.as_array_mut().unwrap() {
+        ev["org"]["id"] = json!(id);
+        ev["org"]["login"] = json!(login);
+    }
+    events
+}
+
+/// A renamed repository whose new name the project tracks: every request goes
+/// to the new name, the `gha_repos` and `gha_orgs` rows are added like the
+/// event writer adds them, nothing is warned about.
+#[test]
+fn rename_to_a_tracked_name_is_followed_silently() {
+    let sides = check(
+        Case::new("rn_covered", Pass::Forks)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .projects_yaml(&feed_filter_yaml("['org,neworg']", ""))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[Ok(HbNode::new(
+                        REPO_ID, MOVED,
+                    )
+                    .fork(RECENT_TS)
+                    .owner(78))]))],
+                );
+                gh.get_ok("/repos/neworg/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "org/repo: renamed to neworg/repo on GitHub");
+        s.expect_no_prefix(0, "WARNING: repo ");
+        s.expect_line(0, "neworg/repo: no events, using gha_repos id 500");
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 1 repos (heartbeat: 0 skipped), recent date: <recent>",
+        );
+        assert_eq!(
+            repo_rows(s),
+            rows(&[
+                &["500", "neworg/repo", "78", "neworg"],
+                &["500", "org/repo", "1", "org"]
+            ])
+        );
+        assert_eq!(org_rows(s), rows(&[&["78", "neworg"]]));
+        let reqs = s.requests();
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/neworg/repo/forks?")),
+            "{reqs:?}"
+        );
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/repo/")),
+            "{reqs:?}"
+        );
+        // the heartbeat still asks under the name the database knows
+        assert_eq!(s.graphql_bodies(), vec![hb_query(&[REPO])]);
+    });
+}
+
+/// The new owner is a user account (or its id is unknown): the `gha_repos`
+/// row has no organization and no `gha_orgs` row is written.
+#[test]
+fn rename_to_a_user_owned_name_has_no_organization() {
+    for (name, node) in [
+        (
+            "rn_user",
+            HbNode::new(REPO_ID, "someone/repo")
+                .fork(RECENT_TS)
+                .owner(90)
+                .user_owned(),
+        ),
+        // an organization without an id in the answer
+        (
+            "rn_noid",
+            HbNode::new(REPO_ID, "someone/repo").fork(RECENT_TS),
+        ),
+    ] {
+        let sides = check(Case::new(name, Pass::Forks).all_repos().setup(move |gh| {
+            gql_route(gh, vec![Scripted::ok(&hb_response(&[Ok(node.clone())]))]);
+            gh.get_ok("/repos/someone/repo/forks", &json!([]));
+        }));
+        both(&sides, |s| {
+            assert_eq!(
+                repo_rows(s),
+                rows(&[
+                    &["500", "org/repo", "1", "org"],
+                    &["500", "someone/repo", "-", "-"]
+                ])
+            );
+            assert!(org_rows(s).is_empty());
+            let reqs = s.requests();
+            assert!(
+                reqs.iter()
+                    .any(|r| r.starts_with("GET /repos/someone/repo/forks?")),
+                "{reqs:?}"
+            );
+        });
+    }
+}
+
+fn away_feed() -> Value {
+    in_org(
+        feed_watch_events((REPO_ID, AWAY), 9100001, 3, "2020-05-03T10:00:00Z", None),
+        79,
+        "elsewhere",
+    )
+}
+
+/// A repository renamed out of the project's rules while its former name is
+/// inside: one warning, and the feed is still written (under the new name:
+/// the events are newer than everything archived under the old one).
+#[test]
+fn rename_out_of_the_rules_warns_and_keeps_the_feed() {
+    let sides = check(
+        Case::new("rn_away", Pass::RepoEvents)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .projects_yaml(&feed_filter_yaml("['org']", ""))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[Ok(HbNode::new(
+                        REPO_ID, AWAY,
+                    )
+                    .issue(RECENT_TS)
+                    .owner(79))]))],
+                );
+                gh.get_ok(&feed_page_path(AWAY, 1), &away_feed());
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, FEED_FILTER_LINE);
+        s.expect_line(0, "org/repo: renamed to elsewhere/repo on GitHub");
+        s.expect_line(0, RENAME_WARNING);
+        assert_eq!(s.count_prefix(0, "WARNING: repo "), 1);
+        s.expect_no_prefix(0, "ghapi2db repo events: elsewhere/repo: outside project");
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 1 repos, 1 pages, checked 3, restored 3",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: filtered out 0 repo(s) and 0 event(s) outside project 'test' org/repo/actor rules",
+        );
+        assert_eq!(
+            written_events(s),
+            rows(&[
+                &["WatchEvent", AWAY, "79", "500", "2020-05-03T09:58:00Z"],
+                &["WatchEvent", AWAY, "79", "500", "2020-05-03T09:59:00Z"],
+                &["WatchEvent", AWAY, "79", "500", "2020-05-03T10:00:00Z"],
+            ])
+        );
+        assert_eq!(
+            repo_rows(s),
+            rows(&[
+                &["500", AWAY, "79", "elsewhere"],
+                &["500", "org/repo", "1", "org"]
+            ])
+        );
+        assert_eq!(org_rows(s), rows(&[&["79", "elsewhere"]]));
+        let reqs = s.requests();
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/repo/")),
+            "{reqs:?}"
+        );
+    });
+}
+
+/// The warning does not depend on seeing the rename again: after the first
+/// run the new name is the one the database knows (it has the newest native
+/// events), and every run still warns - exactly once - until the
+/// configuration covers or excludes the name.
+#[test]
+fn rename_warning_repeats_once_per_run_until_the_configuration_changes() {
+    let sides = check(
+        Case::new("rn_twice", Pass::RepoEvents)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .runs(2)
+            .projects_yaml(&feed_filter_yaml("['org']", ""))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[Ok(HbNode::new(
+                        REPO_ID, AWAY,
+                    )
+                    .issue(RECENT_TS)
+                    .owner(79))]))],
+                );
+                gh.get_ok(&feed_page_path(AWAY, 1), &away_feed());
+            }),
+    );
+    both(&sides, |s| {
+        for run in 0..2 {
+            s.expect_line(run, RENAME_WARNING);
+            assert_eq!(s.count_prefix(run, "WARNING: repo "), 1);
+        }
+        s.expect_line(0, "org/repo: renamed to elsewhere/repo on GitHub");
+        s.expect_no_line(1, "org/repo: renamed to elsewhere/repo on GitHub");
+        s.expect_line(
+            1,
+            "ghapi2db scope: 1 repos from gha_repos (1 ids), 1 historical names skipped",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 1 repos, 1 pages, checked 3, restored 3",
+        );
+        s.expect_line(
+            1,
+            "ghapi2db repo events: processed 1 repos, 1 pages, checked 3, restored 0",
+        );
+        // the second heartbeat asks under the new name
+        assert_eq!(
+            s.graphql_bodies(),
+            vec![hb_query(&[REPO]), hb_query(&[AWAY])]
+        );
+        assert_eq!(written_events(s).len(), 3);
+    });
+}
+
+/// Every pass of one process works under the new name and the warning is
+/// printed once (the heartbeat is evaluated once per process). The license
+/// and language passes run before the heartbeat on the names of `gha_repos`;
+/// the commits pass keeps reading the rows of the database name.
+#[test]
+fn rename_warning_is_printed_once_for_all_passes() {
+    let sides = check(
+        Case::new("rn_all", Pass::All)
+            .all_repos()
+            .projects_yaml(&feed_filter_yaml("['org']", ""))
+            .seed(&seed_commit(
+                SHA1,
+                1000,
+                "Alice A",
+                "alice@example.com",
+                "2020-02-01T10:00:00Z",
+            ))
+            .setup(|gh| {
+                gh.get_ok(
+                    "/repos/org/repo/license",
+                    &license_json("mit", "MIT License"),
+                );
+                gh.get_ok("/repos/org/repo/languages", &json!({"Go": 10}));
+                gql_route(
+                    gh,
+                    vec![
+                        Scripted::ok(&hb_response(&[Ok(HbNode::new(REPO_ID, AWAY)
+                            .issue(RECENT_TS)
+                            .pr(RECENT_TS)
+                            .pushed(RECENT_TS)
+                            .fork(RECENT_TS)
+                            .release(RECENT_TS, None)
+                            .stars(5)
+                            .owner(79))])),
+                        Scripted::ok(&gql_page(&[], false, "")),
+                    ],
+                );
+                gh.get_ok(&feed_path(AWAY), &json!([]));
+                gh.get_ok(&issues_listing_path(AWAY), &json!([]));
+                gh.get_ok(&events_path(AWAY), &json!([]));
+                gh.get_ok(&commits_path(AWAY), &json!([]));
+                empty_restores(gh, AWAY);
+            }),
+    );
+    both(&sides, |s| {
+        assert_eq!(s.count_prefix(0, "WARNING: repo "), 1);
+        s.expect_line(0, RENAME_WARNING);
+        for line in [
+            "ghapi2db repo events: processing 1 repos (heartbeat: 0 skipped), recent date: <recent>",
+            "ghapi2db issues prs: processing 1 repos (heartbeat: 0 skipped), recent date: <recent>",
+            "ghapi2db.go: Processing 1 repos (heartbeat: 0 skipped) - GHAPI Events part",
+            "ghapi2db.go: Processing 1 repos (heartbeat: 0 skipped) - GHAPI commits part",
+            "ghapi2db comments restore: processing 1 repos (heartbeat: 0 skipped), recent date: <recent>",
+            "ghapi2db reviews restore: processing 1 repos (heartbeat: 0 skipped), recent date: <recent>",
+            "ghapi2db forks restore: processing 1 repos (heartbeat: 0 skipped), recent date: <recent>",
+            "ghapi2db releases restore: processing 1 repos (heartbeat: 0 skipped), recent date: <recent>",
+            "ghapi2db stars restore: processing 1 repos (heartbeat: 0 skipped), recent date: <recent>",
+            "ghapi2db repo stats: processing 1 repos (heartbeat: 0 skipped)",
+        ] {
+            s.expect_line(0, line);
+        }
+        // the commits of the repository are still stored under the database name: the commits pass
+        // finds them there and lists the commits under the current name
+        s.expect_line(0, "GH Commits API calls: 1");
+        let reqs = s.requests();
+        let old: Vec<&String> = reqs
+            .iter()
+            .filter(|r| r.contains("/repos/org/repo/"))
+            .collect();
+        assert_eq!(old.len(), 2, "{reqs:?}");
+        assert!(
+            old.iter().all(|r| r.contains("/repos/org/repo/license")
+                || r.contains("/repos/org/repo/languages")),
+            "{reqs:?}"
+        );
+        for path in [
+            "/repos/elsewhere/repo/events?",
+            "/repos/elsewhere/repo/issues?",
+            "/repos/elsewhere/repo/issues/events?",
+            "/repos/elsewhere/repo/commits?",
+            "/repos/elsewhere/repo/issues/comments?",
+            "/repos/elsewhere/repo/pulls/comments?",
+            "/repos/elsewhere/repo/comments?",
+            "/repos/elsewhere/repo/pulls?",
+            "/repos/elsewhere/repo/forks?",
+            "/repos/elsewhere/repo/releases?",
+        ] {
+            assert!(
+                reqs.iter().any(|r| r.starts_with(&format!("GET {path}"))),
+                "no {path} in {reqs:?}"
+            );
+        }
+        // the stargazers of the current name
+        let bodies = s.graphql_bodies();
+        assert_eq!(bodies.len(), 2, "{bodies:?}");
+        assert!(
+            bodies[1].ends_with(r#""variables":{"o":"elsewhere","r":"repo"}}"#),
+            "{}",
+            bodies[1]
+        );
+        // the counters snapshot is written under the current name
+        assert_eq!(
+            s.query("select dup_repo_name, full_name, stargazers_count from gha_forkees"),
+            rows(&[&[AWAY, AWAY, "5"]])
+        );
+    });
+}
+
+/// A repository whose current name is in the project's
+/// `GHA2DB_EXCLUDE_REPOS` is skipped by every pass - renamed into the list or
+/// listed under its own name - without a warning and without a `gha_repos`
+/// row. Also by the passes the heartbeat does not gate (date range mode).
+#[test]
+fn rename_into_the_exclude_list_stops_every_pass() {
+    let yaml = feed_filter_yaml(
+        "['org']",
+        "    env:\n      GHA2DB_EXCLUDE_REPOS: elsewhere/repo,org/quiet\n",
+    );
+    let heartbeat = || {
+        Scripted::ok(&hb_response(&[
+            Ok(HbNode::new(502, "org/kept")
+                .issue(RECENT_TS)
+                .fork(RECENT_TS)),
+            Ok(HbNode::new(501, "org/quiet")
+                .issue(RECENT_TS)
+                .fork(RECENT_TS)),
+            Ok(HbNode::new(REPO_ID, AWAY)
+                .issue(RECENT_TS)
+                .fork(RECENT_TS)
+                .owner(79)),
+        ]))
+    };
+    let seed = format!(
+        "{}{}",
+        seed_repo(501, "org/quiet", None),
+        seed_repo(502, "org/kept", None)
+    );
+    let sides = check(
+        Case::new("rn_excl", Pass::RepoEvents)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .env("GHA2DB_GHAPISKIPFORKS", "")
+            .env("GHA2DB_GHAPISKIPREPOSTATS", "")
+            .projects_yaml(&yaml)
+            .seed(&seed)
+            .setup(move |gh| {
+                gql_route(gh, vec![heartbeat()]);
+                gh.get_ok(&feed_page_path("org/kept", 1), &json!([]));
+                gh.get_ok("/repos/org/kept/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "org/repo: renamed to elsewhere/repo on GitHub");
+        s.expect_line(
+            0,
+            "org/repo: elsewhere/repo is excluded by project 'test' (GHA2DB_EXCLUDE_REPOS), skipping",
+        );
+        s.expect_line(
+            0,
+            "org/quiet: org/quiet is excluded by project 'test' (GHA2DB_EXCLUDE_REPOS), skipping",
+        );
+        s.expect_no_prefix(0, "WARNING: repo ");
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                3,
+                1,
+                "3 found, 0 not found, 0 moved, 0 unknown, 0 archived",
+                [0, 3, 0, 3, 0, 0],
+            ),
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processing 1 repos (heartbeat: 2 skipped), recent date: <recent>",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 1 repos (heartbeat: 2 skipped), recent date: <recent>",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo stats: processing 1 repos (heartbeat: 2 skipped)",
+        );
+        // nothing was written for the excluded names
+        assert_eq!(
+            repo_rows(s),
+            rows(&[
+                &["500", "org/repo", "1", "org"],
+                &["501", "org/quiet", "1", "org"],
+                &["502", "org/kept", "1", "org"]
+            ])
+        );
+        assert!(org_rows(s).is_empty());
+        let reqs = s.requests();
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/repo/")
+                || r.contains("/repos/org/quiet/")
+                || r.contains("/repos/elsewhere/")),
+            "{reqs:?}"
+        );
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/org/kept/forks?")),
+            "{reqs:?}"
+        );
+    });
+
+    // Date range mode: the issue events pass is not gated by the heartbeat, the excluded repositories
+    // stay out all the same (the heartbeat of the feed pass is known).
+    let sides = check(
+        Case::new("rn_excl_dt", Pass::RepoEvents)
+            .all_repos()
+            .env("GHA2DB_GHAPISKIPEVENTS", "")
+            .env("DTFROM", "2020-01-01 00:00:00")
+            .projects_yaml(&yaml)
+            .seed(&seed)
+            .setup(move |gh| {
+                gql_route(gh, vec![heartbeat()]);
+                gh.get_ok(&feed_page_path("org/kept", 1), &json!([]));
+                gh.get_ok(&events_path("org/kept"), &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "ghapi2db.go: Processing 1 repos - GHAPI Events part");
+        let reqs = s.requests();
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/org/kept/issues/events?")),
+            "{reqs:?}"
+        );
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/repo/")
+                || r.contains("/repos/org/quiet/")
+                || r.contains("/repos/elsewhere/")),
+            "{reqs:?}"
+        );
+    });
+}
+
+/// No name of the renamed repository is tracked by the project (another
+/// project's repository, a scope given up long ago): the rename is followed,
+/// nothing is warned about and its feed stays unwritten (bug 75).
+#[test]
+fn rename_without_any_tracked_name_is_silent() {
+    let sides = check(
+        Case::new("rn_foreign", Pass::RepoEvents)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .env("GHA2DB_GHAPISKIPFORKS", "")
+            .projects_yaml(&feed_filter_yaml("['other']", ""))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[Ok(HbNode::new(
+                        REPO_ID, AWAY,
+                    )
+                    .issue(RECENT_TS)
+                    .fork(RECENT_TS)
+                    .owner(79))]))],
+                );
+                gh.get_ok(&feed_page_path(AWAY, 1), &away_feed());
+                gh.get_ok("/repos/elsewhere/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "org/repo: renamed to elsewhere/repo on GitHub");
+        s.expect_no_prefix(0, "WARNING: repo ");
+        s.expect_line(
+            0,
+            "ghapi2db repo events: elsewhere/repo: outside project 'test' org/repo rules, skipping the feed",
+        );
+        s.expect_line(
+            0,
+            "ghapi2db repo events: filtered out 1 repo(s) and 0 event(s) outside project 'test' org/repo/actor rules",
+        );
+        assert!(written_events(s).is_empty());
+        let reqs = s.requests();
+        assert!(!reqs.iter().any(|r| r.contains("/events?")), "{reqs:?}");
+        // the other passes follow the rename
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/elsewhere/repo/forks?")),
+            "{reqs:?}"
+        );
+        assert_eq!(
+            repo_rows(s),
+            rows(&[
+                &["500", AWAY, "79", "elsewhere"],
+                &["500", "org/repo", "1", "org"]
+            ])
+        );
+    });
+}
+
+/// The new name is already known under another repository id: the passes
+/// resolve the id from the name, so the repository keeps its database name
+/// (GitHub redirects the requests). The warning is still printed.
+#[test]
+fn rename_to_a_name_of_another_repository_keeps_the_database_name() {
+    let sides = check(
+        Case::new("rn_taken", Pass::Forks)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .projects_yaml(&feed_filter_yaml("['org']", ""))
+            .seed(&seed_repo(777, AWAY, None))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[
+                        // the name the database has under id 777 is repository 500 on GitHub
+                        Ok(HbNode::new(REPO_ID, AWAY).fork(RECENT_TS).owner(79)),
+                        Ok(HbNode::new(REPO_ID, AWAY).fork(RECENT_TS).owner(79)),
+                    ]))],
+                );
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "WARNING: elsewhere/repo: resolves to elsewhere/repo (id 500) but is tracked as id 777, skipping",
+        );
+        s.expect_line(0, "org/repo: renamed to elsewhere/repo on GitHub");
+        s.expect_line(
+            0,
+            "elsewhere/repo: known under another repository id, still processed as org/repo",
+        );
+        s.expect_line(0, RENAME_WARNING);
+        s.expect_line(
+            0,
+            "ghapi2db forks restore: processing 1 repos (heartbeat: 1 skipped), recent date: <recent>",
+        );
+        assert_eq!(
+            repo_rows(s),
+            rows(&[&["500", "org/repo", "1", "org"], &["777", AWAY, "1", "org"]])
+        );
+        let reqs = s.requests();
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/org/repo/forks?")),
+            "{reqs:?}"
+        );
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/elsewhere/")),
+            "{reqs:?}"
+        );
+    });
+}
+
+/// Without a heartbeat a rename cannot be seen: the legacy scope, the single
+/// repository mode and a failed heartbeat keep the database name.
+#[test]
+fn rename_is_not_followed_without_a_heartbeat() {
+    let unchanged = |s: &Side| {
+        assert_eq!(repo_rows(s), rows(&[&["500", "org/repo", "1", "org"]]));
+        assert!(org_rows(s).is_empty());
+        s.expect_no_prefix(0, "WARNING: repo ");
+        let reqs = s.requests();
+        assert!(
+            reqs.iter()
+                .any(|r| r.starts_with("GET /repos/org/repo/forks?")),
+            "{reqs:?}"
+        );
+    };
+    // legacy scope
+    let sides = check(
+        Case::new("rn_legacy", Pass::Forks)
+            .projects_yaml(&feed_filter_yaml("['org']", ""))
+            .setup(|gh| {
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        unchanged(s);
+        assert!(s.graphql_bodies().is_empty());
+    });
+    // single repository mode
+    let sides = check(
+        Case::new("rn_single", Pass::Forks)
+            .all_repos()
+            .env("REPO", REPO)
+            .projects_yaml(&feed_filter_yaml("['org']", ""))
+            .setup(|gh| {
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        unchanged(s);
+        assert!(s.graphql_bodies().is_empty());
+    });
+    // the heartbeat fails
+    let sides = check(
+        Case::new("rn_hb500", Pass::Forks)
+            .all_repos()
+            .projects_yaml(&feed_filter_yaml("['org']", ""))
+            .setup(|gh| {
+                gql_route(gh, vec![Scripted::raw(500, "text/plain", "boom")]);
+                gh.get_ok("/repos/org/repo/forks", &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        unchanged(s);
+        s.expect_line(
+            0,
+            &heartbeat_line(
+                1,
+                1,
+                "0 found, 0 not found, 0 moved, 1 unknown, 0 archived",
+                [0, 0, 0, 0, 0, 0],
+            ),
+        );
+    });
+}
+
+/// The feed carries the current name on every event: the events older than
+/// the rename are stored under the old name (and its organization) like
+/// their GH Archive copies, the later ones under the new name. An event the
+/// database already has under the old name is no "event id collision".
+#[test]
+fn rename_feed_events_get_the_name_of_their_time() {
+    let sides = check(
+        Case::new("rn_feed", Pass::RepoEvents)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .projects_yaml(&feed_filter_yaml("['org,neworg']", ""))
+            .seed(&last_old_native())
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[Ok(HbNode::new(REPO_ID, MOVED)
+                        .issue(RECENT_TS)
+                        .owner(78))]))],
+                );
+                let star = |id: i64, at: &str| {
+                    feed_event(
+                        id,
+                        "WatchEvent",
+                        (REPO_ID, MOVED),
+                        (12, "bob"),
+                        at,
+                        json!({"action": "started"}),
+                    )
+                };
+                gh.get_ok(
+                    &feed_page_path(MOVED, 1),
+                    &in_org(
+                        json!([
+                            star(9200005, "2020-05-03T10:00:00Z"),
+                            star(9200004, "2020-05-03T09:30:01Z"),
+                            // the archived event itself, as the feed shows it now
+                            feed_event(
+                                1001,
+                                "PushEvent",
+                                (REPO_ID, MOVED),
+                                (11, "alice"),
+                                LAST_OLD,
+                                json!({"push_id": 1, "size": 0, "distinct_size": 0, "ref": "refs/heads/main", "head": SHA1, "before": SHA2, "commits": []}),
+                            ),
+                            star(9200003, LAST_OLD),
+                            star(9200002, "2020-05-03T09:00:00Z"),
+                            star(9200001, "2020-01-15T00:00:00Z"),
+                        ]),
+                        78,
+                        "neworg",
+                    ),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_no_prefix(0, "WARNING: repo ");
+        s.expect_line(
+            0,
+            "ghapi2db repo events: processed 1 repos, 1 pages, checked 6, restored 5",
+        );
+        assert_eq!(
+            s.lines(0)
+                .iter()
+                .filter(|l| l.contains("event id collision"))
+                .count(),
+            0,
+            "{:#?}",
+            s.lines(0)
+        );
+        assert_eq!(
+            written_events(s),
+            rows(&[
+                // older than every archived event: the oldest known name
+                &["WatchEvent", REPO, "1", "500", "2020-01-15T00:00:00Z"],
+                &["WatchEvent", REPO, "1", "500", "2020-05-03T09:00:00Z"],
+                // the very second of the last event under the old name
+                &["WatchEvent", REPO, "1", "500", "2020-05-03T09:30:00Z"],
+                &["WatchEvent", MOVED, "78", "500", "2020-05-03T09:30:01Z"],
+                &["WatchEvent", MOVED, "78", "500", "2020-05-03T10:00:00Z"],
+            ])
+        );
+        assert_eq!(
+            repo_rows(s),
+            rows(&[
+                &["500", MOVED, "78", "neworg"],
+                &["500", "org/repo", "1", "org"]
+            ])
+        );
+        assert_eq!(org_rows(s), rows(&[&["1", "org"], &["78", "neworg"]]));
+    });
+}
+
+/// The restore passes with a range that reaches behind the rename: comments,
+/// reviews, forks and releases older than the rename are stored under the old
+/// name, the later ones under the new name - and a comment or review under
+/// the new name still finds its issue or pull request stored under the old.
+#[test]
+fn rename_restored_objects_get_the_name_of_their_time() {
+    let sides = check(
+        Case::new("rn_restore", Pass::Comments)
+            .all_repos()
+            .env("GHA2DB_GHAPISKIPREVIEWS", "")
+            .env("GHA2DB_GHAPISKIPFORKS", "")
+            .env("GHA2DB_GHAPISKIPRELEASES", "")
+            .seed(&last_old_native())
+            .seed(&issue_and_pr_seed())
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[Ok(HbNode::new(
+                        REPO_ID, MOVED,
+                    )
+                    .issue(RECENT_TS)
+                    .pr(RECENT_TS)
+                    .fork(RECENT_TS)
+                    .release(RECENT_TS, None)
+                    .owner(78))]))],
+                );
+                gh.get_ok(
+                    &issue_comments_path(MOVED),
+                    &json!([
+                        issue_comment_json(
+                            90001,
+                            1,
+                            (11, "alice"),
+                            "2020-05-03T09:00:00Z",
+                            None,
+                            "Before"
+                        ),
+                        issue_comment_json(
+                            90002,
+                            1,
+                            (12, "bob"),
+                            "2020-05-03T10:00:00Z",
+                            None,
+                            "After"
+                        ),
+                    ]),
+                );
+                gh.get_ok(
+                    &review_comments_path(MOVED),
+                    &json!([
+                        review_comment_json(
+                            91001,
+                            2,
+                            (11, "alice"),
+                            "2020-05-03T09:05:00Z",
+                            "Before",
+                            None
+                        ),
+                        review_comment_json(
+                            91002,
+                            2,
+                            (12, "bob"),
+                            "2020-05-03T10:05:00Z",
+                            "After",
+                            None
+                        ),
+                    ]),
+                );
+                gh.get_ok(
+                    &commit_comments_path(MOVED),
+                    &json!([
+                        commit_comment_json(92001, (11, "alice"), "2020-05-03T09:06:00Z", "Before"),
+                        commit_comment_json(92002, (12, "bob"), "2020-05-03T10:06:00Z", "After"),
+                    ]),
+                );
+                gh.get_ok(
+                    "/repos/neworg/repo/pulls",
+                    &json!([pr_list_json(2, "2020-05-03T12:00:00Z")]),
+                );
+                gh.get_ok(
+                    "/repos/neworg/repo/pulls/2/reviews",
+                    &json!([
+                        review_json(
+                            95001,
+                            (11, "alice"),
+                            "2020-05-03T09:10:00Z",
+                            "APPROVED",
+                            Some("Before")
+                        ),
+                        review_json(
+                            95002,
+                            (12, "bob"),
+                            "2020-05-03T10:10:00Z",
+                            "COMMENTED",
+                            Some("After")
+                        ),
+                    ]),
+                );
+                gh.get_ok(
+                    "/repos/neworg/repo/forks",
+                    &json!([
+                        fork_json(8002, (14, "dave"), "2020-05-03T10:20:00Z", 0),
+                        fork_json(8001, (15, "erin"), "2020-05-03T09:20:00Z", 0),
+                    ]),
+                );
+                gh.get_ok(
+                    "/repos/neworg/repo/releases",
+                    &json!([
+                        release_json(
+                            6002,
+                            "v2",
+                            "2020-05-03T10:25:00Z",
+                            Some("2020-05-03T10:25:00Z"),
+                            vec![]
+                        ),
+                        release_json(
+                            6001,
+                            "v1",
+                            "2020-05-03T09:25:00Z",
+                            Some("2020-05-03T09:25:00Z"),
+                            vec![]
+                        ),
+                    ]),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        assert_eq!(
+            written_events(s),
+            rows(&[
+                &[
+                    "IssueCommentEvent",
+                    REPO,
+                    "1",
+                    "500",
+                    "2020-05-03T09:00:00Z"
+                ],
+                &[
+                    "PullRequestReviewCommentEvent",
+                    REPO,
+                    "1",
+                    "500",
+                    "2020-05-03T09:05:00Z"
+                ],
+                &[
+                    "CommitCommentEvent",
+                    REPO,
+                    "1",
+                    "500",
+                    "2020-05-03T09:06:00Z"
+                ],
+                &[
+                    "PullRequestReviewEvent",
+                    REPO,
+                    "1",
+                    "500",
+                    "2020-05-03T09:10:00Z"
+                ],
+                &["ForkEvent", REPO, "1", "500", "2020-05-03T09:20:00Z"],
+                &["ReleaseEvent", REPO, "1", "500", "2020-05-03T09:25:00Z"],
+                &[
+                    "IssueCommentEvent",
+                    MOVED,
+                    "78",
+                    "500",
+                    "2020-05-03T10:00:00Z"
+                ],
+                &[
+                    "PullRequestReviewCommentEvent",
+                    MOVED,
+                    "78",
+                    "500",
+                    "2020-05-03T10:05:00Z"
+                ],
+                &[
+                    "CommitCommentEvent",
+                    MOVED,
+                    "78",
+                    "500",
+                    "2020-05-03T10:06:00Z"
+                ],
+                &[
+                    "PullRequestReviewEvent",
+                    MOVED,
+                    "78",
+                    "500",
+                    "2020-05-03T10:10:00Z"
+                ],
+                &["ForkEvent", MOVED, "78", "500", "2020-05-03T10:20:00Z"],
+                &["ReleaseEvent", MOVED, "78", "500", "2020-05-03T10:25:00Z"],
+            ])
+        );
+        // the issue (7001) and the pull request (7102) are stored under the old name only
+        assert_eq!(
+            s.query(
+                "select dup_type, dup_repo_name, coalesce(issue_id::text, '-'), coalesce(pull_request_id::text, '-') \
+                 from gha_payloads where dup_type in ('IssueCommentEvent', 'PullRequestReviewCommentEvent', \
+                 'PullRequestReviewEvent') order by dup_created_at"
+            ),
+            rows(&[
+                &["IssueCommentEvent", REPO, "7001", "-"],
+                &["PullRequestReviewCommentEvent", REPO, "-", "7102"],
+                &["PullRequestReviewEvent", REPO, "-", "7102"],
+                &["IssueCommentEvent", MOVED, "7001", "-"],
+                &["PullRequestReviewCommentEvent", MOVED, "-", "7102"],
+                &["PullRequestReviewEvent", MOVED, "-", "7102"],
+            ])
+        );
+        // every dup_repo_name of the dependent rows follows its event
+        assert_eq!(
+            s.query(
+                "select count(*) from gha_comments c, gha_events e where e.id = c.event_id and e.dup_repo_name != c.dup_repo_name"
+            ),
+            rows(&[&["0"]])
+        );
+        let reqs = s.requests();
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/repo/")),
+            "{reqs:?}"
+        );
+    });
+}
+
+/// Issue and pull request events on both sides of the rename: the synthetic
+/// `opened`/`closed` events of the listing and the issue events of the
+/// events pass each get the name of their own time.
+#[test]
+fn rename_issue_events_get_the_name_of_their_time() {
+    let sides = check(
+        Case::new("rn_issues", Pass::IssuesPrs)
+            .all_repos()
+            .env("GHA2DB_GHAPISKIPEVENTS", "")
+            .seed(&last_old_native())
+            .seed(&issue_and_pr_seed())
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[Ok(HbNode::new(
+                        REPO_ID, MOVED,
+                    )
+                    .issue(RECENT_TS)
+                    .owner(78))]))],
+                );
+                // an issue the database does not know: opened before the rename, closed after it
+                gh.get_ok(
+                    &issues_listing_page_path(MOVED, 1),
+                    &json!([api_issue_closed(
+                        api_issue(
+                            7003,
+                            3,
+                            (11, "alice"),
+                            "Unknown issue",
+                            "Please fix",
+                            "2020-05-03T09:00:00Z",
+                            false
+                        ),
+                        "2020-05-03T10:00:00Z",
+                        Some((12, "bob"))
+                    )]),
+                );
+                // issue 1 (known): labeled before the rename, closed after it
+                let issue = IssueSpec::new(7001, 1).repo(MOVED);
+                gh.get_ok(
+                    &events_path(MOVED),
+                    &json!([
+                        issue_event(
+                            60002,
+                            Some("closed"),
+                            (12, "bob"),
+                            "2020-05-03T10:30:00Z",
+                            Some(&issue.clone().state("closed"))
+                        ),
+                        issue_event(
+                            60001,
+                            Some("labeled"),
+                            (11, "alice"),
+                            "2020-05-03T09:15:00Z",
+                            Some(&issue)
+                        ),
+                    ]),
+                );
+            }),
+    );
+    both(&sides, |s| {
+        // the synthetic events of the listing (IssuesEvent) and the issue events of the events pass
+        // (stored with the timeline type) - each under the name of its own time
+        assert_eq!(
+            written_events(s),
+            rows(&[
+                &["IssuesEvent", REPO, "1", "500", "2020-05-03T09:00:00Z"],
+                &["labeled", REPO, "1", "500", "2020-05-03T09:15:00Z"],
+                &["IssuesEvent", MOVED, "78", "500", "2020-05-03T10:00:00Z"],
+                &["closed", MOVED, "78", "500", "2020-05-03T10:30:00Z"],
+            ])
+        );
+        // the issue rows written with those events carry the same names
+        assert_eq!(
+            s.query(
+                "select i.dup_repo_name, e.dup_repo_name, e.repo_id, coalesce(e.org_id::text, '-') from gha_issues i, gha_events e \
+                 where e.id = i.event_id and i.id = 7001 and e.id >= 281474976710656 order by i.dup_repo_name"
+            ),
+            rows(&[
+                &[MOVED, MOVED, "500", "78"],
+                &[REPO, REPO, "500", "1"],
+            ])
+        );
+        let reqs = s.requests();
+        assert!(
+            !reqs.iter().any(|r| r.contains("/repos/org/repo/")),
+            "{reqs:?}"
+        );
+    });
+}
+
+/// Stars have no id of their own: one stored under the old name is found
+/// under the repository id and not restored again under the new name - on
+/// this run and on the next one.
+#[test]
+fn rename_stars_are_restored_once_under_either_name() {
+    let old_star = devstatscode::restore::negative_artificial_id(&[
+        "WatchEvent",
+        "14",
+        REPO,
+        "2020-05-03 10:00:00",
+    ]);
+    let sides = check(
+        Case::new("rn_stars", Pass::Stars)
+            .all_repos()
+            .runs(2)
+            .seed(&last_old_native())
+            // dave's star, restored earlier under the name the database had (after the rename)
+            .seed(&seed_event(
+                old_star,
+                "WatchEvent",
+                REPO,
+                REPO_ID,
+                (14, "dave"),
+                "2020-05-03T10:00:00Z",
+            ))
+            .setup(|gh| {
+                let heartbeat = Scripted::ok(&hb_response(&[Ok(HbNode::new(REPO_ID, MOVED)
+                    .stars(3)
+                    .owner(78))]));
+                let page = Scripted::ok(&gql_page(
+                    &[
+                        ("2020-05-03T09:00:00Z", "frank", 16),
+                        ("2020-05-03T10:00:00Z", "dave", 14),
+                        ("2020-05-03T10:05:00Z", "erin", 15),
+                    ],
+                    false,
+                    "",
+                ));
+                gql_route(gh, vec![heartbeat.clone(), page.clone(), heartbeat, page]);
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(
+            0,
+            "ghapi2db stars restore: processed 1 repos, 1 pages, checked 3, restored 2",
+        );
+        s.expect_line(
+            1,
+            "ghapi2db stars restore: processed 1 repos, 1 pages, checked 3, restored 0",
+        );
+        assert_eq!(
+            s.query(
+                "select dup_actor_login, dup_repo_name, coalesce(org_id::text, '-'), created_at from gha_events \
+                 where type = 'WatchEvent' order by created_at"
+            ),
+            rows(&[
+                // older than the rename: the old name
+                &["frank", REPO, "1", "2020-05-03T09:00:00Z"],
+                // already stored under the old name: left alone
+                &["dave", REPO, "1", "2020-05-03T10:00:00Z"],
+                // newer than the rename: the new name
+                &["erin", MOVED, "78", "2020-05-03T10:05:00Z"],
+            ])
+        );
+        // the stargazers are asked under the current name
+        let bodies = s.graphql_bodies();
+        assert_eq!(bodies.len(), 4, "{bodies:?}");
+        assert!(
+            bodies[1].ends_with(r#""variables":{"o":"neworg","r":"repo"}}"#),
+            "{}",
+            bodies[1]
+        );
+    });
+}
+
+/// A renamed repository without archived events: nothing tells an older
+/// name, everything is stored under GitHub's current name.
+#[test]
+fn rename_without_archived_events_uses_the_current_name() {
+    let sides = check(
+        Case::new("rn_nonative", Pass::Comments)
+            .all_repos()
+            .env("GHA2DB_DEBUG", "1")
+            .seed(&seed_repo(510, "org/art", None))
+            // only an API-restored (artificial) event under the old name
+            .seed(&seed_event(
+                ARTIFICIAL_BASE + 5,
+                "IssueCommentEvent",
+                "org/art",
+                510,
+                (11, "alice"),
+                "2020-04-01T10:00:00Z",
+            ))
+            .setup(|gh| {
+                gql_route(
+                    gh,
+                    vec![Scripted::ok(&hb_response(&[
+                        Ok(HbNode::new(510, "neworg/art").issue(RECENT_TS).owner(78)),
+                        Ok(HbNode::new(REPO_ID, REPO)),
+                    ]))],
+                );
+                gh.get_ok(
+                    &issue_comments_path("neworg/art"),
+                    &json!([issue_comment_json(
+                        90001,
+                        1,
+                        (12, "bob"),
+                        "2020-03-01T10:00:00Z",
+                        None,
+                        "Older than everything"
+                    )]),
+                );
+                gh.get_ok(&review_comments_path("neworg/art"), &json!([]));
+                gh.get_ok(&commit_comments_path("neworg/art"), &json!([]));
+            }),
+    );
+    both(&sides, |s| {
+        s.expect_line(0, "org/art: renamed to neworg/art on GitHub");
+        s.expect_line(
+            0,
+            "ghapi2db comments restore: processed 1 repos, 3 pages, checked 1, restored 1",
+        );
+        assert_eq!(
+            s.query(
+                "select dup_repo_name, coalesce(org_id::text, '-'), repo_id from gha_events where created_at = '2020-03-01 10:00:00'"
+            ),
+            rows(&[&["neworg/art", "78", "510"]])
         );
     });
 }

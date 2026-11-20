@@ -425,15 +425,22 @@ pub fn restore_issue_comment(
         eid = raw;
     }
     gh_actor(&mut tc, ctx, cmt.user.as_ref(), maybe_hide);
+    // under any name of the repository: the event carries the name of its
+    // time, the issue's rows the names of theirs
     let issue_id = lookup_id(
         &mut tc,
         ctx,
         &format!(
-            "select max(id) from gha_issues where number = {} and dup_repo_name = {}",
+            "select max(id) from gha_issues where number = {} and (dup_repo_name = {} or dup_repo_id = {})",
             n_value(1),
-            n_value(2)
+            n_value(2),
+            n_value(3)
         ),
-        &[SqlArg::Int(issue_number), SqlArg::from(repo)],
+        &[
+            SqlArg::Int(issue_number),
+            SqlArg::from(repo),
+            SqlArg::Int(repo_id),
+        ],
     );
     restore_event_payload(
         &mut tc,
@@ -549,11 +556,16 @@ pub fn restore_review_comment(
         &mut tc,
         ctx,
         &format!(
-            "select max(id) from gha_pull_requests where number = {} and dup_repo_name = {}",
+            "select max(id) from gha_pull_requests where number = {} and (dup_repo_name = {} or dup_repo_id = {})",
             n_value(1),
-            n_value(2)
+            n_value(2),
+            n_value(3)
         ),
-        &[SqlArg::Int(pr_number), SqlArg::from(repo)],
+        &[
+            SqlArg::Int(pr_number),
+            SqlArg::from(repo),
+            SqlArg::Int(repo_id),
+        ],
     );
     restore_event_payload(
         &mut tc,
@@ -676,11 +688,16 @@ pub fn restore_review(
         &mut tc,
         ctx,
         &format!(
-            "select max(id) from gha_pull_requests where number = {} and dup_repo_name = {}",
+            "select max(id) from gha_pull_requests where number = {} and (dup_repo_name = {} or dup_repo_id = {})",
             n_value(1),
-            n_value(2)
+            n_value(2),
+            n_value(3)
         ),
-        &[SqlArg::Int(pr_number), SqlArg::from(repo)],
+        &[
+            SqlArg::Int(pr_number),
+            SqlArg::from(repo),
+            SqlArg::Int(repo_id),
+        ],
     );
     restore_event_payload(
         &mut tc,
