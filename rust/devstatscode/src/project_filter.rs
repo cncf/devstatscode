@@ -588,68 +588,79 @@ projects:
             exclude_repos: set(&["env/repo"]),
             ..Ctx::default()
         };
-        // (case, the project's env, ENV_SET, expected)
-        let cases: Vec<(&str, Vec<(&str, &str)>, bool, BTreeMap<String, bool>)> = vec![
-            (
-                "the project's list",
-                vec![(
+        struct Case {
+            name: &'static str,
+            env: &'static [(&'static str, &'static str)],
+            env_set: bool,
+            expected: BTreeMap<String, bool>,
+        }
+        let cases = [
+            Case {
+                name: "the project's list",
+                env: &[(
                     "GHA2DB_EXCLUDE_REPOS",
                     "kubernetes/api,kubernetes/apimachinery",
                 )],
-                false,
-                set(&["kubernetes/api", "kubernetes/apimachinery"]),
-            ),
-            (
-                "one name",
-                vec![
+                env_set: false,
+                expected: set(&["kubernetes/api", "kubernetes/apimachinery"]),
+            },
+            Case {
+                name: "one name",
+                env: &[
                     ("GHA2DB_EXCLUDE_REPOS", "tektoncd/pipeline"),
                     ("GHA2DB_EXACT", "1"),
                 ],
-                false,
-                set(&["tektoncd/pipeline"]),
-            ),
-            (
-                "empty items are dropped, names are not trimmed (like Ctx::init)",
-                vec![("GHA2DB_EXCLUDE_REPOS", "a/b,,c/d, e/f,")],
-                false,
-                set(&["a/b", "c/d", " e/f"]),
-            ),
-            (
-                "an empty project list wins over the environment",
-                vec![("GHA2DB_EXCLUDE_REPOS", "")],
-                false,
-                set(&[]),
-            ),
-            (
-                "no project env: the environment",
-                vec![],
-                false,
-                set(&["env/repo"]),
-            ),
-            (
-                "project env without the list: the environment",
-                vec![("GHA2DB_EXACT", "1")],
-                false,
-                set(&["env/repo"]),
-            ),
-            (
-                "ENV_SET: the environment already is the project's",
-                vec![("GHA2DB_EXCLUDE_REPOS", "kubernetes/api")],
-                true,
-                set(&["env/repo"]),
-            ),
+                env_set: false,
+                expected: set(&["tektoncd/pipeline"]),
+            },
+            Case {
+                name: "empty items are dropped, names are not trimmed (like Ctx::init)",
+                env: &[("GHA2DB_EXCLUDE_REPOS", "a/b,,c/d, e/f,")],
+                env_set: false,
+                expected: set(&["a/b", "c/d", " e/f"]),
+            },
+            Case {
+                name: "an empty project list wins over the environment",
+                env: &[("GHA2DB_EXCLUDE_REPOS", "")],
+                env_set: false,
+                expected: set(&[]),
+            },
+            Case {
+                name: "no project env: the environment",
+                env: &[],
+                env_set: false,
+                expected: set(&["env/repo"]),
+            },
+            Case {
+                name: "project env without the list: the environment",
+                env: &[("GHA2DB_EXACT", "1")],
+                env_set: false,
+                expected: set(&["env/repo"]),
+            },
+            Case {
+                name: "ENV_SET: the environment already is the project's",
+                env: &[("GHA2DB_EXCLUDE_REPOS", "kubernetes/api")],
+                env_set: true,
+                expected: set(&["env/repo"]),
+            },
         ];
-        for (name, env, env_set, expected) in cases {
-            set_or_unset("ENV_SET", env_set.then_some("1"));
+        for case in cases {
+            set_or_unset("ENV_SET", case.env_set.then_some("1"));
             let project = Project {
                 pdb: "db".to_string(),
-                env: env
+                env: case
+                    .env
                     .iter()
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect(),
                 ..Project::default()
             };
-            assert_eq!(project_exclude_repos(&ctx, &project), expected, "{name}");
+            assert_eq!(
+                project_exclude_repos(&ctx, &project),
+                case.expected,
+                "{}",
+                case.name
+            );
         }
         crate::env::remove_var("ENV_SET");
         // Neither the environment nor the context is changed (get_repos asks for many projects in one run)
