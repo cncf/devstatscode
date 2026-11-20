@@ -1075,6 +1075,42 @@ TAGS"#,
 }
 
 #[test]
+fn caipe_release_tag_regexp() {
+    let Some(rs) = both(
+        &Case::new(
+            "caipe_release",
+            proj(&[MAIN_REPO, r"annotation_regexp: '^\d+\.\d+\.\d*0$'", START]),
+        )
+        .no_repo()
+        .script(Script::Fake(
+            r#"cat <<'TAGS'
+0.2.0♂♀1577836800♂♀first minor release
+0.2.30♂♀1577923200♂♀every tenth patch
+0.2.29♂♀1578009600♂♀other patch
+0.0.4♂♀1578096000♂♀early patch
+stable♂♀1578182400♂♀moving tag
+v0.2.0♂♀1578268800♂♀v prefix
+TAGS"#,
+        )),
+    ) else {
+        return;
+    };
+    assert_eq!(rs.code(0), Some(0));
+    assert_eq!(
+        rs.annotations(),
+        s3(&[
+            (
+                "2015-06-01 00:00:00",
+                "Project start date",
+                "2015-06-01 - project starts"
+            ),
+            ("2020-01-01 00:00:00", "0.2.0", "first minor release"),
+            ("2020-01-02 00:00:00", "0.2.30", "every tenth patch"),
+        ])
+    );
+}
+
+#[test]
 fn regexp_matching_nothing_leaves_only_milestones() {
     let Some(rs) = both(&Case::new(
         "regexp_nothing",

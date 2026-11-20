@@ -126,6 +126,377 @@ func IdentifyColumnsToDelete(currCols, neededCols []string) []string {
 	return toDrop
 }
 
+// CompactLockTimeout - how long CompactTable waits for the exclusive lock on the table (PostgreSQL interval)
+const CompactLockTimeout = "15s"
+
+// compactMtx - one table rebuild at a time in a process
+var compactMtx sync.Mutex
+
+// compactSlotsSQL - attribute slots used by a public table: all of them and those of the dropped columns
+const compactSlotsSQL = `select count(*), count(*) filter (where a.attisdropped)
+from pg_attribute a
+where a.attnum > 0 and a.attrelid = (
+  select c.oid from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = $1
+)`
+
+// compactPreflightSQL - one row for each reason why a public table cannot be rebuilt by CompactTable
+const compactPreflightSQL = `with t as (
+  select c.* from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = $1
+)
+select r.reason from t cross join lateral (values
+  (1, t.relkind <> 'r', 'it is not an ordinary table'),
+  (2, t.relpersistence <> 'p', 'it is not a permanent table'),
+  (3, pg_get_userbyid(t.relowner) <> current_user, 'it is not owned by the connected role'),
+  (4, t.relispartition or exists (
+    select 1 from pg_inherits i where i.inhrelid = t.oid or i.inhparent = t.oid
+  ), 'it is a partition or takes part in inheritance'),
+  (5, t.reltablespace <> 0, 'it uses a non-default tablespace'),
+  (6, t.reloptions is not null or exists (
+    select 1 from pg_class x where x.oid = t.reltoastrelid and x.reloptions is not null
+  ), 'it has storage options'),
+  (7, t.reloftype <> 0, 'it is a typed table'),
+  (8, t.relrowsecurity or t.relforcerowsecurity or exists (
+    select 1 from pg_policy p where p.polrelid = t.oid
+  ), 'it uses row security'),
+  (9, t.relreplident <> 'd', 'it has a non-default replica identity'),
+  (10, exists (select 1 from pg_publication_rel p where p.prrelid = t.oid), 'it is published'),
+  (11, exists (select 1 from pg_trigger g where g.tgrelid = t.oid and not g.tgisinternal), 'it has triggers'),
+  (12, exists (select 1 from pg_rewrite w where w.ev_class = t.oid), 'it has rules'),
+  (13, exists (
+    select 1 from pg_depend d join pg_rewrite w on w.oid = d.objid
+    where d.classid = 'pg_rewrite'::regclass and d.refclassid = 'pg_class'::regclass
+      and d.refobjid = t.oid and w.ev_class <> t.oid
+  ), 'views depend on it'),
+  (14, exists (
+    select 1 from pg_constraint k where k.contype = 'f' and (k.conrelid = t.oid or k.confrelid = t.oid)
+  ), 'it has foreign keys'),
+  (15, exists (
+    select 1 from pg_constraint k
+    where k.conrelid = t.oid and (k.contype not in ('p', 'u', 'c', 'n', 'f') or not k.convalidated)
+  ), 'it has unsupported constraints'),
+  (16, exists (
+    select 1 from pg_attribute a
+    where a.attrelid = t.oid and a.attnum > 0 and not a.attisdropped
+      and (a.attidentity <> '' or a.attgenerated <> '')
+  ), 'it has identity or generated columns'),
+  (17, exists (
+    select 1 from pg_depend d join pg_class s on s.oid = d.objid
+    where d.classid = 'pg_class'::regclass and d.refclassid = 'pg_class'::regclass
+      and d.refobjid = t.oid and s.relkind = 'S'
+  ) or exists (
+    select 1 from pg_attrdef ad
+    join pg_depend d on d.classid = 'pg_attrdef'::regclass and d.objid = ad.oid
+    join pg_class s on s.oid = d.refobjid
+    where ad.adrelid = t.oid and d.refclassid = 'pg_class'::regclass and s.relkind = 'S'
+  ), 'it uses sequences'),
+  (18, exists (select 1 from pg_statistic_ext e where e.stxrelid = t.oid), 'it has extended statistics'),
+  (19, exists (
+    select 1 from pg_attribute a
+    where a.attrelid = t.oid and a.attnum > 0 and not a.attisdropped and a.attacl is not null
+  ), 'it has column privileges'),
+  (20, exists (
+    select 1 from aclexplode(t.relacl) a where a.grantor <> t.relowner
+  ), 'it has privileges granted by another role'),
+  (21, exists (
+    select 1 from pg_index i join pg_class x on x.oid = i.indexrelid
+    where i.indrelid = t.oid and (
+      not i.indisvalid or not i.indisready or not i.indislive or i.indisclustered or i.indisreplident
+      or x.reltablespace <> 0
+    )
+  ), 'it has special indexes'),
+  (22, exists (
+    select 1 from pg_description x
+    where (x.classoid = 'pg_class'::regclass and x.objsubid = 0 and (
+      x.objoid = t.oid or x.objoid in (select i.indexrelid from pg_index i where i.indrelid = t.oid)
+    )) or (x.classoid = 'pg_constraint'::regclass and x.objoid in (
+      select k.oid from pg_constraint k where k.conrelid = t.oid
+    ))
+  ), 'it has comments'),
+  (23, exists (
+    select 1 from pg_seclabel s where s.classoid = 'pg_class'::regclass and s.objoid = t.oid
+  ), 'it has security labels'),
+  (24, exists (
+    select 1 from pg_depend d
+    where d.classid = 'pg_class'::regclass and d.objid = t.oid and d.deptype = 'e'
+  ), 'it belongs to an extension')
+) as r(ord, failed, reason)
+where r.failed
+order by r.ord`
+
+// compactSignatureSQL - the definition of a public table that a rebuild must preserve:
+// live columns in order, constraints, indexes and the table's own properties (owner, privileges, ...)
+const compactSignatureSQL = `with t as (
+  select c.* from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = $1
+)
+select
+  coalesce((
+    select string_agg(format(
+      '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
+      pg_get_expr(d.adbin, d.adrelid), a.attcollation, a.attstorage, a.attcompression, a.attstattarget,
+      a.attoptions, a.attidentity, a.attgenerated, a.attacl
+    ), E'\n' order by a.attnum)
+    from pg_attribute a left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+    where a.attrelid = t.oid and a.attnum > 0 and not a.attisdropped
+  ), ''),
+  coalesce((
+    select string_agg(format(
+      '%s|%s|%s|%s|%s|%s|%s', k.conname, k.contype, pg_get_constraintdef(k.oid), k.convalidated,
+      k.condeferrable, k.condeferred, k.connoinherit
+    ), E'\n' order by k.conname)
+    from pg_constraint k where k.conrelid = t.oid
+  ), ''),
+  coalesce((
+    select string_agg(format(
+      '%s|%s|%s|%s|%s|%s|%s|%s', x.relname, pg_get_indexdef(i.indexrelid), i.indisprimary, i.indisunique,
+      i.indisvalid, i.indisclustered, i.indisreplident, x.reltablespace
+    ), E'\n' order by x.relname)
+    from pg_index i join pg_class x on x.oid = i.indexrelid where i.indrelid = t.oid
+  ), ''),
+  format(
+    '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', t.relkind, t.relpersistence, pg_get_userbyid(t.relowner),
+    t.reltablespace, t.reloptions, t.relrowsecurity, t.relforcerowsecurity, t.relreplident, t.reloftype,
+    t.relispartition, (
+      select array_agg(x order by x)
+      from unnest(coalesce(t.relacl, acldefault('r', t.relowner))::text[]) x
+    )
+  )
+from t`
+
+// compactDefsSQL - statements that re-create what "create table (like ... excluding indexes)" does not copy:
+// primary key and unique constraints, the other indexes and the privileges
+const compactDefsSQL = `with t as (
+  select c.* from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = $1
+)
+select d.sql from (
+  select 1 as ord, k.conname::text as name, format(
+    'alter table public.%I add constraint %I %s', t.relname, k.conname, pg_get_constraintdef(k.oid)
+  ) as sql
+  from t join pg_constraint k on k.conrelid = t.oid where k.contype in ('p', 'u')
+  union all
+  select 2, x.relname::text, pg_get_indexdef(i.indexrelid)
+  from t join pg_index i on i.indrelid = t.oid join pg_class x on x.oid = i.indexrelid
+  where not exists (select 1 from pg_constraint k where k.conindid = i.indexrelid)
+  union all
+  select 3, pg_get_userbyid(a.grantee)::text || a.is_grantable::text, format(
+    'grant %s on public.%I to %s%s', string_agg(a.privilege_type, ', ' order by a.privilege_type), t.relname,
+    case when a.grantee = 0 then 'public' else quote_ident(pg_get_userbyid(a.grantee)) end,
+    case when a.is_grantable then ' with grant option' else '' end
+  )
+  from t cross join lateral aclexplode(t.relacl) a where a.grantee <> t.relowner
+  group by t.relname, a.grantee, a.is_grantable
+) d
+order by d.ord, d.name`
+
+// pgQuoteIdent - quotes SQL identifier
+func pgQuoteIdent(name string) string {
+	return "\"" + strings.Replace(name, "\"", "\"\"", -1) + "\""
+}
+
+// compactTableTx - rebuilds the table in a single transaction: either everything is done or nothing changes
+// returns: copied rows, slots before, dropped slots before, slots after, reason why nothing was done
+// reason is "" on success and "-" when (under the lock) there is nothing to do
+func compactTableTx(con *sql.DB, ctx *Ctx, table, lockTimeout string) (nRows int64, slots, dropped, newSlots int, reason string) {
+	tx, err := con.Begin()
+	if err != nil {
+		reason = err.Error()
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	fail := func(e error) (int64, int, int, int, string) {
+		return nRows, slots, dropped, newSlots, e.Error()
+	}
+	qTable := "public." + pgQuoteIdent(table)
+	_, err = ExecSQLTx(tx, ctx, "set local lock_timeout = '"+strings.Replace(lockTimeout, "'", "''", -1)+"'")
+	if err != nil {
+		return fail(err)
+	}
+	_, err = ExecSQLTx(tx, ctx, "lock table "+qTable+" in access exclusive mode")
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "55P03" {
+			reason = "could not lock it within " + lockTimeout
+			return
+		}
+		return fail(err)
+	}
+	// Other 'columns' worker could have rebuilt it while we were waiting for the lock
+	err = QueryRowSQLTx(tx, ctx, compactSlotsSQL, table).Scan(&slots, &dropped)
+	if err != nil {
+		return fail(err)
+	}
+	if slots < ctx.ColumnsCompactSlots || dropped == 0 {
+		reason = "-"
+		return
+	}
+	queryStrings := func(query string) ([]string, error) {
+		rows, er := QuerySQLTx(tx, ctx, query, table)
+		if er != nil {
+			return nil, er
+		}
+		defer func() { _ = rows.Close() }()
+		strs := []string{}
+		for rows.Next() {
+			str := ""
+			er = rows.Scan(&str)
+			if er != nil {
+				return nil, er
+			}
+			strs = append(strs, str)
+		}
+		return strs, rows.Err()
+	}
+	reasons, err := queryStrings(compactPreflightSQL)
+	if err != nil {
+		return fail(err)
+	}
+	if len(reasons) > 0 {
+		reason = strings.Join(reasons, ", ")
+		return
+	}
+	Printf(
+		"Compacting '%s' table: %d attribute slots (%d dropped, %d live), threshold %d\n",
+		table, slots, dropped, slots-dropped, ctx.ColumnsCompactSlots,
+	)
+	var before, after [4]string
+	err = QueryRowSQLTx(tx, ctx, compactSignatureSQL, table).Scan(&before[0], &before[1], &before[2], &before[3])
+	if err != nil {
+		return fail(err)
+	}
+	defs, err := queryStrings(compactDefsSQL)
+	if err != nil {
+		return fail(err)
+	}
+	scratch := ""
+	err = QueryRowSQLTx(tx, ctx, "select 'devstats_compact_' || md5($1::text)", table).Scan(&scratch)
+	if err != nil {
+		return fail(err)
+	}
+	qScratch := pgQuoteIdent(scratch)
+	qCopy := qScratch + "." + pgQuoteIdent(table)
+	_, err = ExecSQLTx(tx, ctx, "create schema "+qScratch)
+	if err != nil {
+		return fail(err)
+	}
+	// The copy is created under its final name, so all generated constraint names are the same as in the original
+	_, err = ExecSQLTx(tx, ctx, "create table "+qCopy+" (like "+qTable+" including all excluding indexes)")
+	if err != nil {
+		return fail(err)
+	}
+	res, err := ExecSQLTx(tx, ctx, "insert into "+qCopy+" select * from "+qTable)
+	if err != nil {
+		return fail(err)
+	}
+	nRows, err = res.RowsAffected()
+	if err != nil {
+		return fail(err)
+	}
+	var origRows int64
+	err = QueryRowSQLTx(tx, ctx, "select count(*) from "+qTable).Scan(&origRows)
+	if err != nil {
+		return fail(err)
+	}
+	if origRows != nRows {
+		reason = fmt.Sprintf("copied %d rows but the table has %d rows", nRows, origRows)
+		return
+	}
+	stmts := []string{
+		"drop table " + qTable,
+		"alter table " + qCopy + " set schema public",
+		"drop schema " + qScratch,
+	}
+	stmts = append(stmts, defs...)
+	for _, stmt := range stmts {
+		_, err = ExecSQLTx(tx, ctx, stmt)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	err = QueryRowSQLTx(tx, ctx, compactSignatureSQL, table).Scan(&after[0], &after[1], &after[2], &after[3])
+	if err != nil {
+		return fail(err)
+	}
+	diffs := []string{}
+	for i, part := range []string{"columns", "constraints", "indexes", "table properties"} {
+		if before[i] != after[i] {
+			diffs = append(diffs, part)
+		}
+	}
+	if len(diffs) > 0 {
+		reason = "the rebuilt table would not match the original (" + strings.Join(diffs, ", ") + ")"
+		return
+	}
+	newDropped := 0
+	err = QueryRowSQLTx(tx, ctx, compactSlotsSQL, table).Scan(&newSlots, &newDropped)
+	if err != nil {
+		return fail(err)
+	}
+	if newSlots != slots-dropped || newDropped != 0 {
+		reason = fmt.Sprintf("the rebuilt table would use %d attribute slots (%d dropped), expected %d", newSlots, newDropped, slots-dropped)
+		return
+	}
+	err = tx.Commit()
+	if err != nil {
+		return fail(err)
+	}
+	committed = true
+	return
+}
+
+// CompactTable - rebuilds a public series table with only its live columns
+// PostgreSQL never reuses the attribute slot of a dropped column and a table can use at most 1600 slots,
+// so a table whose columns are added and dropped again and again finally refuses new columns.
+// The table is rebuilt when it uses at least ctx.ColumnsCompactSlots slots and some of them are dropped columns.
+// Everything happens in one transaction under an exclusive table lock: the table is either fully rebuilt
+// (the same rows, columns, defaults, constraints, indexes and privileges) or left untouched with a warning.
+// It never fails the caller. Returns true when the table was rebuilt.
+func CompactTable(con *sql.DB, ctx *Ctx, table string) bool {
+	return CompactTableWithLockTimeout(con, ctx, table, CompactLockTimeout)
+}
+
+// CompactTableWithLockTimeout - CompactTable waiting for the table lock for at most lockTimeout (PostgreSQL interval)
+func CompactTableWithLockTimeout(con *sql.DB, ctx *Ctx, table, lockTimeout string) bool {
+	if ctx.ColumnsCompactSlots <= 0 {
+		return false
+	}
+	var slots, dropped int
+	err := QueryRowSQL(con, ctx, compactSlotsSQL, table).Scan(&slots, &dropped)
+	if err != nil {
+		Printf("Warning: cannot compact '%s' table: %+v\n", table, err)
+		return false
+	}
+	if slots < ctx.ColumnsCompactSlots || dropped == 0 {
+		return false
+	}
+	compactMtx.Lock()
+	defer compactMtx.Unlock()
+	nRows, lockedSlots, lockedDropped, newSlots, reason := compactTableTx(con, ctx, table, lockTimeout)
+	if reason == "-" {
+		return false
+	}
+	if reason != "" {
+		if lockedSlots > 0 {
+			slots, dropped = lockedSlots, lockedDropped
+		}
+		Printf("Warning: cannot compact '%s' table (%d attribute slots, %d dropped): %s\n", table, slots, dropped, reason)
+		return false
+	}
+	_, err = ExecSQL(con, ctx, "analyze public."+pgQuoteIdent(table))
+	if err != nil {
+		Printf("Warning: cannot analyze compacted '%s' table: %+v\n", table, err)
+	}
+	Printf("Compacted '%s' table: %d rows, %d -> %d attribute slots\n", table, nRows, lockedSlots, newSlots)
+	return true
+}
+
 // DropLeastUsedCol - drops two least used columns from table
 // con - connection
 // ctx - context

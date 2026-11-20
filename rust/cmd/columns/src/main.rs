@@ -170,6 +170,8 @@ fn ensure_column_config(
             }
             printf!("Deleted column \"{}\" from '{}' table\n", col_name, table);
         }
+        // Dropped columns keep their attribute slots, release them before the table runs out of slots
+        pg::api::compact_table(con, ctx, &table);
         for col_name in &col_names {
             let mut trials = 0usize;
             loop {

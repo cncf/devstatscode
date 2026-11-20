@@ -56,6 +56,7 @@ type Ctx struct {
 	MetricsYaml              string                       // From GHA2DB_METRICS_YAML gha2db_sync tool, set other metrics.yaml file, default is "metrics/{{project}}metrics.yaml"
 	TagsYaml                 string                       // From GHA2DB_TAGS_YAML tags tool, set other tags.yaml file, default is "metrics/{{project}}/tags.yaml"
 	ColumnsYaml              string                       // From GHA2DB_COLUMNS_YAML tags tool, set other columns.yaml file, default is "metrics/{{project}}/columns.yaml"
+	ColumnsCompactSlots      int                          // From GHA2DB_COLUMNS_COMPACT_SLOTS columns tool, a series table that uses at least this many attribute slots (PostgreSQL allows 1600, dropped columns keep their slots) is rebuilt with only its live columns, default 1300, 0 disables, negative keeps the default
 	VarsYaml                 string                       // From GHA2DB_VARS_YAML db_vars tool, set other vars.yaml file (full path), default is "metrics/{{project}}/vars.yaml"
 	VarsFnYaml               string                       // From GHA2DB_VARS_FN_YAML db_vars tool, set other vars.yaml file (final file name without path), default is "vars.yaml"
 	SkipDatesYaml            string                       // From GHA2DB_SKIP_DATES_YAML gha2db tool, set other skip_dates.yaml file, default is "skip_dates.yaml"
@@ -514,6 +515,16 @@ func (ctx *Ctx) Init() {
 	}
 	if ctx.VarsYaml == "" {
 		ctx.VarsYaml = "metrics/" + proj + ctx.VarsFnYaml
+	}
+
+	// Columns tool: attribute slots at which a series table is compacted
+	ctx.ColumnsCompactSlots = 1300
+	if os.Getenv("GHA2DB_COLUMNS_COMPACT_SLOTS") != "" {
+		slots, err := strconv.Atoi(os.Getenv("GHA2DB_COLUMNS_COMPACT_SLOTS"))
+		FatalNoLog(err)
+		if slots >= 0 {
+			ctx.ColumnsCompactSlots = slots
+		}
 	}
 
 	// GitHub OAuth
@@ -1049,6 +1060,7 @@ func (ctx *Ctx) CopyContext() *Ctx {
 		MetricsYaml:              ctx.MetricsYaml,
 		TagsYaml:                 ctx.TagsYaml,
 		ColumnsYaml:              ctx.ColumnsYaml,
+		ColumnsCompactSlots:      ctx.ColumnsCompactSlots,
 		VarsYaml:                 ctx.VarsYaml,
 		VarsFnYaml:               ctx.VarsFnYaml,
 		GitHubOAuth:              ctx.GitHubOAuth,

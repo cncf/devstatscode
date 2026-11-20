@@ -906,6 +906,468 @@ pub fn identify_columns_to_delete(curr_cols: &[String], needed_cols: &[String]) 
     to_drop
 }
 
+/// Go `CompactLockTimeout`: how long [`compact_table`] waits for the exclusive
+/// lock on the table (PostgreSQL interval).
+pub const COMPACT_LOCK_TIMEOUT: &str = "15s";
+
+/// Go `compactMtx`: one table rebuild at a time in a process.
+static COMPACT_MTX: Mutex<()> = Mutex::new(());
+
+/// Go `compactSlotsSQL`: attribute slots used by a public table — all of
+/// them and those of the dropped columns.
+const COMPACT_SLOTS_SQL: &str = r#"select count(*), count(*) filter (where a.attisdropped)
+from pg_attribute a
+where a.attnum > 0 and a.attrelid = (
+  select c.oid from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = $1
+)"#;
+
+/// Go `compactPreflightSQL`: one row for each reason why a public table
+/// cannot be rebuilt by [`compact_table`].
+const COMPACT_PREFLIGHT_SQL: &str = r#"with t as (
+  select c.* from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = $1
+)
+select r.reason from t cross join lateral (values
+  (1, t.relkind <> 'r', 'it is not an ordinary table'),
+  (2, t.relpersistence <> 'p', 'it is not a permanent table'),
+  (3, pg_get_userbyid(t.relowner) <> current_user, 'it is not owned by the connected role'),
+  (4, t.relispartition or exists (
+    select 1 from pg_inherits i where i.inhrelid = t.oid or i.inhparent = t.oid
+  ), 'it is a partition or takes part in inheritance'),
+  (5, t.reltablespace <> 0, 'it uses a non-default tablespace'),
+  (6, t.reloptions is not null or exists (
+    select 1 from pg_class x where x.oid = t.reltoastrelid and x.reloptions is not null
+  ), 'it has storage options'),
+  (7, t.reloftype <> 0, 'it is a typed table'),
+  (8, t.relrowsecurity or t.relforcerowsecurity or exists (
+    select 1 from pg_policy p where p.polrelid = t.oid
+  ), 'it uses row security'),
+  (9, t.relreplident <> 'd', 'it has a non-default replica identity'),
+  (10, exists (select 1 from pg_publication_rel p where p.prrelid = t.oid), 'it is published'),
+  (11, exists (select 1 from pg_trigger g where g.tgrelid = t.oid and not g.tgisinternal), 'it has triggers'),
+  (12, exists (select 1 from pg_rewrite w where w.ev_class = t.oid), 'it has rules'),
+  (13, exists (
+    select 1 from pg_depend d join pg_rewrite w on w.oid = d.objid
+    where d.classid = 'pg_rewrite'::regclass and d.refclassid = 'pg_class'::regclass
+      and d.refobjid = t.oid and w.ev_class <> t.oid
+  ), 'views depend on it'),
+  (14, exists (
+    select 1 from pg_constraint k where k.contype = 'f' and (k.conrelid = t.oid or k.confrelid = t.oid)
+  ), 'it has foreign keys'),
+  (15, exists (
+    select 1 from pg_constraint k
+    where k.conrelid = t.oid and (k.contype not in ('p', 'u', 'c', 'n', 'f') or not k.convalidated)
+  ), 'it has unsupported constraints'),
+  (16, exists (
+    select 1 from pg_attribute a
+    where a.attrelid = t.oid and a.attnum > 0 and not a.attisdropped
+      and (a.attidentity <> '' or a.attgenerated <> '')
+  ), 'it has identity or generated columns'),
+  (17, exists (
+    select 1 from pg_depend d join pg_class s on s.oid = d.objid
+    where d.classid = 'pg_class'::regclass and d.refclassid = 'pg_class'::regclass
+      and d.refobjid = t.oid and s.relkind = 'S'
+  ) or exists (
+    select 1 from pg_attrdef ad
+    join pg_depend d on d.classid = 'pg_attrdef'::regclass and d.objid = ad.oid
+    join pg_class s on s.oid = d.refobjid
+    where ad.adrelid = t.oid and d.refclassid = 'pg_class'::regclass and s.relkind = 'S'
+  ), 'it uses sequences'),
+  (18, exists (select 1 from pg_statistic_ext e where e.stxrelid = t.oid), 'it has extended statistics'),
+  (19, exists (
+    select 1 from pg_attribute a
+    where a.attrelid = t.oid and a.attnum > 0 and not a.attisdropped and a.attacl is not null
+  ), 'it has column privileges'),
+  (20, exists (
+    select 1 from aclexplode(t.relacl) a where a.grantor <> t.relowner
+  ), 'it has privileges granted by another role'),
+  (21, exists (
+    select 1 from pg_index i join pg_class x on x.oid = i.indexrelid
+    where i.indrelid = t.oid and (
+      not i.indisvalid or not i.indisready or not i.indislive or i.indisclustered or i.indisreplident
+      or x.reltablespace <> 0
+    )
+  ), 'it has special indexes'),
+  (22, exists (
+    select 1 from pg_description x
+    where (x.classoid = 'pg_class'::regclass and x.objsubid = 0 and (
+      x.objoid = t.oid or x.objoid in (select i.indexrelid from pg_index i where i.indrelid = t.oid)
+    )) or (x.classoid = 'pg_constraint'::regclass and x.objoid in (
+      select k.oid from pg_constraint k where k.conrelid = t.oid
+    ))
+  ), 'it has comments'),
+  (23, exists (
+    select 1 from pg_seclabel s where s.classoid = 'pg_class'::regclass and s.objoid = t.oid
+  ), 'it has security labels'),
+  (24, exists (
+    select 1 from pg_depend d
+    where d.classid = 'pg_class'::regclass and d.objid = t.oid and d.deptype = 'e'
+  ), 'it belongs to an extension')
+) as r(ord, failed, reason)
+where r.failed
+order by r.ord"#;
+
+/// Go `compactSignatureSQL`: the definition of a public table that a rebuild
+/// must preserve — live columns in order, constraints, indexes and the
+/// table's own properties (owner, privileges, ...).
+const COMPACT_SIGNATURE_SQL: &str = r#"with t as (
+  select c.* from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = $1
+)
+select
+  coalesce((
+    select string_agg(format(
+      '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
+      pg_get_expr(d.adbin, d.adrelid), a.attcollation, a.attstorage, a.attcompression, a.attstattarget,
+      a.attoptions, a.attidentity, a.attgenerated, a.attacl
+    ), E'\n' order by a.attnum)
+    from pg_attribute a left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+    where a.attrelid = t.oid and a.attnum > 0 and not a.attisdropped
+  ), ''),
+  coalesce((
+    select string_agg(format(
+      '%s|%s|%s|%s|%s|%s|%s', k.conname, k.contype, pg_get_constraintdef(k.oid), k.convalidated,
+      k.condeferrable, k.condeferred, k.connoinherit
+    ), E'\n' order by k.conname)
+    from pg_constraint k where k.conrelid = t.oid
+  ), ''),
+  coalesce((
+    select string_agg(format(
+      '%s|%s|%s|%s|%s|%s|%s|%s', x.relname, pg_get_indexdef(i.indexrelid), i.indisprimary, i.indisunique,
+      i.indisvalid, i.indisclustered, i.indisreplident, x.reltablespace
+    ), E'\n' order by x.relname)
+    from pg_index i join pg_class x on x.oid = i.indexrelid where i.indrelid = t.oid
+  ), ''),
+  format(
+    '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', t.relkind, t.relpersistence, pg_get_userbyid(t.relowner),
+    t.reltablespace, t.reloptions, t.relrowsecurity, t.relforcerowsecurity, t.relreplident, t.reloftype,
+    t.relispartition, (
+      select array_agg(x order by x)
+      from unnest(coalesce(t.relacl, acldefault('r', t.relowner))::text[]) x
+    )
+  )
+from t"#;
+
+/// Go `compactDefsSQL`: statements that re-create what
+/// `create table (like ... excluding indexes)` does not copy — primary key
+/// and unique constraints, the other indexes and the privileges.
+const COMPACT_DEFS_SQL: &str = r#"with t as (
+  select c.* from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = $1
+)
+select d.sql from (
+  select 1 as ord, k.conname::text as name, format(
+    'alter table public.%I add constraint %I %s', t.relname, k.conname, pg_get_constraintdef(k.oid)
+  ) as sql
+  from t join pg_constraint k on k.conrelid = t.oid where k.contype in ('p', 'u')
+  union all
+  select 2, x.relname::text, pg_get_indexdef(i.indexrelid)
+  from t join pg_index i on i.indrelid = t.oid join pg_class x on x.oid = i.indexrelid
+  where not exists (select 1 from pg_constraint k where k.conindid = i.indexrelid)
+  union all
+  select 3, pg_get_userbyid(a.grantee)::text || a.is_grantable::text, format(
+    'grant %s on public.%I to %s%s', string_agg(a.privilege_type, ', ' order by a.privilege_type), t.relname,
+    case when a.grantee = 0 then 'public' else quote_ident(pg_get_userbyid(a.grantee)) end,
+    case when a.is_grantable then ' with grant option' else '' end
+  )
+  from t cross join lateral aclexplode(t.relacl) a where a.grantee <> t.relowner
+  group by t.relname, a.grantee, a.is_grantable
+) d
+order by d.ord, d.name"#;
+
+/// Go `pgQuoteIdent`: quotes an SQL identifier.
+fn pg_quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Result of [`compact_table_tx`] (the Go function's return values).
+#[derive(Debug, Default)]
+struct Compaction {
+    /// Copied rows.
+    n_rows: i64,
+    /// Attribute slots before, counted under the table lock.
+    slots: i64,
+    /// Slots of dropped columns before, counted under the table lock.
+    dropped: i64,
+    /// Attribute slots after the rebuild.
+    new_slots: i64,
+    /// Why nothing was done: `""` on success, `"-"` when (under the lock)
+    /// there is nothing to do.
+    reason: String,
+}
+
+/// The strings of a one-column query of the transaction (Go `queryStrings`).
+fn compact_query_strings(
+    tx: &mut PgTx<'_>,
+    ctx: &Ctx,
+    query: &str,
+    table: &str,
+) -> Result<Vec<String>, PgError> {
+    let mut rows = query_sql_tx(tx, ctx, query, &[SqlArg::from(table)])?;
+    let mut strs = Vec::new();
+    let mut s = String::new();
+    while rows.next() {
+        rows.scan(&mut [&mut s])?;
+        strs.push(s.clone());
+    }
+    rows.err()?;
+    Ok(strs)
+}
+
+/// The four parts of the table definition (Go `compactSignatureSQL` scan).
+fn compact_signature(tx: &mut PgTx<'_>, ctx: &Ctx, table: &str) -> Result<[String; 4], PgError> {
+    let mut sig: [String; 4] = Default::default();
+    {
+        let [a, b, c, d] = &mut sig;
+        query_row_sql_tx(tx, ctx, COMPACT_SIGNATURE_SQL, &[SqlArg::from(table)])
+            .scan(&mut [a, b, c, d])?;
+    }
+    Ok(sig)
+}
+
+/// The slots of the table: all and dropped (Go `compactSlotsSQL` scan).
+fn compact_slots(tx: &mut PgTx<'_>, ctx: &Ctx, table: &str) -> Result<(i64, i64), PgError> {
+    let (mut slots, mut dropped) = (0i64, 0i64);
+    query_row_sql_tx(tx, ctx, COMPACT_SLOTS_SQL, &[SqlArg::from(table)])
+        .scan(&mut [&mut slots, &mut dropped])?;
+    Ok((slots, dropped))
+}
+
+/// Go `compactTableTx`: rebuilds the table in a single transaction — either
+/// everything is done or nothing changes (an unfinished transaction is
+/// rolled back when it is dropped).
+fn compact_table_tx(con: &PgConn, ctx: &Ctx, table: &str, lock_timeout: &str) -> Compaction {
+    let mut res = Compaction::default();
+    let mut tx = match con.begin() {
+        Ok(tx) => tx,
+        Err(e) => {
+            res.reason = e.to_string();
+            return res;
+        }
+    };
+    // Go `fail(err)`: the error text is the reason.
+    macro_rules! check {
+        ($e:expr) => {
+            match $e {
+                Ok(v) => v,
+                Err(e) => {
+                    res.reason = e.to_string();
+                    return res;
+                }
+            }
+        };
+    }
+    let q_table = format!("public.{}", pg_quote_ident(table));
+    check!(exec_sql_tx(
+        &mut tx,
+        ctx,
+        &format!(
+            "set local lock_timeout = '{}'",
+            lock_timeout.replace('\'', "''")
+        ),
+        &[],
+    ));
+    if let Err(e) = exec_sql_tx(
+        &mut tx,
+        ctx,
+        &format!("lock table {} in access exclusive mode", q_table),
+        &[],
+    ) {
+        res.reason = if e.code() == "55P03" {
+            format!("could not lock it within {}", lock_timeout)
+        } else {
+            e.to_string()
+        };
+        return res;
+    }
+    // Other 'columns' worker could have rebuilt it while we were waiting for the lock
+    (res.slots, res.dropped) = check!(compact_slots(&mut tx, ctx, table));
+    if res.slots < ctx.columns_compact_slots || res.dropped == 0 {
+        res.reason = "-".to_string();
+        return res;
+    }
+    let reasons = check!(compact_query_strings(
+        &mut tx,
+        ctx,
+        COMPACT_PREFLIGHT_SQL,
+        table
+    ));
+    if !reasons.is_empty() {
+        res.reason = reasons.join(", ");
+        return res;
+    }
+    printf!(
+        "Compacting '{}' table: {} attribute slots ({} dropped, {} live), threshold {}\n",
+        table,
+        res.slots,
+        res.dropped,
+        res.slots - res.dropped,
+        ctx.columns_compact_slots
+    );
+    let before = check!(compact_signature(&mut tx, ctx, table));
+    let defs = check!(compact_query_strings(&mut tx, ctx, COMPACT_DEFS_SQL, table));
+    let mut scratch = String::new();
+    check!(query_row_sql_tx(
+        &mut tx,
+        ctx,
+        "select 'devstats_compact_' || md5($1::text)",
+        &[SqlArg::from(table)],
+    )
+    .scan(&mut [&mut scratch]));
+    let q_scratch = pg_quote_ident(&scratch);
+    let q_copy = format!("{}.{}", q_scratch, pg_quote_ident(table));
+    check!(exec_sql_tx(
+        &mut tx,
+        ctx,
+        &format!("create schema {}", q_scratch),
+        &[],
+    ));
+    // The copy is created under its final name, so all generated constraint names are the same as in the original
+    check!(exec_sql_tx(
+        &mut tx,
+        ctx,
+        &format!(
+            "create table {} (like {} including all excluding indexes)",
+            q_copy, q_table
+        ),
+        &[],
+    ));
+    let copied = check!(exec_sql_tx(
+        &mut tx,
+        ctx,
+        &format!("insert into {} select * from {}", q_copy, q_table),
+        &[],
+    ));
+    res.n_rows = check!(copied.rows_affected());
+    let mut orig_rows = 0i64;
+    check!(query_row_sql_tx(
+        &mut tx,
+        ctx,
+        &format!("select count(*) from {}", q_table),
+        &[],
+    )
+    .scan(&mut [&mut orig_rows]));
+    if orig_rows != res.n_rows {
+        res.reason = format!(
+            "copied {} rows but the table has {} rows",
+            res.n_rows, orig_rows
+        );
+        return res;
+    }
+    let mut stmts = vec![
+        format!("drop table {}", q_table),
+        format!("alter table {} set schema public", q_copy),
+        format!("drop schema {}", q_scratch),
+    ];
+    stmts.extend(defs);
+    for stmt in &stmts {
+        check!(exec_sql_tx(&mut tx, ctx, stmt, &[]));
+    }
+    let after = check!(compact_signature(&mut tx, ctx, table));
+    let diffs: Vec<&str> = ["columns", "constraints", "indexes", "table properties"]
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| before[*i] != after[*i])
+        .map(|(_, part)| part)
+        .collect();
+    if !diffs.is_empty() {
+        res.reason = format!(
+            "the rebuilt table would not match the original ({})",
+            diffs.join(", ")
+        );
+        return res;
+    }
+    let new_dropped;
+    (res.new_slots, new_dropped) = check!(compact_slots(&mut tx, ctx, table));
+    if res.new_slots != res.slots - res.dropped || new_dropped != 0 {
+        res.reason = format!(
+            "the rebuilt table would use {} attribute slots ({} dropped), expected {}",
+            res.new_slots,
+            new_dropped,
+            res.slots - res.dropped
+        );
+        return res;
+    }
+    check!(tx.commit());
+    res
+}
+
+/// Go `CompactTable`: rebuilds a public series table with only its live
+/// columns. PostgreSQL never reuses the attribute slot of a dropped column
+/// and a table can use at most 1600 slots, so a table whose columns are
+/// added and dropped again and again finally refuses new columns. The table
+/// is rebuilt when it uses at least `ctx.columns_compact_slots` slots and
+/// some of them are dropped columns. Everything happens in one transaction
+/// under an exclusive table lock: the table is either fully rebuilt (the
+/// same rows, columns, defaults, constraints, indexes and privileges) or
+/// left untouched with a warning. It never fails the caller. Returns whether
+/// the table was rebuilt.
+pub fn compact_table(con: &PgConn, ctx: &Ctx, table: &str) -> bool {
+    compact_table_with_lock_timeout(con, ctx, table, COMPACT_LOCK_TIMEOUT)
+}
+
+/// Go `CompactTableWithLockTimeout`: [`compact_table`] waiting for the table
+/// lock for at most `lock_timeout` (PostgreSQL interval).
+pub fn compact_table_with_lock_timeout(
+    con: &PgConn,
+    ctx: &Ctx,
+    table: &str,
+    lock_timeout: &str,
+) -> bool {
+    if ctx.columns_compact_slots <= 0 {
+        return false;
+    }
+    let (mut slots, mut dropped) = (0i64, 0i64);
+    if let Err(err) = query_row_sql(con, ctx, COMPACT_SLOTS_SQL, &[SqlArg::from(table)])
+        .scan(&mut [&mut slots, &mut dropped])
+    {
+        printf!("Warning: cannot compact '{}' table: {}\n", table, err);
+        return false;
+    }
+    if slots < ctx.columns_compact_slots || dropped == 0 {
+        return false;
+    }
+    let _guard = COMPACT_MTX.lock().unwrap_or_else(|e| e.into_inner());
+    let res = compact_table_tx(con, ctx, table, lock_timeout);
+    if res.reason == "-" {
+        return false;
+    }
+    if !res.reason.is_empty() {
+        if res.slots > 0 {
+            (slots, dropped) = (res.slots, res.dropped);
+        }
+        printf!(
+            "Warning: cannot compact '{}' table ({} attribute slots, {} dropped): {}\n",
+            table,
+            slots,
+            dropped,
+            res.reason
+        );
+        return false;
+    }
+    if let Err(err) = exec_sql(
+        con,
+        ctx,
+        &format!("analyze public.{}", pg_quote_ident(table)),
+        &[],
+    ) {
+        printf!(
+            "Warning: cannot analyze compacted '{}' table: {}\n",
+            table,
+            err
+        );
+    }
+    printf!(
+        "Compacted '{}' table: {} rows, {} -> {} attribute slots\n",
+        table,
+        res.n_rows,
+        res.slots,
+        res.new_slots
+    );
+    true
+}
+
 fn go_float_slice(vals: &[f64]) -> String {
     let strs: Vec<String> = vals.iter().map(|f| gofmt::float(*f)).collect();
     gofmt::slice(&strs)

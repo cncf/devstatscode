@@ -1,0 +1,9 @@
+---
+# the same table reached by two configs (same tag): compacted by the first one only
+columns:
+  - table_regexp: '^scommits$'
+    tag: tsig_mentions_labels
+    column: sig_mentions_labels_value
+  - table_regexp: '^scommit'
+    tag: tsig_mentions_labels
+    column: sig_mentions_labels_value

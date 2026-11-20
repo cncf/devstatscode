@@ -227,6 +227,7 @@ func TestInit(t *testing.T) {
 		MetricsYaml:              "metrics/metrics.yaml",
 		TagsYaml:                 "metrics/tags.yaml",
 		ColumnsYaml:              "metrics/columns.yaml",
+		ColumnsCompactSlots:      1300,
 		VarsYaml:                 "metrics/vars.yaml",
 		VarsFnYaml:               "vars.yaml",
 		GitHubOAuth:              "not_use",
@@ -413,6 +414,33 @@ func TestInit(t *testing.T) {
 				t,
 				defaultContext.CopyContext(),
 				map[string]interface{}{"MinGHAPIPoints": 1000},
+			),
+		},
+		{
+			"Setting columns compact slots",
+			map[string]string{"GHA2DB_COLUMNS_COMPACT_SLOTS": "1500"},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{"ColumnsCompactSlots": 1500},
+			),
+		},
+		{
+			"Setting columns compact slots to 0 disables compaction",
+			map[string]string{"GHA2DB_COLUMNS_COMPACT_SLOTS": "0"},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{"ColumnsCompactSlots": 0},
+			),
+		},
+		{
+			"Setting negative columns compact slots keeps the default",
+			map[string]string{"GHA2DB_COLUMNS_COMPACT_SLOTS": "-1"},
+			dynamicSetFields(
+				t,
+				defaultContext.CopyContext(),
+				map[string]interface{}{"ColumnsCompactSlots": 1300},
 			),
 		},
 		{

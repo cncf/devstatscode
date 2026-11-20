@@ -150,6 +150,8 @@ func ensureColumns() {
 					lib.FatalOnError(er)
 					lib.Printf("Deleted column \"%s\" from '%s' table\n", colName, table)
 				}
+				// Dropped columns keep their attribute slots, release them before the table runs out of slots
+				lib.CompactTable(con, &ctx, table)
 				for _, colName := range colNames {
 					trials := 0
 				retryCol:

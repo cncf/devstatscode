@@ -497,6 +497,12 @@ const TEST_CASES: &[(&str, &str, bool)] = &[
     (r"^v\d+\.\d+\.\d*0$", "v1.2.10", true),
     (r"^v\d+\.\d+\.\d*0$", "v1.2.110", true),
     (r"^v\d+\.\d+\.\d*0$", "v1.2.1", false),
+    (r"^\d+\.\d+\.\d*0$", "0.2.0", true),
+    (r"^\d+\.\d+\.\d*0$", "0.2.30", true),
+    (r"^\d+\.\d+\.\d*0$", "0.2.29", false),
+    (r"^\d+\.\d+\.\d*0$", "0.0.4", false),
+    (r"^\d+\.\d+\.\d*0$", "stable", false),
+    (r"^\d+\.\d+\.\d*0$", "v0.2.0", false),
     (r"^v\d+\.\d+\.0\+k0s\.\d+$", "v1.2.0+k0s.0", true),
     (r"^v\d+\.\d+\.0\+k0s\.\d+$", "v1.2.0-beta.+k0s.0", false),
     (r"^v\d+\.\d+\.0\+k0s\.\d+$", "v1.2.0+k0s.1", true),
@@ -555,7 +561,7 @@ const TEST_CASES: &[(&str, &str, bool)] = &[
 
 #[test]
 fn annotation_regexp() {
-    assert_eq!(TEST_CASES.len(), 281);
+    assert_eq!(TEST_CASES.len(), 287);
     for (index, (re, s, expected)) in TEST_CASES.iter().enumerate() {
         let re = goregex::compile(re).unwrap_or_else(|e| {
             panic!(

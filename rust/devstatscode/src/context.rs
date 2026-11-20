@@ -264,6 +264,8 @@ pub struct Ctx {
     pub tags_yaml: String,
     /// From GHA2DB_COLUMNS_YAML tags tool, set other columns.yaml file, default is "metrics/{{project}}/columns.yaml"
     pub columns_yaml: String,
+    /// From GHA2DB_COLUMNS_COMPACT_SLOTS columns tool, a series table that uses at least this many attribute slots (PostgreSQL allows 1600, dropped columns keep their slots) is rebuilt with only its live columns, default 1300, 0 disables, negative keeps the default
+    pub columns_compact_slots: i64,
     /// From GHA2DB_VARS_YAML db_vars tool, set other vars.yaml file (full path), default is "metrics/{{project}}/vars.yaml"
     pub vars_yaml: String,
     /// From GHA2DB_VARS_FN_YAML db_vars tool, set other vars.yaml file (final file name without path), default is "vars.yaml"
@@ -784,6 +786,14 @@ impl Ctx {
             &format!("metrics/{}{}", proj, self.vars_fn_yaml),
         );
 
+        // Columns tool: attribute slots at which a series table is compacted
+        self.columns_compact_slots = 1300;
+        if let Some(slots) = env_int("GHA2DB_COLUMNS_COMPACT_SLOTS") {
+            if slots >= 0 {
+                self.columns_compact_slots = slots;
+            }
+        }
+
         // GitHub OAuth
         self.github_oauth = getenv("GHA2DB_GITHUB_OAUTH");
         if self.github_oauth.is_empty() {
@@ -1127,6 +1137,10 @@ impl Ctx {
             ("MetricsYaml", self.metrics_yaml.clone()),
             ("TagsYaml", self.tags_yaml.clone()),
             ("ColumnsYaml", self.columns_yaml.clone()),
+            (
+                "ColumnsCompactSlots",
+                self.columns_compact_slots.to_string(),
+            ),
             ("VarsYaml", self.vars_yaml.clone()),
             ("VarsFnYaml", self.vars_fn_yaml.clone()),
             ("SkipDatesYaml", self.skip_dates_yaml.clone()),
@@ -1389,6 +1403,7 @@ mod tests {
             metrics_yaml: "metrics/metrics.yaml".to_string(),
             tags_yaml: "metrics/tags.yaml".to_string(),
             columns_yaml: "metrics/columns.yaml".to_string(),
+            columns_compact_slots: 1300,
             vars_yaml: "metrics/vars.yaml".to_string(),
             vars_fn_yaml: "vars.yaml".to_string(),
             github_oauth: "not_use".to_string(),
@@ -1520,6 +1535,27 @@ mod tests {
                 {
                     c.project_scale = 3.14;
                 }
+            },
+        },
+        Case {
+            name: "Setting columns compact slots",
+            env: &[("GHA2DB_COLUMNS_COMPACT_SLOTS", "1500")],
+            set: |c| {
+                c.columns_compact_slots = 1500;
+            },
+        },
+        Case {
+            name: "Setting columns compact slots to 0 disables compaction",
+            env: &[("GHA2DB_COLUMNS_COMPACT_SLOTS", "0")],
+            set: |c| {
+                c.columns_compact_slots = 0;
+            },
+        },
+        Case {
+            name: "Setting negative columns compact slots keeps the default",
+            env: &[("GHA2DB_COLUMNS_COMPACT_SLOTS", "-1")],
+            set: |c| {
+                c.columns_compact_slots = 1300;
             },
         },
         Case {
@@ -2422,7 +2458,7 @@ mod tests {
             },
         },
         ];
-        assert_eq!(cases.len(), 122);
+        assert_eq!(cases.len(), 125);
         let default = default_context();
         for (index, case) in cases.iter().enumerate() {
             let mut expected = default.copy_context();

@@ -11,7 +11,9 @@
 //! because the Go program processes the tables of its second phase in map
 //! order — and, single-threaded, the first phase line by line), the
 //! `Error: '…'` lines of fatal errors and the resulting database: every
-//! table's columns (type, nullability, default) and every row.
+//! table's columns (type, nullability, default), every row and the catalog
+//! (attribute slots in use and dropped, constraints, indexes, owner and
+//! privileges of every table; no scratch schema left behind).
 //!
 //! Needs a PostgreSQL server (`test.sh` finds one; skipped otherwise). The
 //! `hll` cases test the success path when the server has the `hll` extension
@@ -20,6 +22,8 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 
 use devstats_compat::pg::{self as cpg, TestDb};
 use devstats_compat::{
@@ -64,6 +68,12 @@ struct Case<'a> {
     /// The run is single-threaded (`GHA2DB_ST`), so the first phase's output
     /// is compared line by line, not only as a multiset.
     st: bool,
+    /// SQL executed on the scratch database after the seed (and the `hll`
+    /// extension), before the first run.
+    setup: Vec<String>,
+    /// Another session: this statement runs in a transaction that is kept
+    /// open for that many seconds from the start of every run (a table lock).
+    hold: Option<(&'a str, u64)>,
 }
 
 impl<'a> Case<'a> {
@@ -81,7 +91,17 @@ impl<'a> Case<'a> {
             more_runs: Vec::new(),
             compare_errors: true,
             st: true,
+            setup: Vec::new(),
+            hold: None,
         }
+    }
+    fn setup(mut self, sql: &str) -> Self {
+        self.setup.push(sql.to_string());
+        self
+    }
+    fn hold(mut self, sql: &'a str, seconds: u64) -> Self {
+        self.hold = Some((sql, seconds));
+        self
     }
     fn env(mut self, k: &'a str, v: &'a str) -> Self {
         self.env.retain(|(key, _)| *key != k);
@@ -173,15 +193,42 @@ fn run_side(bin: &Path, case: &Case<'_>, suffix: &str) -> Option<Side> {
                 eprintln!("[compat] hll extension not available on the test server — testing the error path");
             }
         }
+        for sql in &case.setup {
+            db.exec(sql);
+        }
         Some(db)
     } else {
         None
     };
-    let mut outs = vec![run(bin, &invocation(case, db.as_ref(), &[]))];
+    let mut outs = vec![run_held(bin, case, db.as_ref(), &[])];
     for extra in &case.more_runs {
-        outs.push(run(bin, &invocation(case, db.as_ref(), extra)));
+        outs.push(run_held(bin, case, db.as_ref(), extra));
     }
     Some(Side { db, outs })
+}
+
+/// One run of `bin`; with `Case::hold` another session first executes that
+/// statement in a transaction and keeps it open for the given time.
+fn run_held(bin: &Path, case: &Case<'_>, db: Option<&TestDb>, extra: &[(&str, &str)]) -> Outcome {
+    let inv = invocation(case, db, extra);
+    let (Some(db), Some((sql, seconds))) = (db, case.hold) else {
+        return run(bin, &inv);
+    };
+    thread::scope(|scope| {
+        let (ready, is_ready) = mpsc::channel();
+        scope.spawn(move || {
+            let con = db.conn();
+            let mut tx = con.begin().unwrap();
+            tx.exec(sql, &[]).unwrap();
+            ready.send(()).unwrap();
+            tx.exec(&format!("select pg_sleep({seconds})"), &[])
+                .unwrap();
+            tx.rollback().unwrap();
+            con.close();
+        });
+        is_ready.recv().unwrap();
+        run(bin, &inv)
+    })
 }
 
 /// `Error: '…'` lines of a fatal error report (the scratch database name
@@ -305,6 +352,39 @@ fn db_state(db: &TestDb) -> DbState {
     (schema, data, counts)
 }
 
+/// Attribute slots (in use, dropped), constraints, indexes, owner and
+/// privileges of every table, then the scratch schemas `compact_table` left
+/// behind (none).
+fn catalog_state(db: &TestDb) -> Vec<Vec<String>> {
+    let con = db.conn();
+    let mut rows = cpg::snapshot(
+        &con,
+        "select c.relname, \
+         (select count(*) from pg_attribute a where a.attrelid = c.oid and a.attnum > 0)::text, \
+         (select count(*) from pg_attribute a where a.attrelid = c.oid and a.attnum > 0 and a.attisdropped)::text, \
+         coalesce((select string_agg(k.conname || ' ' || pg_get_constraintdef(k.oid), '; ' order by k.conname) \
+           from pg_constraint k where k.conrelid = c.oid), ''), \
+         coalesce((select string_agg(i.indexdef, '; ' order by i.indexname) \
+           from pg_indexes i where i.schemaname = 'public' and i.tablename = c.relname), ''), \
+         pg_get_userbyid(c.relowner)::text, \
+         coalesce((select string_agg(x, ',' order by x) from unnest(c.relacl::text[]) x), '') \
+         from pg_class c join pg_namespace n on n.oid = c.relnamespace \
+         where n.nspname = 'public' and c.relkind in ('r', 'p') order by c.relname",
+        &[],
+    )
+    .rows;
+    rows.extend(
+        cpg::snapshot(
+            &con,
+            "select 'schema ' || nspname from pg_namespace where nspname like 'devstats_compact%' order by 1",
+            &[],
+        )
+        .rows,
+    );
+    con.close();
+    rows
+}
+
 /// Run both binaries and compare everything; returns the Rust side for
 /// further assertions (`None` when the DB tests are skipped).
 fn both(case: &Case<'_>) -> Option<Side> {
@@ -352,6 +432,12 @@ fn both(case: &Case<'_>) -> Option<Side> {
             assert_eq!(gc, rc, "row counts (case {:?})", case.name);
             assert_eq!(gs, rs, "schema (case {:?})", case.name);
             assert_eq!(gd, rd, "table data (case {:?})", case.name);
+            assert_eq!(
+                catalog_state(gdb),
+                catalog_state(rdb),
+                "catalog (case {:?})",
+                case.name
+            );
         }
     }
     Some(rust)
@@ -1352,4 +1438,455 @@ fn real_affs_and_repo_groups_yamls() {
             assert_eq!(cols_of(&side, "scompany_activity").len(), 4, "{name}");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Compaction: a table that uses too many attribute slots is rebuilt
+// (`GHA2DB_COLUMNS_COMPACT_SLOTS`, Go `lib.CompactTable`)
+// ---------------------------------------------------------------------------
+
+/// SQL that adds and drops `n` columns of `table`: `n` more attribute slots,
+/// all of them dropped (what months of changing tag values do to a table).
+fn churn(table: &str, n: usize) -> String {
+    format!(
+        "do $$ begin for i in 1..{n} loop \
+         execute format('alter table %I add column %I double precision not null default 0.0', '{table}', 'churn ' || i); \
+         execute format('alter table %I drop column %I', '{table}', 'churn ' || i); \
+         end loop; end $$"
+    )
+}
+
+/// `(slots in use, slots of dropped columns)` of `table` on the Rust side.
+fn slots_of(side: &Side, table: &str) -> (String, String) {
+    let rows = query(
+        side,
+        &format!(
+            "select count(*)::text, (count(*) filter (where attisdropped))::text from pg_attribute \
+             where attrelid = 'public.{table}'::regclass and attnum > 0"
+        ),
+    );
+    (rows[0][0].clone(), rows[0][1].clone())
+}
+
+/// Position of `needle` in `out` (panics with the output when missing).
+fn at(out: &str, needle: &str) -> usize {
+    out.find(needle)
+        .unwrap_or_else(|| panic!("missing {needle:?} in {out}"))
+}
+
+#[test]
+fn compaction_rebuilds_a_table_at_the_threshold() {
+    let side = both(
+        &Case::new("compact")
+            .env("GHA2DB_COLUMNS_COMPACT_SLOTS", "36")
+            .setup("create index \"iactt\" on sact(time)")
+            .setup("create index \"iact p\" on sact(period)")
+            .setup("grant select on sact to public")
+            .setup("grant select, insert on sact to pg_monitor with grant option")
+            .setup(&churn("sact", 30)),
+    )
+    .unwrap();
+    assert_eq!(side.out().code(), 0);
+    let out = stdout_of(&side);
+    // after the stale column is dropped and before the tag's columns are added
+    let deleted = at(&out, "Deleted column \"Stale\" from 'sact' table\n");
+    let compacting = at(
+        &out,
+        "Compacting 'sact' table: 36 attribute slots (31 dropped, 5 live), threshold 36\n",
+    );
+    let compacted = at(
+        &out,
+        "Compacted 'sact' table: 3 rows, 36 -> 5 attribute slots\n",
+    );
+    let added = at(&out, "Added column \"Docs\" to 'sact' table\n");
+    assert!(
+        deleted < compacting && compacting < compacted && compacted < added,
+        "{out}"
+    );
+    assert_eq!(count_lines(&out, "Compacting '"), 1, "{out}");
+    assert_eq!(count_lines(&out, "Compacted '"), 1, "{out}");
+    assert!(!out.contains("cannot compact"), "{out}");
+    // 5 live columns + the 4 added ones, nothing dropped any more
+    assert_eq!(slots_of(&side, "sact"), ("9".to_string(), "0".to_string()));
+    assert_eq!(
+        cols_of(&side, "sact"),
+        [
+            "time",
+            "period",
+            "Kubernetes",
+            "all",
+            "None",
+            "Docs",
+            "Prometheus",
+            "Envoy",
+            "Ünïcode Group"
+        ]
+    );
+    // rows, primary key, indexes and privileges survived the rebuild
+    assert_eq!(
+        query(
+            &side,
+            "select time::date::text, period, \"Kubernetes\"::text, \"all\"::text, \"None\"::text, \"Docs\"::text from sact order by 1, 2"
+        ),
+        vec![
+            vec!["2020-01-01", "d", "1.5", "3.5", "4.5", "0"],
+            vec!["2020-01-01", "w", "100", "300", "400", "0"],
+            vec!["2020-01-02", "d", "10", "30", "40", "0"],
+        ]
+    );
+    assert_eq!(
+        query(
+            &side,
+            "select indexname from pg_indexes where tablename = 'sact' order by 1"
+        ),
+        vec![vec!["iact p"], vec!["iactt"], vec!["sact_pkey"]]
+    );
+    let acl = query(
+        &side,
+        "select array_to_string(relacl, ',') from pg_class where oid = 'public.sact'::regclass",
+    );
+    assert!(
+        acl[0][0].contains("pg_monitor=a*r*/") && acl[0][0].starts_with("=r/")
+            || acl[0][0].contains(",=r/"),
+        "{acl:?}"
+    );
+    // the other tables of the config were far below the threshold
+    assert_eq!(
+        slots_of(&side, "scommits"),
+        ("7".to_string(), "0".to_string())
+    );
+}
+
+#[test]
+fn compaction_needs_the_threshold_and_can_be_disabled() {
+    for (name, slots) in [
+        ("compact_below", Some("37")),
+        ("compact_off", Some("0")),
+        // the default threshold is 1300, a negative value keeps it
+        ("compact_default", None),
+        ("compact_negative", Some("-5")),
+    ] {
+        let mut case = Case::new(name).setup(&churn("sact", 30));
+        if let Some(slots) = slots {
+            case = case.env("GHA2DB_COLUMNS_COMPACT_SLOTS", slots);
+        }
+        let side = both(&case).unwrap();
+        assert_eq!(side.out().code(), 0, "{name}");
+        let out = stdout_of(&side);
+        assert!(!out.contains("ompact"), "{name}: {out}");
+        // 36 slots, the stale column dropped by the tool makes 31 dropped ones, 4 columns added
+        assert_eq!(
+            slots_of(&side, "sact"),
+            ("40".to_string(), "31".to_string()),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn compaction_setting_must_be_a_number() {
+    let side = both(
+        &Case::new("compact_nan")
+            .env("GHA2DB_COLUMNS_COMPACT_SLOTS", "many")
+            .setup(&churn("sact", 30)),
+    )
+    .unwrap();
+    assert_ne!(side.out().code(), 0);
+    assert_eq!(
+        slots_of(&side, "sact"),
+        ("36".to_string(), "30".to_string())
+    );
+}
+
+#[test]
+fn compaction_rescues_a_table_without_free_slots() {
+    // 2 live columns + 1598 dropped ones = the PostgreSQL limit of 1600: no
+    // column could be added any more; the default threshold (1300) applies
+    let side = both(
+        &Case::new("compact_full")
+            .yaml("metrics/testproj/columns_one.yaml")
+            .setup(&churn("scommits", 1598)),
+    )
+    .unwrap();
+    assert_eq!(side.out().code(), 0);
+    let out = stdout_of(&side);
+    assert!(
+        out.contains("Compacting 'scommits' table: 1600 attribute slots (1598 dropped, 2 live), threshold 1300\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Compacted 'scommits' table: 2 rows, 1600 -> 2 attribute slots\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Added column \"sig_node\" to 'scommits' table\n"),
+        "{out}"
+    );
+    assert!(!out.contains("at most 1600 columns"), "{out}");
+    assert_eq!(
+        slots_of(&side, "scommits"),
+        ("4".to_string(), "0".to_string())
+    );
+    assert_eq!(col_info(&side, "scommits", "sig_node"), s3(DOUBLE_DEFAULT));
+    // the same table with compaction switched off: every add fails as before
+    let side = both(
+        &Case::new("compact_full_off")
+            .yaml("metrics/testproj/columns_one.yaml")
+            .env("GHA2DB_COLUMNS_COMPACT_SLOTS", "0")
+            .setup(&churn("scommits", 1598)),
+    )
+    .unwrap();
+    assert_eq!(side.out().code(), 0);
+    let out = stdout_of(&side);
+    assert!(out.contains("at most 1600 columns"), "{out}");
+    assert!(!out.contains("ompact"), "{out}");
+    assert_eq!(
+        slots_of(&side, "scommits"),
+        ("1600".to_string(), "1598".to_string())
+    );
+}
+
+#[test]
+fn compaction_of_every_table_behind_one_regexp() {
+    // single-threaded and with the default number of threads
+    for (name, st) in [("compact_many", true), ("compact_many_mt", false)] {
+        let mut case = Case::new(name)
+            .env("GHA2DB_COLUMNS_COMPACT_SLOTS", "25")
+            .setup(&churn("sact", 30))
+            .setup(&churn("scommits", 25))
+            .setup(&churn("sgrp_pr_merg", 22))
+            .setup(&churn("scountries", 40));
+        if !st {
+            case = case.no_env("GHA2DB_ST");
+        }
+        let side = both(&case).unwrap();
+        assert_eq!(side.out().code(), 0, "{name}");
+        let out = stdout_of(&side);
+        for line in [
+            "Compacting 'sact' table: 36 attribute slots (31 dropped, 5 live), threshold 25\n",
+            "Compacted 'sact' table: 3 rows, 36 -> 5 attribute slots\n",
+            "Compacting 'scommits' table: 27 attribute slots (25 dropped, 2 live), threshold 25\n",
+            "Compacted 'scommits' table: 2 rows, 27 -> 2 attribute slots\n",
+            "Compacting 'sgrp_pr_merg' table: 25 attribute slots (22 dropped, 3 live), threshold 25\n",
+            "Compacted 'sgrp_pr_merg' table: 0 rows, 25 -> 3 attribute slots\n",
+            "Compacting 'scountries' table: 42 attribute slots (40 dropped, 2 live), threshold 25\n",
+            "Compacted 'scountries' table: 1 rows, 42 -> 2 attribute slots\n",
+        ] {
+            assert!(out.contains(line), "{name}: missing {line:?} in {out}");
+        }
+        assert_eq!(count_lines(&out, "Compacted '"), 4, "{name}: {out}");
+        for (table, slots) in [
+            ("sact", "9"),
+            ("scommits", "7"),
+            ("sgrp_pr_merg", "7"),
+            ("scountries", "7"),
+        ] {
+            assert_eq!(
+                slots_of(&side, table),
+                (slots.to_string(), "0".to_string()),
+                "{name} {table}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compaction_happens_once_for_a_table_of_two_configs() {
+    let side = both(
+        &Case::new("compact_twice")
+            .yaml("metrics/testproj/columns_twice.yaml")
+            .env("GHA2DB_COLUMNS_COMPACT_SLOTS", "20")
+            .setup(&churn("scommits", 30)),
+    )
+    .unwrap();
+    assert_eq!(side.out().code(), 0);
+    let out = stdout_of(&side);
+    assert_eq!(count_lines(&out, "Currently "), 2, "{out}");
+    assert!(
+        out.contains("Currently 2 columns in 'scommits'\n")
+            && out.contains("Currently 4 columns in 'scommits'\n"),
+        "{out}"
+    );
+    assert_eq!(count_lines(&out, "Compacting '"), 1, "{out}");
+    assert!(
+        out.contains("Compacted 'scommits' table: 2 rows, 32 -> 2 attribute slots\n"),
+        "{out}"
+    );
+    assert_eq!(
+        slots_of(&side, "scommits"),
+        ("4".to_string(), "0".to_string())
+    );
+}
+
+#[test]
+fn compaction_skips_a_table_that_is_not_a_plain_series_table() {
+    // one warning per table, the table stays as it is and the tool carries on
+    let side = both(
+        &Case::new("compact_skip")
+            .env("GHA2DB_COLUMNS_COMPACT_SLOTS", "20")
+            .setup(&churn("sact", 30))
+            .setup("create view vsact as select time, \"Kubernetes\" from sact")
+            .setup(&churn("scommits", 30))
+            .setup("alter table scommits set (fillfactor = 70)")
+            .setup("comment on table scommits is 'commits'")
+            .setup(&churn("sgrp_pr_merg", 30))
+            .setup("alter table sgrp_pr_merg alter column period set statistics 500"),
+    )
+    .unwrap();
+    assert_eq!(side.out().code(), 0);
+    let out = stdout_of(&side);
+    for line in [
+        "Warning: cannot compact 'sact' table (36 attribute slots, 31 dropped): views depend on it\n",
+        "Warning: cannot compact 'scommits' table (32 attribute slots, 30 dropped): it has storage options, it has comments\n",
+        // found only by comparing the rebuilt table with the original: everything is rolled back
+        "Compacting 'sgrp_pr_merg' table: 33 attribute slots (30 dropped, 3 live), threshold 20\n",
+        "Warning: cannot compact 'sgrp_pr_merg' table (33 attribute slots, 30 dropped): the rebuilt table would not match the original (columns)\n",
+        "Added column \"Docs\" to 'sact' table\n",
+        "Added column \"Envoy\" to 'scommits' table\n",
+        "Added column \"Envoy\" to 'sgrp_pr_merg' table\n",
+    ] {
+        assert!(out.contains(line), "missing {line:?} in {out}");
+    }
+    assert_eq!(count_lines(&out, "Warning: cannot compact '"), 3, "{out}");
+    assert!(!out.contains("Compacted '"), "{out}");
+    for (table, slots, dropped) in [
+        ("sact", "40", "31"),
+        ("scommits", "37", "30"),
+        ("sgrp_pr_merg", "37", "30"),
+    ] {
+        assert_eq!(
+            slots_of(&side, table),
+            (slots.to_string(), dropped.to_string()),
+            "{table}"
+        );
+    }
+    assert_eq!(
+        query(&side, "select count(*)::text from vsact"),
+        vec![vec!["3"]]
+    );
+}
+
+#[test]
+fn compaction_keeps_hll_columns() {
+    let side = both(
+        &Case::new("compact_hll")
+            .yaml("metrics/testproj/columns_hll.yaml")
+            .env("GHA2DB_COLUMNS_COMPACT_SLOTS", "20")
+            .with_hll()
+            .then_run(&[])
+            .setup(&churn("shll", 30)),
+    )
+    .unwrap();
+    let con = side.db.as_ref().unwrap().conn();
+    let hll = cpg::hll_available(&con);
+    con.close();
+    if !hll {
+        return;
+    }
+    assert_eq!(side.outs[0].code(), 0);
+    let out = String::from_utf8_lossy(&side.outs[0].stdout).into_owned();
+    assert!(
+        out.contains("Compacted 'shll' table: 1 rows, 32 -> 2 attribute slots\n"),
+        "{out}"
+    );
+    assert_eq!(
+        col_info(&side, "shll", "Kubernetes"),
+        s3(("USER-DEFINED", "NO", "hll_empty()"))
+    );
+    // a second run after more churn rebuilds the table again, with its hll columns
+    let side = both(
+        &Case::new("compact_hll2")
+            .yaml("metrics/testproj/columns_hll.yaml")
+            .env("GHA2DB_COLUMNS_COMPACT_SLOTS", "20")
+            .with_hll()
+            .setup("alter table shll add column \"Kubernetes\" hll not null default hll_empty()")
+            .setup("update shll set \"Kubernetes\" = hll_add(hll_empty(), hll_hash_text('a'))")
+            .setup(&churn("shll", 30)),
+    )
+    .unwrap();
+    assert_eq!(side.out().code(), 0);
+    let out = stdout_of(&side);
+    assert!(
+        out.contains("Compacted 'shll' table: 1 rows, 33 -> 3 attribute slots\n"),
+        "{out}"
+    );
+    assert_eq!(
+        query(
+            &side,
+            "select hll_cardinality(\"Kubernetes\")::text, hll_cardinality(\"Docs\")::text from shll"
+        ),
+        vec![vec!["1", "0"]]
+    );
+}
+
+#[test]
+fn compaction_echoes_its_statements() {
+    let side = both(
+        &Case::new("compact_qout")
+            .yaml("metrics/testproj/columns_one.yaml")
+            .env("GHA2DB_QOUT", "1")
+            .env("GHA2DB_COLUMNS_COMPACT_SLOTS", "20")
+            .setup("grant select on scommits to public")
+            .setup("create index \"icommitst\" on scommits(time)")
+            .setup(&churn("scommits", 30)),
+    )
+    .unwrap();
+    assert_eq!(side.out().code(), 0);
+    let out = stdout_of(&side);
+    let schema = "\"devstats_compact_58aa5fd53dc0ab9c9bd3258ce5dab7a6\"";
+    let mut last = 0;
+    for sql in [
+        "set local lock_timeout = '15s'\n",
+        "lock table public.\"scommits\" in access exclusive mode\n",
+        "Compacting 'scommits' table: 32 attribute slots (30 dropped, 2 live), threshold 20\n",
+        "select 'devstats_compact_' || md5($1::text)\n[1:scommits ]\n",
+        &format!("create schema {schema}\n"),
+        &format!("create table {schema}.\"scommits\" (like public.\"scommits\" including all excluding indexes)\n"),
+        &format!("insert into {schema}.\"scommits\" select * from public.\"scommits\"\n"),
+        "select count(*) from public.\"scommits\"\n",
+        "drop table public.\"scommits\"\n",
+        &format!("alter table {schema}.\"scommits\" set schema public\n"),
+        &format!("drop schema {schema}\n"),
+        "alter table public.scommits add constraint scommits_pkey PRIMARY KEY (\"time\", period)\n",
+        "CREATE INDEX icommitst ON public.scommits USING btree (\"time\")\n",
+        "grant SELECT on public.scommits to public\n",
+        "analyze public.\"scommits\"\n",
+        "Compacted 'scommits' table: 2 rows, 32 -> 2 attribute slots\n",
+        "alter table \"scommits\" add column if not exists \"sig_api_machinery\" double precision\n",
+    ] {
+        let pos = out[last..]
+            .find(sql)
+            .unwrap_or_else(|| panic!("missing (in this order) {sql:?} in {out}"));
+        last += pos + sql.len();
+    }
+}
+
+#[test]
+fn compaction_waits_for_the_table_lock_only_so_long() {
+    // another session holds a lock on the table for 17 seconds: the tool
+    // waits 15 seconds for its exclusive lock, warns, leaves the table as it
+    // is and then adds the columns once the lock is gone
+    let side = both(
+        &Case::new("compact_lock")
+            .yaml("metrics/testproj/columns_one.yaml")
+            .env("GHA2DB_COLUMNS_COMPACT_SLOTS", "20")
+            .setup(&churn("scommits", 30))
+            .hold("lock table scommits in access share mode", 17),
+    )
+    .unwrap();
+    assert_eq!(side.out().code(), 0);
+    let out = stdout_of(&side);
+    assert!(
+        out.contains("Warning: cannot compact 'scommits' table (32 attribute slots, 30 dropped): could not lock it within 15s\n"),
+        "{out}"
+    );
+    assert!(!out.contains("Compacting '"), "{out}");
+    assert!(
+        out.contains("Added column \"sig_node\" to 'scommits' table\n"),
+        "{out}"
+    );
+    assert_eq!(
+        slots_of(&side, "scommits"),
+        ("34".to_string(), "30".to_string())
+    );
 }
